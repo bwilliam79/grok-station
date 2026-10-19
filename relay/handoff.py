@@ -99,9 +99,9 @@ def route(hooks, bot):
     return hooks["_router"] if "_router" in hooks else hooks.get(bot)
 
 
-def payload(rid, bot, question, reply_by_iso):
+def payload(rid, bot, question, reply_by_iso, tier_max=None):
     """The webhook body. The question is untrusted data, delimited; the routine treats it as a question only."""
-    return {"source": "grok-station", "v": 1, "request_id": rid, "persona": bot, "tier_max": MAX_TIER,
+    return {"source": "grok-station", "v": 1, "request_id": rid, "persona": bot, "tier_max": MAX_TIER if tier_max is None else tier_max,
             "reply_by": reply_by_iso, "question": f"{BEGIN}\n{question}\n{END}"}
 
 
@@ -169,7 +169,28 @@ def remove_pending(pdir, rid):
         pass
 
 
-def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None):
+NOTE_OPS, NOTE_SCOPES = ("add", "remove", "remember", "undo"), ("own_notes", "shared")
+
+
+def note_from(doc, hosts=()):
+    """T1 note proposal from a tile-ingest reply doc (already validated there; checked again here). dict or (None, reason)."""
+    p, sha = doc.get("proposal"), doc.get("proposal_sha")
+    if doc.get("tier") != 1 or not isinstance(p, dict) or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return None, "note-schema"
+    if p.get("op") not in NOTE_OPS or p.get("scope", "own_notes") not in NOTE_SCOPES:
+        return None, "note-schema"
+    text = clean(p.get("text", ""), 121)
+    if not text or len(text) > 120 or re.search(r"save\s*it", text, re.I):
+        return None, "note-text"
+    why = lint_reply(text, hosts)
+    if why:
+        return None, "lint:" + why
+    lst = clean(p.get("list", ""), 25) if p.get("list") else ""
+    return {"op": p["op"], "scope": p.get("scope", "own_notes"), "list": lst, "text": text, "sha": sha,
+            "needs_tap": p.get("scope", "own_notes") != "own_notes"}, None
+
+
+def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None, note_ok=False):
     """(text, None) for a reply that is bound, in scope and clean; (None, reason) for a bad one; (None, None) if none yet.
     The reply file is consumed (deleted) on read, so it can be spoken at most once; seen dedupes request_ids."""
     p = os.path.join(rdir, rid + ".json")
@@ -194,6 +215,8 @@ def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None):
     if not secrets.compare_digest(str(doc.get("nonce", "")), nonce):
         return None, "nonce"
     tier, ac = doc.get("tier"), doc.get("action_class")
+    if note_ok and ac == "note":  # T1 (T1_ENABLED): a proposal for the on-station read-back, never spoken as an answer
+        return note_from(doc, hosts)
     if not isinstance(tier, int) or tier > MAX_TIER or ac not in TIER_ACTIONS.get(tier, ()):
         return None, "above-scope"
     text = strip_markup(clean(doc.get("text", ""), REPLY_MAX + 1))

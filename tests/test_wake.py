@@ -1,3 +1,4 @@
+import re
 """Wake client: persona events keep the listening phase, 16 kHz capture upsampling, patience. No network, no audio."""
 import json, os, sys, types, unittest
 import numpy as np
@@ -34,14 +35,14 @@ def run_session(msgs, persona="kai"):
 class TestWake(unittest.TestCase):
     def test_persona_event_keeps_listening(self):
         p = run_session([{"type": "ready"}, {"type": "persona", "slug": "kai", "name": "Kai"}, {"type": "timeout"}])
-        self.assertEqual(p[0], ("url", "ws://relay.test/ws?persona=kai"))
+        self.assertEqual(re.sub(r"[?&]t1=[^&]*$", "", p[0][1]), "ws://relay.test/ws?persona=kai")
         self.assertIn(("listening", "Kai"), p)
         self.assertNotIn("thinking", [x[0] for x in p])
 
     def test_persona_event_while_responding_is_thinking(self):
         p = run_session([{"type": "response_started"}, {"type": "persona", "slug": "rhea", "name": "Rhea"}, {"type": "done"}],
                         persona="grok")
-        self.assertEqual(p[0], ("url", "ws://relay.test/ws"))
+        self.assertEqual(re.sub(r"[?&]t1=[^&]*$", "", p[0][1]), "ws://relay.test/ws")
         self.assertIn(("thinking", "Rhea"), p)
 
     def test_up24(self):

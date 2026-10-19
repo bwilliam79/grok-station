@@ -466,6 +466,10 @@ A persona can ask its own Grok Bot and speak the answer, answer-only (T0), with 
 and a privacy lint on both ends. Off until enabled per bot. Router mode (`grok-voice-add-router`) sends every handoff
 through one webhook; per-bot entries stay as fallback. See [docs/handoff.md](docs/handoff.md).
 
+### Voice notes (T1, off)
+
+When it's turned on, a teammate can ask to save a short note. The station shows it and reads it back. You say "yes, save it" within 15 seconds, or press the speaker's call button. Notes are off from 10 PM to 7 AM, in guest mode (admin page → Personas), and unless a station button was pressed in the last 30 minutes. See [docs/handoff.md](docs/handoff.md#t1-as-built-2026-10-19-ships-off).
+
 ## Logo
 
 Grok mark extracted from Wikimedia Commons `File:Grok-feb-2025-logo.svg` (X.AI Corp., PD-textlogo; trademark of xAI),

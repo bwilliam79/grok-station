@@ -142,6 +142,64 @@ LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
+# T1 voice notes (relay t1.py): guest mode from the admin page, and physical taps on the station (touchscreen or the
+# speakerphone's call button) for "recent tap" and tap-to-confirm. Taps are read here from evdev (grok is in input).
+T1_FILE = E("WAKE_T1_FILE", "/var/lib/grok-station/admin/t1.json")
+TAP_KEYS = {int(k) for k in E("WAKE_TAP_KEYS", "330,169,164,445").split(",") if k.strip().isdigit()}  # BTN_TOUCH, KEY_PHONE, KEY_PLAYPAUSE, KEY_PICKUP_PHONE
+LAST_TAP = {"at": 0.0}
+CURRENT = {"session": None}
+
+
+def t1_query():
+    try:
+        guest = json.load(open(T1_FILE)).get("guest") is not False
+    except (OSError, ValueError, AttributeError):
+        guest = False  # no admin file yet: guest mode off (T1 still needs T1_ENABLED and a recent tap)
+    return urllib.parse.quote(json.dumps({"guest": guest, "last_tap": int(LAST_TAP["at"])}, separators=(",", ":")))
+
+
+def on_tap(code):
+    LAST_TAP["at"] = time.time()
+    print(f"tap key={code}", flush=True)
+    ses = CURRENT["session"]
+    if ses is not None and getattr(ses, "t1_card", None) and getattr(ses, "ws", None) is not None:
+        try:
+            ses.ws.send(json.dumps({"type": "t1_tap", "request_id": ses.t1_card["request_id"]}))
+            print("t1 tap sent", flush=True)
+        except Exception as e:
+            print(f"t1 tap send failed: {type(e).__name__}", flush=True)
+
+
+def tap_loop():
+    """Read key presses from input devices that have one of TAP_KEYS (evdev, 24-byte input_event on 64-bit)."""
+    import glob, select, struct
+    fmt = "llHHi"
+    size = struct.calcsize(fmt)
+    fds = {}
+    while True:
+        for path in glob.glob("/dev/input/event*"):
+            if path in fds.values():
+                continue
+            try:
+                fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+                fds[fd] = path
+            except OSError:
+                pass
+        try:
+            r, _, _ = select.select(list(fds), [], [], 5)
+        except (OSError, ValueError):
+            r = []
+        for fd in r:
+            try:
+                data = os.read(fd, size * 64)
+            except OSError:
+                os.close(fd)
+                fds.pop(fd, None)
+                continue
+            for i in range(0, len(data) - size + 1, size):
+                _, _, typ, code, val = struct.unpack(fmt, data[i:i + size])
+                if typ == 1 and val == 1 and code in TAP_KEYS:  # EV_KEY press
+                    on_tap(code)
 
 
 def timers_load():
@@ -665,9 +723,15 @@ class Session:
         SESSION_OPEN.set()
         self.persona = persona if SLUG_RE.match(persona or "") else "grok"
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
+        self.ws, self.t1_card = None, None
+        CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
 
     def state(self, state, **kw):
+        if self.t1_card and state in ("speaking", "thinking", "listening"):  # keep the read-back card up until decided
+            c = self.t1_card
+            post_state("confirm", who=c["name"], text=c["text"], heard=f"{c['op']}|{c['list']}|{1 if c['needs_tap'] else 0}")
+            return
         post_state(state, who=self.who, **kw)
 
     def feed(self, pcm24):
@@ -705,6 +769,7 @@ class Session:
                     tq = timers_query()
                     if tq:
                         q.append("timers=" + tq)
+                    q.append("t1=" + t1_query())
                     url = RELAY_URL + ("?" + "&".join(q) if q else "")
                     ws = connect(url, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
                                  open_timeout=4, max_size=1 << 22, legacy=True, **tls)
@@ -718,6 +783,7 @@ class Session:
                 return
             print(f"relay connected in {time.time() - t0:.2f}s", flush=True)
             with ws:
+                self.ws = ws
                 threading.Thread(target=self._sender, args=(ws,), daemon=True).start()
                 for m in ws:
                     if isinstance(m, bytes):
@@ -783,6 +849,17 @@ class Session:
                         name = str(ev.get("name", ""))[:24] or "a teammate"
                         print("relay: handoff wait", flush=True)
                         self.state("thinking", heard=self.heard, text=f"Checking with {name}…")
+                    elif t == "t1_confirm":
+                        lst = " ".join(re.sub(r"[^A-Za-z ']", " ", str(ev.get("list") or "")).split())[:24]
+                        self.t1_card = {"request_id": str(ev.get("request_id", ""))[:40], "name": str(ev.get("name", ""))[:24] or self.who,
+                                        "op": str(ev.get("op", ""))[:10], "list": lst, "text": str(ev.get("text", ""))[:120],
+                                        "needs_tap": bool(ev.get("needs_tap"))}
+                        print("t1: read-back card", flush=True)  # no text in the log
+                        self.state("speaking")
+                    elif t == "t1_result":
+                        self.t1_card = None
+                        print(f"t1: {'confirmed' if ev.get('ok') else 'not saved'}", flush=True)
+                        self.state("thinking", heard=self.heard, text="Saving…" if ev.get("ok") else "Not saved.")
                     elif t in ("timer_set", "timer_cancel"):
                         timer_event(ev)
                     elif t == "handoff_done":
@@ -811,6 +888,7 @@ class Session:
                             self.state("error", text="Can’t reach Grok right now.")
                         break
             self.feeding = False
+            self.t1_card = None  # session over: the card goes (the relay records an undecided read-back as declined)
             if player:
                 player.stdin.close()
                 player.wait(timeout=90)
@@ -821,6 +899,9 @@ class Session:
             self.state("error", text="Can’t reach Grok right now.")
         finally:
             self.feeding = False
+            self.ws, self.t1_card = None, None
+            if CURRENT["session"] is self:
+                CURRENT["session"] = None
             if self.save is not None and out:
                 with wave.open(self.save, "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(b"".join(out))
@@ -855,6 +936,7 @@ def main():
     threading.Thread(target=control_server, daemon=True).start()
     timers_load()
     threading.Thread(target=timers_loop, daemon=True).start()
+    threading.Thread(target=tap_loop, daemon=True).start()
     model = load_model()
     det = Detector()
     print(f"cooldown={COOLDOWN}s gain={GAIN}", flush=True)

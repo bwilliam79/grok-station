@@ -33,8 +33,8 @@ MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
-VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4, "enroll": 30}  # safety timeouts per state
-VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…"}
+VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4, "enroll": 30, "confirm": 30}  # safety timeouts per state
+VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
@@ -855,11 +855,46 @@ def draw_enroll(surf, L, now, msg, t=1.0):
             pygame.draw.rect(surf, LISTENING, (x, y, max(L(24), int(width * min(1.0, bar))), L(24)), border_radius=L(12))
 
 
+T1_VERBS = {"add": "add to", "remove": "remove from", "remember": "remember", "undo": "undo"}
+
+
+def draw_confirm(surf, L, now, msg):
+    """T1 read-back card: the exact note text, and how to confirm. heard = "op|list|needs_tap" (from the wake listener)."""
+    surf.fill(BG)
+    w, h = surf.get_size()
+    se = min(w, h)
+    m = round(0.075 * se)
+    who = msg.get("from") or "Grok"
+    op, lst, tap = (str(msg.get("heard", "")).split("|") + ["", "", ""])[:3]
+    topbar(surf, se, f"{who} · Voice note", now)
+    verb = T1_VERBS.get(op, "save")
+    where = (f"the {lst} list" if lst else "your notes") if op in ("add", "remove") else ""
+    head = f"{who} will {verb} {where}:".replace("  ", " ") if verb != "undo" else f"{who} will undo the note:"
+    y = round(0.17 * se)
+    hr = font("display", round(0.0627 * se)).render(head, True, MUTED)
+    surf.blit(hr, (m, y))
+    y += hr.get_height() + round(0.03 * se)
+    box = pygame.Rect(m, y, w - 2 * m, round(0.36 * se))
+    pygame.draw.rect(surf, SURFACE, box, border_radius=round(0.0188 * se))
+    pygame.draw.rect(surf, AMBER, box, max(2, round(0.0018 * se)), border_radius=round(0.0188 * se))
+    pad = round(0.03 * se)
+    f, lines, step = fit_text("display", msg.get("text", ""), box.w - 2 * pad, box.h - 2 * pad, round(0.0938 * se), round(0.04 * se), max_lines=3)
+    draw_lines(surf, f, lines, step, TEXT, box.x + pad, box.y + pad)
+    y = box.bottom + round(0.04 * se)
+    how = "Press the call button on the speaker to save." if tap == "1" else "Say “yes, save it”, or press the call button."
+    hw = font("display", round(0.0563 * se)).render(how, True, LISTENING)
+    surf.blit(hw, (m, y))
+    foot = font("body", round(0.0328 * se)).render("Anything else cancels. Nothing is saved until you confirm.", True, MUTED)
+    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+
+
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     state = msg.get("state", state)
     if state == "enroll":
         return draw_enroll(surf, L, now, msg, t)
+    if state == "confirm":
+        return draw_confirm(surf, L, now, msg)
     surf.fill(BG)
     if state == "listening":
         pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
@@ -1349,6 +1384,7 @@ def demo(out, size):
     demo_qr = [("".join("1" if ((r * 7 + c * 3) % 5 < 2 or (r < 7 and c < 7)) else "0" for c in range(29))) for r in range(29)]
     shots.append(("setup-hotspot", draw_hotspot, (now, dict(sd, mode="hotspot", ssid="grok-station-7F3A", password="hearth-4821",
                                                             url="http://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr))))
+    shots.append(("t1-confirm", draw_session, (now, {"from": "Finn", "heard": "add|grocery|0", "text": "oat milk and two lemons", "state": "confirm"})))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)

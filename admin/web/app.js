@@ -508,11 +508,20 @@ async function pageVoice(el) {
   xaiPanel($("#x", el)); relayPanel($("#r", el));
 }
 async function pagePersonas(el) {
-  const r = await api("GET", "/api/personas");
-  const d = r.data || {};
-  el.innerHTML = `<div class="banner off">${esc(d.where || "")}</div><div class="tiles" style="margin-top:16px">${(d.personas || []).map(p => `<div class="tile">
+  const [r, g] = await Promise.all([api("GET", "/api/personas"), api("GET", "/api/t1")]);
+  const d = r.data || {}, guest = !!(g.data || {}).guest;
+  el.innerHTML = `<div class="card"><div class="row"><button class="tog${guest ? " on" : ""}" role="switch" aria-checked="${guest}" id="guest" aria-label="Guest mode"></button>
+    <div><div class="lbl">Guest mode</div><div class="help">Turns off saving voice notes from the station while guests are over.</div></div></div>
+    <p class="note">Voice notes (when turned on for a teammate) need someone at the station: the note is shown and read back, then you say “yes, save it” or press the speaker's call button. They're off from 10 PM to 7 AM and unless the call button was pressed in the last 30 minutes.</p></div>
+    <div class="banner off" style="margin-top:16px">${esc(d.where || "")}</div><div class="tiles" style="margin-top:16px">${(d.personas || []).map(p => `<div class="tile">
     <div style="font:600 17px var(--disp)">${esc(p.name)}</div><div class="help">Voice: ${esc(p.voice || "default")}</div>
     <div class="help">${p.wake_word ? "Wake word: " + esc(WORD(p.wake_word)) : "Opened by name in a conversation"}</div></div>`).join("") || `<p class="help">No personas found on this station.</p>`}</div>`;
+  $("#guest", el).onclick = async () => {
+    const on = !$("#guest", el).classList.contains("on");
+    const x = await api("PUT", "/api/t1", {guest: on});
+    if (x.ok) { $("#guest", el).classList.toggle("on", on); $("#guest", el).setAttribute("aria-checked", on); toast(on ? "Guest mode on." : "Guest mode off."); }
+    else toast(x.data.error, "bad");
+  };
 }
 async function pageSystem(el) {
   el.innerHTML = `<div class="cols"><div class="card" id="ver"><h2>Updates</h2><p class="help">Checking…</p></div><div class="card" id="hl"><h2>Health</h2></div></div>

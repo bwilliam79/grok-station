@@ -756,6 +756,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"personas": out, "editable": False,
                                "where": "The persona registry lives on the voice service computer; this page shows it read-only."})
 
+    # T1 voice notes: guest mode switch (read by the wake listener, sent to the relay with each session)
+    def api_get_t1(self, p, q, j):
+        d = read_json(path("t1.json"), {})
+        return self.send(200, {"guest": d.get("guest") is True, "changed_at": d.get("changed_at")})
+
+    def api_put_t1(self, p, q, j):
+        if not isinstance(j.get("guest"), bool):
+            return self.send(400, {"error": "bad value"})
+        write_json(path("t1.json"), {"guest": j["guest"], "changed_at": int(now())}, 0o640)
+        return self.send(200, {"ok": True, "guest": j["guest"]})
+
     # system
     def api_get_system(self, p, q, j):
         if p == "/api/system/logs":

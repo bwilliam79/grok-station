@@ -25,6 +25,8 @@ services:
       WEATHER_LON: ${WEATHER_LON:-}
       WEATHER_PLACE: ${WEATHER_PLACE:-}
       WEATHER_UNITS: ${WEATHER_UNITS:-fahrenheit}
+      # T1 voice notes (docs/handoff.md): OFF until the owner + Nix flip it.
+      T1_ENABLED: ${T1_ENABLED:-0}
     secrets: [xai_api_key, relay_token, keyterms, webhooks]
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
@@ -37,6 +39,8 @@ services:
       # Handoff binding dirs, shared with tile-ingest (POST /voice/reply): pending rw here, replies rw (consumed on read)
       - ${GROK_STATION_VOICE:-./no-voice}/pending:/voice/pending
       - ${GROK_STATION_VOICE:-./no-voice}/replies:/voice/replies
+      # T1 confirm events (read by tile-ingest, which alone holds the receipt key)
+      - ${GROK_STATION_VOICE:-./no-voice}/confirms:/voice/confirms
     ports:
       - "${GROK_STATION_RELAY_BIND:-127.0.0.1}:8790:8790"
     read_only: true

@@ -43,7 +43,7 @@ Logs and alerts carry request_id, agent, length and verdict only, never text. Ev
 ## Token identity limit (Nix, 2026-10-19)
 All bots' routines run as the same box user, so any bot can read every voice token. The voice token therefore does not prove which bot is replying. The real control is the nonce-to-persona binding (403 persona-mismatch), which limits a rogue reply to a request already issued to that persona. That's acceptable for T0 answers. **Nothing above T0 may be authorized by the token alone:** T1+ must be gated by the owner's on-screen confirm or an approval card in his chat.
 
-## T1 design: `note` with on-station confirm (proposal for Nix's review, not built)
+## T1 design: `note` with on-station confirm (built, off: `T1_ENABLED=0`)
 Status: design only. Nothing below is enabled; every bot stays at T0 until Nix approves this and the owner OKs a canary.
 
 **What T1 allows.** One action class, `note`: a reversible write inside the bot's own notes (remember a fact, add or remove a list item, add a reminder to the bot's own list). It stays inside that bot: nothing is sent, posted, bought, booked, shared or scheduled with anyone else, and no other system changes. The never-by-voice list above still applies at every tier.
@@ -70,6 +70,27 @@ Status: design only. Nothing below is enabled; every bot stays at T0 until Nix a
 **Rollout.** Flag `T1_ENABLED=0` in the relay and in tile-ingest. Per-bot `tier_max` is set in tile-ingest. Steps: Nix review, then build with tests (forged/expired/replayed/wrong-persona/wrong-hash confirms, decline paths, model-free read-back), then one canary bot for a week with the owner's OK, then wider rollout.
 
 **Open questions for Nix.** (a) Is spoken "yes, save it" enough, or require touch where the screen supports it? (b) Should the 5/day cap or the 10-minute undo window change? (c) Keep the HMAC key on the relay host, or put it in tile-ingest so the box never sees confirm files at all? (d) Should a guest-mode switch in the admin page turn T1 off while guests are over?
+
+## T1 as built (2026-10-19, ships off)
+
+Approved with the reviewer's conditions. Everything below is in the code and tested; `T1_ENABLED` is `0` in both the relay and tile-ingest, and every bot is still tier 0.
+
+- **Confirm.** A spoken confirm counts only from the station mic, only after the read-back finishes (the window opens when the station says it is listening, after playback; the station sends no mic audio during playback), and only within 15 s. It must be the whole utterance "yes, save it" (case and punctuation ignored). The read-back is a fixed template that never contains "save", and the station's own TTS is not in the transcript. Anything other than `own_notes` needs a tap.
+- **Tap.** The station has no touchscreen. A tap is a press of a station button read from evdev: `BTN_TOUCH` (330), `KEY_PHONE` (169), `KEY_PLAYPAUSE` (164) or `KEY_PICKUP_PHONE` (445). Volume and mute keys don't count. Override with `WAKE_TAP_KEYS`.
+- **Recent tap.** A tap within the last 30 minutes. With no recent tap, T1 is off and the persona says it can't save notes right now.
+- **Off when.** `T1_ENABLED` is not 1 (either side), guest mode is on (admin page → Personas, `/var/lib/grok-station/admin/t1.json`), 10 PM–7 AM station time, or no recent tap. A missing or bad station status counts as guest mode.
+- **Receipts.** tile-ingest stores each proposal with its sha256. The relay writes `/voice/confirms/<rid>.json` (verdict, how, source, times, station state, sha, never the text). `GET /voice/confirm/<rid>` turns a confirmed event into an HMAC receipt (once, 2 min). `POST /voice/commit` verifies it once. A replayed receipt, a hash mismatch, an event outside the window, guest mode or no recent tap gets 403 and an alert. The key is `tile-ingest` data `t1/receipt.key` (600). It is never on the box, and it is never mounted into the relay container. The relay and tile-ingest share one host (home computer), so the separation there is at the container level.
+- **Caps.** 5 per bot per day and 20 per day for all bots, with an alert at the cap. Undo by voice within 24 h; undo in the app anytime.
+- **Notes.** Committed notes come back as `{origin: "voice", trust: "untrusted", ...}`, and bots must treat them as data on later reads. Text gets the privacy lint, plus rejects for links, codes, numbers over 5 digits and the confirm phrase.
+- **Logs.** `t1 <rid> agent= verdict= how=` only.
+
+### Turning it on (not done)
+
+1. Run `evtest` on the station and press the speakerphone's call button. Confirm that its key code is in `WAKE_TAP_KEYS`.
+2. Give one canary bot `maxTier: 1` in tile-ingest `VOICE_AGENTS`.
+3. Update that bot's routine to propose with `action_class: "note"`, poll `GET /voice/confirm/<rid>`, call `POST /voice/commit`, and store the note with the untrusted tag.
+4. Set `T1_ENABLED=1` in tile-ingest and the relay `.env`, then rebuild both (check for sessions and enrollments first).
+5. Run the live canary with Nix: the TV-during-read-back test, then a real confirm.
 
 ## Router mode (one webhook)
 
