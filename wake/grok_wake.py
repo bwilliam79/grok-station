@@ -15,6 +15,12 @@ Personas: the relay may switch the session to a teammate ({"type":"persona","slu
 that name and portrait. At startup (and hourly) the client caches GET /personas and each GET /portrait/<slug> into
 GROK_STATION_PORTRAITS (default /opt/grok-station/portraits, never in git); the display reads personas.json there to
 keep /show from posting as any persona.
+Wake words: WAKE_CONFIG (default /opt/grok-station/wake/wakewords.json, repo copy wake/wakewords.json) lists custom
+openWakeWord models (models_dir/<name>.onnx), each with a persona slug, threshold and patience (consecutive 80 ms
+frames at or above the threshold). A wake opens the session as that persona (relay /ws?persona=<slug>). The optional
+"fallback" entry loads a built-in openWakeWord model (hey_jarvis). Without the file: single WAKE_MODEL as before.
+`grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
+`grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
 import json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
 import numpy as np
@@ -107,9 +113,86 @@ def persona_loop():
         time.sleep(3600)
 
 
+WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
+SLUG_RE = re.compile(r"^[a-z]{2,16}$")
+WORDS = {}  # model key -> {"name", "persona", "threshold", "patience", "provisional"}
+
+
+def _word(w):
+    return {"name": str(w["name"]), "persona": str(w.get("persona", "grok")), "threshold": float(w.get("threshold", 0.5)),
+            "patience": max(1, int(w.get("patience", 1))), "provisional": bool(w.get("provisional", False))}
+
+
 def load_model():
+    """One openWakeWord Model holding every configured word. Fills WORDS (model key -> word settings)."""
     from openwakeword.model import Model
-    return Model(wakeword_models=[MODEL], inference_framework="onnx")
+    WORDS.clear()
+    try:
+        with open(WAKE_CONFIG) as f:
+            cfg = json.load(f)
+    except FileNotFoundError:
+        cfg = None
+    except (OSError, ValueError) as e:
+        print(f"wake config unreadable ({type(e).__name__}); using {MODEL}", flush=True)
+        cfg = None
+    if cfg is None:
+        WORDS[MODEL] = _word({"name": MODEL, "threshold": THRESH})
+        return Model(wakeword_models=[MODEL], inference_framework="onnx")
+    paths = []
+    for w in cfg.get("words", []):
+        w = _word(w)
+        path = os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
+        if not os.path.isfile(path):
+            print(f"wake word {w['name']}: model missing, skipped", flush=True)
+            continue
+        paths.append(path); WORDS[w["name"]] = w
+    fb = cfg.get("fallback")
+    if fb or not paths:
+        fb = _word(fb or {"name": "hey_jarvis"})
+        paths.append(fb["name"]); WORDS[fb["name"]] = fb
+    model = Model(wakeword_models=paths, inference_framework="onnx")
+    for k in list(WORDS):
+        if k not in model.models:
+            print(f"wake word {k}: not in loaded models, skipped", flush=True)
+            WORDS.pop(k)
+    for k, w in WORDS.items():
+        print(f"wake word {k} -> {w['persona']} threshold={w['threshold']} patience={w['patience']}"
+              f"{' (provisional)' if w['provisional'] else ''}", flush=True)
+    print(f"loaded {len(WORDS)} wake words", flush=True)
+    return model
+
+
+class Detector:
+    """Per-word consecutive-frame counters. feed(scores) returns the triggered model key (highest score) or None."""
+
+    def __init__(self):
+        self.n = {k: 0 for k in WORDS}
+
+    def reset(self):
+        self.n = {k: 0 for k in WORDS}
+
+    def feed(self, sc):
+        hits = []
+        for k, w in WORDS.items():
+            s = sc.get(k, 0.0)
+            self.n[k] = self.n[k] + 1 if s >= w["threshold"] else 0
+            if self.n[k] >= w["patience"]:
+                hits.append((s, k))
+        return max(hits)[1] if hits else None
+
+
+def persona_name(slug):
+    """Display name for a persona slug from the cached personas.json; Grok when unknown."""
+    if slug == "grok":
+        return "Grok"
+    try:
+        with open(os.path.join(PORTRAITS, "personas.json")) as f:
+            for p in json.load(f).get("personas", []):
+                if p.get("slug") == slug:
+                    return " ".join(str(p.get("name", "")).split())[:20] or "Grok"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "Grok"
 
 
 def find_card(tool):
@@ -143,33 +226,55 @@ def post_state(state, **kw):
 
 
 def scores(model, pcm):
-    return model.predict(pcm).get(next(iter(model.models)), 0.0)
+    return model.predict(pcm)
 
 
 def test(path):
+    """Offline: feed a 16 kHz mono WAV through the same detector; report the trigger. Never opens a session."""
     model = load_model()
     with wave.open(path) as w:
         assert w.getframerate() == 16000 and w.getnchannels() == 1 and w.getsampwidth() == 2, "need 16 kHz mono s16"
         pcm = np.frombuffer(w.readframes(w.getnframes()), "<i2")
     pcm = np.concatenate([np.zeros(16000, "<i2"), pcm, np.zeros(16000, "<i2")])
-    best, at = 0.0, 0.0
+    det, peak, hit = Detector(), {k: 0.0 for k in WORDS}, None
     for i in range(0, len(pcm) - CHUNK, CHUNK):
-        s = scores(model, pcm[i:i + CHUNK])
-        if s > best:
-            best, at = s, i / 16000
-    print(f"{os.path.basename(path)}: peak {MODEL} score {best:.3f} at {at:.2f}s -> {'DETECTED' if best >= THRESH else 'no'}")
+        sc = scores(model, pcm[i:i + CHUNK])
+        for k in peak:
+            peak[k] = max(peak[k], sc.get(k, 0.0))
+        k = det.feed(sc)
+        if k and not hit:
+            hit = (k, i / 16000)
+    others = " ".join(f"{k} {v:.3f}" for k, v in peak.items() if not hit or k != hit[0])
+    if hit:
+        print(f"{os.path.basename(path)}: TRIGGER {hit[0]} -> {WORDS[hit[0]]['persona']} at {hit[1]:.2f}s "
+              f"(peak {peak[hit[0]]:.3f}); others: {others}")
+    else:
+        print(f"{os.path.basename(path)}: no trigger; peaks: {others}")
+
+
+def bench(seconds=30):
+    model = load_model()
+    x = (np.random.randn(16000 * seconds) * 1000).astype("<i2")
+    for i in range(0, 16000 * 2, CHUNK):
+        model.predict(x[i:i + CHUNK])
+    t, n = time.process_time(), 0
+    for i in range(0, len(x) - CHUNK, CHUNK):
+        model.predict(x[i:i + CHUNK]); n += 1
+    ms = (time.process_time() - t) / n * 1000
+    print(f"bench: {len(WORDS)} words, {ms:.2f} ms CPU per 80 ms frame = {ms / 80 * 100:.1f}% of one core")
 
 
 class Session:
     """One question and answer through the relay. Feed it 24 kHz PCM16 bytes with feed(); runs in a thread."""
 
-    def __init__(self, play_dev, save=None, skip=VOICE_SKIP, echo_text=False):
+    def __init__(self, play_dev, save=None, skip=VOICE_SKIP, echo_text=False, persona="grok"):
         self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
         self.skip = int(skip * 24000) * 2  # bytes of 24 kHz PCM16 still to drop
         self.echo_text = echo_text         # print transcripts: only for the manual --ask check, never the service log
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
-        self.who = "Grok"  # the persona speaking; the relay's persona event changes it
+        self.persona = persona if SLUG_RE.match(persona or "") else "grok"
+        self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
         threading.Thread(target=self.run, daemon=True).start()
 
     def state(self, state, **kw):
@@ -206,7 +311,8 @@ class Session:
             for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
                 try:
                     tls = {"ssl": relay_ssl()} if RELAY_URL.startswith("wss://") else {}
-                    ws = connect(RELAY_URL, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
+                    url = RELAY_URL + (f"?persona={self.persona}" if self.persona != "grok" else "")
+                    ws = connect(url, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
                                  open_timeout=4, max_size=1 << 22, legacy=True, **tls)
                     break
                 except Exception as e:
@@ -323,7 +429,8 @@ def main():
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
     model = load_model()
-    print(f"model={MODEL} threshold={THRESH} cooldown={COOLDOWN}s gain={GAIN}", flush=True)
+    det = Detector()
+    print(f"cooldown={COOLDOWN}s gain={GAIN}", flush=True)
     while True:
         cap = find_card("arecord")
         if not cap:
@@ -346,6 +453,7 @@ def main():
             if sess and not sess.active:
                 sess = None
                 model.reset()  # drop audio features from the session before listening again
+                det.reset()
             if sess:
                 if sess.feeding:
                     xx = np.concatenate([tail24, x]); tail24 = xx[-(len(_K24) - 1):]
@@ -356,17 +464,21 @@ def main():
                 xx = np.concatenate([tail, x]); tail = xx[-(len(_K) - 1):]
                 x = np.convolve(xx, _K, "valid")[::DECIM]
             pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
-            s = scores(model, pcm)
+            sc = scores(model, pcm)
+            s = max(sc.values(), default=0.0)
+            hit = det.feed(sc)
             rms_sum += float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))); n += 1
             peak = max(peak, s)
             now = time.time()
-            if s >= THRESH and now - last_hit >= COOLDOWN:
+            if hit and now - last_hit >= COOLDOWN:
                 last_hit = now
-                print(f"WAKE {MODEL} score={s:.3f}", flush=True)
+                slug = WORDS[hit]["persona"]
+                print(f"WAKE {hit} score={sc.get(hit, 0.0):.3f} persona={slug}", flush=True)
+                det.reset()
                 subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
-                threading.Thread(target=post_state, args=("listening",), daemon=True).start()
+                threading.Thread(target=post_state, args=("listening",), kwargs={"who": persona_name(slug)}, daemon=True).start()
                 if RELAY_URL:
-                    sess = Session(play)
+                    sess = Session(play, persona=slug)
             if now - last_log >= LEVEL_EVERY:
                 avg = rms_sum / max(1, n)
                 dbfs = 20 * np.log10(max(avg, 1) / 32768)
@@ -380,6 +492,8 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--test":
         test(sys.argv[2])
+    elif len(sys.argv) in (2, 3) and sys.argv[1] == "--bench":
+        bench(int(sys.argv[2]) if len(sys.argv) == 3 else 30)
     elif len(sys.argv) == 2 and sys.argv[1] == "--sync":
         sync_personas()
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "--ask":

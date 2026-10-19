@@ -371,16 +371,23 @@ async def session(req):
                                                            heartbeat=20, max_msg_size=1 << 24) as up:
             now = datetime.datetime.now(ZoneInfo(TZ))
             roster = persona_list()
-            instructions = persona_instructions(None, roster, now)
+            want = req.query.get("persona", "")  # the wake word the Pi heard ("Hey Kai" -> kai); Grok when absent
+            start = roster.get(want) if SLUG.match(want) else None
+            if want and not start:
+                log("persona query ignored:", want if SLUG.match(want) else "bad slug")
+            instructions = persona_instructions(start, roster, now)
             audio_in = {"format": {"type": "audio/pcm", "rate": 24000}}
             terms = KEYTERMS + [p["name"] for p in roster.values() if p["name"] not in KEYTERMS]
             if terms:
                 audio_in["transcription"] = {"keyterms": terms[:100]}
             await up.send_json({"type": "session.update", "session": {
-                "voice": VOICE, "instructions": instructions, "turn_detection": {"type": "server_vad"}, "tools": talk_tool(roster),
+                "voice": start["voice"] if start else VOICE, "instructions": instructions, "turn_detection": {"type": "server_vad"}, "tools": talk_tool(roster),
                 "audio": {"input": audio_in, "output": {"format": {"type": "audio/pcm", "rate": 24000}}}}})
             st = {"speaking": False, "responding": False, "speech": False, "quiet_since": time.monotonic(),
-                  "persona": "grok", "again": False, "audio": False, "switched": False}
+                  "persona": start["slug"] if start else "grok", "again": False, "audio": False, "switched": False}
+            if start:
+                await pi.send_json({"type": "persona", "slug": start["slug"], "name": start["name"]})
+                log(f"persona (wake) -> {start['slug']}")
 
             async def switch(slug):
                 """Same session, new voice + instructions; the Pi swaps the portrait. Voice comes from the registry only."""

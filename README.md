@@ -21,7 +21,12 @@ and Inter 500 (body), bundled in `assets/fonts`. Sizes come from a 1080p spec an
 | Weather offline | no successful fetch for 1 h | Small amber cloud-off icon in place of stale weather. |
 
 The display redraws once a minute (plus on messages and weather updates); otherwise the process sleeps in
-`pygame.event.wait`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
+`pygame.event.wait`. Two cheap partial updates run in between: the clock colon blinks (1 s on, 1 s off) by
+repainting and writing only the colon's rectangle to the framebuffer (`GROK_STATION_BLINK=0` keeps it lit), and
+while a voice session is **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
+15) by repainting only the portrait rectangle from a cached circle-cropped photo. The colon is centered between the
+hour and minute digits on their ink (not the font box), and the date is centered under HH:MM (AM/PM excluded).
+Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
 last good reading cached in `/var/cache/grok-station/weather.json`.
 
 Portraits: `assets/portraits/<name>.png` (lowercased `from`), then `/opt/grok-station/portraits/` for
@@ -95,8 +100,19 @@ name, `WAKE_DEVICE_NAME`, default `Razer`), runs [openWakeWord](https://github.c
 Runtime, and on a hit (score ≥ 0.5, 2 s cooldown) plays a 200 ms two-tone chime on the headset and POSTs
 `{"state":"listening"}` to `http://127.0.0.1:8787/state`. Mic level and peak score are logged every 30 s.
 
-**The wake phrase is "Hey Jarvis"**, a pre-trained openWakeWord model used as a placeholder until a custom
-"Hey Grok" model is trained. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
+**Wake words pick the persona.** "Hey Grok" plus one phrase per teammate on voice: Hey Ash, Hey Miles, Hey Kai,
+Hey Piper, Hey Jules and Hey Rhea (**provisional**: just under the 0.80 recall goal, kept on a strict 0.995
+threshold until real-voice enrollment). Hey Finn isn't shipped yet (pending real-voice enrollment). The models are
+generic phrase models trained with openWakeWord on synthetic speech, in `wake/models/` (~400 KB each), installed
+to `/opt/grok-station/wake/models`. `wake/wakewords.json` (installed as `/opt/grok-station/wake/wakewords.json`,
+override with `WAKE_CONFIG`) lists each word's `name` (model file stem), `persona` (registry slug, or `grok`),
+`threshold`, `patience` (consecutive 80 ms frames at or above the threshold) and optional `provisional`. The
+optional `fallback` entry (`hey_jarvis` → Grok) keeps the built-in openWakeWord model loaded as a safety net;
+drop it to retire Hey Jarvis. If several words fire on the same frame the highest score wins; one cooldown is
+shared. A wake opens the session as that persona: the Pi connects to `/ws?persona=<slug>`, and the relay starts
+the session with that persona's voice and instructions (unknown slugs fall back to Grok) and sends the `persona`
+event so the display shows them from the first "listening" frame. Without a config file the old single
+`WAKE_MODEL` / `WAKE_THRESHOLD` behaviour applies. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
 the voice relay below (when configured).
 
 Setup on the Pi (venv, since openWakeWord's tflite dependency has no Trixie arm64 wheel):
@@ -108,6 +124,8 @@ python3 -m venv /opt/grok-station/wake/venv
 /opt/grok-station/wake/venv/bin/pip install onnxruntime numpy tqdm scipy scikit-learn requests
 /opt/grok-station/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["hey_jarvis"])'
 sudo install -m755 wake/grok_wake.py /opt/grok-station/wake/
+sudo install -m644 wake/wakewords.json /opt/grok-station/wake/
+sudo install -d /opt/grok-station/wake/models && sudo install -m644 wake/models/*.onnx /opt/grok-station/wake/models/
 sudo install -m644 systemd/grok-station-wake.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
 ```
@@ -115,12 +133,14 @@ sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
 Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOLD`, `WAKE_COOLDOWN`,
 `WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain, default 4), `WAKE_CAPTURE_RATE` (default 48000;
 audio is captured at the device's native rate and decimated to 16 kHz in software, because some USB headsets,
-including the Razer USB Sound Card, deliver muffled audio in their 16 kHz mode and the wake word never scores). Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) prints the peak
-score. On a Pi 5 the listener uses about 11% of one core and ~200 MB RSS.
+including the Razer USB Sound Card, deliver muffled audio in their 16 kHz mode and the wake word never scores). Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) runs the clip through
+the same detector and prints which word and persona it triggers plus every word's peak score (no session is
+opened). `grok_wake.py --bench [seconds]` times the loaded models on noise. On a Pi 5 the listener used about 12%
+of one core with Hey Jarvis alone; `--bench` measures 10.6% of one core for all eight models (seven custom words plus the Hey Jarvis fallback) vs 9.4% for Hey Jarvis alone (the shared audio front end dominates). The spinning ring renders one revolution once (about 66% of a core for 1.2 s), then reuses those 18 frames at about 6% of a core; a colon blink costs about 2 ms.
 
 ## Voice (proof of concept)
 
-One question and answer per wake: "Hey Jarvis" → chime + **listening** → speak → **thinking** (Grok started a
+One question and answer per wake: "Hey Grok" (or a teammate's wake word) → chime + **listening** → speak → **thinking** (Grok started a
 response) → **speaking** (reply plays on the headset, text on screen) → idle. Mic audio keeps streaming until a
 response actually starts, so a short noise or the tail of the wake word (which can trip the server VAD without
 producing a reply) doesn't swallow the real question. The first `VOICE_SKIP_MS` (default 300) of post-wake audio
