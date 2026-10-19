@@ -127,8 +127,8 @@ producing a reply) doesn't swallow the real question. The first `VOICE_SKIP_MS` 
 is dropped for the same reason. Nothing heard (or only noise) for 10 s → "Didn't catch that." and idle.
 
 ```
-Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any LAN host) ──▶ wss://api.x.ai/v1/realtime
-     mic PCM16 24 kHz ▲  reply PCM16 24 kHz + JSON events ▼                        grok-voice-3.0, server_vad
+Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) ──▶ relay/ ──▶ wss://api.x.ai/v1/realtime
+     mic PCM16 24 kHz ▲  reply PCM16 24 kHz + JSON events ▼   (Docker, any LAN host)   grok-voice-3.0, server_vad
 ```
 
 - **The xAI API key lives only on the relay host**, never on the Pi. The Pi holds a random device token.
@@ -154,7 +154,26 @@ Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any 
   (each mode 600; `keyterms` may be empty), plus a state dir. In `relay/.env` (gitignored, paths only) set
   `GROK_STATION_SECRETS=<dir>`, `GROK_STATION_STATE=<dir>` and optionally `GROK_STATION_ALERTS=<dir>`, then
   `docker compose up -d --build`. Secrets are compose file mounts at `/run/secrets/*`, not environment
-  variables, so `docker inspect` doesn't show them. It publishes port 8790 on the LAN; keep it off any public proxy.
+  variables, so `docker inspect` doesn't show them. The relay's port 8790 is published on the host's loopback only;
+  LAN clients go through the `tls` service. Keep both off any public proxy or tunnel.
+- **TLS front (`tls` service, `relay/Caddyfile`):** Caddy on LAN port `GROK_STATION_TLS_PORT` (8791) terminates
+  TLS 1.3 and requires a client certificate signed by your private CA (`client_auth require_and_verify`), then
+  proxies only `/ws` and `/health` to the relay; anything else is 404. No ACME, no admin API, no plain-HTTP
+  listener, same container hardening as the relay. The device token is still required behind it. Restrict the port
+  to the station's address in the host firewall too. Set `GROK_STATION_PKI=<dir>` in `relay/.env`; that dir holds
+  `server.crt`, `server.key` (600) and `client-ca.crt` only, never the CA key. One-time setup with openssl
+  (EC P-256; keep the CA dir mode 700 on the relay host, outside the repo):
+  ```sh
+  openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+  openssl req -x509 -new -key ca.key -sha256 -days 3650 -subj "/CN=grok-station private CA" \
+    -addext "basicConstraints=critical,CA:TRUE,pathlen:0" -addext "keyUsage=critical,keyCertSign,cRLSign" -out ca.crt
+  # server cert: CSR from a new server.key, signed by ca.key with
+  #   extendedKeyUsage=serverAuth, subjectAltName=DNS:<relay-host>.local,IP:<relay-host LAN IP>
+  # client cert: generate client.key + CSR ON THE PI (the key never leaves it), sign on the relay host with
+  #   extendedKeyUsage=clientAuth, CN=grok-station; copy back only client.crt and ca.crt
+  ```
+  Certs are valid 825 days; re-issue before expiry (`openssl x509 -enddate -noout -in <cert>`). To revoke the Pi,
+  re-key the CA (or issue a new client CA) and restart `tls`.
 - **Rotating tokens** (use `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`; never reuse a token
   between the relay, `/show`, or anything else):
   - Relay device token: add the new token as a second line of `relay_token` and `docker compose up -d` (both are
@@ -164,7 +183,12 @@ Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any 
   - `/show` token: set the new `GROK_STATION_TOKEN` in `/etc/grok-station/env`, `sudo systemctl restart
     grok-station`, then update every sender (e.g. the Apple Shortcut) right away; there is no overlap window.
 - Pi side: `/opt/grok-station/wake/venv/bin/pip install "websockets>=17"`, then add to `/etc/grok-station/wake.env`
-  (root, 600) `GROK_RELAY_URL=ws://<relay-host>:8790/ws` and `GROK_RELAY_TOKEN=...`. Without `GROK_RELAY_URL`
+  (root, 600) `GROK_RELAY_URL=wss://<relay-host>.local:8791/ws` and `GROK_RELAY_TOKEN=...`. Put `client.key`,
+  `client.crt` and `ca.crt` in `/etc/grok-station/tls/` (root, 600) and install the drop-in
+  `systemd/grok-station-wake-tls.conf` as `/etc/systemd/system/grok-station-wake.service.d/tls.conf`; it passes
+  them to the unprivileged listener as systemd credentials. Only that CA is trusted for the server, and TLS 1.3 is
+  required. (`GROK_RELAY_CA` / `GROK_RELAY_CERT` / `GROK_RELAY_KEY` override the paths for manual runs.) A plain
+  `ws://` URL still works for a relay published without the TLS front. Without `GROK_RELAY_URL`
   the listener stays wake-word-only. `VOICE_GAIN` sets gain on audio sent to Grok (default = `WAKE_GAIN`).
 - Mic audio for Grok is decimated 48 → 24 kHz from the same capture as the wake word; the wake detector is paused
   during a session (and reset after) so the reply can't re-trigger it. Mic streaming stops when the VAD reports

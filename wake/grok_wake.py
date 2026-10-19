@@ -8,6 +8,9 @@ voice relay: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays
 The wake detector is paused during a session so the reply can't re-trigger it.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
 `grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
+A wss:// GROK_RELAY_URL uses mutual TLS: the server must chain to GROK_RELAY_CA (only that CA is trusted) and the
+client presents GROK_RELAY_CERT / GROK_RELAY_KEY. Each defaults to a systemd credential (relay-ca.crt,
+relay-client.crt, relay-client.key in $CREDENTIALS_DIRECTORY; see systemd/grok-station-wake-tls.conf).
 """
 import json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
 import numpy as np
@@ -30,6 +33,18 @@ VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Gro
 VOICE_SKIP = float(E("VOICE_SKIP_MS", "300")) / 1000  # drop this much post-wake audio (tail of the wake word)
 D24 = CAP_RATE // 24000
 _K24 = np.sinc(np.arange(-24, 25) / max(1, D24)) * np.hamming(49); _K24 /= _K24.sum()
+
+
+def relay_ssl():
+    """TLS context for a wss:// relay: private-CA pin plus client certificate. None for plain ws://."""
+    if not RELAY_URL.startswith("wss://"):
+        return None
+    import ssl
+    cred = lambda env, name: E(env) or os.path.join(E("CREDENTIALS_DIRECTORY", "."), name)
+    ctx = ssl.create_default_context(cafile=cred("GROK_RELAY_CA", "relay-ca.crt"))  # trusts only this CA
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
+    ctx.load_cert_chain(cred("GROK_RELAY_CERT", "relay-client.crt"), cred("GROK_RELAY_KEY", "relay-client.key"))
+    return ctx
 
 
 def load_model():
@@ -126,8 +141,9 @@ class Session:
         try:
             for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
                 try:
+                    tls = {"ssl": relay_ssl()} if RELAY_URL.startswith("wss://") else {}
                     ws = connect(RELAY_URL, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
-                                 open_timeout=4, max_size=1 << 22, legacy=True)
+                                 open_timeout=4, max_size=1 << 22, legacy=True, **tls)
                     break
                 except Exception as e:
                     err = e
