@@ -525,6 +525,7 @@ async function pagePersonas(el) {
 }
 async function pageSystem(el) {
   el.innerHTML = `<div class="cols"><div class="card" id="ver"><h2>Updates</h2><p class="help">Checking…</p></div><div class="card" id="hl"><h2>Health</h2></div></div>
+    <div class="card" id="tls"><h2>Security certificate</h2></div>
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
       <div class="log" id="log" style="margin-top:12px">Pick a part and press Show.</div></div>
@@ -540,6 +541,9 @@ async function pageSystem(el) {
   };
   const s = (await api("GET", "/api/system")).data || {};
   const hh = s.health || {};
+  const t = s.tls || {};
+  $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station made its own certificate for ${esc(t.url || "this page")}. If your browser warns about it, check that the browser's SHA-256 fingerprint matches this one exactly (it's also shown on the station screen for 10 minutes after a new certificate is made), then trust it.</p>
+    <div class="row"><span>SHA-256</span><span class="right mono" style="word-break:break-all;max-width:70%;text-align:right">${t.fingerprint ? esc(t.fingerprint) : "n/a"}</span></div>`;
   $("#hl", el).innerHTML = `<h2>Health</h2>
     <div class="row"><span>CPU temperature</span><span class="right mono">${hh.cpu_c != null ? hh.cpu_c + " °C" : "n/a"}</span></div>
     <div class="row"><span>Uptime</span><span class="right mono">${hh.uptime_s != null ? Math.floor(hh.uptime_s / 86400) + "d " + Math.floor(hh.uptime_s % 86400 / 3600) + "h" : "n/a"}</span></div>

@@ -1,9 +1,35 @@
 #!/bin/sh
 # grok-station admin CLI (root). `sudo grok-station reset-admin`: wipe ONLY the admin password; a new setup code shows
 # on the station screen and voice stays off until a new password is set. `boot-check` runs at boot (admin service):
-# an empty file named grok-station-reset on the boot partition does the same reset, then is deleted.
+# an empty file named grok-station-reset on the boot partition does the same reset, then is deleted. It also
+# runs `tls-cert` (below).
 set -eu
 AUTH=/var/lib/grok-station/admin/auth.json
+TLS="${GROK_TLS_DIR:-/var/lib/grok-station/tls}"   # per-station admin page cert: key.pem (600 grok-admin), cert.pem, fingerprint, host
+# `tls-cert` (run at install and before every admin start): make the station's self-signed cert if it is
+# missing, if the hostname changed, or if it ends within 30 days. The private key never leaves the station.
+tls_cert() {
+  h="$(cat "${GROK_HOSTNAME_FILE:-/etc/hostname}" 2>/dev/null | tr -d '[:space:]')"; [ -n "$h" ] || h=grok-station
+  if [ -s "$TLS/key.pem" ] && [ -s "$TLS/cert.pem" ] && [ "$(cat "$TLS/host" 2>/dev/null)" = "$h" ] &&
+     openssl x509 -in "$TLS/cert.pem" -noout -checkend 2592000 >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ "$(id -u)" = 0 ]; then install -d -o root -g grok -m 0750 "$TLS"; else install -d -m 0750 "$TLS"; fi
+  tmp="$(mktemp -d "$TLS/.new.XXXXXX")"
+  ( umask 077
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 825 -sha256 \
+      -keyout "$tmp/key.pem" -out "$tmp/cert.pem" -subj "/CN=$h.local/O=grok-station" \
+      -addext "subjectAltName=DNS:$h.local,DNS:$h,IP:10.42.0.1" \
+      -addext "basicConstraints=critical,CA:FALSE" -addext "keyUsage=critical,digitalSignature" \
+      -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1 )
+  chmod 600 "$tmp/key.pem"; chmod 644 "$tmp/cert.pem"
+  if [ "$(id -u)" = 0 ]; then chown grok-admin:grok "$tmp/key.pem"; chown root:grok "$tmp/cert.pem"; fi
+  openssl x509 -in "$tmp/cert.pem" -noout -fingerprint -sha256 | sed 's/^.*=//' > "$tmp/fingerprint"
+  printf '%s\n' "$h" > "$tmp/host"; chmod 644 "$tmp/fingerprint" "$tmp/host"
+  for f in key.pem cert.pem fingerprint host; do mv -f "$tmp/$f" "$TLS/$f"; done
+  rmdir "$tmp"
+  command -v logger >/dev/null && logger -t grok-station "admin TLS cert made for $h.local (sha256 $(cat "$TLS/fingerprint"))"
+}
 reset() {
   [ -f "$AUTH" ] || { echo "No admin password is set yet (setup code is on the station screen)."; return 0; }
   /usr/bin/python3 - "$AUTH" <<'PY'
@@ -25,7 +51,11 @@ case "${1:-}" in
   reset-admin)
     [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
     reset; systemctl restart grok-station-admin ;;
+  tls-cert)
+    [ "$(id -u)" = 0 ] || [ -n "${GROK_TLS_DIR:-}" ] || { echo "Run with sudo." >&2; exit 1; }
+    tls_cert; cat "$TLS/fingerprint" ;;
   boot-check)
+    tls_cert || logger -t grok-station "admin TLS cert: could not make one"
     for f in /boot/firmware/grok-station-reset /boot/grok-station-reset; do
       if [ -e "$f" ]; then rm -f "$f"; sync; reset; logger -t grok-station "admin password reset from boot partition file"; fi
     done ;;

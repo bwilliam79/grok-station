@@ -438,8 +438,8 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
 Grok and each teammate can use four safe tools during a conversation (`relay/tools.py`): **time and date** (local, or another time zone), **weather** at the station's location (Open-Meteo, no key; now, today, tomorrow), **unit conversions** (length, weight, cooking volumes, temperature, speed, area) and **timers** ("set a pasta timer for 10 minutes", "how long is left", "cancel the timer"). Timers live on the station, so they ring (three chimes and a notice) even after the conversation ends, survive a restart, and wait for a conversation to finish before ringing. Up to 10 timers, 24 hours each. None of the tools can send, post, buy or change anything outside the station.
 Config in the relay `.env`: `WEATHER_LAT`, `WEATHER_LON` (without them Grok says no location is set), optional `WEATHER_PLACE`, `WEATHER_UNITS` (`fahrenheit`/`celsius`), `TZ_NAME`. Tests: `python3 -m pytest tests/test_tools.py`.
 
-## Admin page (`http://grok-station.local`)
-A small web page on the station (port 80, home network only) so nobody has to SSH in. Design: Noor's admin UI spec (Hearth theme). Service `grok-station-admin` runs as its own `grok-admin` user; the few root actions go through one allowlisted helper (`/usr/local/lib/grok-station/grok-station-helper`, sudoers entry for that file only).
+## Admin page (`https://grok-station.local`)
+A small web page on the station (HTTPS on port 443, home network only) so nobody has to SSH in. Design: Noor's admin UI spec (Hearth theme). Service `grok-station-admin` runs as its own `grok-admin` user; the few root actions go through one allowlisted helper (`/usr/local/lib/grok-station/grok-station-helper`, sudoers entry for that file only).
 
 **First run, no default password.** Until an admin password exists the station shows **Setup needed** with a one-time 6-character code (grouped 3+3, no 0/O/1/I; new on every boot until used) and voice stays off: a wake word gives the chime and no conversation, enrollment is refused. Open the page, type the code, choose a password (at least 10 characters, stored as a salted scrypt hash). Five wrong codes or passwords lock sign-in for 15 minutes.
 
@@ -449,7 +449,17 @@ A small web page on the station (port 80, home network only) so nobody has to SS
 
 **Secrets are write-only.** The page never gets a stored secret back: it shows `••••` + last 4, Replace and Test. A new token only replaces the old one after it tests OK. Nothing secret in logs, URLs or browser storage.
 
-**No network?** 90 s after boot with no connection and no saved Wi-Fi in range, the station starts its own hotspot (`grok-station-XXXX`) and shows QR codes to join it and open `http://10.42.0.1`. It never starts while connected and stops once home Wi-Fi is back.
+**No network?** 90 s after boot with no connection and no saved Wi-Fi in range, the station starts its own hotspot (`grok-station-XXXX`) and shows QR codes to join it and open `https://10.42.0.1`. It never starts while connected and stops once home Wi-Fi is back.
+
+**HTTPS only.** Passwords and keys go through this page, so it is never served over plain HTTP:
+
+- **Ports.** Port 443 serves the page. Port 80 only answers with a `301` to the same path on `https://`, with no page content and no cookies.
+- **Headers and cookies.** Responses carry `Strict-Transport-Security`, and the session cookie is `HttpOnly; Secure; SameSite=Strict`.
+- **The certificate.** Each station makes its own self-signed certificate (`sudo grok-station tls-cert`, run at install and before every start of the admin service):
+  - files in `/var/lib/grok-station/tls/`; the key is `key.pem`, mode 600, owned by `grok-admin`, and never leaves the station or goes in the repo;
+  - an EC P-256 key, valid for 825 days, for `<hostname>.local`, `<hostname>` and the hotspot `10.42.0.1`;
+  - it is remade when the hostname changes (renaming in Network restarts the page with a new certificate), or when it is within 30 days of expiry.
+- **Trusting it.** The browser warns the first time. Compare its SHA-256 fingerprint with the one on the station screen before trusting the certificate. The fingerprint is on the setup and hotspot screens, on a screen shown for 10 minutes after a new certificate is made, and on System → Security certificate. Browsers apply HSTS only after the certificate is trusted.
 
 **Forgot the password?** Physical access only, never by voice: either put an empty file named `grok-station-reset` on the SD card's boot partition and power on (the file is deleted after use), or run `sudo grok-station reset-admin`. Only the password is wiped; the station shows **Password reset** with a new code and every other setting is kept.
 

@@ -286,7 +286,7 @@ def hotspot_start():
     rc, _ = nm("dev", "wifi", "hotspot", "ifname", "wlan0", "con-name", HOTSPOT, "ssid", ssid, "password", pw, timeout=40)
     if rc:
         fail("hotspot failed")
-    out({"ok": True, "url": "http://10.42.0.1"})
+    out({"ok": True, "url": "https://10.42.0.1"})
 
 
 def hotspot_stop():

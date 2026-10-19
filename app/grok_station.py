@@ -1014,6 +1014,7 @@ def draw_setup(surf, L, now, d):
     reset = d.get("mode") == "reset"
     topbar(surf, se, "Admin password reset" if reset else "Setup needed", now)
     host = str(d.get("host") or "grok-station.local")[:40]
+    host = str(d.get("url") or "https://" + host)[:48]
     lines = [("display", 0.0938, "Password reset" if reset else "Setup needed", TEXT, 0),
              ("body", 0.0498, "On your phone or laptop, open", hexc("E6DCCF"), 0.0164),
              ("display", 0.0627, host, LISTENING, 0.0059),
@@ -1044,7 +1045,26 @@ def draw_setup(surf, L, now, d):
     code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
     foot = font("body", round(0.0328 * se)).render("Voice stays off until a new password is set" if reset
                                                     else "Voice stays off until setup is done", True, MUTED)
+    fy = h - round(0.0657 * se) - foot.get_height()
+    fy = draw_fingerprint(surf, se, d, w - m, fy + foot.get_height())
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+
+
+FP_RE = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}")
+
+
+def draw_fingerprint(surf, se, d, right, bottom):
+    """The admin page's certificate SHA-256, bottom right, in two rows so it fits 800 px. Returns the top y."""
+    fp = str(d.get("fingerprint") or "")
+    if not FP_RE.fullmatch(fp):
+        return bottom
+    f, lab = font("mono", round(0.03 * se)), font("body", round(0.0285 * se))
+    rows = [lab.render("Admin page certificate (SHA-256)", True, MUTED), f.render(fp[:47], True, hexc("E6DCCF")), f.render(fp[48:], True, hexc("E6DCCF"))]
+    y = bottom
+    for r in reversed(rows):
+        y -= r.get_height()
+        surf.blit(r, (right - r.get_width(), y))
+    return y
 
 
 def draw_qr(surf, matrix, x, y, size):
@@ -1075,7 +1095,7 @@ def draw_hotspot(surf, L, now, d):
     qr = min(round(0.276 * se), col_w - round(0.02 * se))
     y0 = hy + head.get_height() + round(0.04 * se)
     steps = [("Join my Wi-Fi", d.get("qr_join"), [(str(d.get("ssid", ""))[:32], LISTENING), (str(d.get("password", ""))[:32], TEXT)]),
-             ("Open setup", d.get("qr_open"), [(str(d.get("url", "http://10.42.0.1"))[:40], LISTENING)]),
+             ("Open setup", d.get("qr_open"), [(str(d.get("url", "https://10.42.0.1"))[:40], LISTENING)]),
              ("Enter the code", None, [])]
     for i, (title, matrix, sub) in enumerate(steps):
         cx = m + col_w * i + col_w // 2
@@ -1107,6 +1127,42 @@ def draw_hotspot(surf, L, now, d):
             code_box(surf, se, d["code"], cx, y + qr // 4, code_px=min(0.0692, 0.0692 * col_w / (0.42 * se)), align="center")
     foot = font("body", round(0.0328 * se)).render("Plug in a network cable instead and this goes away", True, MUTED)
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+    draw_fingerprint(surf, se, d, w - m, h - round(0.0657 * se) - foot.get_height() - round(0.012 * se))
+
+
+TLS_FILE = E("GROK_TLS_FILE", "/run/grok-station-admin/tls.json")  # admin page cert, published by the admin service
+CERT_SHOW_S = 600  # a new cert's fingerprint is on screen for 10 min, so it can be checked when the browser asks
+
+
+def read_cert(now=None):
+    try:
+        with open(TLS_FILE) as f:
+            d = json.load(f)
+        if FP_RE.fullmatch(str(d.get("fingerprint", ""))) and 0 <= (now or time.time()) - float(d.get("made_at", 0)) < CERT_SHOW_S:
+            return {"fingerprint": d["fingerprint"], "url": str(d.get("url", ""))[:48]}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def draw_cert(surf, L, now, d):
+    """New admin page certificate: the URL and the full SHA-256 fingerprint to compare with the browser's."""
+    surf.fill(BG)
+    w, h = surf.get_size()
+    se = min(w, h)
+    topbar(surf, se, "Admin page", now)
+    rows = [(font("display", round(0.075 * se)), "New security certificate", TEXT),
+            (font("body", round(0.045 * se)), "If your browser asks, check it matches:", hexc("E6DCCF")),
+            (font("display", round(0.055 * se)), d.get("url") or "", LISTENING)]
+    fp = d["fingerprint"]
+    f = font("mono", round(0.05 * se))
+    rows += [(f, fp[i:i + 23], TEXT) for i in range(0, 95, 24)]
+    rend = [fo.render(t, True, c) for fo, t, c in rows]
+    gap = round(0.018 * se)
+    y = max(round(0.15 * se), (h - sum(r.get_height() + gap for r in rend)) // 2)
+    for i, r in enumerate(rend):
+        surf.blit(r, ((w - r.get_width()) // 2, y))
+        y += r.get_height() + (gap * 2 if i == 2 else gap)
 
 
 SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot}
@@ -1217,6 +1273,11 @@ def main():
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
+        cd = setup.get("cert")
+        if cd and not msg and not thinking():
+            disp.show(draw_cert, now, cd, fade=fade, snapshot=snapshot)
+            last_key = ("cert", now.tm_min, cd["fingerprint"])
+            return
         if thinking():
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -1290,7 +1351,12 @@ def main():
                 setup["doc"], msg, anim_started = sd, None, None
                 paint(fade=True)
                 print(f"setup screen: {sd['mode'] if sd else 'off'}", flush=True)
-        if setup["doc"]:
+            cd = read_cert()
+            if cd != setup.get("cert"):
+                setup["cert"] = cd
+                paint(fade=True)
+                print(f"cert screen: {'on' if cd else 'off'}", flush=True)
+        if setup["doc"] or setup.get("cert"):
             wait = min(wait, 2.0)
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW):
@@ -1378,12 +1444,14 @@ def demo(out, size):
         shots.append((f"enroll-{k:02d}-{stage}", draw_session, (now, em, "enroll", t)))
     shots.append(("enroll-no-persona", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll",
                                                              "text": "“Hey Nova”", "heard": "1/10|prompt|"}, "enroll", 1)))
-    sd = {"mode": "setup", "code": "K7P4QX", "host": "grok-station.local"}
+    sd = {"mode": "setup", "code": "K7P4QX", "host": "grok-station.local", "url": "https://grok-station.local",
+          "fingerprint": ":".join(f"{(i * 37) % 256:02X}" for i in range(32))}
     shots.append(("setup-needed", draw_setup, (now, sd)))
     shots.append(("setup-reset", draw_setup, (now, dict(sd, mode="reset", code="R4M9TW"))))
     demo_qr = [("".join("1" if ((r * 7 + c * 3) % 5 < 2 or (r < 7 and c < 7)) else "0" for c in range(29))) for r in range(29)]
     shots.append(("setup-hotspot", draw_hotspot, (now, dict(sd, mode="hotspot", ssid="grok-station-7F3A", password="hearth-4821",
-                                                            url="http://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr))))
+                                                            url="https://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr, fingerprint=sd["fingerprint"]))))
+    shots.append(("admin-cert", draw_cert, (now, {"fingerprint": sd["fingerprint"], "url": "https://grok-station.local"})))
     shots.append(("t1-confirm", draw_session, (now, {"from": "Finn", "heard": "add|grocery|0", "text": "oat milk and two lemons", "state": "confirm"})))
     for name, painter, args in shots:
         disp.screen.fill(BG)

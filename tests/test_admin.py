@@ -31,6 +31,9 @@ os.environ.update(ADMIN_STATE_DIR=os.path.join(TMP, "state"), ADMIN_RUN_DIR=os.p
 os.makedirs(os.environ["ADMIN_STATE_DIR"]); os.makedirs(os.environ["ADMIN_RUN_DIR"])
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 import grok_admin as ga  # noqa: E402
+ga.EXIT = lambda code: None  # renaming would restart the service
+RESTARTS = []
+ga.restart_soon = lambda delay=2.0: RESTARTS.append(delay)
 
 CLOCK = [time.time()]
 ga.now = lambda: CLOCK[0]
@@ -196,7 +199,8 @@ class Sessions(unittest.TestCase):
         c = C()
         c.req("POST", "/api/setup/code", {"code": setup_doc()["code"]})
         cookie = c.last.getheader("Set-Cookie")
-        self.assertIn("HttpOnly", cookie); self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("HttpOnly", cookie); self.assertIn("SameSite=Strict", cookie); self.assertIn("Secure", cookie)
+        self.assertIn("max-age=31536000", c.last.getheader("Strict-Transport-Security"))
 
     def test_logout_and_password_change_end_sessions(self):
         c = signed_in()

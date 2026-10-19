@@ -1,5 +1,5 @@
 [Unit]
-Description=grok-station admin web page (LAN, port 80)
+Description=grok-station admin web page (LAN, HTTPS on 443; port 80 only redirects)
 After=network-online.target grok-station.service
 Wants=network-online.target
 

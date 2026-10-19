@@ -15,6 +15,7 @@ install -m644 "$S"/admin/web/index.html "$S"/admin/web/app.js "$S"/admin/web/adm
 install -m644 "$S"/admin/web/assets/* /opt/grok-station/admin/web/assets/
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/tools/grok-station" /usr/local/bin/grok-station
+/usr/local/bin/grok-station tls-cert >/dev/null  # per-station admin page cert (kept if still valid for this hostname)
 install -o root -g root -m440 "$S/admin/sudoers.example" /etc/sudoers.d/grok-station-admin.new && visudo -cf /etc/sudoers.d/grok-station-admin.new >/dev/null && mv /etc/sudoers.d/grok-station-admin.new /etc/sudoers.d/grok-station-admin
 install -m644 "$S"/systemd/grok-station.service "$S"/systemd/grok-station-admin.service /etc/systemd/system/
 [ -d /opt/grok-station/wake ] && install -m644 "$S"/systemd/grok-station-wake.service /etc/systemd/system/

@@ -13,7 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 E = os.environ.get
 HERE = os.path.dirname(os.path.abspath(__file__))
-PORT = int(E("ADMIN_PORT", "80"))
+PORT = int(E("ADMIN_PORT", "443"))  # HTTPS only; the app is never served over plain HTTP
+HTTP_PORT = int(E("ADMIN_HTTP_PORT", "80"))  # 301 to https and nothing else (0 = off)
+TLS_DIR = E("ADMIN_TLS_DIR", "/var/lib/grok-station/tls")  # made on the station by `grok-station tls-cert`
 STATE_DIR = E("ADMIN_STATE_DIR", "/var/lib/grok-station/admin")
 RUN_DIR = E("ADMIN_RUN_DIR", "/run/grok-station-admin")  # setup.json lives here (dir 0750, group grok)
 WEB = E("ADMIN_WEB_DIR", os.path.join(HERE, "web"))
@@ -131,7 +133,8 @@ class Auth:
         if not self.code:  # same boot (tmpfs): keep the code already on screen
             c = str(old.get("code", ""))
             self.code = c if len(c) == 6 and all(ch in CODE_ALPHABET for ch in c) else new_code()
-        doc = {"mode": self.mode(), "code": self.code, "host": hostname() + ".local"}
+        doc = {"mode": self.mode(), "code": self.code, "host": hostname() + ".local", "url": admin_url(),
+               "fingerprint": tls_info()["fingerprint"]}
         doc.update({k: v for k, v in read_json(os.path.join(RUN_DIR, "hotspot.json"), {}).items()
                     if k in ("ssid", "password", "url", "qr_join", "qr_open")})
         if doc != old:
@@ -248,6 +251,21 @@ def hostname():
         return "grok-station"
 
 
+def tls_info():
+    """The station cert's SHA-256 fingerprint (AB:CD:...) and the hostname it was made for."""
+    def rd(n):
+        try:
+            return open(os.path.join(TLS_DIR, n)).read().strip()
+        except OSError:
+            return ""
+    fp = rd("fingerprint").upper()
+    return {"fingerprint": fp if re.fullmatch(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}", fp) else "", "host": rd("host")}
+
+
+def admin_url(host=None):
+    return f"https://{host or hostname()}.local"
+
+
 def wake(method, p, body=None, timeout=3):
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
@@ -359,6 +377,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Strict-Transport-Security", "max-age=31536000")  # browsers apply it only once the cert is trusted
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
                                                     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         for k, v in headers:
@@ -376,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
         return c[name].value if name in c else None
 
     def set_cookie(self, name, val, max_age):
-        return ("Set-Cookie", f"{name}={val}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}")
+        return ("Set-Cookie", f"{name}={val}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={max_age}")
 
     def body(self, limit=16384):
         n = int(self.headers.get("Content-Length") or 0)
@@ -662,7 +681,8 @@ class Handler(BaseHTTPRequestHandler):
             ok, out = helper("hostname", h)
             if ok:
                 AUTH.publish()
-            return self.send(200 if ok else 500, {"ok": ok, "url": f"http://{h}.local"} if ok else {"error": "Couldn't change it."})
+                restart_soon()  # new hostname: the service restarts and `tls-cert` makes a cert for it
+            return self.send(200 if ok else 500, {"ok": ok, "url": admin_url(h), "restarting": True} if ok else {"error": "Couldn't change it."})
         if p == "/api/network/join":
             ssid, pw = str(j.get("ssid", "")), j.get("password")
             if not 1 <= len(ssid.encode()) <= 32 or (pw is not None and not 8 <= len(str(pw)) <= 63):
@@ -794,7 +814,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(503, {"error": "Can't check for updates right now."})
             cur = version()
             return self.send(200, {"current": cur, "latest": latest, "update_ready": not latest["sha"].startswith(cur.split("-")[-1][:7]) if cur != "dev" else True})
-        return self.send(200, {"version": version(), "health": health(), "services": services(), "network": net_summary()})
+        return self.send(200, {"version": version(), "health": health(), "services": services(), "network": net_summary(),
+                               "tls": {**tls_info(), "url": admin_url()}})
 
     def api_post_system(self, p, q, j):
         if p == "/api/system/restart-voice":
@@ -873,9 +894,9 @@ def hotspot_loop():
                 pw = "hearth-" + "".join(secrets.choice("23456789") for _ in range(4))
                 ok2, out = helper("hotspot-start", stdin={"ssid": ssid, "password": pw}, timeout=40)
                 if ok2:
-                    write_json(os.path.join(RUN_DIR, "hotspot.json"), {"ssid": ssid, "password": pw, "url": out.get("url", "http://10.42.0.1"),
+                    write_json(os.path.join(RUN_DIR, "hotspot.json"), {"ssid": ssid, "password": pw, "url": "https://10.42.0.1",
                                                                       "qr_join": qr(f"WIFI:T:WPA;S:{ssid};P:{pw};;"),
-                                                                      "qr_open": qr(out.get("url", "http://10.42.0.1"))}, 0o640)
+                                                                      "qr_open": qr("https://10.42.0.1")}, 0o640)
                     print("hotspot started (no network)", flush=True)
             elif ok and hs and (st.get("saved_in_range") or st.get("wired") or st.get("wifi")):
                 helper("hotspot-stop", timeout=40)
@@ -899,8 +920,77 @@ def qr(text):
     return ["".join("1" if c else "0" for c in row) for row in q.get_matrix()]
 
 
+EXIT = os._exit  # tests replace it
+
+
+def restart_soon(delay=2.0):
+    """Exit after the reply is out; systemd restarts the service and ExecStartPre remakes the cert."""
+    threading.Timer(delay, lambda: EXIT(3)).start()
+
+
+def tls_context():
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(os.path.join(TLS_DIR, "cert.pem"), os.path.join(TLS_DIR, "key.pem"))  # no cert: fail, never plain HTTP
+    return ctx
+
+
+class TLSServer(ThreadingHTTPServer):
+    """Handshake in the request thread (never in the accept loop), with a timeout, so a slow client blocks nobody."""
+    daemon_threads = True
+
+    def finish_request(self, request, client_address):
+        try:
+            request.settimeout(10)
+            request.do_handshake()
+            request.settimeout(60)  # idle keep-alive connections close after a minute
+        except Exception:
+            return
+        super().finish_request(request, client_address)
+
+
+class Redirect(BaseHTTPRequestHandler):
+    """Port 80: a 301 to the same path on https, no app content, no cookies."""
+    server_version = "grok-station-admin"
+    protocol_version = "HTTP/1.1"
+
+    def go(self):
+        host = (self.headers.get("Host") or "").rsplit("]", 1)[-1].split(":")[0].strip().lower()
+        own = (hostname(), hostname() + ".local")
+        if not (host in own or re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", host)):  # only our own names or an IP literal
+            host = hostname() + ".local"
+        path = self.path if self.path.startswith("/") and not self.path.startswith("//") else "/"
+        path = re.sub(r"[^A-Za-z0-9._~/?=&%+-]", "", path)[:512] or "/"
+        self.send_response(301)
+        self.send_header("Location", f"https://{host}{'' if PORT == 443 else f':{PORT}'}{path}")
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+    do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = go
+
+    def log_message(self, fmt, *a):
+        pass
+
+
+def publish_tls():
+    """/run/grok-station-admin/tls.json for the station screen (shows a new cert's fingerprint for a while)."""
+    t = tls_info()
+    if not t["fingerprint"]:
+        return
+    try:
+        made = int(os.stat(os.path.join(TLS_DIR, "cert.pem")).st_mtime)
+    except OSError:
+        made = 0
+    write_json(os.path.join(RUN_DIR, "tls.json"), {"fingerprint": t["fingerprint"], "url": admin_url(), "made_at": made}, 0o640)
+
+
 def main():
     os.makedirs(STATE_DIR, mode=0o750, exist_ok=True)
+    publish_tls()
     AUTH.publish()
     print(f"admin on :{PORT} setup_required={AUTH.setup_required()} mode={AUTH.mode()}", flush=True)
     threading.Thread(target=hotspot_loop, daemon=True).start()
@@ -913,9 +1003,18 @@ def main():
                     AUTH.publish()
             except Exception:
                 pass
+            if tls_info()["host"] not in ("", hostname()):  # renamed outside the page: restart for a matching cert
+                print("hostname changed: restarting for a new cert", flush=True)
+                EXIT(3)
     threading.Thread(target=republish, daemon=True).start()
     ThreadingHTTPServer.daemon_threads = True
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    if HTTP_PORT:
+        threading.Thread(target=ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Redirect).serve_forever, daemon=True).start()
+    ctx = tls_context()
+    srv = TLSServer(("0.0.0.0", PORT), Handler)
+    srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
+    print(f"admin https on :{PORT} (sha256 {tls_info()['fingerprint']}), http :{HTTP_PORT} redirects only", flush=True)
+    srv.serve_forever()
 
 
 if __name__ == "__main__":
