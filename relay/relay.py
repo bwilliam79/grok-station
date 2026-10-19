@@ -17,7 +17,7 @@ from aiohttp import web, ClientSession, WSMsgType
 
 E = os.environ.get
 KEY, TOKEN = E("XAI_API_KEY", ""), E("RELAY_TOKEN", "")
-MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "eve")
+MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))
 INSTRUCTIONS = E("INSTRUCTIONS", (
