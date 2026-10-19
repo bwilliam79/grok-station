@@ -321,7 +321,9 @@ def wav_ok(b):
     import io, wave
     try:
         with wave.open(io.BytesIO(b)) as w:
-            return (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2) and 4800 <= w.getnframes() <= 80000
+            n = w.getnframes()
+            return ((w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2) and 4800 <= n <= 80000
+                    and len(w.readframes(n)) == 2 * n)  # header and data agree (no truncated upload)
     except Exception:
         return False
 
@@ -345,7 +347,9 @@ async def enroll_route(req):
     if not (os.path.isdir(ENROLL_DIR) and PHRASE.match(ph) and SESSION.match(ses)):
         return web.json_response({"error": "bad request"}, status=400)
     d = os.path.join(ENROLL_DIR, ph, ses)
-    body = await req.content.read(200_001)
+    if (req.content_length or 0) > 200_000:
+        return web.json_response({"error": "too large"}, status=413)
+    body = await req.read()  # whole body (content.read(n) can return a partial chunk); aiohttp caps it at 1 MiB
     m = CLIP.match(item)
     if m:
         if int(m.group(1)) >= MAX_CLIPS or len(body) > 200_000 or not wav_ok(body):
