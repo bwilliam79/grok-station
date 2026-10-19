@@ -6,6 +6,9 @@ apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pyga
 install -d /usr/share/plymouth/themes/grok /opt/grok-station
 install -m644 splash/grok.plymouth splash/grok.script splash/grok.png /usr/share/plymouth/themes/grok/
 install -m755 app/grok_station.py /opt/grok-station/
+install -d /opt/grok-station/assets/fonts /opt/grok-station/assets/portraits
+install -m644 assets/fonts/* /opt/grok-station/assets/fonts/
+install -m644 assets/portraits/*.png /opt/grok-station/assets/portraits/
 install -m644 systemd/grok-station.service /etc/systemd/system/
 C=/boot/firmware/cmdline.txt
 for o in quiet splash loglevel=3 vt.global_cursor_default=0 logo.nologo consoleblank=0 plymouth.ignore-serial-consoles; do

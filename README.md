@@ -1,10 +1,48 @@
 # grok-station
 
-Raspberry Pi 5 (Pi OS Lite 64-bit, Trixie, no desktop/audio/mic) kiosk:
+Raspberry Pi 5 (Pi OS Lite 64-bit, Trixie, no desktop) kiosk display:
 
-1. **Boot splash** — Plymouth `script` theme: centered Grok mark on black with a slow opacity pulse.
-2. **Siri proof of concept** — one Python process (`grok-station.service`) that runs a tiny stdlib HTTP
-   listener on `:8787` and draws fullscreen text by rendering with pygame off-screen and writing straight to the `/dev/fb0` framebuffer (no X/Wayland/browser; SDL KMS/DRM frames never reached the screen on the Pi 5).
+1. **Boot splash**: Plymouth `script` theme, a centered Grok mark on black with a slow opacity pulse.
+2. **Station UI**: one Python process (`grok-station.service`) that runs a small stdlib HTTP listener on `:8787`
+   and draws the screen by rendering with pygame off-screen into a 16bpp surface written straight to `/dev/fb0`
+   (no X/Wayland/browser; SDL KMS/DRM frames never reached the screen on the Pi 5).
+
+## Screens
+
+Design follows the "Hearth" palette (warm near-black, warm white text). Fonts are Inter Tight 600 (display)
+and Inter 500 (body), bundled in `assets/fonts`. Sizes come from a 1080p spec and scale with the screen
+(`min(h/1080, w/1920)`), so any resolution or aspect ratio works (the Pi runs 2560x1706).
+
+| Screen | When | Shows |
+| --- | --- | --- |
+| Idle | default | Large clock + AM/PM, date, weather top-right (icon, temp, condition, high/low). Lower third is reserved for a future "Next up" card (`draw_next_up` hook). |
+| Message | `POST /show` | With `from`: circular portrait with a warm ring at left; name, the question (`heard`, muted italic) and the reply at right, sized to fit. Without `from`: the text, large and centered. Stays up `GROK_STATION_HOLD` seconds after the last message, then fades back. |
+| Night | `GROK_STATION_NIGHT` hours | Only a dim warm clock on black, drifting a few px every 10 min against burn-in. |
+| Weather offline | no successful fetch for 1 h | Small amber cloud-off icon in place of stale weather. |
+
+The display redraws once a minute (plus on messages and weather updates); otherwise the process sleeps in
+`pygame.event.wait`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
+last good reading cached in `/var/cache/grok-station/weather.json`.
+
+Portraits: `assets/portraits/<name>.png` (lowercased `from`), then `/opt/grok-station/portraits/` for
+local-only images. Missing portrait = initial monogram. `grok.png` ships in the repo.
+
+The session ring is drawn by a painter looked up in `RINGS` by state (only `speaking` exists today), so
+listening/thinking states can be added later as new painters without touching the layout.
+
+Preview without a Pi: `python3 app/grok_station.py --demo /tmp/out 2560x1706` renders every screen to PNG.
+
+## Config (`/etc/grok-station/env`, all optional except the token)
+
+| Variable | Default | |
+| --- | --- | --- |
+| `GROK_STATION_TOKEN` | (required) | Bearer token for `/show` |
+| `GROK_STATION_LAT` / `GROK_STATION_LON` | `36.19` / `-94.13` | Weather location |
+| `GROK_STATION_UNITS` | `fahrenheit` | or `celsius` |
+| `GROK_STATION_HOLD` | `60` | Seconds a message stays up |
+| `GROK_STATION_NIGHT` | `22-6` | Night clock hours (24h start-end); empty disables |
+| `GROK_STATION_FADE` | `1` | `0` disables the fade back to idle |
+| `GROK_STATION_PORT` | `8787` | |
 
 ## Layout
 
@@ -12,8 +50,10 @@ Raspberry Pi 5 (Pi OS Lite 64-bit, Trixie, no desktop/audio/mic) kiosk:
 | --- | --- |
 | `splash/grok.plymouth`, `grok.script`, `grok.png` | `/usr/share/plymouth/themes/grok/` |
 | `app/grok_station.py` | `/opt/grok-station/grok_station.py` |
+| `assets/fonts/*`, `assets/portraits/*` | `/opt/grok-station/assets/` |
 | `systemd/grok-station.service` | `/etc/systemd/system/` |
 | (token, not in repo) | `/etc/grok-station/env` (root:root 600): `GROK_STATION_TOKEN=...` |
+| `tools/make_fonts.py` | (dev only) rebuilds the static, subset fonts from the Inter variable fonts |
 
 `install.sh` (run as root on the Pi) installs packages (plymouth, python3-pygame, Mesa EGL/GBM), copies files,
 appends `quiet splash loglevel=3 vt.global_cursor_default=0 logo.nologo consoleblank=0 plymouth.ignore-serial-consoles`
@@ -25,22 +65,23 @@ It runs as `grok` (groups video/render/input).
 
 ## API
 
-- `POST /show` — header `Authorization: Bearer <token>`, JSON `{"text": "..."}` (max 500 chars).
+- `POST /show`: header `Authorization: Bearer <token>`, JSON `{"text": "...", "from": "Grok", "heard": "..."}`.
+  `text` is required (max 500 chars); `from` (speaker name, max 40) and `heard` (what was asked, max 300) are optional.
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
-- `GET /health` — 200.
+- `GET /health`: 200.
 
-Each render is also saved to `/run/grok-station/last.png` for remote verification.
+Anything on the LAN with the token can post to it (a script, a home automation, an Apple Shortcut using
+"Get Contents of URL"). Each message render is saved to `/run/grok-station/last.png` for remote verification.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d '{"text":"hello"}' http://grok-station.local:8787/show
+curl -H "Authorization: Bearer $TOKEN" -d '{"from":"Grok","heard":"what is the weather","text":"Mild and clear."}' \
+  http://grok-station.local:8787/show
 ```
 
-## Apple Shortcut ("Show on Grok Station")
+## Credits
 
-1. Dictate Text (or Ask for Input → Text).
-2. Get Contents of URL: `http://grok-station.local:8787/show` (use the Pi's LAN IP if `.local` fails),
-   Method POST, Header `Authorization` = `Bearer <token>`, Request Body JSON, key `text` = Dictated Text.
-3. Name it "Show on Grok Station" → "Hey Siri, show on Grok Station".
+Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
 
 ## Logo
 

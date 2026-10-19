@@ -1,5 +1,5 @@
 [Unit]
-Description=grok-station display + Siri listener
+Description=grok-station display UI + LAN /show listener
 # Start while the splash is still up, then take the display from Plymouth.
 After=systemd-user-sessions.service plymouth-start.service
 Before=plymouth-quit.service plymouth-quit-wait.service
@@ -10,6 +10,7 @@ User=grok
 SupplementaryGroups=video render input
 EnvironmentFile=/etc/grok-station/env
 RuntimeDirectory=grok-station
+CacheDirectory=grok-station
 ExecStartPre=-+/usr/bin/plymouth quit --retain-splash
 ExecStart=/usr/bin/python3 /opt/grok-station/grok_station.py
 Restart=always
