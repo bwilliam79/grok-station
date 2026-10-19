@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""grok-station wake listener (proof of concept).
+"""grok-station wake listener + voice client (proof of concept).
 
-Reads 16 kHz mono S16 audio from the USB headset mic via `arecord`, runs openWakeWord (ONNX),
-and on detection plays a chime on the headset and POSTs {"state": "listening"} to the display
-app's localhost-only /state endpoint. The display returns to idle on its own after a timeout.
+Captures the USB headset mic at 48 kHz via `arecord`, decimates to 16 kHz for openWakeWord (ONNX).
+On a wake it plays a chime, shows "listening", and (if GROK_RELAY_URL is set) opens one session to the
+voice relay: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
+`aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
+The wake detector is paused during a session so the reply can't re-trigger it.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
+`grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
 """
-import json, os, re, subprocess, sys, threading, time, urllib.request, wave
+import json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -22,6 +25,10 @@ CAP_RATE = int(E("WAKE_CAPTURE_RATE", "48000"))  # capture natively, decimate to
 DECIM = CAP_RATE // 16000
 _K = np.sinc(np.arange(-32, 33) / DECIM) * np.hamming(65); _K /= _K.sum()  # low-pass FIR for decimation
 CHUNK = 1280                                     # 80 ms at 16 kHz, what openWakeWord expects
+RELAY_URL, RELAY_TOKEN = E("GROK_RELAY_URL", ""), E("GROK_RELAY_TOKEN", "")
+VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Grok
+D24 = CAP_RATE // 24000
+_K24 = np.sinc(np.arange(-24, 25) / max(1, D24)) * np.hamming(49); _K24 /= _K24.sum()
 
 
 def load_model():
@@ -50,9 +57,10 @@ def make_chime(path):
         w.writeframes((tone * 0.35 * 32767).astype("<i2").tobytes())
 
 
-def post_state(state):
+def post_state(state, **kw):
+    print(f"display -> {state}", flush=True)
     try:
-        req = urllib.request.Request(STATE_URL, json.dumps({"state": state}).encode(), {"Content-Type": "application/json"})
+        req = urllib.request.Request(STATE_URL, json.dumps({"state": state, **kw}).encode(), {"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=2).read()
     except Exception as e:
         print(f"state post failed: {type(e).__name__}", flush=True)
@@ -76,6 +84,123 @@ def test(path):
     print(f"{os.path.basename(path)}: peak {MODEL} score {best:.3f} at {at:.2f}s -> {'DETECTED' if best >= THRESH else 'no'}")
 
 
+class Session:
+    """One question and answer through the relay. Feed it 24 kHz PCM16 bytes with feed(); runs in a thread."""
+
+    def __init__(self, play_dev, save=None):
+        self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
+        self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
+        self.heard, self.reply = "", ""
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def feed(self, pcm24):
+        if self.feeding:
+            try:
+                self.q.put_nowait(pcm24)
+            except queue.Full:
+                pass
+
+    def _sender(self, ws):
+        try:
+            while self.feeding:
+                try:
+                    ws.send(self.q.get(timeout=0.2))
+                except queue.Empty:
+                    pass
+        except Exception:
+            pass
+
+    def run(self):
+        from websockets.sync.client import connect
+        player, out, t0 = None, [], time.time()
+        try:
+            try:
+                ws = connect(RELAY_URL, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
+                             open_timeout=4, max_size=1 << 22)
+            except Exception as e:
+                print(f"relay unreachable: {type(e).__name__}", flush=True)
+                post_state("error", text="Can’t reach Grok right now.")
+                return
+            print(f"relay connected in {time.time() - t0:.2f}s", flush=True)
+            threading.Thread(target=self._sender, args=(ws,), daemon=True).start()
+            with ws:
+                for m in ws:
+                    if isinstance(m, bytes):
+                        if self.t_first_audio is None:
+                            self.t_first_audio = time.time()
+                            lat = self.t_first_audio - (self.t_end_speech or self.t_first_audio)
+                            print(f"first audio {lat:.2f}s after end of speech", flush=True)
+                            post_state("speaking", heard=self.heard, text=self.reply or "…")
+                            player = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000",
+                                                       "-c", "1", "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                        if self.save is not None:
+                            out.append(m)
+                        try:
+                            player.stdin.write(m)
+                        except (BrokenPipeError, AttributeError):
+                            pass
+                        continue
+                    ev = json.loads(m)
+                    t = ev.get("type")
+                    if t == "speech_stopped":
+                        self.feeding, self.t_end_speech = False, self.t_end_speech or time.time()
+                        print("relay: speech stopped", flush=True)
+                        post_state("thinking", heard=self.heard)
+                    elif t == "speech_started":
+                        print("relay: speech started", flush=True)
+                    elif t == "heard":
+                        self.heard = " ".join(ev.get("text", "").split())
+                        print(f"heard: {self.heard!r}", flush=True)
+                        post_state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
+                    elif t == "reply":
+                        self.reply = ev.get("text", "").strip()
+                        print(f"reply: {self.reply!r}", flush=True)
+                        if self.t_first_audio:
+                            post_state("speaking", heard=self.heard, text=self.reply)
+                    elif t == "reply_delta":
+                        self.reply += ev.get("text", "")
+                    elif t in ("done", "timeout", "error"):
+                        print(f"relay: {t} {ev.get('message', '')}".rstrip(), flush=True)
+                        if t != "done":
+                            post_state("error", text="I didn’t catch that." if t == "timeout" else "Grok had a problem. Try again.")
+                        break
+            self.feeding = False
+            if player:
+                player.stdin.close()
+                player.wait(timeout=90)
+                post_state("speaking", heard=self.heard, text=self.reply or "…", done=True)
+            print(f"session over in {time.time() - t0:.1f}s", flush=True)
+        except Exception as e:
+            print(f"session failed: {type(e).__name__}: {e}", flush=True)
+            post_state("error", text="Can’t reach Grok right now.")
+        finally:
+            self.feeding = False
+            if self.save is not None and out:
+                with wave.open(self.save, "wb") as w:
+                    w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(b"".join(out))
+            self.active = False
+
+
+def ask(path, save=None):
+    """Offline end-to-end check: stream a 24 kHz mono WAV through the relay as if it were the mic."""
+    with wave.open(path) as w:
+        assert w.getframerate() == 24000 and w.getnchannels() == 1 and w.getsampwidth() == 2, "need 24 kHz mono s16"
+        pcm = w.readframes(w.getnframes())
+    post_state("listening")
+    s = Session(find_card("aplay") or "default", save)
+    step = 1920 * 2  # 80 ms
+    for i in range(0, len(pcm), step):
+        s.feed(pcm[i:i + step]); time.sleep(0.08)
+    t_spoken = time.time()
+    while s.feeding:  # trailing silence so server VAD can end the turn
+        s.feed(b"\0" * step); time.sleep(0.08)
+    while s.active:
+        time.sleep(0.05)
+    if s.t_first_audio:
+        print(f"RESULT end-of-file->first audio {s.t_first_audio - t_spoken:.2f}s, "
+              f"VAD end->first audio {s.t_first_audio - (s.t_end_speech or t_spoken):.2f}s", flush=True)
+
+
 def main():
     make_chime(CHIME)
     model = load_model()
@@ -92,11 +217,22 @@ def main():
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
         last_hit, last_log, peak, rms_sum, n = 0.0, time.time(), 0.0, 0.0, 0
         tail = np.zeros(len(_K) - 1, np.float32)
+        tail24 = np.zeros(len(_K24) - 1, np.float32)
+        sess = None
         while True:
             buf = p.stdout.read(CHUNK * DECIM * 2)
             if not buf or len(buf) < CHUNK * DECIM * 2:
                 break
             x = np.frombuffer(buf, "<i2").astype(np.float32)
+            if sess and not sess.active:
+                sess = None
+                model.reset()  # drop audio features from the session before listening again
+            if sess:
+                if sess.feeding:
+                    xx = np.concatenate([tail24, x]); tail24 = xx[-(len(_K24) - 1):]
+                    y = np.convolve(xx, _K24, "valid")[::D24] if D24 > 1 else x
+                    sess.feed(np.clip(y * VOICE_GAIN, -32768, 32767).astype("<i2").tobytes())
+                continue  # wake detector paused while a session is open
             if DECIM > 1:
                 xx = np.concatenate([tail, x]); tail = xx[-(len(_K) - 1):]
                 x = np.convolve(xx, _K, "valid")[::DECIM]
@@ -110,6 +246,8 @@ def main():
                 print(f"WAKE {MODEL} score={s:.3f}", flush=True)
                 subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
                 threading.Thread(target=post_state, args=("listening",), daemon=True).start()
+                if RELAY_URL:
+                    sess = Session(play)
             if now - last_log >= LEVEL_EVERY:
                 avg = rms_sum / max(1, n)
                 dbfs = 20 * np.log10(max(avg, 1) / 32768)
@@ -123,5 +261,7 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--test":
         test(sys.argv[2])
+    elif len(sys.argv) in (3, 4) and sys.argv[1] == "--ask":
+        ask(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     else:
         main()

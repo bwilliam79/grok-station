@@ -2,3 +2,4 @@
 env
 *token*
 __pycache__/
+.env

@@ -69,9 +69,11 @@ It runs as `grok` (groups video/render/input).
   `text` is required (max 500 chars); `from` (speaker name, max 40) and `heard` (what was asked, max 300) are optional.
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
 - `GET /health`: 200.
-- `POST /state` (**localhost only**, no token): `{"state": "listening"|"idle"}`. Used by the wake listener on the
-  same Pi. `listening` shows the listening screen (teal tick ring, "Listening") for `GROK_STATION_LISTEN_HOLD`
-  seconds (default 8), then idle. 403 from any other address.
+- `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
+  Used by the wake listener on the same Pi. States: `listening` (teal tick ring, `GROK_STATION_LISTEN_HOLD` s,
+  default 8), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
+  `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `error` (short notice, 5 s), `idle`.
+  Each state has a safety timeout back to idle. 403 from any other address.
 
 Anything on the LAN with the token can post to it (a script, a home automation, an Apple Shortcut using
 "Get Contents of URL"). Each message render is saved to `/run/grok-station/last.png` for remote verification.
@@ -91,7 +93,8 @@ Runtime, and on a hit (score ≥ 0.5, 2 s cooldown) plays a 200 ms two-tone chim
 `{"state":"listening"}` to `http://127.0.0.1:8787/state`. Mic level and peak score are logged every 30 s.
 
 **The wake phrase is "Hey Jarvis"**, a pre-trained openWakeWord model used as a placeholder until a custom
-"Hey Grok" model is trained. No audio leaves the Pi; there is no speech-to-text or cloud step yet.
+"Hey Grok" model is trained. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
+the voice relay below (when configured).
 
 Setup on the Pi (venv, since openWakeWord's tflite dependency has no Trixie arm64 wheel):
 
@@ -111,6 +114,33 @@ Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOL
 audio is captured at the device's native rate and decimated to 16 kHz in software, because some USB headsets,
 including the Razer USB Sound Card, deliver muffled audio in their 16 kHz mode and the wake word never scores). Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) prints the peak
 score. On a Pi 5 the listener uses about 11% of one core and ~200 MB RSS.
+
+## Voice (proof of concept)
+
+One question and answer per wake: "Hey Jarvis" → chime + **listening** → speak → **thinking** (server VAD heard
+you stop) → **speaking** (reply plays on the headset, text on screen) → idle.
+
+```
+Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any LAN host) ──▶ wss://api.x.ai/v1/realtime
+     mic PCM16 24 kHz ▲  reply PCM16 24 kHz + JSON events ▼                        grok-voice-3.0, server_vad
+```
+
+- **The xAI API key lives only on the relay host**, never on the Pi. The Pi holds a random device token.
+- `relay/relay.py` (aiohttp): `GET /ws` (`Authorization: Bearer $RELAY_TOKEN`) opens one xAI realtime session,
+  forwards mic audio up and reply audio, transcripts and turn events down, then closes after the reply, after
+  10 s with no speech, or at 60 s (cost guard; realtime voice bills by the minute). One session at a time.
+  `GET /health` reports whether a key is loaded plus session count and total seconds. Logs carry event types and
+  durations only, no transcripts or audio.
+- Run it: put `XAI_API_KEY=...` and `RELAY_TOKEN=...` in `relay/.env` (mode 600, gitignored), then
+  `docker compose up -d --build` in `relay/`. It publishes port 8790 on the LAN; keep it off any public proxy.
+- Pi side: `/opt/grok-station/wake/venv/bin/pip install websockets`, then add to `/etc/grok-station/wake.env`
+  (root, 600) `GROK_RELAY_URL=ws://<relay-host>:8790/ws` and `GROK_RELAY_TOKEN=...`. Without `GROK_RELAY_URL`
+  the listener stays wake-word-only. `VOICE_GAIN` sets gain on audio sent to Grok (default = `WAKE_GAIN`).
+- Mic audio for Grok is decimated 48 → 24 kHz from the same capture as the wake word; the wake detector is paused
+  during a session (and reset after) so the reply can't re-trigger it. Mic streaming stops when the VAD reports
+  end of speech. If the relay is unreachable the screen shows "Can't reach Grok right now." for 5 s.
+- End-to-end check without talking: `grok_wake.py --ask question.wav [reply.wav]` (24 kHz mono) streams the
+  file through the same path, plays the reply, and prints the end-of-speech → first-audio latency.
 
 ## Credits
 

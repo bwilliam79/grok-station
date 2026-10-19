@@ -31,6 +31,9 @@ FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "8"))  # seconds the listening screen stays up
+REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
+VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5}  # safety timeouts per state
+VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now."}
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 
 
@@ -156,12 +159,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(403, {"error": "localhost only"})
         try:
             n = int(self.headers.get("Content-Length", 0))
-            state = json.loads(self.rfile.read(min(n, 1024)) or b"{}").get("state")
+            if n > 8192:
+                return self._reply(413, {"error": "too large"})
+            j = json.loads(self.rfile.read(n) or b"{}")
+            state = j.get("state")
+            heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
+            text = str(j.get("text") or "").strip()[:MAX_TEXT]
         except Exception:
             return self._reply(400, {"error": "bad json"})
-        if state not in ("listening", "idle"):
-            return self._reply(400, {"error": "state must be listening or idle"})
-        pygame.event.post(pygame.event.Event(STATE, state=state))
+        if state not in ("idle", *VOICE_HOLDS):
+            return self._reply(400, {"error": "state must be idle, " + ", ".join(VOICE_HOLDS)})
+        pygame.event.post(pygame.event.Event(STATE, state=state, heard=heard, text=text, done=bool(j.get("done"))))
         print(f"state {state}", flush=True)
         self._reply(200, {"ok": True})
 
@@ -388,8 +396,19 @@ def ring_listening(c, cx, cy, r, ring_w, glow, t):
         pygame.draw.line(c, LISTENING, p0, p1, max(2, int(ring_w / 2.4)))
 
 
-# Future voice states (listening ticks, thinking arc, handoff sweep) register a painter here; nothing else changes.
-RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening}
+def ring_thinking(c, cx, cy, r, ring_w, glow, t):
+    """Violet arc (Noor S3): faint full track plus a bright 270° arc with rounded ends. Static for now."""
+    rr = r + ring_w / 2
+    pygame.draw.circle(c, (*THINKING[:3], 60), (cx, cy), rr, max(2, int(ring_w / 3)))
+    a0, a1 = -math.pi / 2, -math.pi / 2 + 1.5 * math.pi
+    steps = 180
+    for i in range(steps + 1):  # thick arc as overlapping dots: pygame.draw.arc leaves gaps at this width
+        a = a0 + (a1 - a0) * i / steps
+        pygame.draw.circle(c, THINKING, (cx + rr * math.cos(a), cy + rr * math.sin(a)), ring_w / 2)
+
+
+# Voice states register a painter here; "error" reuses the quiet idle ring.
+RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle}
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0):
@@ -522,6 +541,8 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
             bh = int(L(56) * hh)
             pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
         text_at(surf, "body", L(40), "Say “Hey Jarvis” to wake (placeholder)", MUTED, (L.m, L.h - L(70)), "midleft")
+    elif state == "thinking":
+        text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, photo_top + d + L(150)), "center")
     # measure the right column first so it can sit centered on the photo
     fn = font("display", L(120))
     name = who if fn.size(who)[0] <= width else ellipsize(fn, who, width)
@@ -619,10 +640,12 @@ def main():
             wait = min(wait, max(0.05, until - t))
         ev = pygame.event.wait(int(wait * 1000))
         if ev.type == STATE:
-            if ev.state == "listening":
-                msg, until = {"from": VOICE_NAME, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"}, time.time() + LISTEN_HOLD
+            if ev.state in VOICE_HOLDS:
+                hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
+                msg = {"from": VOICE_NAME, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
+                until = time.time() + hold
                 paint()
-            elif msg and msg.get("state") == "listening":
+            elif msg and msg.get("voice"):
                 until = 0
             continue
         if ev.type == SHOW:
@@ -661,6 +684,8 @@ def demo(out, size):
                                                   "with a light breeze in the afternoon. No rain expected."})),
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
         ("listening", draw_session, (now, {"from": "Grok", "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
+        ("thinking", draw_session, (now, {"from": "Grok", "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
+        ("error", draw_session, (now, {"from": "Grok", "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),
         ("night", draw_night, (time.strptime("2026-10-18 23:07", "%Y-%m-%d %H:%M"),)),
     ]
