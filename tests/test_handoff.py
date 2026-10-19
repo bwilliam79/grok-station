@@ -6,8 +6,7 @@ from aiohttp import web, ClientSession
 from aiohttp.test_utils import TestServer
 
 TMP = tempfile.mkdtemp()
-os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", STATE_FILE=os.path.join(TMP, "usage.json"),
-                  ALERT_DIR=os.path.join(TMP, "none"), PERSONAS_FILE=os.path.join(TMP, "none.json"),
+os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", ALERT_DIR=os.path.join(TMP, "none"), PERSONAS_FILE=os.path.join(TMP, "none.json"),
                   HANDOFF_PENDING=os.path.join(TMP, "pending"), HANDOFF_REPLIES=os.path.join(TMP, "replies"),
                   HANDOFF_STATE=os.path.join(TMP, "handoff.json"), REPLY_WAIT="3")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))

@@ -174,7 +174,7 @@ next question. Silence closes the session quietly. A short "thanks", "that's all
 follow-up ends it right away. Caps:
 - 60 s per turn (`MAX_SESSION`);
 - about 3 min per conversation (`MAX_TOTAL`, default 180);
-- the whole conversation's time counts against `MAX_MINUTES_DAY`;
+- no daily talk-time limit;
 
 The mic is muted while a reply plays, and the reply's echo is dropped before the follow-up opens.
 `MULTI_TURN=0` on the relay restores one answer per wake. Design: `docs/multiturn.md`.
@@ -192,11 +192,10 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   realtime voice bills by the minute). One session at a time. The instructions get the current local date and
   time (`TZ_NAME`, default America/Chicago); the optional `keyterms` secret (comma-separated) biases
   transcription toward names the station should recognize.
-  `GET /health` returns `{"ok":true}`; with the token it adds key presence, today's usage and the caps. Logs carry
+  `GET /health` returns `{"ok":true}`; with the token it adds key presence, usage since start and the caps. Logs carry
   event types and durations only, no transcripts or audio.
-- **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); a daily
-  minutes cap `MAX_MINUTES_DAY` (20; there is no daily session-count cap), counted per America/Chicago day in
-  `/state/usage.json` so restarts don't reset it, returns 429; sessions are still counted for the logs; 5 bad tokens in 10 min lock the source out for 15 min (429). Behind the
+- **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); no daily
+  talk-time or session cap (the per-turn and per-session caps bound each conversation); 5 bad tokens in 10 min lock the source out for 15 min (429). Behind the
   `tls` front the source is the **client certificate** (Caddy sets `X-Client-Cert-Fp`; the relay trusts it only
   from the `tls` container), so bad tries with one certificate can't lock out the station; direct loopback callers
   are keyed by address. Upstream audio is capped at `MAX_UP_SECONDS` (`MAX_TOTAL` + 5 = 185 with multi-turn, else 65) per session. 80% / 100% of a cap and

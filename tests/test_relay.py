@@ -6,8 +6,7 @@ from aiohttp import web, WSMsgType
 from aiohttp.test_utils import TestServer, TestClient
 
 TMP = tempfile.mkdtemp()
-os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", STATE_FILE=os.path.join(TMP, "usage.json"),
-                  ALERT_DIR=os.path.join(TMP, "none"), PERSONAS_FILE=os.path.join(TMP, "none.json"), NO_SPEECH="1.0")
+os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", ALERT_DIR=os.path.join(TMP, "none"), PERSONAS_FILE=os.path.join(TMP, "none.json"), NO_SPEECH="1.0")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))
 import relay  # noqa: E402
 
@@ -55,7 +54,7 @@ def fake_xai(transcripts):
 
 
 class MultiTurn(unittest.IsolatedAsyncioTestCase):
-    async def run_session(self, transcripts, listen=True, keep_usage=False, expect_reject=False, **cfg):
+    async def run_session(self, transcripts, listen=True, expect_reject=False, **cfg):
         old = {k: getattr(relay, k) for k in cfg}
         for k, v in cfg.items():
             setattr(relay, k, v)
@@ -65,13 +64,11 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
             relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
             rapp = web.Application(); rapp.router.add_get("/ws", relay.session)
             client = TestClient(TestServer(rapp)); await client.start_server()
-            if os.path.exists(relay.STATE) and not keep_usage:
-                os.remove(relay.STATE)
             events = []
             if expect_reject:
                 r = await client.get("/ws", headers={"Authorization": "Bearer test-token"})
                 await client.close(); await xs.close()
-                return [r.status], xlog, relay.load_usage(), 0
+                return [r.status], xlog, dict(relay.stats), 0
             ws = await client.ws_connect("/ws", headers={"Authorization": "Bearer test-token"})
             loop = asyncio.get_running_loop()
             t0 = loop.time()
@@ -91,7 +88,7 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
             m.cancel()
             dt = loop.time() - t0
             await client.close(); await xs.close()
-            return events, xlog, relay.load_usage(), dt
+            return events, xlog, dict(relay.stats), dt
         finally:
             for k, v in old.items():
                 setattr(relay, k, v)
@@ -102,8 +99,7 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ev[-1], "timeout")          # NO_SPEECH close of the unanswered follow-up
         self.assertEqual(x["updates"], 1)            # one xAI session, same persona/voice across turns
         self.assertEqual(x["clears"], 2)             # echo dropped before each follow-up
-        self.assertEqual(u["sessions"], 1)           # one wake = one session against the daily cap
-        self.assertGreater(u["seconds"], 0.5)        # all turns' wall time counts against daily minutes
+        self.assertGreater(u["seconds"], 0.5)        # in-memory stats only
 
     async def test_thanks_ends(self):
         ev, x, _, _ = await self.run_session(["turn the question", "thanks, that's all"])
@@ -131,17 +127,14 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("turn_done", ev)
         self.assertEqual(ev[-1], "done")
 
-    async def test_no_daily_session_cap(self):
-        relay.save_usage({"day": relay.today(), "sessions": 500, "seconds": 0.0})
+    async def test_no_daily_cap(self):
         self.assertFalse(hasattr(relay, "MAX_SESSIONS_DAY"))
-        ev, _, u, _ = await self.run_session(["q"], MULTI_TURN=False, keep_usage=True)
-        self.assertEqual(ev[-1], "done")
-        self.assertEqual(u["sessions"], 501)
-
-    async def test_minutes_cap_still_applies(self):
-        relay.save_usage({"day": relay.today(), "sessions": 1, "seconds": relay.MAX_MINUTES_DAY * 60})
-        ev, _, _, _ = await self.run_session(["q"], keep_usage=True, expect_reject=True)
-        self.assertEqual(ev, [429])
+        self.assertFalse(hasattr(relay, "MAX_MINUTES_DAY"))
+        self.assertFalse(hasattr(relay, "load_usage"))
+        relay.stats.update(sessions=10_000, seconds=1e7)   # far past any old daily limit
+        ev, _, u, _ = await self.run_session(["q"], MULTI_TURN=False)
+        self.assertEqual(ev[-1], "done")                    # no 429
+        self.assertEqual(u["sessions"], 10_001)
 
     def test_enroll_status(self):
         d = tempfile.mkdtemp(); old = relay.ENROLL_DIR; relay.ENROLL_DIR = d

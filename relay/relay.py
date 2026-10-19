@@ -16,9 +16,9 @@ short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds.
 GET /health returns {"ok":true} (details only with the token).
 
 Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env. Requests with an Origin header
-(browsers) are refused; one session at a time (atomic check-and-set); a daily cap on minutes is
-persisted in /state; 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
-capped. Alerts (cap, 80% of cap, lockout) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
+(browsers) are refused; one session at a time (atomic check-and-set); no daily talk-time cap (per-turn and
+per-session caps only); 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
+capped. Alerts (lockout, handoff) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
 import asyncio, base64, datetime, hmac, json, os, re, secrets, socket, time, unicodedata
 from zoneinfo import ZoneInfo
@@ -51,9 +51,7 @@ INSTRUCTIONS = E("INSTRUCTIONS", (
     "Answer in one to three short spoken sentences, plainly and warmly. No lists, markdown, or emoji."))
 TZ = E("TZ_NAME", "America/Chicago")                  # for the "current date and time" line in the instructions
 KEYTERMS = [t.strip()[:50] for t in (secret("keyterms") or "Grok").split(",") if t.strip()][:100]  # transcription bias
-MAX_MINUTES_DAY = float(E("MAX_MINUTES_DAY", "20"))  # daily cost cap (minutes); there is no daily session-count cap
 MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", str(MAX_TOTAL + 5 if MULTI_TURN else 65)))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
-STATE = E("STATE_FILE", "/state/usage.json")
 ALERT_DIR = E("ALERT_DIR", "/alerts")                  # optional: ntfy outbox (files <ms>-<hex>.json)
 LOCK_FAILS, LOCK_WINDOW, LOCK_FOR = 5, 600, 900
 PERSONAS_FILE = E("PERSONAS_FILE", "/config/personas.json")  # private registry, mounted read-only; absent = Grok only
@@ -124,24 +122,6 @@ def log(*a):
 
 def today():
     return datetime.datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d")
-
-
-def load_usage():
-    try:
-        with open(STATE) as f:
-            u = json.load(f)
-        if u.get("day") == today():
-            return u
-    except (OSError, ValueError):
-        pass
-    return {"day": today(), "sessions": 0, "seconds": 0.0}
-
-
-def save_usage(u):
-    tmp = STATE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(u, f)
-    os.replace(tmp, STATE)
 
 
 def alert(kind, title, message, priority=4):
@@ -560,9 +540,9 @@ async def fetch_voices():
 async def health(req):
     if not authorized(req):
         return web.json_response({"ok": True})
-    u = load_usage()
-    return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"], "today": u,
-                              "caps": {"minutes": MAX_MINUTES_DAY}})
+    return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"],
+                              "since_start": {"sessions": stats["sessions"], "seconds": round(stats["seconds"], 1)},
+                              "caps": {"turn_s": MAX_SESSION, "session_s": MAX_TOTAL, "no_speech_s": NO_SPEECH}})
 
 
 async def session(req):
@@ -576,16 +556,9 @@ async def session(req):
         return web.json_response({"error": "unauthorized"}, status=401)
     if not KEY:
         return web.json_response({"error": "no xai key configured"}, status=503)
-    u = load_usage()
-    if u["seconds"] >= MAX_MINUTES_DAY * 60:
-        alert("cap", "grok-station relay: daily cap reached",
-              f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (cap {MAX_MINUTES_DAY:g} min).")
-        return web.json_response({"error": "daily cap reached"}, status=429)
     if stats["busy"]:
         return web.json_response({"error": "busy"}, status=409)  # one device, one session at a time
     stats["busy"] = 1  # check-and-set with no await in between: the event loop can't interleave another request
-    u["sessions"] += 1
-    save_usage(u)
     t0, n_up, n_down, why = time.monotonic(), 0, 0, "?"
     pi = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
     try:
@@ -783,14 +756,8 @@ async def session(req):
         dt = time.monotonic() - t0
         stats["sessions"] += 1
         stats["seconds"] += dt
-        u = load_usage()
-        u["seconds"] += dt
-        save_usage(u)
-        if u["seconds"] >= 0.8 * MAX_MINUTES_DAY * 60:
-            alert("cap80", "grok-station relay: 80% of daily cap",
-                  f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (cap {MAX_MINUTES_DAY:g} min).", 3)
         log(f"session end: {why}; {dt:.1f}s; up {n_up / 48000:.1f}s audio; down {n_down / 48000:.1f}s audio; "
-            f"today {u['sessions']} sessions {u['seconds'] / 60:.2f} min")
+            f"since start {stats['sessions']} sessions {stats['seconds'] / 60:.2f} min")
         await pi.close()
     return pi
 
@@ -805,6 +772,6 @@ if __name__ == "__main__":
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)
     log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
-        f"keyterms={len(KEYTERMS)} tz={TZ} cap={MAX_MINUTES_DAY:g} min/day "
+        f"keyterms={len(KEYTERMS)} tz={TZ} caps=turn {MAX_SESSION:g}s/session {MAX_TOTAL:g}s (no daily cap) "
         f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")
     web.run_app(app, port=PORT, print=None, access_log=None)

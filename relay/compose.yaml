@@ -1,6 +1,6 @@
 # LAN-only voice relay. Secrets are files outside the repo (dir mode 700, files 600), mounted at /run/secrets:
 #   $GROK_STATION_SECRETS/xai_api_key   $GROK_STATION_SECRETS/relay_token (one token per line)   .../keyterms (optional)
-# Usage counters persist in $GROK_STATION_STATE. ntfy drop folder (dedicated to this relay): $GROK_STATION_ALERTS.
+# Handoff limit counters persist in $GROK_STATION_STATE. ntfy drop folder (dedicated to this relay): $GROK_STATION_ALERTS.
 # Personas: private registry $GROK_STATION_PRIVATE/personas.json (dir 700, file 600, see personas.example.json) and two
 # read-only portrait dirs $GROK_STATION_PORTRAITS_A / _B (photos are never in git). Without them only Grok is on voice.
 # Enroll mode (docs/enroll.md): clip inbox $GROK_STATION_ENROLL (rw, writable by uid 10001) and published models
@@ -17,7 +17,6 @@ services:
     environment:
       XAI_MODEL: grok-voice-3.0
       XAI_VOICE: luna
-      MAX_MINUTES_DAY: ${MAX_MINUTES_DAY:-20}
       # Teammate handoff (real-bot pilot): OFF. Turned on only with the owner's OK (see docs/handoff.md).
       HANDOFF_ENABLED: "0"
     secrets: [xai_api_key, relay_token, keyterms, webhooks]

@@ -23,8 +23,8 @@ all" ends it, and so do silence and the caps. The same persona answers every tur
 - **Per turn:** `MAX_SESSION` (60 s), measured from the start of the turn (session start, or the Pi's `listening`).
 - **Total:** `MAX_TOTAL` (180 s) per connection.
 - **Upstream audio:** `MAX_UP_SECONDS` now defaults to `MAX_TOTAL + 5`.
-- **Daily minutes:** the whole connection's wall time counts against `MAX_MINUTES_DAY`, as before. The session count
-  goes up by 1 per wake, not per turn.
+- **No daily limit:** there is no daily talk-time or session cap (`MAX_MINUTES_DAY` and `usage.json` were removed).
+  Teammate handoffs keep their own per-bot and global daily caps (docs/handoff.md).
 - **Kill switch:** `MULTI_TURN=0` restores the old one-answer-per-wake behavior.
 
 ## Compatibility
