@@ -17,6 +17,10 @@ DEVICE = E("WAKE_DEVICE_NAME", "Razer")        # matched against `arecord -l` / 
 STATE_URL = E("WAKE_STATE_URL", "http://127.0.0.1:8787/state")
 CHIME = E("WAKE_CHIME", "/opt/grok-station/wake/chime.wav")
 LEVEL_EVERY = float(E("WAKE_LEVEL_EVERY", "30"))
+GAIN = float(E("WAKE_GAIN", "4"))                # software gain; headset mics run quiet
+CAP_RATE = int(E("WAKE_CAPTURE_RATE", "48000"))  # capture natively, decimate to 16 kHz (Razer USB card's 16 kHz mode is muffled)
+DECIM = CAP_RATE // 16000
+_K = np.sinc(np.arange(-32, 33) / DECIM) * np.hamming(65); _K /= _K.sum()  # low-pass FIR for decimation
 CHUNK = 1280                                     # 80 ms at 16 kHz, what openWakeWord expects
 
 
@@ -75,7 +79,7 @@ def test(path):
 def main():
     make_chime(CHIME)
     model = load_model()
-    print(f"model={MODEL} threshold={THRESH} cooldown={COOLDOWN}s", flush=True)
+    print(f"model={MODEL} threshold={THRESH} cooldown={COOLDOWN}s gain={GAIN}", flush=True)
     while True:
         cap = find_card("arecord")
         if not cap:
@@ -84,14 +88,19 @@ def main():
             continue
         play = find_card("aplay") or cap
         print(f"capture {cap} playback {play}", flush=True)
-        p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"],
+        p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw"],
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
         last_hit, last_log, peak, rms_sum, n = 0.0, time.time(), 0.0, 0.0, 0
+        tail = np.zeros(len(_K) - 1, np.float32)
         while True:
-            buf = p.stdout.read(CHUNK * 2)
-            if not buf or len(buf) < CHUNK * 2:
+            buf = p.stdout.read(CHUNK * DECIM * 2)
+            if not buf or len(buf) < CHUNK * DECIM * 2:
                 break
-            pcm = np.frombuffer(buf, "<i2")
+            x = np.frombuffer(buf, "<i2").astype(np.float32)
+            if DECIM > 1:
+                xx = np.concatenate([tail, x]); tail = xx[-(len(_K) - 1):]
+                x = np.convolve(xx, _K, "valid")[::DECIM]
+            pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
             s = scores(model, pcm)
             rms_sum += float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))); n += 1
             peak = max(peak, s)

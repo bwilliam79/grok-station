@@ -107,7 +107,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
 ```
 
 Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOLD`, `WAKE_COOLDOWN`,
-`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`. Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) prints the peak
+`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain, default 4), `WAKE_CAPTURE_RATE` (default 48000;
+audio is captured at the device's native rate and decimated to 16 kHz in software, because some USB headsets,
+including the Razer USB Sound Card, deliver muffled audio in their 16 kHz mode and the wake word never scores). Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) prints the peak
 score. On a Pi 5 the listener uses about 11% of one core and ~200 MB RSS.
 
 ## Credits
