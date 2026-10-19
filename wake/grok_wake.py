@@ -22,7 +22,7 @@ frames at or above the threshold). A wake opens the session as that persona (rel
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
-import shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
+import shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -139,6 +139,77 @@ SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
 LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
+# Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
+TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
+TIMERS, TIMERS_LOCK = {}, threading.Lock()
+
+
+def timers_load():
+    try:
+        d = json.load(open(TIMERS_FILE))
+        with TIMERS_LOCK:
+            TIMERS.update({k: v for k, v in d.items() if re.fullmatch(r"[a-z0-9]{4,12}", k) and isinstance(v, dict)
+                           and isinstance(v.get("due"), (int, float))})
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
+def timers_save():
+    try:
+        tmp = TIMERS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(TIMERS, f)
+        os.replace(tmp, TIMERS_FILE)
+    except OSError as e:
+        print(f"timers save failed: {type(e).__name__}", flush=True)
+
+
+def timer_event(ev):
+    """timer_set / timer_cancel from the relay. Labels are cleaned again here."""
+    tid = str(ev.get("id", ""))
+    if not re.fullmatch(r"[a-z0-9]{4,12}", tid):
+        return
+    with TIMERS_LOCK:
+        if ev.get("type") == "timer_set":
+            sec = ev.get("seconds")
+            if isinstance(sec, int) and 1 <= sec <= 86400 and len(TIMERS) < 10:
+                label = " ".join(re.sub(r"[^\w '\-]", " ", str(ev.get("label") or "")).split())[:24] or "timer"
+                TIMERS[tid] = {"label": label, "due": time.time() + sec}
+                print(f"timer set {sec}s", flush=True)
+        else:
+            if TIMERS.pop(tid, None):
+                print("timer cancelled", flush=True)
+        timers_save()
+
+
+def timers_query():
+    with TIMERS_LOCK:
+        now = time.time()
+        items = [{"id": k, "label": v["label"], "left": int(v["due"] - now)} for k, v in TIMERS.items() if v["due"] > now]
+    return urllib.parse.quote(json.dumps(items, separators=(",", ":"))) if items else ""
+
+
+def timers_loop():
+    """Ring due timers: three chimes and a notice. Waits for a conversation to end so it doesn't talk over it."""
+    while True:
+        time.sleep(0.5)
+        with TIMERS_LOCK:
+            due = [(k, v) for k, v in TIMERS.items() if v["due"] <= time.time()]
+        if not due or LIVE["session"] or not LIVE["play"]:
+            continue
+        for k, v in due:
+            with TIMERS_LOCK:
+                TIMERS.pop(k, None)
+                timers_save()
+            late = time.time() - v["due"]
+            print(f"timer done (late {late:.0f}s)", flush=True)
+            if late > 3600:
+                continue  # rang while the station was off for over an hour: drop silently
+            label = v.get("label", "timer")
+            post_state("speaking", who="grok", text=("Your timer is done." if label == "timer" else f"Your {label} timer is done."), done=True)
+            for _ in range(3):
+                subprocess.run(["aplay", "-q", "-D", LIVE["play"], CHIME], stderr=subprocess.DEVNULL, timeout=10)
+                time.sleep(0.4)
 
 
 def setup_mode():
@@ -630,7 +701,11 @@ class Session:
             for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
                 try:
                     tls = {"ssl": relay_ssl()} if RELAY_URL.startswith("wss://") else {}
-                    url = RELAY_URL + (f"?persona={self.persona}" if self.persona != "grok" else "")
+                    q = [f"persona={self.persona}"] if self.persona != "grok" else []
+                    tq = timers_query()
+                    if tq:
+                        q.append("timers=" + tq)
+                    url = RELAY_URL + ("?" + "&".join(q) if q else "")
                     ws = connect(url, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
                                  open_timeout=4, max_size=1 << 22, legacy=True, **tls)
                     break
@@ -708,6 +783,8 @@ class Session:
                         name = str(ev.get("name", ""))[:24] or "a teammate"
                         print("relay: handoff wait", flush=True)
                         self.state("thinking", heard=self.heard, text=f"Checking with {name}…")
+                    elif t in ("timer_set", "timer_cancel"):
+                        timer_event(ev)
                     elif t == "handoff_done":
                         print("relay: handoff done", flush=True)
                     elif t == "xai_error":
@@ -776,6 +853,8 @@ def main():
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
     threading.Thread(target=control_server, daemon=True).start()
+    timers_load()
+    threading.Thread(target=timers_loop, daemon=True).start()
     model = load_model()
     det = Detector()
     print(f"cooldown={COOLDOWN}s gain={GAIN}", flush=True)

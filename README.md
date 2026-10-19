@@ -434,6 +434,10 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
   check the watcher with `launchctl print gui/$(id -u)/grok-enroll-watch` or
   `systemctl --user status grok-enroll-watch.timer`, and look at `enroll/watch.err`.
 
+## Station tools (every persona)
+Grok and each teammate can use four safe tools during a conversation (`relay/tools.py`): **time and date** (local, or another time zone), **weather** at the station's location (Open-Meteo, no key; now, today, tomorrow), **unit conversions** (length, weight, cooking volumes, temperature, speed, area) and **timers** ("set a pasta timer for 10 minutes", "how long is left", "cancel the timer"). Timers live on the station, so they ring (three chimes and a notice) even after the conversation ends, survive a restart, and wait for a conversation to finish before ringing. Up to 10 timers, 24 hours each. None of the tools can send, post, buy or change anything outside the station.
+Config in the relay `.env`: `WEATHER_LAT`, `WEATHER_LON` (without them Grok says no location is set), optional `WEATHER_PLACE`, `WEATHER_UNITS` (`fahrenheit`/`celsius`), `TZ_NAME`. Tests: `python3 -m pytest tests/test_tools.py`.
+
 ## Admin page (`http://grok-station.local`)
 A small web page on the station (port 80, home network only) so nobody has to SSH in. Design: Noor's admin UI spec (Hearth theme). Service `grok-station-admin` runs as its own `grok-admin` user; the few root actions go through one allowlisted helper (`/usr/local/lib/grok-station/grok-station-helper`, sudoers entry for that file only).
 

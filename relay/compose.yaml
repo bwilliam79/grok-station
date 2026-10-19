@@ -19,6 +19,12 @@ services:
       XAI_VOICE: luna
       # Teammate handoff: off unless HANDOFF_ENABLED=1 in .env (see docs/handoff.md). Webhooks are hot-reloaded.
       HANDOFF_ENABLED: ${HANDOFF_ENABLED:-0}
+      # Station tools (relay/tools.py): weather location and zone come from .env; nothing location-specific in the repo.
+      TZ_NAME: ${TZ_NAME:-America/Chicago}
+      WEATHER_LAT: ${WEATHER_LAT:-}
+      WEATHER_LON: ${WEATHER_LON:-}
+      WEATHER_PLACE: ${WEATHER_PLACE:-}
+      WEATHER_UNITS: ${WEATHER_UNITS:-fahrenheit}
     secrets: [xai_api_key, relay_token, keyterms, webhooks]
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
