@@ -95,14 +95,17 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"from":"Grok","heard":"what is the w
 ## Wake word (proof of concept)
 
 `wake/grok_wake.py` runs as its own service, `grok-station-wake.service` (user `grok`, group `audio`), so an audio
-crash can't take down the display. It reads 16 kHz mono from the USB headset mic via `arecord` (device picked by
-name, `WAKE_DEVICE_NAME`, default `Razer`), runs [openWakeWord](https://github.com/dscripka/openWakeWord) with ONNX
-Runtime, and on a hit (score ≥ 0.5, 2 s cooldown) plays a 200 ms two-tone chime on the headset and POSTs
-`{"state":"listening"}` to `http://127.0.0.1:8787/state`. Mic level and peak score are logged every 30 s.
+crash can't take down the display. It reads 16 kHz mono from the USB speakerphone (EMEET OfficeCore M0 Plus) via
+`arecord`; the device is picked by name (`WAKE_DEVICE_NAME`, default `EMEET`) for both capture and playback (chime
+and replies go to the same card, `plughw:CARD=...`), runs [openWakeWord](https://github.com/dscripka/openWakeWord) with ONNX
+Runtime, and on a hit (score ≥ 0.5, 2 s cooldown) plays a 200 ms two-tone chime on the speakerphone and POSTs
+`{"state":"listening"}` to `http://127.0.0.1:8787/state`. Mic level and peak score are logged every 30 s, plus
+each wake word's peak when it reached 0.05 (`peaks hey_rhea=0.712 ...`), so a missed real-voice wake can be tuned.
 
 **Wake words pick the persona.** "Hey Grok" plus one phrase per teammate on voice: Hey Ash, Hey Miles, Hey Kai,
-Hey Piper, Hey Jules and Hey Rhea (**provisional**: just under the 0.80 recall goal, kept on a strict 0.995
-threshold until real-voice enrollment). Hey Finn isn't shipped yet (pending real-voice enrollment). The models are
+Hey Piper, Hey Jules and Hey Rhea (**provisional**: just under the 0.80 recall goal, threshold 0.8 with patience 2:
+0.78 recall / 1.03 false wakes per hour on the 10.7 h validation set, versus 0.995 / 1 that missed the real voice,
+until real-voice enrollment). Hey Finn isn't shipped yet (pending real-voice enrollment). The models are
 generic phrase models trained with openWakeWord on synthetic speech, in `wake/models/` (~400 KB each), installed
 to `/opt/grok-station/wake/models`. `wake/wakewords.json` (installed as `/opt/grok-station/wake/wakewords.json`,
 override with `WAKE_CONFIG`) lists each word's `name` (model file stem), `persona` (registry slug, or `grok`),
@@ -111,7 +114,9 @@ optional `fallback` entry (`hey_jarvis` → Grok) keeps the built-in openWakeWor
 drop it to retire Hey Jarvis. If several words fire on the same frame the highest score wins; one cooldown is
 shared. A wake opens the session as that persona: the Pi connects to `/ws?persona=<slug>`, and the relay starts
 the session with that persona's voice and instructions (unknown slugs fall back to Grok) and sends the `persona`
-event so the display shows them from the first "listening" frame. Without a config file the old single
+event so the display shows them from the first "listening" frame. The persona event keeps the current phase
+(listening stays listening; the violet ring spins only once a response has started), so a teammate's listening
+screen matches Grok's: same tick ring, with their portrait (Grok's is the logo). Without a config file the old single
 `WAKE_MODEL` / `WAKE_THRESHOLD` behaviour applies. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
 the voice relay below (when configured).
 
@@ -131,9 +136,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
 ```
 
 Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOLD`, `WAKE_COOLDOWN`,
-`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain, default 4), `WAKE_CAPTURE_RATE` (default 48000;
-audio is captured at the device's native rate and decimated to 16 kHz in software, because some USB headsets,
-including the Razer USB Sound Card, deliver muffled audio in their 16 kHz mode and the wake word never scores). Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) runs the clip through
+`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain, default 4), `WAKE_CAPTURE_RATE` (default 16000;
+set it to the device's native capture rate, see `/proc/asound/cardN/stream0`. The EMEET mic is 16 kHz only, so it
+is used as is and upsampled ×1.5 to 24 kHz for the voice session. Use 48000 for devices whose 16 kHz mode is poor,
+such as the Razer USB Sound Card (muffled, the wake word never scores); 48 kHz is decimated to 16 and 24 kHz).
+Playback is 48 kHz stereo on the EMEET; `aplay` via `plughw` converts the 24 kHz mono reply. Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) runs the clip through
 the same detector and prints which word and persona it triggers plus every word's peak score (no session is
 opened). `grok_wake.py --bench [seconds]` times the loaded models on noise. On a Pi 5 the listener used about 12%
 of one core with Hey Jarvis alone; `--bench` measures 10.6% of one core for all eight models (seven custom words plus the Hey Jarvis fallback) vs 9.4% for Hey Jarvis alone (the shared audio front end dominates). The spinning ring renders one revolution once (about 66% of a core for 1.2 s), then reuses those 18 frames at about 6% of a core; a colon blink costs about 2 ms.
@@ -141,7 +148,7 @@ of one core with Hey Jarvis alone; `--bench` measures 10.6% of one core for all 
 ## Voice (proof of concept)
 
 One question and answer per wake: "Hey Grok" (or a teammate's wake word) → chime + **listening** → speak → **thinking** (Grok started a
-response) → **speaking** (reply plays on the headset, text on screen) → idle. Mic audio keeps streaming until a
+response) → **speaking** (reply plays on the speakerphone, text on screen) → idle. Mic audio keeps streaming until a
 response actually starts, so a short noise or the tail of the wake word (which can trip the server VAD without
 producing a reply) doesn't swallow the real question. The first `VOICE_SKIP_MS` (default 300) of post-wake audio
 is dropped for the same reason. Nothing heard (or only noise) for 10 s → "Didn't catch that." and idle.

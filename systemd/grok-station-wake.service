@@ -1,5 +1,5 @@
 [Unit]
-Description=grok-station wake word listener (openWakeWord, headset mic)
+Description=grok-station wake word listener (openWakeWord, USB speakerphone)
 After=sound.target grok-station.service
 
 [Service]

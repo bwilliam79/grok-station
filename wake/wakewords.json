@@ -7,7 +7,7 @@
   {"name": "hey_kai", "persona": "kai", "threshold": 0.6, "patience": 1},
   {"name": "hey_piper", "persona": "piper", "threshold": 0.5, "patience": 1},
   {"name": "hey_jules", "persona": "jules", "threshold": 0.95, "patience": 1},
-  {"name": "hey_rhea", "persona": "rhea", "threshold": 0.995, "patience": 1, "provisional": true}
+  {"name": "hey_rhea", "persona": "rhea", "threshold": 0.8, "patience": 2, "provisional": true}
  ],
  "fallback": {"name": "hey_jarvis", "persona": "grok", "threshold": 0.5, "patience": 1}
 }

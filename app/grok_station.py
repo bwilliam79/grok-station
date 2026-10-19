@@ -888,6 +888,7 @@ def demo(out, size):
                                                   "with a light breeze in the afternoon. No rain expected."})),
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
         ("listening", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
+        ("listening-persona", draw_session, (now, {"from": "Kai", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
         ("thinking", draw_session, (now, {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
         ("error", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),

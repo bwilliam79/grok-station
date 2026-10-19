@@ -29,12 +29,13 @@ E = os.environ.get
 MODEL = E("WAKE_MODEL", "hey_jarvis")          # pre-trained placeholder until a custom "Hey Grok" model exists
 THRESH = float(E("WAKE_THRESHOLD", "0.5"))
 COOLDOWN = float(E("WAKE_COOLDOWN", "2"))
-DEVICE = E("WAKE_DEVICE_NAME", "Razer")        # matched against `arecord -l` / `aplay -l` card names
+DEVICE = E("WAKE_DEVICE_NAME", "EMEET")        # matched against `arecord -l` / `aplay -l` card names (capture + playback)
 STATE_URL = E("WAKE_STATE_URL", "http://127.0.0.1:8787/state")
 CHIME = E("WAKE_CHIME", "/opt/grok-station/wake/chime.wav")
 LEVEL_EVERY = float(E("WAKE_LEVEL_EVERY", "30"))
 GAIN = float(E("WAKE_GAIN", "4"))                # software gain; headset mics run quiet
-CAP_RATE = int(E("WAKE_CAPTURE_RATE", "48000"))  # capture natively, decimate to 16 kHz (Razer USB card's 16 kHz mode is muffled)
+CAP_RATE = int(E("WAKE_CAPTURE_RATE", "16000"))  # the device's native capture rate: 16000 (EMEET M0 Plus mic) or 48000
+                                                 # (e.g. the Razer USB card, whose 16 kHz mode is muffled); 48k is decimated
 DECIM = CAP_RATE // 16000
 _K = np.sinc(np.arange(-32, 33) / DECIM) * np.hamming(65); _K /= _K.sum()  # low-pass FIR for decimation
 CHUNK = 1280                                     # 80 ms at 16 kHz, what openWakeWord expects
@@ -42,8 +43,14 @@ RELAY_URL, RELAY_TOKEN = E("GROK_RELAY_URL", ""), E("GROK_RELAY_TOKEN", "")
 VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Grok
 VOICE_SKIP = float(E("VOICE_SKIP_MS", "300")) / 1000  # drop this much post-wake audio (tail of the wake word)
 PORTRAITS = E("GROK_STATION_PORTRAITS", "/opt/grok-station/portraits")
-D24 = CAP_RATE // 24000
+D24 = CAP_RATE // 24000                          # 48k -> 24k decimation; 16k capture is upsampled instead (up24)
 _K24 = np.sinc(np.arange(-24, 25) / max(1, D24)) * np.hamming(49); _K24 /= _K24.sum()
+
+
+def up24(x, prev):
+    """16 kHz chunk -> 24 kHz (x1.5, linear; speech content is below 8 kHz). prev is the previous chunk's last sample."""
+    xs = np.concatenate([[prev], x])
+    return np.interp(np.arange(len(x) * 3 // 2) / 1.5, np.arange(len(xs)), xs)
 
 
 def relay_ssl():
@@ -350,7 +357,13 @@ class Session:
                         if name:
                             self.who, self.reply = name, ""
                             print(f"persona: {name}", flush=True)
-                            self.state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text="…")
+                            # keep the current phase: a wake-word persona arrives while the person is still talking
+                            if self.t_first_audio:
+                                self.state("speaking", heard=self.heard, text="…")
+                            elif self.responding:
+                                self.state("thinking", heard=self.heard, text="…")
+                            else:
+                                self.state("listening")
                     elif t == "speech_stopped":
                         # keep streaming: a short noise may get no response, and the real question follows
                         self.t_end_speech = time.time()
@@ -441,7 +454,7 @@ def main():
         print(f"capture {cap} playback {play}", flush=True)
         p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw"],
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
-        last_hit, last_log, peak, rms_sum, n = 0.0, time.time(), 0.0, 0.0, 0
+        last_hit, last_log, peak, rms_sum, n, peaks = 0.0, time.time(), 0.0, 0.0, 0, {}
         tail = np.zeros(len(_K) - 1, np.float32)
         tail24 = np.zeros(len(_K24) - 1, np.float32)
         sess = None
@@ -457,7 +470,7 @@ def main():
             if sess:
                 if sess.feeding:
                     xx = np.concatenate([tail24, x]); tail24 = xx[-(len(_K24) - 1):]
-                    y = np.convolve(xx, _K24, "valid")[::D24] if D24 > 1 else x
+                    y = np.convolve(xx, _K24, "valid")[::D24] if D24 > 1 else up24(x, xx[-len(x) - 1]) if CAP_RATE == 16000 else x
                     sess.feed(np.clip(y * VOICE_GAIN, -32768, 32767).astype("<i2").tobytes())
                 continue  # wake detector paused while a session is open
             if DECIM > 1:
@@ -469,6 +482,8 @@ def main():
             hit = det.feed(sc)
             rms_sum += float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))); n += 1
             peak = max(peak, s)
+            for k, v in sc.items():
+                peaks[k] = max(peaks.get(k, 0.0), v)
             now = time.time()
             if hit and now - last_hit >= COOLDOWN:
                 last_hit = now
@@ -482,8 +497,9 @@ def main():
             if now - last_log >= LEVEL_EVERY:
                 avg = rms_sum / max(1, n)
                 dbfs = 20 * np.log10(max(avg, 1) / 32768)
-                print(f"level rms={avg:.0f} ({dbfs:.1f} dBFS) peak_score={peak:.3f} frames={n}", flush=True)
-                last_log, peak, rms_sum, n = now, 0.0, 0.0, 0
+                top = " ".join(f"{k}={v:.3f}" for k, v in sorted(peaks.items(), key=lambda kv: -kv[1]) if v >= 0.05)
+                print(f"level rms={avg:.0f} ({dbfs:.1f} dBFS) peak_score={peak:.3f} frames={n}{' peaks ' + top if top else ''}", flush=True)
+                last_log, peak, rms_sum, n, peaks = now, 0.0, 0.0, 0, {}
         p.kill()
         print("capture ended; restarting", flush=True)
         time.sleep(2)
