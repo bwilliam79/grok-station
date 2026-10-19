@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Clock colon placement, thinking-ring phases, and partial framebuffer writes."""
-import os, sys, tempfile, time, unittest
+import json, os, sys, tempfile, time, unittest
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -313,3 +313,237 @@ class Resolution(unittest.TestCase):
             L = gs.Layout(*size)
             self.assertAlmostEqual(L.s, min(size[0] / 1920, size[1] / 1080))
             self.assertGreater(L.m, 0)
+
+
+CARD_SIZES = ((800, 480), (1024, 768), (1280, 800), (1920, 1080), (2560, 1706), (3840, 2160))
+EPOCH = 1_700_000_000
+WEATHER_CARD = {"kind": "weather", "icon": "partly", "now_temp": 64, "units": "°F", "conditions": "partly cloudy",
+                 "today": {"high": 71, "low": 52}, "tomorrow": {"high": 68, "low": 49}}
+TIME_CARD = {"kind": "time", "zone_label": "London", "hhmm": "11:05 PM", "day": "Mon", "offset": "+6 h"}
+CONVERT_CARD = {"kind": "convert", "value": "350", "from_unit": "°F", "result": "176.67", "to_unit": "°C"}
+
+
+def _chip(n, left, ringing=False, label="pasta"):
+    return {"id": f"t{n:05d}", "label": label, "ends_at_epoch": EPOCH + left, "ringing": ringing}
+
+
+class ToolCards(unittest.TestCase):
+    def setUp(self):
+        gs.TIMER_CHIPS[:] = []
+        gs.TIMER_EPOCH = EPOCH
+
+    def tearDown(self):
+        gs.TIMER_CHIPS[:] = []
+        gs.TIMER_EPOCH = None
+
+    def test_bad_payloads_are_ignored(self):
+        huge = {"kind": "weather", "now_temp": 70, "units": "°F", "conditions": "x" * 600}
+        self.assertGreater(len(json.dumps(huge)), gs._CARD_MAX)
+        self.assertIsNone(gs.clean_card(huge))
+        self.assertIsNone(gs.clean_card({"kind": "weather", "icon": "meteor", "place": "Chicago", "lat": 1, "lon": 2}))
+        self.assertIsNone(gs.clean_card({"kind": "time", "zone_label": "London"}))
+        self.assertIsNone(gs.clean_card({"kind": "convert", "value": "1", "from_unit": "m", "result": "3"}))
+        self.assertIsNone(gs.clean_card("nope"))
+        self.assertIsNone(gs.clean_timers({"id": "abcd"}))  # not a list: keep the previous set
+        ev = gs.state_event({"state": "speaking", "text": "Hi", "card": {
+            "type": "card", "kind": "weather", "icon": "sun", "now_temp": 61, "units": "°F",
+            "conditions": "clear", "today": {"high": 70, "low": 40}, "tomorrow": {"high": True, "low": 30},
+            "place": "Chicago", "lat": 41.8, "lon": -87.6}})
+        self.assertEqual(ev["card"]["icon"], "sun")
+        self.assertNotIn("tomorrow", ev["card"])  # high was a bool
+        blob = json.dumps(ev["card"]).lower()
+        for banned in ("place", "chicago", "lat", "lon", "41.8"):
+            self.assertNotIn(banned, blob)
+        ev = gs.state_event({"state": "speaking", "card": huge})
+        self.assertTrue(ev["has_card"])
+        self.assertIsNone(ev["card"])
+        prior = {"kind": "time", "hhmm": "5:05 PM"}
+        self.assertEqual(gs.merge_card(prior, True, None, True), prior)   # bad card does not wipe
+        self.assertIsNone(gs.merge_card(prior, False, None, True))        # done, and no card was sent
+        self.assertEqual(gs.merge_card(prior, False, None, False), prior)  # in-progress post keeps it
+        with self.assertRaises(ValueError):
+            gs.state_event({})
+        with self.assertRaises(ValueError):
+            gs.state_event({"timers": "nope"})
+        with self.assertRaises(ValueError):
+            gs.state_event({"state": "asleep"})
+        ev = gs.state_event({"timers": [
+            {"id": "abcd12", "label": "pasta!", "ends_at_epoch": EPOCH, "ringing": False},
+            {"id": "NO", "ends_at_epoch": EPOCH},
+            {"id": "abcd12", "label": "dup", "ends_at_epoch": EPOCH + 5},
+            {"id": "zzzz99", "ends_at_epoch": True},
+        ]})
+        self.assertEqual(len(ev["timers"]), 1)
+        self.assertEqual(ev["timers"][0]["label"], "pasta")
+        ev = gs.state_event({"state": "idle", "timers": []})
+        self.assertEqual(ev["timers"], [])
+        self.assertEqual(ev["state"], "idle")
+        posted = pygame.event.Event(gs.STATE, **gs.state_event({"card": TIME_CARD, "timers": []}))
+        self.assertIsNone(posted.state)
+        self.assertEqual(posted.card["hhmm"], "11:05 PM")
+
+    def test_cards_have_no_wake_hint(self):
+        with open(gs.__file__, encoding="utf-8") as f:
+            src = f.read()
+        self.assertNotIn("to wake", src)
+        self.assertNotIn("say hey", src.lower())
+        for card in (WEATHER_CARD, TIME_CARD, CONVERT_CARD):
+            for _role, text in gs._card_lines(gs.clean_card(card)):
+                self.assertNotIn("wake", text.lower())
+                self.assertNotIn("hey", text.lower())
+
+    def _draw(self, size, painter, args):
+        seen = []
+        real = gs.font
+
+        def wrapped(kind, px):
+            seen.append(int(px))
+            return real(kind, px)
+
+        surf = pygame.Surface(size)
+        gs.font = wrapped
+        try:
+            painter(surf, gs.Layout(*size), *args)
+        finally:
+            gs.font = real
+        self.assertTrue(seen)
+        self.assertGreaterEqual(min(seen), 14, size)
+        return surf
+
+    def _assert_safe(self, size, *rects):
+        side, top, bot = gs.safe_insets(*size)
+        safe = pygame.Rect(side, top, size[0] - 2 * side, size[1] - top - bot)
+        for rect in rects:
+            self.assertIsNotNone(rect, size)
+            self.assertTrue(safe.contains(rect), f"{size} {rect} outside {safe}")
+
+    def _no_overlap(self, a, b, what):
+        if a and b:
+            self.assertFalse(a.colliderect(b), f"{what}: {a} vs {b}")
+
+    def test_cards_and_timers_at_every_size(self):
+        now = time.strptime("2026-10-19 17:05", "%Y-%m-%d %H:%M")
+        running = [_chip(1, 125, label="pasta"), _chip(2, 90, label="tea"), _chip(3, 600, label="eggs"),
+                   _chip(4, 3700, label="rice"), _chip(5, 20, label="soup")]
+        for size in CARD_SIZES:
+            for card in (WEATHER_CARD, TIME_CARD, CONVERT_CARD):
+                gs.TIMER_CHIPS[:] = []
+                self._draw(size, gs.draw_session, (now, {"from": "Grok", "voice": True, "heard": "a question",
+                                                          "text": "Here you go.", "state": "speaking", "card": card}))
+                self._assert_safe(size, gs.LAST_CARD_RECT)
+                self._no_overlap(gs.LAST_CARD_RECT, gs.LAST_TOPBAR_RECT, f"card/topbar {size}")
+                self.assertIsNone(gs.LAST_TIMER_RECT)
+                # 4:3 stacks the card under the avatar; wider aspects stay side by side
+                if size == (1024, 768):
+                    self.assertGreaterEqual(gs.LAST_CARD_RECT.top, gs.LAST_PORTRAIT_RECT.bottom - 2)
+                if size in ((800, 480), (2560, 1706)):
+                    self.assertGreaterEqual(gs.LAST_CARD_RECT.left, gs.LAST_PORTRAIT_RECT.right - 2)
+                self._no_overlap(gs.LAST_CARD_RECT, gs.LAST_PORTRAIT_RECT, f"card/portrait {size}")
+            for chips in (running[:1], running, [_chip(1, -5, ringing=True, label="eggs")]):
+                gs.TIMER_CHIPS[:] = [dict(c) for c in chips]
+                self._draw(size, gs.draw_session, (now, {"from": "Grok", "voice": True, "heard": "",
+                                                          "text": "Here you go.", "state": "speaking", "card": TIME_CARD}))
+                self._assert_safe(size, gs.LAST_CARD_RECT, gs.LAST_TIMER_RECT)
+                self._no_overlap(gs.LAST_TIMER_RECT, gs.LAST_TOPBAR_RECT, f"strip/topbar {size}")
+                self._no_overlap(gs.LAST_TIMER_RECT, gs.LAST_CARD_RECT, f"strip/card {size}")
+                self._no_overlap(gs.LAST_TIMER_RECT, gs.LAST_PORTRAIT_RECT, f"strip/portrait {size}")
+            wx = gs.Weather()
+            wx.data, wx.ok_at = {"temp": 64, "code": 2, "day": True, "hi": 71, "lo": 52}, EPOCH
+            gs.TIMER_CHIPS[:] = [dict(c) for c in running]
+            self._draw(size, gs.draw_idle, (now, wx, True))
+            self._assert_safe(size, gs.LAST_TIMER_RECT)
+            for other in (gs.LAST_CLOCK_RECT, gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT):
+                self._no_overlap(gs.LAST_TIMER_RECT, other, f"idle {size}")
+            off = gs.Weather()
+            off.ok_at = off.started = 0
+            old_loc = gs.LAT, gs.LON
+            gs.LAT, gs.LON = "41.0", "-87.0"  # offline badge only exists once a location is configured
+            try:
+                self._draw(size, gs.draw_idle, (now, off, True))
+            finally:
+                gs.LAT, gs.LON = old_loc
+            self._assert_safe(size, gs.LAST_TIMER_RECT)
+            self._no_overlap(gs.LAST_TIMER_RECT, gs.LAST_OFFLINE_RECT, f"offline {size}")
+            self._no_overlap(gs.LAST_TIMER_RECT, gs.LAST_CLOCK_RECT, f"offline clock {size}")
+            gs.draw_night(pygame.Surface(size), gs.Layout(*size), now, True)
+            self.assertIsNone(gs.LAST_TIMER_RECT)  # the night clock does not carry the strip
+
+    def test_timer_strip_states_and_local_repaint(self):
+        size = (1280, 800)
+        now = time.strptime("2026-10-19 17:05", "%Y-%m-%d %H:%M")
+        L = gs.Layout(*size)
+        seen = []
+        real = gs.font
+
+        class RecordingFont:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def render(self, text, *a, **k):
+                seen.append(str(text))
+                return self._inner.render(text, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        def wrapped(kind, px):
+            return RecordingFont(real(kind, px))
+
+        gs.font = wrapped
+        try:
+            surf = pygame.Surface(size)
+            gs.TIMER_CHIPS[:] = [_chip(i, left, label=label) for i, (left, label) in
+                                 enumerate(((20, "soup"), (90, "tea"), (125, "pasta"), (600, "eggs"), (50, "rice")), 1)]
+            gs.draw_idle(surf, L, now, gs.Weather())
+            self.assertIn("+1", seen)
+            self.assertIn("02:05", seen)
+            seen.clear()
+            gs.TIMER_CHIPS[:] = [_chip(1, 3700, label="rice")]
+            gs.draw_timer_strip(surf, L)
+            self.assertIn("1:01:40", seen)
+            seen.clear()
+            gs.TIMER_EPOCH = EPOCH  # even second: ringing chip is the amber fill
+            gs.TIMER_CHIPS[:] = [_chip(1, -5, ringing=True, label="eggs")]
+            gs.draw_timer_strip(surf, L)
+            self.assertIn("Done", seen)
+            rect = gs.LAST_TIMER_RECT
+            even = surf.copy()
+            gs.TIMER_EPOCH = EPOCH + 1
+            gs.draw_timer_strip(surf, L)
+            spot = None
+            for y in range(rect.top + 2, rect.bottom - 2, 2):
+                for x in range(rect.left, rect.right, 3):
+                    c = even.get_at((x, y))
+                    d = surf.get_at((x, y))
+                    if c.r > 200 and c.g > 140 and c.b < 120 and d.r < 80:
+                        spot = (c, d)
+                        break
+                if spot:
+                    break
+            self.assertIsNotNone(spot, "ringing chip did not pulse between amber and the amber well")
+        finally:
+            gs.font = real
+        gs.TIMER_EPOCH = EPOCH
+        gs.TIMER_CHIPS[:] = [_chip(1, 125, label="pasta")]
+        surf = pygame.Surface(size)
+        gs.draw_idle(surf, L, now, gs.Weather())
+        rect = pygame.Rect(gs.LAST_TIMER_RECT)
+        before = bytes(surf.get_buffer().raw)
+        gs.TIMER_EPOCH = EPOCH + 61
+
+        class Disp:
+            screen = surf
+            flushed = None
+            def flush_rect(self, r):
+                self.flushed = pygame.Rect(r)
+
+        disp = Disp()
+        gs.repaint_timer_strip(disp)
+        after = bytes(surf.get_buffer().raw)
+        self.assertEqual(disp.flushed, rect)
+        pitch = surf.get_pitch()
+        self.assertNotEqual(before, after)
+        for y in range(size[1]):
+            if rect.top <= y < rect.bottom:
+                continue
+            self.assertEqual(before[y * pitch:(y + 1) * pitch], after[y * pitch:(y + 1) * pitch], f"row {y}")

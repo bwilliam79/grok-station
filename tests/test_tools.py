@@ -100,6 +100,135 @@ class Timers(unittest.TestCase):
         self.assertEqual(T.parse_timers("not json", 0), {})
 
 
+class Cards(unittest.TestCase):
+    """Display cards are small, display-only, and absent when the tool fails."""
+
+    def test_time_card(self):
+        now = datetime.datetime(2026, 10, 19, 22, 5, tzinfo=datetime.timezone.utc)
+        out, card = T.time_result({"timezone": "Europe/London"}, now)
+        self.assertTrue(out["ok"])
+        self.assertEqual(card, {"type": "card", "kind": "time", "zone_label": "London", "hhmm": "11:05 PM",
+                                 "day": "Mon", "offset": "+6 h"})
+        out, card = T.time_result({"timezone": "Asia/Tokyo"}, now)
+        self.assertEqual(card["zone_label"], "Tokyo")
+        self.assertEqual(card["hhmm"], "7:05 AM")
+        self.assertEqual(card["day"], "Tue")
+        self.assertEqual(card["offset"], "+14 h")
+        out, card = T.time_result({"timezone": "Asia/Kolkata"}, now)
+        self.assertEqual(card["offset"], "+10:30 h")
+        self.assertEqual(card["hhmm"], "3:35 AM")
+        out, card = T.time_result({"timezone": "America/New_York"}, now)
+        self.assertEqual(card["zone_label"], "New York")
+        self.assertEqual(card["offset"], "+1 h")
+        out, card = T.time_result({}, now)
+        self.assertEqual(card["zone_label"], "Chicago")
+        self.assertEqual(card["day"], "Mon")
+        self.assertEqual(card["hhmm"], "5:05 PM")
+        self.assertEqual(card["offset"], "+0 h")
+        out, card = T.time_result({"timezone": "Mars/Base"}, now)
+        self.assertFalse(out["ok"])
+        self.assertIsNone(card)
+
+    def test_weather_card_has_no_place(self):
+        j = json.loads(json.dumps(SAMPLE))
+        j.update(latitude=41.88, longitude=-87.63, timezone="America/Chicago", place="the kitchen")
+        card = T.weather_card(j)
+        self.assertEqual(card["kind"], "weather")
+        self.assertEqual(card["icon"], "partly")
+        self.assertEqual(card["now_temp"], 61)
+        self.assertEqual(card["units"], "°F")
+        self.assertEqual(card["conditions"], "partly cloudy")
+        self.assertEqual(card["today"], {"high": 66, "low": 45})
+        self.assertEqual(card["tomorrow"], {"high": 59, "low": 41})
+        blob = json.dumps(card).lower()
+        for banned in ("place", "lat", "lon", "kitchen", "chicago", "41.88", "-87.63", "latitude", "longitude"):
+            self.assertNotIn(banned, blob)
+        self.assertNotIn("place", card)
+        old = T.UNITS
+        T.UNITS = "celsius"
+        try:
+            self.assertEqual(T.weather_card(SAMPLE)["units"], "°C")
+        finally:
+            T.UNITS = old
+        self.assertIsNone(T.weather_card({"current": {}, "daily": {}}))
+
+    def test_icon_mapping(self):
+        expect = {0: "sun", 1: "partly", 2: "partly", 3: "cloud", 45: "fog", 48: "fog", 51: "rain", 63: "rain",
+                  67: "rain", 80: "rain", 82: "rain", 71: "snow", 77: "snow", 85: "snow", 95: "storm", 99: "storm",
+                  123: "cloud"}
+        for code, icon in expect.items():
+            self.assertEqual(T.wmo_icon(code), icon, code)
+        self.assertEqual(T.wmo_icon(None), "cloud")
+        self.assertEqual(T.wmo_icon("nope"), "cloud")
+        rainy = json.loads(json.dumps(SAMPLE))
+        rainy["current"]["weather_code"] = 95
+        self.assertEqual(T.weather_card(rainy)["icon"], "storm")
+
+    def test_convert_card_and_failures(self):
+        out, card = T.convert_result({"value": 350, "from_unit": "F", "to_unit": "celsius"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(card, {"type": "card", "kind": "convert", "value": "350", "from_unit": "°F",
+                                 "result": "176.67", "to_unit": "°C"})
+        out, card = T.convert_result({"value": 1, "from_unit": "mile", "to_unit": "km"})
+        self.assertEqual(card["value"], "1")
+        self.assertEqual(card["from_unit"], "mi")
+        self.assertEqual(card["result"], "1.61")
+        self.assertEqual(card["to_unit"], "km")
+        out, card = T.convert_result({"value": 1, "from_unit": "kg", "to_unit": "km"})
+        self.assertFalse(out["ok"])
+        self.assertIsNone(card)
+        out, card = T.convert_result({"value": "lots", "from_unit": "m", "to_unit": "ft"})
+        self.assertIsNone(card)
+
+    def test_run_sends_a_card_only_on_success(self):
+        class Resp:
+            def __init__(self, status, body):
+                self.status, self.body = status, body
+            async def read(self):
+                return self.body
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+
+        class Http:
+            def __init__(self, status, body):
+                self.status, self.body = status, body
+            def get(self, url, timeout=None):
+                return Resp(self.status, self.body)
+
+        old = T.LAT, T.LON, T._timeout
+        T.LAT, T.LON, T._timeout = "41.0", "-87.0", lambda s: None
+        try:
+            out, card = asyncio.run(T.run("get_weather", {"day": "tomorrow"}, Http(200, json.dumps(SAMPLE).encode()), {}, 0))
+            self.assertNotIn("now", out)  # spoken summary follows the requested day
+            self.assertIn("place", out)   # the model still hears where it is
+            self.assertEqual(card["kind"], "weather")
+            self.assertIn("now_temp", card)  # the card is not filtered by day
+            self.assertNotIn("place", card)
+            out, card = asyncio.run(T.run("get_weather", {}, Http(503, b""), {}, 0))
+            self.assertFalse(out["ok"])
+            self.assertIsNone(card)
+            T.LAT = T.LON = ""
+            out, card = asyncio.run(T.run("get_weather", {}, None, {}, 0))
+            self.assertFalse(out["ok"])
+            self.assertIsNone(card)
+        finally:
+            T.LAT, T.LON, T._timeout = old
+        out, card = asyncio.run(T.run("get_time", {"timezone": "Mars/Base"}, None, {}, 0))
+        self.assertFalse(out["ok"])
+        self.assertIsNone(card)
+        out, card = asyncio.run(T.run("convert_units", {"value": 2, "from_unit": "cup", "to_unit": "tbsp"}, None, {}, 0))
+        self.assertEqual(card["kind"], "convert")
+        self.assertEqual(card["result"], "32")
+        out, msg = asyncio.run(T.run("set_timer", {"seconds": 5, "label": "tea"}, None, {}, 0))
+        self.assertEqual(msg["type"], "timer_set")
+        self.assertNotEqual(msg.get("kind"), "card")
+        with open(os.path.join(os.path.dirname(__file__), "..", "relay", "relay.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn('log(f"tool {ev[\'name\']} ok={out.get(\'ok\')}")', src)
+
+
 class Wiring(unittest.TestCase):
     def test_every_persona_gets_tools_and_safety_allows_only_timers(self):
         import relay

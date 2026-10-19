@@ -15,14 +15,14 @@ and Inter 500 (body), bundled in `assets/fonts`. Sizes come from a 1080p spec an
 
 | Screen | When | Shows |
 | --- | --- | --- |
-| Idle | default | Large clock + AM/PM, date, weather top-right (icon, temp, condition, high/low). Lower third is reserved for a future "Next up" card (`draw_next_up` hook). |
-| Message | `POST /show` | With `from`: circular portrait with a warm ring at left; name, the question (`heard`, muted italic) and the reply at right, sized to fit. Without `from`: the text, large and centered. Stays up `GROK_STATION_HOLD` seconds after the last message, then fades back. |
+| Idle | default | Large clock + AM/PM, date, weather top-right (icon, temp, condition, high/low). Running timers sit in a strip of chips along the bottom. Lower third is reserved for a future "Next up" card (`draw_next_up` hook). |
+| Message | `POST /show` or a voice session | With `from`: circular portrait with a warm ring at left; name, the question (`heard`, muted italic) and the reply at right, sized to fit. A tool card (weather, time or a unit conversion) replaces or sits under the reply. Without `from`: the text, large and centered. Stays up `GROK_STATION_HOLD` seconds after the last message, then fades back. A tool card holds an extra 4 seconds after the session ends. |
 | Night | `GROK_STATION_NIGHT` hours | Only a dim warm clock on black, drifting a few px every 10 min against burn-in. |
 | Weather offline | no successful fetch for 1 h | Small amber cloud-off icon in place of stale weather. |
 
 The display redraws once a minute (plus on messages and weather updates); otherwise the process sleeps in
 `pygame.event.wait`. The clock colon is steady (an optional blink, `GROK_STATION_BLINK=1`, repaints only the colon's
-rectangle once a second). While **listening**, a solid teal ring (the thinking arc's style, but full and continuous, no ticks) around every persona (Grok included) pulses once a second (thickens, brightens and glows, smooth cosine); while **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
+rectangle once a second). Timer chips repaint only their own strip once a second, the same way. While **listening**, a solid teal ring (the thinking arc's style, but full and continuous, no ticks) around every persona (Grok included) pulses once a second (thickens, brightens and glows, smooth cosine); while **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
 15) by repainting only the portrait rectangle from a cached circle-cropped photo. Each animation's loop (15 pulse frames, 18 spin frames) is rendered once per portrait, then reused. Speaking and idle rings are static. The listening screen has no wake-word hint (the station is already awake). The colon is centered between the
 hour and minute digits on their ink (not the font box), and the date is centered under HH:MM (AM/PM excluded).
 Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
@@ -436,6 +436,17 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
 
 ## Station tools (every persona)
 Grok and each teammate can use four safe tools during a conversation (`relay/tools.py`): **time and date** (local, or another time zone), **weather** at the station's location (Open-Meteo, no key; now, today, tomorrow), **unit conversions** (length, weight, cooking volumes, temperature, speed, area) and **timers** ("set a pasta timer for 10 minutes", "how long is left", "cancel the timer"). Timers live on the station, so they ring (three chimes and a notice) even after the conversation ends, survive a restart, and wait for a conversation to finish before ringing. Up to 10 timers, 24 hours each. None of the tools can send, post, buy or change anything outside the station.
+
+A successful time, weather or conversion answer also shows a card on the station (the spoken reply is unchanged; a failed tool shows nothing). The card is a rounded panel in the session's text column — beside the portrait, or under it on a 4:3 screen:
+
+- **Weather.** A drawn icon (sun, partly cloudy, cloud, fog, rain, snow, storm), the current temperature, the conditions, and two rows for today's and tomorrow's high and low. The place name and the coordinates stay in the spoken answer only; they are not on the card and not in the log.
+- **Time.** The city (the last part of the time-zone name, so `Europe/London` is "London"), a large clock, the weekday and the offset from the station ("+6 h").
+- **Convert.** The original quantity in muted type, and the result large ("350 °F" / "= 176.67 °C").
+
+The card stays until the conversation ends, then for 4 seconds. Timers are separate: pill chips (a short label and a live `mm:ss`, or `h:mm:ss` past an hour) along the bottom of the idle clock and of a session, including after the conversation ends. At most four chips show, then "+N". A timer that rings turns amber, pulses, and reads "Done" until the station clears it (the chime, the spoken notice, then about a minute). The display counts down from the end time itself. The wake listener posts the whole list only when a timer is set, cancelled, starts ringing or is cleared — not every second — and its log records the type of the update, never the label or the duration.
+
+`python3 tools/render_cards.py OUTDIR` writes preview PNGs of each card, the idle clock with timers, and a ringing timer, at 800×480, 1920×1080 and 3840×2160.
+
 Config in the relay `.env`: `WEATHER_LAT`, `WEATHER_LON` (without them Grok says no location is set), optional `WEATHER_PLACE`, `WEATHER_UNITS` (`fahrenheit`/`celsius`), `TZ_NAME`. Tests: `python3 -m pytest tests/test_tools.py`.
 
 ## Admin page (`https://grok-station.local`)

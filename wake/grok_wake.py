@@ -5,6 +5,9 @@ Captures the USB headset mic at 48 kHz via `arecord`, decimates to 16 kHz for op
 On a wake it plays a chime, shows "listening", and (if GROK_RELAY_URL is set) opens one session to the
 voice relay: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
 `aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
+A tool card (`{"type":"card",...}`) is forwarded on that same POST. Timers post their full list
+(`{"timers":[{id,label,ends_at_epoch,ringing}]}`) when the set changes — set, cancel, ring, clear —
+and the display counts down locally. Logs name the event type only, never a temperature, label or duration.
 The wake detector is paused during a session so the reply can't re-trigger it.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
 `grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
@@ -142,6 +145,7 @@ LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
+RING_HOLD = 60.0  # ringing chip stays up this long after the chimes and the spoken notice
 # T1 voice notes (relay t1.py): guest mode from the admin page, and physical taps on the station (touchscreen or the
 # speakerphone's call button) for "recent tap" and tap-to-confirm. Taps are read here from evdev (grok is in input).
 T1_FILE = E("WAKE_T1_FILE", "/var/lib/grok-station/admin/t1.json")
@@ -222,52 +226,169 @@ def timers_save():
         print(f"timers save failed: {type(e).__name__}", flush=True)
 
 
+def _clean_timer_label(s):
+    return " ".join(re.sub(r"[^\w '\-]", " ", str(s or "")).split())[:24] or "timer"
+
+
+def timer_rows():
+    """Full timer list for the display. Ringing chips sort first, then soonest deadline."""
+    with TIMERS_LOCK:
+        rows = [{"id": k, "label": v.get("label") or "timer", "ends_at_epoch": float(v["due"]),
+                 "ringing": bool(v.get("ringing"))} for k, v in TIMERS.items() if isinstance(v.get("due"), (int, float))]
+    rows.sort(key=lambda r: (not r["ringing"], r["ends_at_epoch"]))
+    return rows
+
+
+def post_timers():
+    """Push the whole set. The display counts down from ends_at; this is not called every second."""
+    post_state(timers=timer_rows())
+
+
 def timer_event(ev):
     """timer_set / timer_cancel from the relay. Labels are cleaned again here."""
     tid = str(ev.get("id", ""))
     if not re.fullmatch(r"[a-z0-9]{4,12}", tid):
         return
+    changed = False
     with TIMERS_LOCK:
         if ev.get("type") == "timer_set":
             sec = ev.get("seconds")
             if isinstance(sec, int) and 1 <= sec <= 86400 and len(TIMERS) < 10:
-                label = " ".join(re.sub(r"[^\w '\-]", " ", str(ev.get("label") or "")).split())[:24] or "timer"
-                TIMERS[tid] = {"label": label, "due": time.time() + sec}
-                print(f"timer set {sec}s", flush=True)
-        else:
-            if TIMERS.pop(tid, None):
-                print("timer cancelled", flush=True)
-        timers_save()
+                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": time.time() + sec}
+                changed = True
+                print("timer set", flush=True)
+        elif TIMERS.pop(tid, None):
+            changed = True
+            print("timer cancelled", flush=True)
+        if changed:
+            timers_save()
+    if changed:
+        post_timers()
 
 
 def timers_query():
     with TIMERS_LOCK:
         now = time.time()
-        items = [{"id": k, "label": v["label"], "left": int(v["due"] - now)} for k, v in TIMERS.items() if v["due"] > now]
+        items = [{"id": k, "label": v["label"], "left": int(v["due"] - now)}
+                 for k, v in TIMERS.items() if v["due"] > now and not v.get("ringing")]
     return urllib.parse.quote(json.dumps(items, separators=(",", ":"))) if items else ""
+
+
+def _expire_rings(now):
+    """Drop chips whose ringing hold has ended. A ring that never recorded its deadline gets one now."""
+    removed = dirty = False
+    with TIMERS_LOCK:
+        for k, v in list(TIMERS.items()):
+            if not v.get("ringing"):
+                continue
+            if not v.get("ring_until"):
+                v["ring_until"] = now + RING_HOLD
+                dirty = True
+            elif now >= v["ring_until"]:
+                TIMERS.pop(k, None)
+                removed = dirty = True
+        if dirty:
+            timers_save()
+    if removed:
+        print("timer clear", flush=True)
+        post_timers()
+
+
+def _notice_and_chime(label):
+    post_state("speaking", who="grok", text=("Your timer is done." if label == "timer" else f"Your {label} timer is done."), done=True)
+    dev = LIVE.get("play")
+    for _ in range(3):
+        if dev:
+            subprocess.run(["aplay", "-q", "-D", dev, CHIME], stderr=subprocess.DEVNULL, timeout=10)
+        time.sleep(0.4)
+
+
+def _ring_one(k, v):
+    """Mark the chip ringing, chime, then keep it up for RING_HOLD. Late by over an hour: drop quietly."""
+    late = time.time() - v["due"]
+    with TIMERS_LOCK:
+        cur = TIMERS.get(k)
+        if not cur or cur.get("ringing"):
+            return
+        if late > 3600:
+            TIMERS.pop(k, None)
+            timers_save()
+            dropped = True
+        else:
+            cur["ringing"] = True
+            timers_save()
+            dropped = False
+    if dropped:
+        print("timer dropped", flush=True)
+        post_timers()
+        return
+    print("timer ringing", flush=True)
+    post_timers()
+    try:
+        _notice_and_chime(v.get("label") or "timer")
+    finally:
+        with TIMERS_LOCK:
+            cur = TIMERS.get(k)
+            if cur and cur.get("ringing"):
+                cur["ring_until"] = time.time() + RING_HOLD
+                timers_save()
+
+
+def timers_tick():
+    """One pass: clear finished rings, start due ones when the speaker is free."""
+    _expire_rings(time.time())
+    with TIMERS_LOCK:
+        due = [(k, dict(v)) for k, v in TIMERS.items() if not v.get("ringing") and v["due"] <= time.time()]
+    if not due or LIVE["session"] or not LIVE["play"]:
+        return
+    for k, v in due:
+        _ring_one(k, v)
 
 
 def timers_loop():
     """Ring due timers: three chimes and a notice. Waits for a conversation to end so it doesn't talk over it."""
     while True:
         time.sleep(0.5)
-        with TIMERS_LOCK:
-            due = [(k, v) for k, v in TIMERS.items() if v["due"] <= time.time()]
-        if not due or LIVE["session"] or not LIVE["play"]:
-            continue
-        for k, v in due:
-            with TIMERS_LOCK:
-                TIMERS.pop(k, None)
-                timers_save()
-            late = time.time() - v["due"]
-            print(f"timer done (late {late:.0f}s)", flush=True)
-            if late > 3600:
-                continue  # rang while the station was off for over an hour: drop silently
-            label = v.get("label", "timer")
-            post_state("speaking", who="grok", text=("Your timer is done." if label == "timer" else f"Your {label} timer is done."), done=True)
-            for _ in range(3):
-                subprocess.run(["aplay", "-q", "-D", LIVE["play"], CHIME], stderr=subprocess.DEVNULL, timeout=10)
-                time.sleep(0.4)
+        timers_tick()
+
+
+_CARD_FIELDS = {"weather": ("icon", "now_temp", "units", "conditions", "today", "tomorrow"),
+                "time": ("zone_label", "hhmm", "day", "offset"),
+                "convert": ("value", "from_unit", "result", "to_unit")}
+
+
+def take_card(ev):
+    """Display card from a relay event, or None. Unknown keys (place, coordinates) are not copied. Capped at 600 bytes."""
+    if not isinstance(ev, dict):
+        return None
+    kind = ev.get("kind")
+    if kind not in _CARD_FIELDS:
+        return None
+    card = {"type": "card", "kind": kind}
+    for k in _CARD_FIELDS[kind]:
+        if k in ev:
+            card[k] = ev[k]
+    if kind == "weather":
+        for name in ("today", "tomorrow"):
+            hl = card.get(name)
+            if not isinstance(hl, dict):
+                card.pop(name, None)
+                continue
+            slim = {}
+            for hk in ("high", "low"):
+                v = hl.get(hk)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    slim[hk] = v
+            if len(slim) == 2:
+                card[name] = slim
+            else:
+                card.pop(name, None)
+    try:
+        if len(json.dumps(card, separators=(",", ":"))) > 600:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return card
 
 
 def setup_mode():
@@ -662,10 +783,23 @@ def make_chime(path):
         w.writeframes((tone * 0.35 * 32767).astype("<i2").tobytes())
 
 
-def post_state(state, **kw):
-    print(f"display -> {state}{' (' + kw['who'] + ')' if kw.get('who') else ''}", flush=True)
+def post_state(state=None, **kw):
+    """POST /state. The log line is the state and the kinds of attachment (card / timer count), never the values."""
+    body = {}
+    if state:
+        body["state"] = state
+    body.update(kw)
+    bits = [str(state)] if state else []
+    if "card" in kw:
+        kind = kw["card"].get("kind") if isinstance(kw.get("card"), dict) else ""
+        bits.append("card " + kind if kind in ("weather", "time", "convert") else "card")
+    if "timers" in kw:
+        n = len(kw["timers"]) if isinstance(kw.get("timers"), list) else 0
+        bits.append(f"timers {n}")
+    who = kw.get("who") if isinstance(kw.get("who"), str) else ""
+    print(f"display -> {' '.join(bits) or 'update'}{(' (' + who + ')') if who else ''}", flush=True)
     try:
-        req = urllib.request.Request(STATE_URL, json.dumps({"state": state, **kw}).encode(), {"Content-Type": "application/json"})
+        req = urllib.request.Request(STATE_URL, json.dumps(body).encode(), {"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=2).read()
     except Exception as e:
         print(f"state post failed: {type(e).__name__}", flush=True)
@@ -723,11 +857,14 @@ class Session:
         SESSION_OPEN.set()
         self.persona = persona if SLUG_RE.match(persona or "") else "grok"
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
+        self.card = None  # last tool card; attached to later state posts until the session ends
         self.ws, self.t1_card = None, None
         CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
 
     def state(self, state, **kw):
+        if getattr(self, "card", None) and "card" not in kw:
+            kw["card"] = self.card
         if self.t1_card and state in ("speaking", "thinking", "listening"):  # keep the read-back card up until decided
             c = self.t1_card
             post_state("confirm", who=c["name"], text=c["text"], heard=f"{c['op']}|{c['list']}|{1 if c['needs_tap'] else 0}")
@@ -876,6 +1013,20 @@ class Session:
                                 pass
                     elif t in ("timer_set", "timer_cancel"):
                         timer_event(ev)
+                    elif t == "card":
+                        card = take_card(ev)
+                        if not card:
+                            print("relay: card ignored", flush=True)
+                        else:
+                            self.card = card
+                            print(f"relay: card {card['kind']}", flush=True)
+                            phase = "speaking" if self.t_first_audio else ("thinking" if self.responding else "listening")
+                            kw = {"heard": self.heard}
+                            if self.reply:
+                                kw["text"] = self.reply
+                            elif phase != "listening":
+                                kw["text"] = "…"
+                            self.state(phase, **kw)
                     elif t == "handoff_done":
                         print("relay: handoff done", flush=True)
                     elif t == "xai_error":

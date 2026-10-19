@@ -3,6 +3,9 @@
 
 POST /show {"text": "...", "from": "Grok", "heard": "..."} with "Authorization: Bearer $GROK_STATION_TOKEN".
 Screens: idle (clock, date, weather), message/session, night clock, weather offline.
+A tool card (weather, time, unit conversion) sits in the session text column and holds 4 s after the
+session ends. Timers are a bottom strip of chips on the idle clock and in sessions; the strip rect
+repaints once a second, and the wake listener pushes the list only when it changes.
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
@@ -229,7 +232,12 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(code, out)
 
     def _state(self):
-        """Localhost-only, no token: the wake listener on the same Pi drives voice states."""
+        """Localhost-only, no token: the wake listener on the same Pi drives voice states.
+
+        A body may be a voice state, a tool card, a timer list, or any mix. Card and timer
+        payloads are validated; a bad attachment is ignored rather than wiping a good one.
+        The log line is the state and the attachment kinds, never the values.
+        """
         if self.client_address[0].removeprefix("::ffff:") not in ("127.0.0.1", "::1"):
             return self._reply(403, {"error": "localhost only"})
         try:
@@ -237,16 +245,20 @@ class Handler(BaseHTTPRequestHandler):
             if n > 8192:
                 return self._reply(413, {"error": "too large"})
             j = json.loads(self.rfile.read(n) or b"{}")
-            state = j.get("state")
-            heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
-            text = str(j.get("text") or "").strip()[:MAX_TEXT]
-            who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
         except Exception:
             return self._reply(400, {"error": "bad json"})
-        if state not in ("idle", *VOICE_HOLDS):
-            return self._reply(400, {"error": "state must be idle, " + ", ".join(VOICE_HOLDS)})
-        pygame.event.post(pygame.event.Event(STATE, state=state, heard=heard, text=text, done=bool(j.get("done")), who=who))
-        print(f"state {state} who={who}", flush=True)
+        try:
+            ev = state_event(j)
+        except ValueError as e:
+            err = str(e)
+            return self._reply(400, {"error": err if err.startswith("state must") else "bad json"})
+        pygame.event.post(pygame.event.Event(STATE, **ev))
+        bits = [ev["state"] or "-"]
+        if ev["has_card"]:
+            bits.append("card" if ev["card"] else "card-ignored")
+        if ev["has_timers"]:
+            bits.append(f"timers {len(ev['timers'])}")
+        print(f"state {' '.join(bits)} who={ev['who']}", flush=True)
         self._reply(200, {"ok": True})
 
     def log_message(self, *a):
@@ -546,6 +558,12 @@ _photo_cache = {}  # (path, mtime, d, k, initial, photo_ok) -> circle-cropped su
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
+LAST_CLOCK_RECT = LAST_DATE_RECT = LAST_WEATHER_RECT = LAST_OFFLINE_RECT = None
+LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_TIMER_RECT = None
+TIMER_CHIPS = []    # validated timers: {id, label, ends_at_epoch, ringing}; the display counts down locally
+TIMER_EPOCH = None  # pin the countdown (render script); None uses time.time()
+_CARD_ICON = ("sun", "partly", "cloud", "fog", "rain", "snow", "storm")
+_CARD_MAX = 640     # bytes of JSON; anything larger is dropped
 
 
 def _circle_photo(name, d, k, photo_ok):
@@ -630,7 +648,394 @@ def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True):
     return digits, colon_rect
 
 
+def tpx(se, frac):
+    """Text size as a fraction of the short edge. Never under 14 px."""
+    return max(14, round(frac * se))
+
+
+def safe_insets(w, h):
+    """(side, top, bottom) safe margins from the short edge. 0.075 / 0.0516 / 0.0657."""
+    se = min(w, h)
+    return round(0.075 * se), round(0.0516 * se), round(0.0657 * se)
+
+
+def _finite(v, lo, hi):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if not math.isfinite(float(v)) or not lo <= float(v) <= hi:
+        return None
+    return int(round(float(v)))
+
+
+def _clip_str(v, n):
+    if not isinstance(v, str):
+        return None
+    s = " ".join(v.split())
+    return s[:n] if s else None
+
+
+def state_event(j):
+    """Validate a POST /state body into STATE-event fields.
+
+    `state` is None for a card-only or timers-only post. `card` is the cleaned card, or None
+    when the post omitted it or the payload was unusable. `has_timers` is false when `timers`
+    is missing or not a list (the previous chips stay); an empty list clears them.
+    Raises ValueError when nothing usable is left.
+    """
+    if not isinstance(j, dict):
+        raise ValueError("bad json")
+    raw_state = j.get("state")
+    has_state = "state" in j and raw_state not in (None, "")
+    if has_state and raw_state not in ("idle", *VOICE_HOLDS):
+        raise ValueError("state must be idle, " + ", ".join(VOICE_HOLDS))
+    has_card = "card" in j
+    card = clean_card(j.get("card")) if has_card else None
+    timers = clean_timers(j.get("timers")) if "timers" in j else None
+    if not has_state and card is None and timers is None:
+        raise ValueError("nothing to apply")
+    heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
+    text = str(j.get("text") or "").strip()[:MAX_TEXT]
+    who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
+    return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
+            "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers}
+
+
+def merge_card(prior, has_card, card, done):
+    """Card to keep on a new voice message.
+
+    A usable card replaces the previous one. A bad payload is ignored (the previous card stays).
+    A finished message that didn't include a card — the timer notice — does not keep one.
+    """
+    if has_card:
+        return card if card else prior
+    if done:
+        return None
+    return prior
+
+
+def clean_card(c):
+    """Allowlisted display fields only. Bad types and unknown icons are dropped; an oversized payload is ignored."""
+    if not isinstance(c, dict):
+        return None
+    if c.get("type") not in (None, "card"):
+        return None
+    try:
+        if len(json.dumps(c)) > _CARD_MAX:
+            return None
+    except (TypeError, ValueError):
+        return None
+    kind = c.get("kind")
+    if kind == "weather":
+        out = {"kind": "weather"}
+        if c.get("icon") in _CARD_ICON:
+            out["icon"] = c["icon"]
+        temp = _finite(c.get("now_temp"), -150, 150)
+        if temp is not None:
+            out["now_temp"] = temp
+        if c.get("units") in ("°F", "°C"):
+            out["units"] = c["units"]
+        cond = _clip_str(c.get("conditions"), 32)
+        if cond:
+            out["conditions"] = cond
+        for name in ("today", "tomorrow"):
+            hl = c.get(name)
+            if not isinstance(hl, dict):
+                continue
+            hi, lo = _finite(hl.get("high"), -150, 150), _finite(hl.get("low"), -150, 150)
+            if hi is not None and lo is not None:
+                out[name] = {"high": hi, "low": lo}
+        return out if len(out) > 1 else None
+    if kind == "time":
+        out = {"kind": "time"}
+        for key, n in (("zone_label", 24), ("hhmm", 16), ("day", 4), ("offset", 12)):
+            s = _clip_str(c.get(key), n)
+            if s:
+                out[key] = s
+        return out if "hhmm" in out else None
+    if kind == "convert":
+        out = {"kind": "convert"}
+        for key, n in (("value", 16), ("from_unit", 12), ("result", 16), ("to_unit", 12)):
+            s = _clip_str(c.get(key), n)
+            if s:
+                out[key] = s
+        return out if {"value", "from_unit", "result", "to_unit"} <= out.keys() else None
+    return None
+
+
+def clean_timers(items):
+    """None if `items` isn't a list (caller keeps the previous set). Otherwise the valid chips, possibly empty."""
+    if not isinstance(items, list):
+        return None
+    out, seen = [], set()
+    for t in items[:10]:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id", ""))
+        if not re.fullmatch(r"[a-z0-9]{4,12}", tid) or tid in seen:
+            continue
+        ends = t.get("ends_at_epoch")
+        if isinstance(ends, bool) or not isinstance(ends, (int, float)) or not math.isfinite(float(ends)):
+            continue
+        if not 1_000_000_000 <= float(ends) <= 20_000_000_000:
+            continue
+        label = " ".join(re.sub(r"[^\w '\-]", " ", str(t.get("label") or "")).split())[:24] or "timer"
+        out.append({"id": tid, "label": label, "ends_at_epoch": float(ends), "ringing": bool(t.get("ringing"))})
+        seen.add(tid)
+    return out
+
+
+def fmt_remaining(sec):
+    """mm:ss, or h:mm:ss once an hour is left. Counts down; never negative."""
+    sec = max(0, int(sec))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def _epoch(epoch):
+    if epoch is not None:
+        return epoch
+    return time.time() if TIMER_EPOCH is None else TIMER_EPOCH
+
+
+def timer_strip_height(se):
+    px = tpx(se, 0.0328)
+    return font("body", px).get_height() + 2 * max(4, round(0.006 * se))
+
+
+def timer_strip_rect(L):
+    """Bottom band inside the safe area. Full safe width so a once-a-second redraw never shifts the rect."""
+    side, top, bot = safe_insets(L.w, L.h)
+    sh = timer_strip_height(min(L.w, L.h))
+    y = max(top, L.h - bot - sh)
+    return pygame.Rect(side, y, max(1, L.w - 2 * side), sh)
+
+
+def content_limit(L):
+    """Lowest y session text or a card may use: above the timer strip when one is showing."""
+    _side, _top, bot = safe_insets(L.w, L.h)
+    gap = max(6, round(0.008 * min(L.w, L.h)))
+    if TIMER_CHIPS:
+        return timer_strip_rect(L).top - gap
+    return L.h - max(L(96), bot)
+
+
+def draw_timer_chips(surf, rect, timers, epoch):
+    se = min(surf.get_width(), surf.get_height())
+    px = tpx(se, 0.0328)
+    fl, fn = font("body", px), font("mono", px)
+    pad_x = max(8, round(0.012 * se))
+    gap = max(6, round(0.008 * se))
+    inner = max(6, round(0.008 * se))
+    ordered = sorted(timers, key=lambda t: (not t.get("ringing"), t.get("ends_at_epoch", 0)))[:10]
+    shown, extra = ordered[:4], max(0, len(ordered) - 4)
+
+    def right_of(t):
+        if t.get("ringing"):
+            return "Done"
+        return fmt_remaining(t.get("ends_at_epoch", epoch) - epoch)
+
+    labels = [t.get("label") or "timer" for t in shown]
+    times = [right_of(t) for t in shown]
+    plus = f"+{extra}" if extra else ""
+
+    def chip_w(lab, tim):
+        return pad_x + fl.size(lab)[0] + inner + fn.size(tim)[0] + pad_x
+
+    def total(labs):
+        w = sum(chip_w(a, b) for a, b in zip(labs, times))
+        n = len(labs) + (1 if plus else 0)
+        if plus:
+            w += pad_x + fl.size(plus)[0] + pad_x
+        return w + gap * max(0, n - 1)
+
+    for _ in range(48):
+        if not labels or total(labels) <= rect.w:
+            break
+        i = max(range(len(labels)), key=lambda k: fl.size(labels[k])[0])
+        base = labels[i].rstrip("…").rstrip()
+        if len(base) <= 1:
+            labels[i] = base[:1] or "…"
+            break
+        labels[i] = base[:-1] + "…"
+    widths = [chip_w(a, b) for a, b in zip(labels, times)]
+    plus_w = pad_x + fl.size(plus)[0] + pad_x if plus else 0
+    if plus:
+        widths.append(plus_w)
+    row = sum(widths) + gap * max(0, len(widths) - 1)
+    x = rect.x + max(0, (rect.w - row) // 2)
+    phase = int(epoch) % 2 == 0
+    prev = surf.get_clip()
+    surf.set_clip(rect)
+    amber_bg = hexc("33270F")
+    for i, (t, lab, tim) in enumerate(zip(shown, labels, times)):
+        w = widths[i]
+        box = pygame.Rect(x, rect.y, w, rect.h)
+        rad = min(box.w, box.h) // 2
+        if t.get("ringing"):
+            bg = AMBER if phase else amber_bg
+            fg = BG if phase else AMBER
+            lc = BG if phase else SPEAKING
+        else:
+            bg, fg, lc = SURFACE2, TEXT, MUTED
+        pygame.draw.rect(surf, bg, box, border_radius=rad)
+        if t.get("ringing"):
+            pygame.draw.rect(surf, AMBER, box, max(2, round(0.002 * se)), border_radius=rad)
+        li, ni = fl.render(lab, True, lc), fn.render(tim, True, fg)
+        surf.blit(li, (x + pad_x, rect.y + (rect.h - li.get_height()) // 2))
+        surf.blit(ni, (x + w - pad_x - ni.get_width(), rect.y + (rect.h - ni.get_height()) // 2))
+        x += w + gap
+    if plus:
+        box = pygame.Rect(x, rect.y, plus_w, rect.h)
+        pygame.draw.rect(surf, SURFACE2, box, border_radius=min(box.w, box.h) // 2)
+        pi = fl.render(plus, True, MUTED)
+        surf.blit(pi, (x + (plus_w - pi.get_width()) // 2, rect.y + (rect.h - pi.get_height()) // 2))
+    surf.set_clip(prev)
+
+
+def draw_timer_strip(surf, L, epoch=None):
+    """Pill chips along the bottom safe edge. No-op (and clears LAST_TIMER_RECT) when nothing is running."""
+    global LAST_TIMER_RECT
+    if not TIMER_CHIPS:
+        LAST_TIMER_RECT = None
+        return None
+    rect = timer_strip_rect(L)
+    surf.fill(BG, rect)
+    draw_timer_chips(surf, rect, TIMER_CHIPS, _epoch(epoch))
+    LAST_TIMER_RECT = rect
+    return rect
+
+
+def repaint_timer_strip(disp, epoch=None):
+    """Redraw only the strip and flush that rectangle. Called once a second while any timer is up."""
+    rect = LAST_TIMER_RECT
+    if not rect or not TIMER_CHIPS:
+        return
+    disp.screen.fill(BG, rect)
+    draw_timer_chips(disp.screen, rect, TIMER_CHIPS, _epoch(epoch))
+    disp.flush_rect(rect)
+
+
+def card_icon(kind, px):
+    mapped = "clear" if kind == "sun" else kind
+    if mapped not in ("clear", "partly", "cloud", "fog", "rain", "snow", "storm"):
+        return None
+    return weather_icon(mapped, True, max(8, px), max(2, px // 12))
+
+
+def _card_lines(card):
+    if card["kind"] == "time":
+        lines = [("muted", card["zone_label"])] if card.get("zone_label") else []
+        lines.append(("hero", card.get("hhmm", "")))
+        meta = "  ·  ".join(p for p in (card.get("day"), card.get("offset")) if p)
+        if meta:
+            lines.append(("muted", meta))
+        return lines
+    if card["kind"] == "convert":
+        return [("muted", f"{card['value']} {card['from_unit']}"), ("hero", f"= {card['result']} {card['to_unit']}")]
+    lines = []
+    if "now_temp" in card:
+        lines.append(("hero", f"{card['now_temp']}{card.get('units', '')}"))
+    if card.get("conditions"):
+        lines.append(("sub", card["conditions"]))
+    for key, title in (("today", "Today"), ("tomorrow", "Tomorrow")):
+        hl = card.get(key)
+        if hl:
+            lines.append(("muted", f"{title}  {hl['high']}° / {hl['low']}°"))
+    return lines
+
+
+def _role_font(role, hero, sub):
+    if role == "hero":
+        return "display", hero
+    return "body", sub
+
+
+def draw_card(surf, card, x, y, max_w, max_h):
+    """Surface-2 panel. Weather puts the icon beside the text, or above it when the row doesn't fit. Returns the rect."""
+    if not card or max_w < 48 or max_h < 28:
+        return None
+    se = min(surf.get_width(), surf.get_height())
+    pad = max(8, round(0.016 * se))
+    gap = max(4, round(0.008 * se))
+    hero, sub = tpx(se, 0.0627), tpx(se, 0.0328)
+    icon_px = max(sub, round(0.07 * se)) if card["kind"] == "weather" and card.get("icon") else 0
+    lines = _card_lines(card)
+    if not lines and not icon_px:
+        return None
+    panel_w = min(max_w, max(48, round(0.72 * se)))
+
+    def text_h(hero, sub):
+        h = 0
+        for i, (role, _text) in enumerate(lines):
+            kind, px = _role_font(role, hero, sub)
+            h += font(kind, px).get_height()
+            if i:
+                h += gap
+        return h
+
+    def text_w(hero, sub):
+        w = 0
+        for role, text in lines:
+            kind, px = _role_font(role, hero, sub)
+            w = max(w, font(kind, px).size(text)[0])
+        return w
+
+    for _ in range(6):
+        th, tw = text_h(hero, sub), text_w(hero, sub)
+        beside = bool(icon_px) and icon_px + gap + tw <= panel_w - 2 * pad
+        inner = max(icon_px, th) if beside else ((icon_px + gap) if icon_px else 0) + th
+        if inner + 2 * pad <= max_h or (hero <= 14 and sub <= 14):
+            break
+        if hero > 14:
+            hero = max(14, int(hero * 0.85))
+        if sub > 14:
+            sub = max(14, int(sub * 0.85))
+        if icon_px > sub:
+            icon_px = max(sub, int(icon_px * 0.85))
+    th, tw = text_h(hero, sub), text_w(hero, sub)
+    inner_w = panel_w - 2 * pad
+    beside = bool(icon_px) and icon_px + gap + min(tw, inner_w) <= inner_w
+    inner = max(icon_px, th) if beside else ((icon_px + gap) if icon_px else 0) + th
+    rect = pygame.Rect(x, y, panel_w, min(max_h, max(sub + 2 * pad, inner + 2 * pad)))
+    rect.clamp_ip(surf.get_rect())
+    rad = min(max(6, round(0.019 * se)), rect.w // 2, rect.h // 2)
+    pygame.draw.rect(surf, SURFACE2, rect, border_radius=rad)
+    prev = surf.get_clip()
+    surf.set_clip(rect)
+    col_w = inner_w - (icon_px + gap if beside else 0)
+    if beside:
+        ic = card_icon(card["icon"], icon_px)
+        if ic:
+            surf.blit(ic, (rect.left + pad, rect.top + (rect.h - icon_px) // 2))
+        tx = rect.left + pad + icon_px + gap
+        ty = rect.top + max(pad, (rect.h - th) // 2)
+        anchor = "left"
+    else:
+        ty = rect.top + pad
+        if icon_px:
+            ic = card_icon(card["icon"], icon_px)
+            if ic:
+                surf.blit(ic, (rect.centerx - icon_px // 2, ty))
+            ty += icon_px + gap
+        tx = rect.centerx
+        anchor = "center"
+    for role, text in lines:
+        kind, px = _role_font(role, hero, sub)
+        f = font(kind, px)
+        shown = text if f.size(text)[0] <= col_w else ellipsize(f, text, col_w)
+        img = f.render(shown, True, TEXT if role in ("hero", "sub") else MUTED)
+        surf.blit(img, (tx if anchor == "left" else tx - img.get_width() // 2, ty))
+        ty += img.get_height() + gap
+    surf.set_clip(prev)
+    return rect
+
+
 def draw_idle(surf, L, now, wx, colon_on=True):
+    global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+    global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT
+    LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
+    LAST_WEATHER_RECT = LAST_OFFLINE_RECT = LAST_DATE_RECT = LAST_CLOCK_RECT = None
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
@@ -638,20 +1043,25 @@ def draw_idle(surf, L, now, wx, colon_on=True):
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
     x = L.m - L(8)
     digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base, colon_on)
-    baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base)
+    ampm_r = baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base)
+    LAST_CLOCK_RECT = digits.union(ampm_r)
     date = time.strftime("%A, %B %-d", now)
     dimg = font("body", L(60)).render(date, True, TEXT)
     dbr = dimg.get_bounding_rect()
     bx = int(round(digits.x + digits.w / 2.0 - (dbr.x + dbr.w / 2.0)))
-    surf.blit(dimg, (bx, base + L(40)))
+    date_y = base + L(40)
+    surf.blit(dimg, (bx, date_y))
+    LAST_DATE_RECT = pygame.Rect(bx, date_y, dimg.get_width(), dimg.get_height())
     if wx.offline():
         draw_offline_badge(surf, L, base)
     elif wx.data:
         draw_weather(surf, L, wx.data, base)
     draw_next_up(surf, L, now)
+    draw_timer_strip(surf, L)
 
 
 def draw_weather(surf, L, d, clock_base):
+    global LAST_WEATHER_RECT
     right = L.w - L.m
     label, kind = WMO.get(d["code"], ("", "cloud"))
     temp_px = L(180)
@@ -659,21 +1069,28 @@ def draw_weather(surf, L, d, clock_base):
     r = baseline_text(surf, "display", temp_px, f"{d['temp']}°", TEXT, right, tb, align="right")
     icon_px = L(150)
     icon = weather_icon(kind, d["day"], icon_px, max(2, L(7)))
-    surf.blit(icon, (r.left - icon_px - L(12), tb - L(140)))
+    icon_at = (r.left - icon_px - L(12), tb - L(140))
+    surf.blit(icon, icon_at)
+    marks = [r, pygame.Rect(icon_at, (icon_px, icon_px))]
     y = tb + L(36)
     if label:
-        y = text_at(surf, "body", L(56), label, TEXT, (right, y), "topright").bottom + L(4)
-    text_at(surf, "body", L(48), f"High {d['hi']}°  ·  Low {d['lo']}°", MUTED, (right, y), "topright")
+        lr = text_at(surf, "body", L(56), label, TEXT, (right, y), "topright")
+        marks.append(lr)
+        y = lr.bottom + L(4)
+    marks.append(text_at(surf, "body", L(48), f"High {d['hi']}°  ·  Low {d['lo']}°", MUTED, (right, y), "topright"))
+    LAST_WEATHER_RECT = marks[0].unionall(marks[1:])
 
 
 def draw_offline_badge(surf, L, clock_base):
+    global LAST_OFFLINE_RECT
     right = L.w - L.m
     well = L(150)
     rect = pygame.Rect(right - well, clock_base - L(250), well, well)
     pygame.draw.rect(surf, SURFACE2, rect, border_radius=L(28))
     ic = offline_icon(L(104), max(2, L(7)))
     surf.blit(ic, ic.get_rect(center=rect.center))
-    text_at(surf, "body", L(44), "Weather offline", MUTED, (right, rect.bottom + L(20)), "topright")
+    tr = text_at(surf, "body", L(44), "Weather offline", MUTED, (right, rect.bottom + L(20)), "topright")
+    LAST_OFFLINE_RECT = rect.union(tr)
 
 
 def draw_next_up(surf, L, now):
@@ -682,6 +1099,8 @@ def draw_next_up(surf, L, now):
 
 
 def draw_night(surf, L, now, colon_on=True):
+    global LAST_TIMER_RECT
+    LAST_TIMER_RECT = None  # the dim clock doesn't carry the timer strip
     surf.fill(BLACK)
     hhmm, ampm = clock_parts(now)
     f, fm = font("night", L(340)), font("night", L(90))
@@ -695,9 +1114,11 @@ def draw_night(surf, L, now, colon_on=True):
 
 
 def draw_topbar_clock(surf, L, now):
+    global LAST_TOPBAR_RECT
     hhmm, ampm = clock_parts(now)
     y = L(34) + L(72) // 2
     r = text_at(surf, "display", L(56), f"{hhmm} {ampm}", TEXT, (L.w - L.m, y), "midright")
+    LAST_TOPBAR_RECT = r
     return r
 
 
@@ -888,11 +1309,63 @@ def draw_confirm(surf, L, now, msg):
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
+def _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, photo_top, d, card, stack):
+    """Name, heard quote, reply and (when present) the tool card. Returns the y under the block."""
+    global LAST_CARD_RECT
+    fn = font("display", L(120))
+    name = who if fn.size(who)[0] <= width else ellipsize(fn, who, width)
+    name_h = int(fn.get_ascent() * 0.98)
+    heard_part = fit_text("italic", f"“{heard}”", width, L(130), L(48), L(40), lh=1.02, max_lines=2) if heard else None
+    heard_h = heard_part[2] * len(heard_part[1]) + L(28) if heard else 0
+    if not card:
+        avail = bottom - top_min - name_h - L(20) - heard_h
+        f, lines, step = fit_text("body", text, width, avail, L(76), L(40), lh=1.06)
+        block = name_h + L(20) + heard_h + step * len(lines)
+        y = top_min if stack else max(top_min, min(photo_top + d // 2 - block // 2, bottom - block))
+        baseline_text(surf, "display", L(120), name, TEXT, x - L(4), y + int(fn.get_ascent() * 0.78))
+        y += name_h + L(20)
+        if heard_part:
+            y = draw_lines(surf, *heard_part, MUTED, x, y) + L(28)
+        draw_lines(surf, f, lines, step, TEXT, x, y)
+        LAST_CARD_RECT = None
+        return y + step * len(lines)
+    se = min(L.w, L.h)
+    card_gap = L(16)
+    room = bottom - top_min - name_h - L(20) - heard_h - card_gap
+    pref = min(max(0, room), max(tpx(se, 0.16), round(0.22 * se)))
+    avail = room - pref
+    if avail < L(40):
+        f, lines, step = font("body", L(40)), [], L(40)
+        pref = max(0, room)
+    else:
+        f, lines, step = fit_text("body", text, width, avail, L(76), L(40), lh=1.06)
+    block = name_h + L(20) + heard_h + step * len(lines) + card_gap + pref
+    y = top_min if stack else max(top_min, min(photo_top + d // 2 - block // 2, bottom - block))
+    if stack:
+        img = fn.render(name, True, TEXT)
+        surf.blit(img, (x + (width - img.get_width()) // 2, y))
+    else:
+        baseline_text(surf, "display", L(120), name, TEXT, x - L(4), y + int(fn.get_ascent() * 0.78))
+    y += name_h + L(20)
+    if heard_part:
+        y = draw_lines(surf, *heard_part, MUTED, x, y, "center" if stack else "left", width if stack else 0) + L(28)
+    if lines:
+        y = draw_lines(surf, f, lines, step, TEXT, x, y, "center" if stack else "left", width if stack else 0)
+        y += card_gap
+    LAST_CARD_RECT = draw_card(surf, card, x, y, width, max(0, bottom - y))
+    return (LAST_CARD_RECT.bottom if LAST_CARD_RECT else y)
+
+
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
-    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_CARD_RECT, LAST_TOPBAR_RECT
+    global LAST_CLOCK_RECT, LAST_DATE_RECT, LAST_WEATHER_RECT, LAST_OFFLINE_RECT
+    LAST_CARD_RECT = LAST_TOPBAR_RECT = None
+    LAST_CLOCK_RECT = LAST_DATE_RECT = LAST_WEATHER_RECT = LAST_OFFLINE_RECT = None
     state = msg.get("state", state)
     if state == "enroll":
-        return draw_enroll(surf, L, now, msg, t)
+        draw_enroll(surf, L, now, msg, t)
+        draw_timer_strip(surf, L)
+        return
     if state == "confirm":
         return draw_confirm(surf, L, now, msg)
     surf.fill(BG)
@@ -900,54 +1373,73 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
         pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
     draw_topbar_clock(surf, L, now)
     who, heard, text = msg.get("from", ""), msg.get("heard", ""), msg["text"]
+    card = clean_card(msg.get("card")) if isinstance(msg.get("card"), dict) else None
     top_row = L(34) + L(72)
     if not who:
         LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
         # plain {text}: big centered message, heard (if any) above it
         width = L.w - 2 * L.m
         y0, y1 = top_row + L(60), L.h - L(110)
+        if card or TIMER_CHIPS:
+            y1 = min(y1, content_limit(L))
         if heard:
             fh, lh, sh = fit_text("italic", f"“{heard}”", width, L(140), L(48), L(40), max_lines=2)
             draw_lines(surf, fh, lh, sh, MUTED, L.m, y0, "center", width)
             y0 += sh * len(lh) + L(40)
-        f, lines, step = fit_text("display", text, width, y1 - y0, L(180), L(48), lh=1.0)
-        y = y0 + max(0, (y1 - y0 - step * len(lines)) // 2)
-        draw_lines(surf, f, lines, step, TEXT, L.m, y, "center", width)
+        reserve = 0 if not card else min(max(0, y1 - y0), round(0.28 * min(L.w, L.h)))
+        text_h = max(0, y1 - y0 - reserve - (L(12) if card else 0))
+        f, lines, step = fit_text("display", text, width, text_h or 1, L(180), L(48), lh=1.0)
+        if card and text_h < L(48):
+            lines = []
+        block_h = step * len(lines) + (L(12) + reserve if card and lines else 0)
+        y = y0 + max(0, (y1 - y0 - (block_h or step)) // 2) if not card else y0
+        if lines:
+            draw_lines(surf, f, lines, step, TEXT, L.m, y, "center", width)
+            y += step * len(lines) + (L(12) if card else 0)
+        if card:
+            LAST_CARD_RECT = draw_card(surf, card, L.m, y, width, max(0, y1 - y))
+        draw_timer_strip(surf, L)
         return
     d, ring_w = L(500), max(4, L(14))
-    left = L(160)
-    x = left + d + L(140)
-    width = L.w - L.m - x
+    se = min(L.w, L.h)
+    gap_col = L(140)
+    side, _top, _bot = safe_insets(L.w, L.h)
+    safe_w = L.w - 2 * side
+    # sized by the short edge; wrap under the avatar only when that row is wider than the safe area (4:3)
+    stack = bool(card) and d + gap_col + min(round(0.8 * se), safe_w) > safe_w
+    if stack:
+        width = min(round(0.8 * se), safe_w)
+        left = (L.w - d) // 2
+        x = (L.w - width) // 2
+        photo_top = top_row + L(8)
+    else:
+        left = L(160)
+        x = left + d + gap_col
+        width = L.w - L.m - x
+        photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
     bottom = L.h - L(96)
-    photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
+    if card or TIMER_CHIPS:
+        bottom = min(bottom, content_limit(L))
     img, pad = portrait(who, d, ring_w, state, t, photo_ok=bool(msg.get("voice")))
     origin = (left - pad, photo_top - pad)
     surf.blit(img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, bool(msg.get("voice")))
+    label_bottom = photo_top + d
+    label_y = photo_top + d + L(150)
+    if TIMER_CHIPS:  # keep the state label above the strip; unchanged when no timer is up
+        label_y = min(label_y, max(photo_top + d + L(16), content_limit(L) - L(36)))
     if state == "listening":
-        lr = text_at(surf, "display", L(64), "Listening", LISTENING, (left + d // 2 + L(40), photo_top + d + L(150)), "center")
+        lr = text_at(surf, "display", L(64), "Listening", LISTENING, (left + d // 2 + L(40), label_y), "center")
         for i, hh in enumerate((0.45, 0.8, 1.0, 0.65, 0.35)):  # small static waveform glyph
             bh = int(L(56) * hh)
             pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
+        label_bottom = lr.bottom
     elif state == "thinking":
-        text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, photo_top + d + L(150)), "center")
-    # measure the right column first so it can sit centered on the photo
-    fn = font("display", L(120))
-    name = who if fn.size(who)[0] <= width else ellipsize(fn, who, width)
-    name_h = int(fn.get_ascent() * 0.98)
-    heard_part = fit_text("italic", f"“{heard}”", width, L(130), L(48), L(40), lh=1.02, max_lines=2) if heard else None
-    heard_h = heard_part[2] * len(heard_part[1]) + L(28) if heard else 0
-    top_min = top_row + L(40)
-    avail = bottom - top_min - name_h - L(20) - heard_h
-    f, lines, step = fit_text("body", text, width, avail, L(76), L(40), lh=1.06)
-    block = name_h + L(20) + heard_h + step * len(lines)
-    y = max(top_min, min(photo_top + d // 2 - block // 2, bottom - block))
-    baseline_text(surf, "display", L(120), name, TEXT, x - L(4), y + int(fn.get_ascent() * 0.78))
-    y += name_h + L(20)
-    if heard_part:
-        y = draw_lines(surf, *heard_part, MUTED, x, y) + L(28)
-    draw_lines(surf, f, lines, step, TEXT, x, y)
+        label_bottom = text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, label_y), "center").bottom
+    top_min = max(top_row + L(40), label_bottom + L(12)) if stack else top_row + L(40)
+    _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, photo_top, d, card, stack)
+    draw_timer_strip(surf, L)
 
 
 # ---------------------------------------------------------------- setup needed / password reset / hotspot (admin page)
@@ -1244,12 +1736,15 @@ class Display:
 
 
 def main():
+    global LAST_TIMER_RECT
     pygame.display.init()  # dummy driver: needed for the event queue only
     pygame.font.init()
     disp = Display()
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
     msg, until, last_key, anim_started = None, 0.0, None, None
+    card_hold = False   # the 4 s notice hold after a session that showed a card has started
+    strip_at = 0.0      # last time the timer strip was painted; ticks are at least 0.9 s apart
 
     def thinking():  # any animated ring (thinking spin, listening pulse, enrollment fill/pulse until it finishes)
         a = anim_of(msg)
@@ -1265,11 +1760,13 @@ def main():
     setup = {"doc": None, "checked": 0.0}
 
     def paint(fade=False, snapshot=True):
-        nonlocal last_key
+        nonlocal last_key, strip_at
+        global LAST_TIMER_RECT
         now = time.localtime()
         on = colon_blink_on()
         sd = setup["doc"]
         if sd:  # until setup is done this is the idle screen and the screen on wake (voice is off)
+            LAST_TIMER_RECT = None
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
@@ -1291,6 +1788,8 @@ def main():
             disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
             key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data))
         last_key = key
+        if TIMER_CHIPS and key[0] != "night":
+            strip_at = time.time()
 
     spin_frames = {}  # (args, frame) -> opaque screen-format portrait; one revolution is rendered once, then reused
 
@@ -1325,6 +1824,26 @@ def main():
             disp.screen.blit(*LAST_COLON_GLYPH)
         disp.flush_rect(LAST_COLON_RECT)
 
+    def maybe_strip():
+        """Countdown tick: redraw the timer strip only, and not on the night clock."""
+        nonlocal strip_at
+        if not TIMER_CHIPS or setup["doc"] or (last_key and last_key[0] == "night"):
+            return
+        now = time.time()
+        if now - strip_at < 0.9:
+            return
+        strip_at = now
+        if not LAST_TIMER_RECT:
+            paint(snapshot=False)
+        else:
+            repaint_timer_strip(disp)
+
+    def apply_chips(ev):
+        if getattr(ev, "has_timers", False) and ev.timers is not None:
+            TIMER_CHIPS[:] = [dict(t) for t in ev.timers]
+            return True
+        return False
+
     paint()
     threading.Thread(target=wx.loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
@@ -1348,7 +1867,7 @@ def main():
             setup["checked"] = time.time()
             sd = read_setup()
             if sd != setup["doc"]:
-                setup["doc"], msg, anim_started = sd, None, None
+                setup["doc"], msg, anim_started, card_hold = sd, None, None, False
                 paint(fade=True)
                 print(f"setup screen: {sd['mode'] if sd else 'off'}", flush=True)
             cd = read_cert()
@@ -1358,13 +1877,23 @@ def main():
                 print(f"cert screen: {'on' if cd else 'off'}", flush=True)
         if setup["doc"] or setup.get("cert"):
             wait = min(wait, 2.0)
+        if TIMER_CHIPS and not setup["doc"] and not (last_key and last_key[0] == "night"):
+            delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss and the ringing pulse step together
+            if delay < 0.05:
+                delay += 1.0
+            wait = min(wait, delay)
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW):
             continue  # nothing else is shown until setup is done
         if ev.type == STATE:
+            chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
                 new = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
+                kept = merge_card(msg.get("card") if msg else None, getattr(ev, "has_card", False), getattr(ev, "card", None), bool(ev.done))
+                if kept:
+                    new["card"] = kept
+                card_hold = False  # a new voice state restarts the hold; the extra 4 s starts when it ends
                 if anim_of(new):
                     if (not anim_started or not msg or msg.get("state") != ev.state
                             or (ev.state == "enroll" and msg.get("heard") != ev.heard)):
@@ -1374,11 +1903,28 @@ def main():
                 msg = new
                 until = time.time() + hold
                 paint()
-            elif msg and msg.get("voice"):
-                until, anim_started = 0, None
+            elif ev.state == "idle":
+                # session end: one 4 s notice hold while a card is up, then the idle clock
+                if msg and msg.get("card") and not card_hold:
+                    card_hold = True
+                    until = time.time() + VOICE_HOLDS["notice"]
+                    paint()
+                elif msg and msg.get("voice"):
+                    until, anim_started = 0, None
+                elif chips_changed and not (last_key and last_key[0] == "night"):
+                    paint(snapshot=False)
+            elif chips_changed or (getattr(ev, "has_card", False) and getattr(ev, "card", None) and msg):
+                if getattr(ev, "card", None) and msg:
+                    msg["card"] = ev.card
+                    card_hold = False
+                if msg or chips_changed:
+                    if last_key and last_key[0] == "night" and not msg:
+                        pass  # chips are stored and drawn the next time the idle clock is painted
+                    else:
+                        paint(snapshot=not msg)
             continue
         if ev.type == SHOW:
-            msg, until, anim_started = ev.msg, time.time() + HOLD, None
+            msg, until, anim_started, card_hold = ev.msg, time.time() + HOLD, None, False
             paint()
             print("rendered", flush=True)
         elif ev.type == WEATHER:
@@ -1388,15 +1934,23 @@ def main():
             break
         elif ev.type == pygame.NOEVENT:
             if msg and time.time() >= until:
-                msg, anim_started = None, None
-                paint(fade=True)
-                print("back to idle", flush=True)
+                if msg.get("card") and not card_hold:
+                    card_hold = True
+                    until = time.time() + VOICE_HOLDS["notice"]
+                else:
+                    msg, anim_started, card_hold = None, None, False
+                    paint(fade=True)
+                    print("back to idle", flush=True)
             elif thinking():
                 spin_portrait()  # no full-screen repaint, no snapshot
+                maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:
                 paint(snapshot=False)
             elif not msg and E("GROK_STATION_BLINK", "0") != "0":
                 blink_colon()
+                maybe_strip()
+            else:
+                maybe_strip()
 
 
 def demo(out, size):

@@ -825,7 +825,8 @@ async def session(req):
                             continue
                         if ev.get("name") in station_tools.NAMES:  # station tools (T0-equivalent; see tools.py)
                             out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], time.time())
-                            if to_pi:
+                            # card or timer message; a failed tool sends nothing. Log the name and verdict only.
+                            if out.get("ok") and isinstance(to_pi, dict) and to_pi.get("type") in ("card", "timer_set", "timer_cancel"):
                                 await pi.send_json(to_pi)
                             log(f"tool {ev['name']} ok={out.get('ok')}")  # name and verdict only
                             await up.send_json({"type": "conversation.item.create", "item": {

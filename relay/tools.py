@@ -4,6 +4,10 @@ Nothing here sends, posts, buys, books or changes anything outside the station, 
   get_weather    Open-Meteo (no key) for the configured location WEATHER_LAT/WEATHER_LON (WEATHER_PLACE names it)
   convert_units  length, weight, volume (incl. cooking), temperature, speed, area
   set_timer / list_timers / cancel_timer   the station rings; the relay only passes the request along
+
+run() returns (tool output, message for the Pi). A successful time, weather or unit lookup also sends a small
+display card ({"type":"card",...}); timers still send timer_set / timer_cancel. A failed tool sends nothing.
+The weather card has no place name and no coordinates — those stay in the tool output for the spoken answer only.
 """
 import datetime, json, os, re, secrets, urllib.parse
 from zoneinfo import ZoneInfo, available_timezones
@@ -19,6 +23,19 @@ WMO = {0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy", 45: "fogg
        65: "heavy rain", 66: "freezing rain", 67: "freezing rain", 71: "light snow", 73: "snow", 75: "heavy snow",
        77: "snow grains", 80: "rain showers", 81: "rain showers", 82: "heavy rain showers", 85: "snow showers",
        86: "heavy snow showers", 95: "thunderstorms", 96: "thunderstorms with hail", 99: "thunderstorms with hail"}
+# Display icon for a WMO code. One of sun|partly|cloud|fog|rain|snow|storm; unknown codes fall back to cloud.
+_ICON = {0: "sun", 1: "partly", 2: "partly", 3: "cloud", 45: "fog", 48: "fog",
+         51: "rain", 53: "rain", 55: "rain", 56: "rain", 57: "rain", 61: "rain", 63: "rain", 65: "rain", 66: "rain", 67: "rain",
+         80: "rain", 81: "rain", 82: "rain", 71: "snow", 73: "snow", 75: "snow", 77: "snow", 85: "snow", 86: "snow",
+         95: "storm", 96: "storm", 99: "storm"}
+_DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def wmo_icon(code):
+    try:
+        return _ICON.get(int(code), "cloud")
+    except (TypeError, ValueError):
+        return "cloud"
 
 
 def _fn(name, desc, props=None, req=()):
@@ -44,16 +61,47 @@ SPECS = [
 NAMES = {s["name"] for s in SPECS}
 
 # ---------------------------------------------------------------- time
-def get_time(args, now=None):
+def _zone_label(zone):
+    """City part of an IANA name: Europe/London -> London, America/New_York -> New York."""
+    return (zone.split("/")[-1].replace("_", " ") or zone)[:24]
+
+
+def _hhmm(t):
+    h = t.hour % 12 or 12
+    return f"{h}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+
+
+def _offset_vs_local(t):
+    """How far `t`'s zone is from the station zone, e.g. '+6 h' or '+5:30 h'."""
+    try:
+        local_off = t.astimezone(ZoneInfo(TZ)).utcoffset()
+    except Exception:
+        local_off = t.utcoffset()
+    delta = (t.utcoffset() or datetime.timedelta(0)) - (local_off or datetime.timedelta(0))
+    mins = int(round(delta.total_seconds() / 60.0))
+    sign = "+" if mins >= 0 else "-"
+    h, m = divmod(abs(mins), 60)
+    return f"{sign}{h} h" if m == 0 else f"{sign}{h}:{m:02d} h"
+
+
+def time_result(args, now=None):
+    """(tool output, time card or None). The card is display fields only."""
     tz = str(args.get("timezone") or "").strip()
     zone = TZ
     if tz:
         if tz not in available_timezones():
-            return {"ok": False, "error": "Unknown time zone; use an IANA name like Europe/Paris."}
+            return {"ok": False, "error": "Unknown time zone; use an IANA name like Europe/Paris."}, None
         zone = tz
     t = now.astimezone(ZoneInfo(zone)) if now else datetime.datetime.now(ZoneInfo(zone))
-    return {"ok": True, "timezone": zone, "date": t.strftime("%A, %B %-d, %Y"), "time": t.strftime("%-I:%M %p"),
-            "iso": t.isoformat(timespec="minutes")}
+    out = {"ok": True, "timezone": zone, "date": t.strftime("%A, %B %-d, %Y"), "time": t.strftime("%-I:%M %p"),
+           "iso": t.isoformat(timespec="minutes")}
+    card = {"type": "card", "kind": "time", "zone_label": _zone_label(zone), "hhmm": _hhmm(t),
+            "day": _DAYS[t.weekday()], "offset": _offset_vs_local(t)}
+    return out, card
+
+
+def get_time(args, now=None):
+    return time_result(args, now)[0]
 
 
 # ---------------------------------------------------------------- weather
@@ -83,18 +131,61 @@ def weather_summary(j, day="now"):
     return out
 
 
-async def get_weather(args, http):
+def _round_temp(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return int(round(v))
+
+
+def weather_card(j):
+    """Display card for a forecast. Numbers and short strings only — no place name and no coordinates."""
+    if not isinstance(j, dict):
+        return None
+    c, d = j.get("current") or {}, j.get("daily") or {}
+    if not isinstance(c, dict):
+        c = {}
+    if not isinstance(d, dict):
+        d = {}
+    code = c.get("weather_code")
+    card = {"type": "card", "kind": "weather", "icon": wmo_icon(code), "units": "°F" if UNITS == "fahrenheit" else "°C"}
+    now = _round_temp(c.get("temperature_2m"))
+    if now is not None:
+        card["now_temp"] = now
+    cond = WMO.get(code)
+    if cond:
+        card["conditions"] = cond[:32]
+    times = d.get("time") if isinstance(d.get("time"), list) else []
+    highs = d.get("temperature_2m_max") if isinstance(d.get("temperature_2m_max"), list) else []
+    lows = d.get("temperature_2m_min") if isinstance(d.get("temperature_2m_min"), list) else []
+    for i, name in enumerate(("today", "tomorrow")):
+        if i >= len(times):
+            continue
+        hi, lo = _round_temp(highs[i] if i < len(highs) else None), _round_temp(lows[i] if i < len(lows) else None)
+        if hi is not None and lo is not None:
+            card[name] = {"high": hi, "low": lo}
+    if "now_temp" not in card and "today" not in card:
+        return None
+    return card
+
+
+async def _weather(args, http):
+    """(tool output, weather card or None). One fetch feeds both; the card is not filtered by `day`."""
     url = weather_url()
     if not url:
-        return {"ok": False, "error": "No weather location is configured for the station. Say so briefly."}
+        return {"ok": False, "error": "No weather location is configured for the station. Say so briefly."}, None
     try:
         async with http.get(url, timeout=_timeout(6)) as r:
             if r.status != 200:
                 raise ValueError(r.status)
             j = json.loads(await r.read())
     except Exception:
-        return {"ok": False, "error": "The weather service isn't answering right now."}
-    return weather_summary(j, str(args.get("day") or "now"))
+        return {"ok": False, "error": "The weather service isn't answering right now."}, None
+    summary = weather_summary(j, str(args.get("day") or "now"))
+    return summary, (weather_card(j) if summary.get("ok") else None)
+
+
+async def get_weather(args, http):
+    return (await _weather(args, http))[0]
 
 
 def _timeout(s):
@@ -103,46 +194,49 @@ def _timeout(s):
 
 
 # ---------------------------------------------------------------- units
-_U = {}  # alias -> (dimension, factor to SI base)
-def _add(dim, factor, *names):
+_U = {}   # alias -> (dimension, factor to SI base)
+_DISP = {}  # alias -> short label drawn on the card
+def _add(dim, factor, disp, *names):
     for n in names:
         _U[n] = (dim, factor)
+        _DISP[n] = disp
 
-_add("length", 1, "m", "meter", "meters", "metre", "metres")
-_add("length", 0.001, "mm", "millimeter", "millimeters")
-_add("length", 0.01, "cm", "centimeter", "centimeters")
-_add("length", 1000, "km", "kilometer", "kilometers", "kilometre", "kilometres")
-_add("length", 0.0254, "in", "inch", "inches")
-_add("length", 0.3048, "ft", "foot", "feet")
-_add("length", 0.9144, "yd", "yard", "yards")
-_add("length", 1609.344, "mi", "mile", "miles")
-_add("mass", 1, "kg", "kilogram", "kilograms", "kilo", "kilos")
-_add("mass", 0.001, "g", "gram", "grams")
-_add("mass", 1e-6, "mg", "milligram", "milligrams")
-_add("mass", 0.45359237, "lb", "lbs", "pound", "pounds")
-_add("mass", 0.028349523125, "oz", "ounce", "ounces")
-_add("mass", 6.35029318, "st", "stone", "stones")
-_add("volume", 0.001, "l", "liter", "liters", "litre", "litres")
-_add("volume", 1e-6, "ml", "milliliter", "milliliters", "millilitre", "millilitres")
-_add("volume", 0.0002365882365, "cup", "cups")
-_add("volume", 0.00001478676478125, "tbsp", "tablespoon", "tablespoons")
-_add("volume", 0.00000492892159375, "tsp", "teaspoon", "teaspoons")
-_add("volume", 0.0000295735295625, "floz", "fl oz", "fluid ounce", "fluid ounces")
-_add("volume", 0.000473176473, "pint", "pints", "pt")
-_add("volume", 0.000946352946, "quart", "quarts", "qt")
-_add("volume", 0.003785411784, "gal", "gallon", "gallons")
-_add("speed", 1, "m/s", "meters per second")
-_add("speed", 1 / 3.6, "km/h", "kph", "kmh", "kilometers per hour")
-_add("speed", 0.44704, "mph", "miles per hour")
-_add("speed", 0.514444, "knot", "knots", "kn")
-_add("area", 1, "m2", "sq m", "square meter", "square meters")
-_add("area", 0.09290304, "ft2", "sq ft", "square foot", "square feet")
-_add("area", 4046.8564224, "acre", "acres")
-_add("area", 10000, "ha", "hectare", "hectares")
-_add("area", 1e6, "km2", "sq km", "square kilometer", "square kilometers")
-_add("area", 2589988.110336, "mi2", "sq mi", "square mile", "square miles")
+_add("length", 1, "m", "m", "meter", "meters", "metre", "metres")
+_add("length", 0.001, "mm", "mm", "millimeter", "millimeters")
+_add("length", 0.01, "cm", "cm", "centimeter", "centimeters")
+_add("length", 1000, "km", "km", "kilometer", "kilometers", "kilometre", "kilometres")
+_add("length", 0.0254, "in", "in", "inch", "inches")
+_add("length", 0.3048, "ft", "ft", "foot", "feet")
+_add("length", 0.9144, "yd", "yd", "yard", "yards")
+_add("length", 1609.344, "mi", "mi", "mile", "miles")
+_add("mass", 1, "kg", "kg", "kilogram", "kilograms", "kilo", "kilos")
+_add("mass", 0.001, "g", "g", "gram", "grams")
+_add("mass", 1e-6, "mg", "mg", "milligram", "milligrams")
+_add("mass", 0.45359237, "lb", "lb", "lbs", "pound", "pounds")
+_add("mass", 0.028349523125, "oz", "oz", "ounce", "ounces")
+_add("mass", 6.35029318, "st", "st", "stone", "stones")
+_add("volume", 0.001, "L", "l", "liter", "liters", "litre", "litres")
+_add("volume", 1e-6, "mL", "ml", "milliliter", "milliliters", "millilitre", "millilitres")
+_add("volume", 0.0002365882365, "cup", "cup", "cups")
+_add("volume", 0.00001478676478125, "tbsp", "tbsp", "tablespoon", "tablespoons")
+_add("volume", 0.00000492892159375, "tsp", "tsp", "teaspoon", "teaspoons")
+_add("volume", 0.0000295735295625, "fl oz", "floz", "fl oz", "fluid ounce", "fluid ounces")
+_add("volume", 0.000473176473, "pt", "pint", "pints", "pt")
+_add("volume", 0.000946352946, "qt", "quart", "quarts", "qt")
+_add("volume", 0.003785411784, "gal", "gal", "gallon", "gallons")
+_add("speed", 1, "m/s", "m/s", "meters per second")
+_add("speed", 1 / 3.6, "km/h", "km/h", "kph", "kmh", "kilometers per hour")
+_add("speed", 0.44704, "mph", "mph", "miles per hour")
+_add("speed", 0.514444, "kn", "knot", "knots", "kn")
+_add("area", 1, "m²", "m2", "sq m", "square meter", "square meters")
+_add("area", 0.09290304, "ft²", "ft2", "sq ft", "square foot", "square feet")
+_add("area", 4046.8564224, "acre", "acre", "acres")
+_add("area", 10000, "ha", "ha", "hectare", "hectares")
+_add("area", 1e6, "km²", "km2", "sq km", "square kilometer", "square kilometers")
+_add("area", 2589988.110336, "mi²", "mi2", "sq mi", "square mile", "square miles")
 TEMP = {"c": "c", "celsius": "c", "°c": "c", "degc": "c", "f": "f", "fahrenheit": "f", "°f": "f", "degf": "f",
         "k": "k", "kelvin": "k"}
+_TEMP_DISP = {"c": "°C", "f": "°F", "k": "K"}
 
 
 def _norm(u):
@@ -167,6 +261,37 @@ def convert_units(args):
         return {"ok": False, "error": "I don't know one of those units."}
     rr = round(r, 2) if abs(r) >= 1 else float(f"{r:.3g}")
     return {"ok": True, "value": v, "from_unit": args.get("from_unit"), "result": rr, "to_unit": args.get("to_unit")}
+
+
+def _fmt_num(n):
+    """Short decimal for a card. Integers stay integers; tiny values keep 3 significant digits."""
+    if isinstance(n, bool) or not isinstance(n, (int, float)):
+        return ""
+    if isinstance(n, float) and (n != n or abs(n) == float("inf")):
+        return ""
+    if isinstance(n, float) and abs(n) < 1 and n != 0:
+        return f"{n:.3g}"
+    s = f"{n:.2f}".rstrip("0").rstrip(".") if isinstance(n, float) else str(n)
+    return s if s not in ("", "-") else "0"
+
+
+def _disp_unit(raw):
+    n = _norm(raw)
+    if n in TEMP:
+        return _TEMP_DISP[TEMP[n]]
+    return _DISP.get(n, " ".join(str(raw or "").split())[:12])
+
+
+def convert_result(args):
+    """(tool output, convert card or None). Card fields are formatted strings."""
+    out = convert_units(args)
+    if not out.get("ok"):
+        return out, None
+    card = {"type": "card", "kind": "convert", "value": _fmt_num(out["value"]), "from_unit": _disp_unit(out["from_unit"]),
+            "result": _fmt_num(out["result"]), "to_unit": _disp_unit(out["to_unit"])}
+    if not all(card[k] for k in ("value", "from_unit", "result", "to_unit")):
+        return out, None
+    return out, card
 
 
 # ---------------------------------------------------------------- timers (state lives on the station)
@@ -229,13 +354,17 @@ def cancel_timer(args, timers, now):
 
 
 async def run(name, args, http, timers, now):
-    """Dispatch one tool call -> (output dict, optional message for the Pi)."""
+    """Dispatch one tool call -> (output dict, optional message for the Pi).
+
+    The Pi message is a display card for time / weather / units, or timer_set / timer_cancel.
+    Failed calls return None for the message, so the station shows nothing.
+    """
     if name == "get_time":
-        return get_time(args), None
+        return time_result(args, None)
     if name == "get_weather":
-        return await get_weather(args, http), None
+        return await _weather(args, http)
     if name == "convert_units":
-        return convert_units(args), None
+        return convert_result(args)
     if name == "set_timer":
         return set_timer(args, timers, now)
     if name == "list_timers":
