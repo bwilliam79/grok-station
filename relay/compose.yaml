@@ -17,8 +17,8 @@ services:
     environment:
       XAI_MODEL: grok-voice-3.0
       XAI_VOICE: luna
-      # Teammate handoff (real-bot pilot): OFF. Turned on only with the owner's OK (see docs/handoff.md).
-      HANDOFF_ENABLED: "0"
+      # Teammate handoff: off unless HANDOFF_ENABLED=1 in .env (see docs/handoff.md). Webhooks are hot-reloaded.
+      HANDOFF_ENABLED: ${HANDOFF_ENABLED:-0}
     secrets: [xai_api_key, relay_token, keyterms, webhooks]
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state

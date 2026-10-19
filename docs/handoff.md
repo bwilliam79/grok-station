@@ -32,5 +32,8 @@ Logs and alerts carry request_id, agent, length and verdict only, never text. Ev
 1. tile-ingest: `node bin/gen-voice-token.js <bot>` stores the hash only. Hand the plaintext from the mode-600 handoff
    file to the bot, then delete that file.
 2. The bot creates its routine with the shared prompt (step 0 checks, delimiters, data allowlist, guest rule, T0, no
-   verbatim memory). The routine's webhook URL and token go into `webhooks.json` on the relay host only (mode 600).
+   verbatim memory). The owner copies the routine's webhook URL and key from its panel and runs
+   `grok-voice-add-webhook <bot>` on the relay host, which prompts for both (the key is hidden) and merges them into
+   `webhooks.json` (mode 600). The relay calls it with `Authorization: Bearer <key>` and reloads the file on change.
+   A bot without a webhook gets no `check_notes` tool, so its persona says its full notes can't be reached.
 3. Set `HANDOFF_ENABLED=1` and `VOICE_ENABLED=1` only with the owner's OK.

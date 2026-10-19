@@ -73,7 +73,7 @@ def load_webhooks(raw):
         return {}
     out = {}
     for bot, ent in (doc.items() if isinstance(doc, dict) else []):
-        if (re.fullmatch(r"[a-z]{2,16}", str(bot)) and isinstance(ent, dict) and str(ent.get("url", "")).startswith("https://")
+        if (re.fullmatch(r"[a-z]{2,16}", str(bot)) and isinstance(ent, dict) and re.match(r"https://|http://127\.0\.0\.1:", str(ent.get("url", "")))
                 and isinstance(ent.get("token"), str) and ent["token"] and ent.get("enabled", True) is True):
             out[bot] = {"url": ent["url"], "token": ent["token"]}
     return out

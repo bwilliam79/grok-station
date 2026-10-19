@@ -71,6 +71,7 @@ class Units(unittest.TestCase):
                                                   "hank": {"url": "http://plain", "token": "t"},
                                                   "kai": {"url": "https://x.invalid", "token": "t", "enabled": False}}))
         self.assertEqual(list(hooks), ["jules"])
+        self.assertEqual(handoff.load_webhooks(json.dumps({"kai": {"url": "http://192.0.2.5/x", "token": "t"}})), {})
 
 
 class RoundTrip(unittest.IsolatedAsyncioTestCase):
@@ -97,7 +98,10 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             return web.json_response({"ok": True})
         app = web.Application(); app.router.add_post("/hook", hook)
         self.srv = TestServer(app); await self.srv.start_server()
-        relay.WEBHOOKS = {"jules": {"url": str(self.srv.make_url("/hook")), "token": "t"}}
+        relay.WEBHOOKS_FILE = os.path.join(TMP, "webhooks.json")
+        with open(relay.WEBHOOKS_FILE, "w") as f:
+            json.dump({"jules": {"url": str(self.srv.make_url("/hook")), "token": "t"}}, f)
+        relay._hooks["mtime"] = None
         relay.HANDOFF = True
         self.lines = []
         self._log = relay.log
@@ -133,6 +137,15 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         async with ClientSession() as http:
             self.assertEqual(await relay.ask_teammate(http, "jules", "q"), (None, "timeout"))
         self.assertLess(time.monotonic() - t0, 4.5)
+
+    def test_hot_reload(self):
+        self.assertNotIn("kai", relay.webhooks())
+        time.sleep(0.01)
+        d = json.load(open(relay.WEBHOOKS_FILE)); d["kai"] = {"url": "https://example.invalid/k", "token": "t"}
+        with open(relay.WEBHOOKS_FILE, "w") as f:   # in place, like grok-voice-add-webhook
+            json.dump(d, f)
+        self.assertIn("kai", relay.webhooks())
+        self.assertFalse(any("example.invalid" in l or '"t"' in l for l in self.lines))   # never logs URLs or keys
 
     def test_tool_only_for_bots_with_a_webhook(self):
         roster = {"jules": {"slug": "jules", "name": "Jules"}, "hank": {"slug": "hank", "name": "Hank"}}

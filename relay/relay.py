@@ -77,7 +77,27 @@ _personas = {"mtime": None, "map": {}, "voices": None, "hosts": []}
 # Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1; per bot only with a webhook entry in
 # the webhooks secret (home computer only, mode 600). Every bot answers at T0 (answer only).
 HANDOFF = E("HANDOFF_ENABLED", "0") == "1"
-WEBHOOKS = handoff.load_webhooks("\n".join(secret("webhooks", multi=True))) if HANDOFF else {}
+WEBHOOKS_FILE = E("WEBHOOKS_FILE", "/run/secrets/webhooks")
+_hooks = {"mtime": None, "map": {}}
+
+
+def webhooks():
+    """Bot -> {url, token}, re-read when the file changes (the add script rewrites it in place). Never logged."""
+    if not HANDOFF:
+        return {}
+    try:
+        mt = os.stat(WEBHOOKS_FILE).st_mtime_ns
+    except OSError:
+        return {}
+    if mt != _hooks["mtime"]:
+        try:
+            with open(WEBHOOKS_FILE) as f:
+                _hooks["map"] = handoff.load_webhooks(f.read())
+        except OSError:
+            _hooks["map"] = {}
+        _hooks["mtime"] = mt
+        log(f"handoff: {len(_hooks['map'])} bot webhook(s): {' '.join(sorted(_hooks['map']))}")
+    return _hooks["map"]
 PENDING_DIR, REPLIES_DIR = E("HANDOFF_PENDING", "/voice/pending"), E("HANDOFF_REPLIES", "/voice/replies")
 REPLY_WAIT = float(E("REPLY_WAIT", "40"))           # seconds the station waits for a teammate's answer
 _limits = handoff.Limits(E("HANDOFF_STATE", "/state/handoff.json"), lambda: today())
@@ -255,7 +275,7 @@ NOTES_TOOL = {"type": "function", "name": "check_notes",
 def tools_for(roster, slug):
     """talk_to, plus check_notes when this persona has a live handoff webhook."""
     t = talk_tool(roster)
-    return t + [NOTES_TOOL] if HANDOFF and slug in WEBHOOKS and slug in roster else t
+    return t + [NOTES_TOOL] if HANDOFF and slug in webhooks() and slug in roster else t
 
 
 async def ask_teammate(http, bot, question, on_wait=None):
@@ -273,7 +293,9 @@ async def ask_teammate(http, bot, question, on_wait=None):
     try:
         handoff.write_pending(PENDING_DIR, rid, bot, nonce, deadline * 1000)
         reply_by = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat(timespec="seconds")
-        hook = WEBHOOKS[bot]
+        hook = webhooks().get(bot)
+        if not hook:
+            return None, "no-webhook"
         try:
             async with http.post(hook["url"], json=handoff.payload(rid, bot, q, reply_by), allow_redirects=False,
                                  headers={"Authorization": f"Bearer {hook['token']}"}, timeout=ClientTimeout(total=10)) as r:
@@ -671,7 +693,7 @@ async def session(req):
                             args = {}
                         if ev.get("name") == "check_notes":
                             bot = st["persona"]
-                            if not (HANDOFF and bot in WEBHOOKS and bot in roster):
+                            if not (HANDOFF and bot in webhooks() and bot in roster):
                                 out = {"ok": False, "error": "Your notes aren't reachable from the station. Say so briefly."}
                             else:
                                 st["hold"] = True
