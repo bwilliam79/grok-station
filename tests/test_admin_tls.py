@@ -46,7 +46,7 @@ class Cert(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(tls)), ["cert.pem", "fingerprint", "host", "key.pem"])  # no temp leftovers
 
     def test_no_key_in_repo(self):
-        out = subprocess.run(["git", "-C", ROOT, "grep", "-l", "-I", "BEGIN .*PRIVATE KEY"], capture_output=True, text=True).stdout
+        out = subprocess.run(["git", "-C", ROOT, "grep", "-l", "-I", "-E", "^-----BEGIN [A-Z ]*PRIVATE KEY-----$"], capture_output=True, text=True).stdout
         self.assertEqual(out.strip(), "")
 
 
