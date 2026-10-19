@@ -1,0 +1,17 @@
+[Unit]
+Description=grok-station wake word listener (openWakeWord, headset mic)
+After=sound.target grok-station.service
+
+[Service]
+User=grok
+SupplementaryGroups=audio
+EnvironmentFile=-/etc/grok-station/wake.env
+ExecStart=/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py
+Restart=always
+RestartSec=3
+MemoryMax=350M
+CPUQuota=80%
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

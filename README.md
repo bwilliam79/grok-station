@@ -69,6 +69,9 @@ It runs as `grok` (groups video/render/input).
   `text` is required (max 500 chars); `from` (speaker name, max 40) and `heard` (what was asked, max 300) are optional.
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
 - `GET /health`: 200.
+- `POST /state` (**localhost only**, no token): `{"state": "listening"|"idle"}`. Used by the wake listener on the
+  same Pi. `listening` shows the listening screen (teal tick ring, "Listening") for `GROK_STATION_LISTEN_HOLD`
+  seconds (default 8), then idle. 403 from any other address.
 
 Anything on the LAN with the token can post to it (a script, a home automation, an Apple Shortcut using
 "Get Contents of URL"). Each message render is saved to `/run/grok-station/last.png` for remote verification.
@@ -78,6 +81,34 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"text":"hello"}' http://grok-station
 curl -H "Authorization: Bearer $TOKEN" -d '{"from":"Grok","heard":"what is the weather","text":"Mild and clear."}' \
   http://grok-station.local:8787/show
 ```
+
+## Wake word (proof of concept)
+
+`wake/grok_wake.py` runs as its own service, `grok-station-wake.service` (user `grok`, group `audio`), so an audio
+crash can't take down the display. It reads 16 kHz mono from the USB headset mic via `arecord` (device picked by
+name, `WAKE_DEVICE_NAME`, default `Razer`), runs [openWakeWord](https://github.com/dscripka/openWakeWord) with ONNX
+Runtime, and on a hit (score ≥ 0.5, 2 s cooldown) plays a 200 ms two-tone chime on the headset and POSTs
+`{"state":"listening"}` to `http://127.0.0.1:8787/state`. Mic level and peak score are logged every 30 s.
+
+**The wake phrase is "Hey Jarvis"**, a pre-trained openWakeWord model used as a placeholder until a custom
+"Hey Grok" model is trained. No audio leaves the Pi; there is no speech-to-text or cloud step yet.
+
+Setup on the Pi (venv, since openWakeWord's tflite dependency has no Trixie arm64 wheel):
+
+```sh
+sudo install -d -o grok -g grok /opt/grok-station/wake
+python3 -m venv /opt/grok-station/wake/venv
+/opt/grok-station/wake/venv/bin/pip install --no-deps openwakeword
+/opt/grok-station/wake/venv/bin/pip install onnxruntime numpy tqdm scipy scikit-learn requests
+/opt/grok-station/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["hey_jarvis"])'
+sudo install -m755 wake/grok_wake.py /opt/grok-station/wake/
+sudo install -m644 systemd/grok-station-wake.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
+```
+
+Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOLD`, `WAKE_COOLDOWN`,
+`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`. Offline check: `grok_wake.py --test clip.wav` (16 kHz mono) prints the peak
+score. On a Pi 5 the listener uses about 11% of one core and ~200 MB RSS.
 
 ## Credits
 

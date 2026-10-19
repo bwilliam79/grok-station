@@ -29,7 +29,9 @@ WX_CACHE = E("GROK_STATION_WEATHER_CACHE", "/var/cache/grok-station/weather.json
 WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after failure, offline after
 FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
-SHOW, WEATHER = pygame.USEREVENT + 1, pygame.USEREVENT + 2
+SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
+LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "8"))  # seconds the listening screen stays up
+VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 
 
 def hexc(s):
@@ -124,6 +126,8 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, {"ok": True}) if self.path == "/health" else self._reply(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/state":
+            return self._state()
         if not ipaddress.ip_address(self.client_address[0].removeprefix("::ffff:")).is_private:
             return self._reply(403, {"error": "lan only"})
         if self.path != "/show":
@@ -144,6 +148,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, {"error": "text required"})
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
+        self._reply(200, {"ok": True})
+
+    def _state(self):
+        """Localhost-only, no token: the wake listener on the same Pi drives voice states."""
+        if self.client_address[0].removeprefix("::ffff:") not in ("127.0.0.1", "::1"):
+            return self._reply(403, {"error": "localhost only"})
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            state = json.loads(self.rfile.read(min(n, 1024)) or b"{}").get("state")
+        except Exception:
+            return self._reply(400, {"error": "bad json"})
+        if state not in ("listening", "idle"):
+            return self._reply(400, {"error": "state must be listening or idle"})
+        pygame.event.post(pygame.event.Event(STATE, state=state))
+        print(f"state {state}", flush=True)
         self._reply(200, {"ok": True})
 
     def log_message(self, *a):
@@ -357,8 +376,20 @@ def ring_idle(c, cx, cy, r, ring_w, glow, t):
     pygame.draw.circle(c, RULE, (cx, cy), r + ring_w / 2, int(ring_w / 3))
 
 
+def ring_listening(c, cx, cy, r, ring_w, glow, t):
+    """Teal tick ring (Noor S2): thin base ring plus 72 radial ticks, every 6th one longer. Static for now."""
+    pygame.draw.circle(c, (*LISTENING[:3], 90), (cx, cy), r, max(2, int(ring_w / 4)))
+    r0 = r + ring_w * 0.7
+    for i in range(72):
+        a = 2 * math.pi * i / 72 - math.pi / 2
+        ln = ring_w * (2.2 if i % 6 == 0 else 1.4) * (0.75 + 0.25 * t)
+        p0 = (cx + r0 * math.cos(a), cy + r0 * math.sin(a))
+        p1 = (cx + (r0 + ln) * math.cos(a), cy + (r0 + ln) * math.sin(a))
+        pygame.draw.line(c, LISTENING, p0, p1, max(2, int(ring_w / 2.4)))
+
+
 # Future voice states (listening ticks, thinking arc, handoff sweep) register a painter here; nothing else changes.
-RINGS = {"speaking": ring_speaking, "idle": ring_idle}
+RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening}
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0):
@@ -458,7 +489,10 @@ def draw_topbar_clock(surf, L, now):
 
 
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
+    state = msg.get("state", state)
     surf.fill(BG)
+    if state == "listening":
+        pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
     draw_topbar_clock(surf, L, now)
     who, heard, text = msg.get("from", ""), msg.get("heard", ""), msg["text"]
     top_row = L(34) + L(72)
@@ -482,6 +516,12 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
     img, pad = portrait(who, d, ring_w, state, t)
     surf.blit(img, (left - pad, photo_top - pad))
+    if state == "listening":
+        lr = text_at(surf, "display", L(64), "Listening", LISTENING, (left + d // 2 + L(40), photo_top + d + L(150)), "center")
+        for i, hh in enumerate((0.45, 0.8, 1.0, 0.65, 0.35)):  # small static waveform glyph
+            bh = int(L(56) * hh)
+            pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
+        text_at(surf, "body", L(40), "Say “Hey Jarvis” to wake (placeholder)", MUTED, (L.m, L.h - L(70)), "midleft")
     # measure the right column first so it can sit centered on the photo
     fn = font("display", L(120))
     name = who if fn.size(who)[0] <= width else ellipsize(fn, who, width)
@@ -578,6 +618,13 @@ def main():
         if msg:
             wait = min(wait, max(0.05, until - t))
         ev = pygame.event.wait(int(wait * 1000))
+        if ev.type == STATE:
+            if ev.state == "listening":
+                msg, until = {"from": VOICE_NAME, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"}, time.time() + LISTEN_HOLD
+                paint()
+            elif msg and msg.get("state") == "listening":
+                until = 0
+            continue
         if ev.type == SHOW:
             msg, until = ev.msg, time.time() + HOLD
             paint()
@@ -613,6 +660,7 @@ def demo(out, size):
                                           "text": "Tomorrow looks mild: partly sunny, a high of 71 and a low of 52, "
                                                   "with a light breeze in the afternoon. No rain expected."})),
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
+        ("listening", draw_session, (now, {"from": "Grok", "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),
         ("night", draw_night, (time.strptime("2026-10-18 23:07", "%Y-%m-%d %H:%M"),)),
     ]
