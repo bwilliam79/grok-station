@@ -1,7 +1,7 @@
 # Multi-turn sessions (follow-ups without the wake word)
 
 ## Goal
-After a reply, keep the session open for a follow-up about 10 s long. the owner (or anyone) can ask another
+After a reply, keep the session open for a follow-up about 10 s long. Anyone can ask another
 question without saying the wake word. The display shows the pulsing listening ring between turns. "Thanks" or "that's
 all" ends it, and so do silence and the caps. The same persona answers every turn.
 

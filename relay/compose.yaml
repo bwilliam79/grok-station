@@ -5,6 +5,7 @@
 # read-only portrait dirs $GROK_STATION_PORTRAITS_A / _B (photos are never in git). Without them only Grok is on voice.
 # Enroll mode (docs/enroll.md): clip inbox $GROK_STATION_ENROLL (rw, writable by uid 10001) and published models
 # $GROK_STATION_WAKEWORDS (ro), both on the training host.
+# Teammate handoff (off by default): $GROK_STATION_SECRETS/webhooks.json and $GROK_STATION_VOICE (stats-dashboard's voice/).
 # LAN clients connect through the `tls` service (Caddy, wss + client certificate) on $GROK_STATION_TLS_PORT (8791);
 # certs come from $GROK_STATION_PKI (server.crt, server.key, client-ca.crt). The relay's own port is published on the
 # host's loopback only (GROK_STATION_RELAY_BIND, default 127.0.0.1) for local health checks.
@@ -17,7 +18,9 @@ services:
       XAI_MODEL: grok-voice-3.0
       XAI_VOICE: luna
       MAX_MINUTES_DAY: ${MAX_MINUTES_DAY:-20}
-    secrets: [xai_api_key, relay_token, keyterms]
+      # Teammate handoff (real-bot pilot): OFF. Turned on only with the owner's OK (see docs/handoff.md).
+      HANDOFF_ENABLED: "0"
+    secrets: [xai_api_key, relay_token, keyterms, webhooks]
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
       - ${GROK_STATION_ALERTS:-./no-alerts}:/alerts
@@ -26,6 +29,9 @@ services:
       - ${GROK_STATION_PORTRAITS_B:-./no-personas}:/portraits/b:ro
       - ${GROK_STATION_ENROLL:-./no-enroll}:/enroll
       - ${GROK_STATION_WAKEWORDS:-./no-wakewords}:/wakewords:ro
+      # Handoff binding dirs, shared with tile-ingest (POST /voice/reply): pending rw here, replies rw (consumed on read)
+      - ${GROK_STATION_VOICE:-./no-voice}/pending:/voice/pending
+      - ${GROK_STATION_VOICE:-./no-voice}/replies:/voice/replies
     ports:
       - "${GROK_STATION_RELAY_BIND:-127.0.0.1}:8790:8790"
     read_only: true
@@ -68,3 +74,5 @@ secrets:
   xai_api_key: {file: "${GROK_STATION_SECRETS:?set GROK_STATION_SECRETS}/xai_api_key"}
   relay_token: {file: "${GROK_STATION_SECRETS}/relay_token"}
   keyterms: {file: "${GROK_STATION_SECRETS}/keyterms"}
+  # {"<bot>": {"url": "https://...", "token": "..."}}; home computer only, mode 600, never in git or on any other machine
+  webhooks: {file: "${GROK_STATION_SECRETS}/webhooks.json"}

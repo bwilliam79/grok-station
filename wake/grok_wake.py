@@ -657,6 +657,13 @@ class Session:
                             self.state("speaking", heard=self.heard, text=self.reply)
                     elif t == "reply_delta":
                         self.reply += ev.get("text", "")
+                    elif t == "handoff_wait":
+                        # teammate handoff: the persona is asking its own Grok Bot; keep the thinking screen up
+                        name = str(ev.get("name", ""))[:24] or "a teammate"
+                        print("relay: handoff wait", flush=True)
+                        self.state("thinking", heard=self.heard, text=f"Checking with {name}…")
+                    elif t == "handoff_done":
+                        print("relay: handoff done", flush=True)
                     elif t == "xai_error":
                         print("relay: xai error", flush=True)
                     elif t == "turn_done":

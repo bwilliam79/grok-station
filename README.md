@@ -439,6 +439,11 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
 
 Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
 
+
+## Teammate handoff (off by default)
+A persona can ask its own Grok Bot and speak the answer, answer-only (T0), with per-bot tokens, limits, nonce binding
+and a privacy lint on both ends. Off until enabled per bot. See [docs/handoff.md](docs/handoff.md).
+
 ## Logo
 
 Grok mark extracted from Wikimedia Commons `File:Grok-feb-2025-logo.svg` (X.AI Corp., PD-textlogo; trademark of xAI),
