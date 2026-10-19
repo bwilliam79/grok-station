@@ -1,5 +1,6 @@
 """Teammate handoff (real-bot pilot, Nix GO 2026-10-19): the station asks a teammate's own Grok Bot routine and speaks its
-answer. Off unless HANDOFF_ENABLED=1 and the bot has a webhook in the webhooks secret; every bot ships at T0 (answer only).
+answer. Off unless HANDOFF_ENABLED=1 and the persona has a route (the "_router" webhook if set, else that bot's own
+webhook); every bot ships at T0 (answer only).
 
 Blockers covered here: B4 (one POST, never retried after the body is sent; the routine's step 0 checks source/v/request_id/
 reply_by), B6 (question stripped of control/zero-width/bidi, capped at 300, sent as delimited untrusted data), B10 (per bot
@@ -65,18 +66,37 @@ def new_request_id():
     return "vs_" + secrets.token_urlsafe(17)[:22].ljust(22, "A")
 
 
+def _webhook_ok(ent):
+    """Same bar for a bot entry and for "_router": allowed URL, non-empty token, enabled (default true)."""
+    return (isinstance(ent, dict) and re.match(r"https://|http://127\.0\.0\.1:", str(ent.get("url", "")))
+            and isinstance(ent.get("token"), str) and ent["token"] and ent.get("enabled", True) is True)
+
+
 def load_webhooks(raw):
-    """{"<bot>": {"url": "https://...", "token": "..."}} -> validated map. Never logged."""
+    """{"<bot>": {"url", "token"}, optional "_router": same shape} -> validated map. Never logged.
+
+    Bot names must match [a-z]{2,16}. "_router" is kept under that key when it passes the same checks.
+    """
     try:
         doc = json.loads(raw or "{}")
     except ValueError:
         return {}
     out = {}
-    for bot, ent in (doc.items() if isinstance(doc, dict) else []):
-        if (re.fullmatch(r"[a-z]{2,16}", str(bot)) and isinstance(ent, dict) and re.match(r"https://|http://127\.0\.0\.1:", str(ent.get("url", "")))
-                and isinstance(ent.get("token"), str) and ent["token"] and ent.get("enabled", True) is True):
-            out[bot] = {"url": ent["url"], "token": ent["token"]}
+    if not isinstance(doc, dict):
+        return {}
+    for name, ent in doc.items():
+        if not _webhook_ok(ent):
+            continue
+        if name == "_router" or re.fullmatch(r"[a-z]{2,16}", str(name)):
+            out[name] = {"url": ent["url"], "token": ent["token"]}
     return out
+
+
+def route(hooks, bot):
+    """Entry to POST: the "_router" entry when present, else this bot's webhook, else None."""
+    if not isinstance(hooks, dict):
+        return None
+    return hooks["_router"] if "_router" in hooks else hooks.get(bot)
 
 
 def payload(rid, bot, question, reply_by_iso):

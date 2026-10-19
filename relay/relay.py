@@ -77,15 +77,15 @@ LINT = [("link or email", re.compile(r"https?:|www\.|@|\b[a-z0-9-]+\.(com|net|or
         ("internal host", re.compile(r"\.(lan|local|internal|home\.arpa|localdomain)\b|\blocalhost\b", re.I))]
 VOICES = set()               # filled from GET /v1/tts/voices at startup; empty = not validated
 _personas = {"mtime": None, "map": {}, "voices": None, "hosts": []}
-# Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1; per bot only with a webhook entry in
-# the webhooks secret (home computer only, mode 600). Every bot answers at T0 (answer only).
+# Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1. A "_router" entry covers every roster
+# persona; otherwise only a bot with its own webhook is reachable. Secret is home computer-only, mode 600. Every bot answers at T0.
 HANDOFF = E("HANDOFF_ENABLED", "0") == "1"
 WEBHOOKS_FILE = E("WEBHOOKS_FILE", "/run/secrets/webhooks")
 _hooks = {"mtime": None, "map": {}}
 
 
 def webhooks():
-    """Bot -> {url, token}, re-read when the file changes (the add script rewrites it in place). Never logged."""
+    """Name -> {url, token} (bots, plus "_router" when set). Re-read when the file changes. Never logged."""
     if not HANDOFF:
         return {}
     try:
@@ -99,7 +99,10 @@ def webhooks():
         except OSError:
             _hooks["map"] = {}
         _hooks["mtime"] = mt
-        log(f"handoff: {len(_hooks['map'])} bot webhook(s): {' '.join(sorted(_hooks['map']))}")
+        bots = sorted(k for k in _hooks["map"] if k != "_router")
+        state = "on" if "_router" in _hooks["map"] else "off"
+        # Names and on/off only. The URL and token never go to the log.
+        log(f"handoff: router {state}, {len(bots)} bot webhook(s): {' '.join(bots)}".rstrip())
     return _hooks["map"]
 PENDING_DIR, REPLIES_DIR = E("HANDOFF_PENDING", "/voice/pending"), E("HANDOFF_REPLIES", "/voice/replies")
 REPLY_WAIT = float(E("REPLY_WAIT", "40"))           # seconds the station waits for a teammate's answer
@@ -275,10 +278,15 @@ NOTES_TOOL = {"type": "function", "name": "check_notes",
                   "required": ["question"]}}
 
 
+def has_route(bot):
+    """True when a handoff for this persona has somewhere to POST (the router, or the bot's own webhook)."""
+    return handoff.route(webhooks(), bot) is not None
+
+
 def tools_for(roster, slug):
-    """talk_to, plus check_notes when this persona has a live handoff webhook."""
+    """talk_to, plus check_notes when this persona has a handoff route. A router covers every roster persona."""
     t = talk_tool(roster)
-    return t + [NOTES_TOOL] if HANDOFF and slug in webhooks() and slug in roster else t
+    return t + [NOTES_TOOL] if HANDOFF and has_route(slug) and slug in roster else t
 
 
 async def ask_teammate(http, bot, question, on_wait=None):
@@ -296,7 +304,7 @@ async def ask_teammate(http, bot, question, on_wait=None):
     try:
         handoff.write_pending(PENDING_DIR, rid, bot, nonce, deadline * 1000)
         reply_by = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat(timespec="seconds")
-        hook = webhooks().get(bot)
+        hook = handoff.route(webhooks(), bot)
         if not hook:
             return None, "no-webhook"
         try:
@@ -697,7 +705,7 @@ async def session(req):
                             args = {}
                         if ev.get("name") == "check_notes":
                             bot = st["persona"]
-                            if not (HANDOFF and bot in webhooks() and bot in roster):
+                            if not (HANDOFF and has_route(bot) and bot in roster):
                                 out = {"ok": False, "error": "Your notes aren't reachable from the station. Say so briefly."}
                             else:
                                 st["hold"] = True

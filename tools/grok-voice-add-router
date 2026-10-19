@@ -1,0 +1,34 @@
+#!/bin/bash
+# grok-voice-add-router: add/replace the one router webhook in webhooks.json (mode 600, home computer only).
+# Prompts for the URL and the key (hidden). The relay calls it with "Authorization: Bearer <key>" and hot-reloads.
+# Per-bot entries stay in place as fallback. Prints only "ok router". Never echoes the URL or key.
+set -euo pipefail
+export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH
+[[ $# -eq 0 ]] || { echo "usage: grok-voice-add-router" >&2; exit 2; }
+F="$HOME/docker/grok-station-secrets/webhooks.json"
+read -r -p "Router webhook URL: " url
+[[ "$url" =~ ^https://[^[:space:]]+$ ]] || { echo "URL must start with https://" >&2; exit 2; }
+read -r -s -p "Router webhook key (hidden): " key; echo >&2
+[ -n "$key" ] || { echo "empty key" >&2; exit 2; }
+umask 077
+URL="$url" KEY="$key" F="$F" /usr/bin/python3 - <<'PY'
+import json, os
+f = os.environ["F"]
+try:
+    d = json.load(open(f))
+except (OSError, ValueError):
+    d = {}
+d["_router"] = {"url": os.environ["URL"], "token": os.environ["KEY"]}
+data = json.dumps(d, indent=1) + "\n"
+fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)   # in place: keeps the inode the relay's bind mount sees
+os.write(fd, data.encode()); os.close(fd); os.chmod(f, 0o600)
+PY
+unset key url
+# The relay reloads on change; confirm the container sees the router, else restart it when idle.
+seen() { docker exec grok-station-relay python -c "import json,sys;sys.exit(0 if sys.argv[1] in json.load(open('/run/secrets/webhooks')) else 1)" "_router" 2>/dev/null; }
+if ! seen; then
+  for i in $(seq 1 60); do docker logs --since 20s grok-station-relay 2>&1 | grep -qE "xai |turn " || break; sleep 5; done
+  (cd "$HOME/docker/grok-station/relay" && docker compose restart relay >/dev/null 2>&1)
+  sleep 3; seen || { echo "relay does not see _router yet" >&2; exit 1; }
+fi
+echo "ok router"
