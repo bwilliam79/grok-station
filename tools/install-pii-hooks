@@ -1,0 +1,9 @@
+#!/bin/sh
+# Install pii-guard as this clone's pre-commit and pre-push hooks.
+set -e
+top="$(git rev-parse --show-toplevel)"; hooks="$(git rev-parse --git-path hooks)"
+mkdir -p "$hooks"
+printf '#!/bin/sh\nexec "%s/tools/pii-guard" staged\n' "$top" > "$hooks/pre-commit"
+printf '#!/bin/sh\nexec "%s/tools/pii-guard" push\n' "$top" > "$hooks/pre-push"
+chmod +x "$hooks/pre-commit" "$hooks/pre-push"
+echo "pii-guard hooks installed in $hooks (patterns: \${PII_GUARD_PATTERNS:-~/.config/pii-guard/patterns})"

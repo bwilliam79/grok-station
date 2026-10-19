@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# pii-guard: refuse commits/pushes that contain personal info (names, emails, LAN addresses, ...).
+# The patterns are NOT in this repo (the list itself is personal). One extended regex per line in:
+#   $PII_GUARD_PATTERNS, else ~/.config/pii-guard/patterns
+# Modes:  staged   (pre-commit: staged additions + file names)
+#         push     (pre-push: reads the hook's stdin; new commits' diffs, messages, authors)
+#         tree     (CI: every tracked file, file names, and the last commit's message/author)
+# Output names the file and line only, never the matching text. Exit 1 on a match.
+set -u
+PAT="${PII_GUARD_PATTERNS:-$HOME/.config/pii-guard/patterns}"
+mode="${1:-staged}"
+if [ ! -s "$PAT" ]; then
+  if [ "$mode" = tree ] && [ -n "${CI:-}" ]; then echo "::warning::pii-guard: no patterns (set the PII_GUARD_PATTERNS secret); skipped"; exit 0; fi
+  echo "pii-guard: no patterns file at $PAT; see README (pii-guard)." >&2; exit 1
+fi
+hits=0
+scan() {  # stdin: text; $1: label. Reports "label line N" per hit; returns 1 on any hit.
+  local out
+  out="$(LC_ALL=C grep -nIE -f "$PAT" | cut -d: -f1)" || true
+  [ -z "$out" ] && return 0
+  printf '%s\n' "$out" | sed "s|^|pii-guard: match in $1 line |" >&2
+  return 1
+}
+case "$mode" in
+  staged)
+    git diff --cached --name-only --diff-filter=ACMR | scan "staged file names" || hits=1
+    while IFS= read -r -d '' f; do
+      git diff --cached -U0 -- "$f" | grep '^+' | grep -v '^+++' | scan "$f (added)" || hits=1
+    done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+    ;;
+  push)
+    z=0000000000000000000000000000000000000000
+    while read -r lref lsha rref rsha; do
+      [ -n "$lsha" ] || continue
+      [ "$lsha" = "$z" ] && continue
+      if [ "$rsha" = "$z" ]; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi
+      for c in $(git rev-list $range); do
+        git show -s --format='%an %ae %cn %ce%n%B' "$c" | scan "commit ${c:0:7} message/author" || hits=1
+        git show --format= --name-only "$c" | scan "commit ${c:0:7} file names" || hits=1
+        git show --format= -U0 "$c" | grep '^+' | grep -v '^+++' | scan "commit ${c:0:7} diff" || hits=1
+      done
+    done
+    ;;
+  tree)
+    git ls-files | scan "file names" || hits=1
+    while IFS= read -r -d '' f; do
+      [ -f "$f" ] || continue
+      scan "$f" < "$f" || hits=1
+    done < <(git ls-files -z)
+    git log -1 --format='%an %ae %cn %ce%n%B' | scan "last commit message/author" || hits=1
+    ;;
+  *) echo "usage: pii-guard staged|push|tree" >&2; exit 2;;
+esac
+[ "$hits" = 0 ] || { echo "pii-guard: blocked. Remove the personal info (use 'the owner', placeholders, or documentation addresses)." >&2; exit 1; }

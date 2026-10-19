@@ -1,0 +1,16 @@
+name: pii-guard
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  pii-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan tree, file names and last commit
+        env:
+          PATTERNS: ${{ secrets.PII_GUARD_PATTERNS }}
+        run: |
+          f="$RUNNER_TEMP/pii-patterns"; printf '%s\n' "$PATTERNS" > "$f"
+          [ -n "$PATTERNS" ] || : > "$f"
+          PII_GUARD_PATTERNS="$f" bash tools/pii-guard tree

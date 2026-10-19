@@ -474,3 +474,11 @@ When it's turned on, a teammate can ask to save a short note. The station shows 
 
 Grok mark extracted from Wikimedia Commons `File:Grok-feb-2025-logo.svg` (X.AI Corp., PD-textlogo; trademark of xAI),
 rendered white-on-transparent at 300 px. Source in `splash/grok-src.svg`, mark-only in `splash/grok-mark.svg`.
+
+## pii-guard (personal info check)
+
+This repo must not contain personal info: names, emails, home addresses or locations, LAN addresses, MACs or personal hostnames. `tools/pii-guard` enforces that. It reads extended regexes, one per line, from a local file that is **never committed**, because the list is itself personal: `~/.config/pii-guard/patterns` (mode 600), or the path in `$PII_GUARD_PATTERNS`. When it finds a match, it reports the file and line but never the matched text.
+
+- **Hooks.** Run `tools/install-pii-hooks` once per clone. It adds a pre-commit hook (staged additions and file names) and a pre-push hook (new commits: diffs, messages, authors).
+- **CI.** `tools/ci/pii-guard.yml` (to activate, copy it to `.github/workflows/`; that needs a token with workflow scope) runs `tools/pii-guard tree` on every push and pull request, with the patterns taken from the `PII_GUARD_PATTERNS` repository secret. Without the secret it warns and skips.
+- **On a match.** Write "the owner" instead of a name. Use placeholders for host values, documentation addresses (192.0.2.x) in tests, and example.com for emails.
