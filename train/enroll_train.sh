@@ -35,5 +35,6 @@ say "EVAL real held-out"
 set +e; python enroll_eval.py $m runs_sw/${m}__$tag.onnx eval_sw/${m}__$tag/report.json "$J" "$PUB" "$persona" >> "$J/eval.log" 2>&1; rc=$?; set -e
 rm -rf runs/${m}_$tag  # merged features are big; the model + report stay
 say "RESULT $(tail -2 "$J/eval.log" | head -1)"
+[ -f "$J/result.json" ] && cp "$J/result.json" "$S/.result.tmp" && mv "$S/.result.tmp" "$S/result.json"  # for GET .../status
 [ -n "$CHECK_N" ] && { touch "$S/DONE"; say "JOB DONE check ($([ $rc = 0 ] && echo pass || echo fail)), not published"; exit 0; }
 [ $rc = 0 ] && { touch "$S/DONE"; say "JOB DONE published"; } || { touch "$S/DONE"; say "JOB DONE below the gate, not published"; }

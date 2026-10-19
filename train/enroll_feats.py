@@ -9,14 +9,23 @@ from openwakeword.utils import compute_features_from_generator
 
 ses, job = sys.argv[1], sys.argv[2]
 rounds = int(sys.argv[3]) if len(sys.argv) > 3 else 200
+import json
 clips = sorted(glob.glob(os.path.join(ses, "[0-9][0-9].wav")))
+try:  # top-up session: also train/evaluate on the earlier session it tops up (same phrase, same speaker)
+    prior = json.load(open(os.path.join(ses, "READY"))).get("prior")
+except (OSError, ValueError):
+    prior = None
+if prior:
+    clips = sorted(glob.glob(os.path.join(os.path.dirname(os.path.normpath(ses)), prior, "[0-9][0-9].wav"))) + clips
 assert len(clips) >= 10 or os.environ.get("TRAIN_N"), f"need 10+ clips, have {len(clips)}"
 rng = random.Random(len(clips))
 held = sorted(rng.sample(clips, max(3, len(clips) // 5)))
 if os.environ.get("HELD_FILE"):  # reduced-clip check: reuse another job's held-out set so results compare directly
     held = [l.strip() for l in open(os.environ["HELD_FILE"]) if l.strip()]
-hb = {os.path.basename(c) for c in held}
-train = [c for c in clips if os.path.basename(c) not in hb]
+    hb = {os.path.basename(c) for c in held}  # check dirs hold symlinks to the same file names
+    train = [c for c in clips if os.path.basename(c) not in hb]
+else:
+    train = [c for c in clips if c not in held]
 if os.environ.get("TRAIN_N"):    # train on only the first N clips (in recording order) outside the held-out set
     train = train[:int(os.environ["TRAIN_N"])]
 os.makedirs(job, exist_ok=True)

@@ -101,3 +101,55 @@ class TestEnroll(unittest.TestCase):
         finally:
             gw.WAKE_CONFIG = old
         self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank"); self.assertEqual(ph["hey_rhea"], "rhea")
+
+
+class EnrollFlow(unittest.TestCase):
+    def run_enroll(self, n=10, loud_at=(), topup=False):
+        import tempfile, threading
+        posted, uploads, reads = [], [], {"n": 0}
+        clip = {"k": 0}
+
+        def read16(raw=False):
+            reads["n"] += 1
+            return np.zeros(1280, np.int16)
+
+        def fake_concat(parts):  # recording window: speech (or a clipped clip) instead of silence
+            clip["k"] += 1
+            t = np.arange(len(parts) * 1280) / 16000.0
+            amp = 32767 if clip["k"] in loud_at else 6000
+            y = (amp * np.sin(2 * np.pi * 220 * t)).astype(np.int16)
+            y[: 16000 // 2] = 0; y[-16000 // 2:] = 0
+            return y
+        old = (gw.post_state, gw.relay_post, gw.subprocess.Popen, gw.ENROLL_DIR, gw.np.concatenate, gw.follow_training, gw.time.sleep)
+        gw.post_state = lambda state, **kw: posted.append(kw.get("heard", "").split("|")[1] if "|" in kw.get("heard", "") else state)
+        gw.relay_post = lambda path, body, ctype="": uploads.append((path, body if ctype == "application/json" else b""))
+        gw.subprocess.Popen = lambda *a, **k: None
+        gw.ENROLL_DIR = tempfile.mkdtemp()
+        gw.np.concatenate = fake_concat
+        gw.follow_training = lambda *a, **k: None
+        gw.time.sleep = lambda s: None
+        try:
+            if topup:
+                os.makedirs(os.path.join(gw.ENROLL_DIR, "hey_finn", "20261019-150740"))
+            gw.enroll({"phrase": "hey_finn", "persona": "finn", "count": n, "topup": topup}, read16, "default")
+        finally:
+            (gw.post_state, gw.relay_post, gw.subprocess.Popen, gw.ENROLL_DIR, gw.np.concatenate, gw.follow_training, gw.time.sleep) = old
+        return posted, uploads
+
+    def test_stages_and_default_count(self):
+        self.assertEqual(gw.ENROLL_COUNT, 10); self.assertEqual(gw.TOPUP_COUNT, 10)
+        self.assertEqual((gw.LEAD_S, gw.CLIP_S, gw.RETRY_S), (0.9, 2.4, 1.5))
+        posted, uploads = self.run_enroll(loud_at=(2,))
+        self.assertEqual(posted[0], "prompt")
+        self.assertEqual(posted[1:4], ["ready", "recording", "saved"])
+        self.assertIn("loud", posted)
+        self.assertEqual(posted[-1], "uploaded")
+        self.assertEqual(sum(1 for p, _ in uploads if p.endswith(".wav")), 10)
+        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
+        self.assertEqual(done["count"], 10)
+        self.assertNotIn("prior", done)
+
+    def test_topup_names_prior_session(self):
+        _, uploads = self.run_enroll(topup=True)
+        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
+        self.assertEqual(done["prior"], "20261019-150740")

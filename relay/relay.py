@@ -16,7 +16,7 @@ short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds.
 GET /health returns {"ok":true} (details only with the token).
 
 Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env. Requests with an Origin header
-(browsers) are refused; one session at a time (atomic check-and-set); daily caps on sessions and minutes are
+(browsers) are refused; one session at a time (atomic check-and-set); a daily cap on minutes is
 persisted in /state; 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
 capped. Alerts (cap, 80% of cap, lockout) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
@@ -50,7 +50,7 @@ INSTRUCTIONS = E("INSTRUCTIONS", (
     "Answer in one to three short spoken sentences, plainly and warmly. No lists, markdown, or emoji."))
 TZ = E("TZ_NAME", "America/Chicago")                  # for the "current date and time" line in the instructions
 KEYTERMS = [t.strip()[:50] for t in (secret("keyterms") or "Grok").split(",") if t.strip()][:100]  # transcription bias
-MAX_SESSIONS_DAY, MAX_MINUTES_DAY = int(E("MAX_SESSIONS_DAY", "40")), float(E("MAX_MINUTES_DAY", "20"))
+MAX_MINUTES_DAY = float(E("MAX_MINUTES_DAY", "20"))  # daily cost cap (minutes); there is no daily session-count cap
 MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", str(MAX_TOTAL + 5 if MULTI_TURN else 65)))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
 STATE = E("STATE_FILE", "/state/usage.json")
 ALERT_DIR = E("ALERT_DIR", "/alerts")                  # optional: ntfy outbox (files <ms>-<hex>.json)
@@ -384,15 +384,58 @@ async def enroll_route(req):
         except ValueError:
             j = {}
         persona = str(j.get("persona", ""))
+        prior = str(j.get("prior", ""))  # top-up: an earlier finished session of the same phrase to train with
+        if prior and not (SESSION.match(prior) and prior != ses and os.path.isfile(os.path.join(ENROLL_DIR, ph, prior, "READY"))):
+            return web.json_response({"error": "bad prior session"}, status=400)
         n = len([f for f in os.listdir(d) if CLIP.match(f)]) if os.path.isdir(d) else 0
-        if n < 10 or not SLUG.match(persona):
-            return web.json_response({"error": "need 10+ clips and a persona slug"}, status=400)
+        if n < (5 if prior else 10) or not SLUG.match(persona):
+            return web.json_response({"error": "need 10+ clips (5+ for a top-up) and a persona slug"}, status=400)
         with open(os.path.join(d, ".READY.tmp"), "w") as f:
-            json.dump({"phrase": ph, "persona": persona, "clips": n, "at": int(time.time())}, f)
+            json.dump({"phrase": ph, "persona": persona, "clips": n, "at": int(time.time()), **({"prior": prior} if prior else {})}, f)
         os.replace(os.path.join(d, ".READY.tmp"), os.path.join(d, "READY"))
         log(f"enroll: {ph} {ses} ready ({n} clips)")
         return web.json_response({"ok": True, "clips": n})
     return web.json_response({"error": "bad request"}, status=400)
+
+
+def enroll_status(ph, ses):
+    """Training status of one inbox session: recording | queued (position, 1 = next/training) | done (passed) | failed."""
+    d = os.path.join(ENROLL_DIR, ph, ses)
+    if not os.path.isdir(d):
+        return {"state": "unknown"}
+    if os.path.exists(os.path.join(d, "FAILED")):
+        return {"state": "failed"}
+    if os.path.exists(os.path.join(d, "DONE")):
+        try:
+            with open(os.path.join(d, "result.json")) as f:
+                r = json.load(f)
+        except (OSError, ValueError):
+            r = {}
+        return {"state": "done", "passed": bool(r.get("passed"))}
+    ready = os.path.join(d, "READY")
+    if not os.path.exists(ready):
+        return {"state": "recording"}
+    mine, ahead = os.path.getmtime(ready), 0
+    for p in os.listdir(ENROLL_DIR):
+        if not PHRASE.match(p) or not os.path.isdir(os.path.join(ENROLL_DIR, p)):
+            continue
+        for x in os.listdir(os.path.join(ENROLL_DIR, p)):
+            o = os.path.join(ENROLL_DIR, p, x)
+            if (p, x) != (ph, ses) and os.path.exists(os.path.join(o, "READY")) and not any(
+                    os.path.exists(os.path.join(o, k)) for k in ("DONE", "FAILED")) and os.path.getmtime(os.path.join(o, "READY")) < mine:
+                ahead += 1
+    return {"state": "queued", "position": ahead + 1}
+
+
+async def enroll_status_route(req):
+    """GET /enroll/<phrase>/<session>/status (token): the station follows its enrollment to a pass/fail notice."""
+    bad = await gate(req)
+    if bad:
+        return bad
+    ph, ses = req.match_info.get("phrase", ""), req.match_info.get("session", "")
+    if not (os.path.isdir(ENROLL_DIR) and PHRASE.match(ph) and SESSION.match(ses)):
+        return web.json_response({"error": "bad request"}, status=400)
+    return web.json_response(enroll_status(ph, ses))
 
 
 async def wakewords_route(req):
@@ -450,7 +493,7 @@ async def health(req):
         return web.json_response({"ok": True})
     u = load_usage()
     return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"], "today": u,
-                              "caps": {"sessions": MAX_SESSIONS_DAY, "minutes": MAX_MINUTES_DAY}})
+                              "caps": {"minutes": MAX_MINUTES_DAY}})
 
 
 async def session(req):
@@ -465,9 +508,9 @@ async def session(req):
     if not KEY:
         return web.json_response({"error": "no xai key configured"}, status=503)
     u = load_usage()
-    if u["sessions"] >= MAX_SESSIONS_DAY or u["seconds"] >= MAX_MINUTES_DAY * 60:
+    if u["seconds"] >= MAX_MINUTES_DAY * 60:
         alert("cap", "grok-station relay: daily cap reached",
-              f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (caps {MAX_SESSIONS_DAY} / {MAX_MINUTES_DAY:g} min).")
+              f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (cap {MAX_MINUTES_DAY:g} min).")
         return web.json_response({"error": "daily cap reached"}, status=429)
     if stats["busy"]:
         return web.json_response({"error": "busy"}, status=409)  # one device, one session at a time
@@ -651,9 +694,9 @@ async def session(req):
         u = load_usage()
         u["seconds"] += dt
         save_usage(u)
-        if u["sessions"] >= 0.8 * MAX_SESSIONS_DAY or u["seconds"] >= 0.8 * MAX_MINUTES_DAY * 60:
+        if u["seconds"] >= 0.8 * MAX_MINUTES_DAY * 60:
             alert("cap80", "grok-station relay: 80% of daily cap",
-                  f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (caps {MAX_SESSIONS_DAY} / {MAX_MINUTES_DAY:g} min).", 3)
+                  f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (cap {MAX_MINUTES_DAY:g} min).", 3)
         log(f"session end: {why}; {dt:.1f}s; up {n_up / 48000:.1f}s audio; down {n_down / 48000:.1f}s audio; "
             f"today {u['sessions']} sessions {u['seconds'] / 60:.2f} min")
         await pi.close()
@@ -664,11 +707,12 @@ if __name__ == "__main__":
     app = web.Application()
     app.add_routes([web.get("/health", health), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/enroll/{phrase}/{session}/{item}", enroll_route),
+                    web.get("/enroll/{phrase}/{session}/status", enroll_status_route),
                     web.get("/wakewords", wakewords_route), web.get("/wakeword/{name}.onnx", wakeword_file)])
     async def start_voices(_app):
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)
     log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
-        f"keyterms={len(KEYTERMS)} tz={TZ} caps={MAX_SESSIONS_DAY}/day {MAX_MINUTES_DAY:g} min/day "
+        f"keyterms={len(KEYTERMS)} tz={TZ} cap={MAX_MINUTES_DAY:g} min/day "
         f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")
     web.run_app(app, port=PORT, print=None, access_log=None)

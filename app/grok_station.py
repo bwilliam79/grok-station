@@ -81,6 +81,7 @@ def hexc(s):
 BG, SURFACE, SURFACE2, RULE = hexc("0D0B09"), hexc("17130F"), hexc("211B16"), hexc("2E2620")
 TEXT, MUTED, FAINT = hexc("F5EFE6"), hexc("A89B8C"), hexc("6F655A")
 LISTENING, THINKING, SPEAKING, AMBER = hexc("3FD3B6"), hexc("A99CFF"), hexc("FFE6BF"), hexc("F5C04A")
+RED = hexc("FF5A52")  # the single red (design.md): mic off only on the display; problems use text on a quiet ring
 SUN = hexc("F2C46A")
 NIGHT_TEXT, NIGHT_DIM, BLACK = hexc("9A7752"), hexc("5E4934"), hexc("000000")
 
@@ -204,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0))
             j = json.loads(self.rfile.read(min(n, 1024)) or b"{}")
-            body = json.dumps({"phrase": str(j.get("phrase", ""))[:24], "count": int(j.get("count", 25))}).encode()
+            body = json.dumps({"phrase": str(j.get("phrase", ""))[:24], "count": int(j.get("count", 10)), "topup": bool(j.get("topup"))}).encode()
         except Exception:
             return self._reply(400, {"error": "bad json"})
         try:
@@ -505,8 +506,36 @@ def ring_thinking(c, cx, cy, r, ring_w, glow, t):
         pygame.draw.circle(c, THINKING, (cx + rr * math.cos(a), cy + rr * math.sin(a)), ring_w / 2)
 
 
+def ring_success(c, cx, cy, r, ring_w, glow, t):
+    """Teal static ring (saved, uploaded, passed)."""
+    pygame.draw.circle(c, LISTENING, (cx, cy), r + ring_w / 2, int(ring_w))
+
+
+def ring_ready(c, cx, cy, r, ring_w, glow, t):
+    """Get ready: warm arc on a rule track that fills clockwise from 12 o'clock as t goes 0 -> 1 (the 0.9 s pause)."""
+    rr = r + ring_w / 2
+    pygame.draw.circle(c, RULE, (cx, cy), rr, max(2, int(ring_w / 3)))
+    t = max(0.0, min(1.0, t))
+    steps = int(240 * t)
+    for i in range(steps + 1):
+        a = -math.pi / 2 + 2 * math.pi * t * i / max(1, steps)
+        pygame.draw.circle(c, SPEAKING, (cx + rr * math.cos(a), cy + rr * math.sin(a)), ring_w / 2)
+
+
+def ring_saved(c, cx, cy, r, ring_w, glow, t):
+    """Clip accepted: one teal pulse (width up to 2x plus a soft halo at 35%), ease-out; plain teal ring at t=1."""
+    t = max(0.0, min(1.0, t))
+    p = math.sin(math.pi * (1 - (1 - t) ** 2))  # ease-out bump, 0 at both ends
+    w = ring_w * (1 + p)
+    if p > 0.01:
+        halo = (*LISTENING[:3], int(255 * 0.35 * p))
+        pygame.draw.circle(c, halo, (cx, cy), r + ring_w / 2 + w / 2 + ring_w * 0.4, max(2, int(ring_w * 0.8)))
+    pygame.draw.circle(c, LISTENING, (cx, cy), r + ring_w / 2, int(w))
+
+
 # Voice states register a painter here; "error" and "notice" reuse the quiet idle ring.
-RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle}
+RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle,
+         "success": ring_success, "enroll_ready": ring_ready, "enroll_saved": ring_saved}
 
 _photo_cache = {}  # (path, mtime, d, k, initial, photo_ok) -> circle-cropped surface
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
@@ -667,38 +696,165 @@ def draw_topbar_clock(surf, L, now):
     return r
 
 
-def draw_enroll(surf, L, now, msg):
-    """Enroll screen: the phrase to say, big; "Clip 3 of 25" + progress bar; status line (recording, retry, done)."""
+ENROLL_STAGES = {
+    # stage: (ring, label, label color, meter) ; copy is built in enroll_copy()
+    "prompt": ("idle", "Ready", MUTED, None),
+    "ready": ("enroll_ready", "Get ready", SPEAKING, None),
+    "recording": ("listening", "Recording", LISTENING, "live"),
+    "loud": ("idle", "Too loud", TEXT, "full"),
+    "quiet": ("idle", "Try again", TEXT, "flat"),
+    "saved": ("enroll_saved", "Saved", LISTENING, None),
+    "uploaded": ("success", "Done", LISTENING, None),
+    "queued": ("thinking", "Queued", THINKING, None),
+    "passed": ("success", "Ready", LISTENING, None),
+    "failed": ("idle", "Not yet", MUTED, None),
+    "error": ("idle", "Stopped", MUTED, None),
+}
+ENROLL_ANIM = {"ready": ("enroll_ready", 0.9, False), "saved": ("enroll_saved", 0.3, False),
+               "recording": ("listening", PULSE_PERIOD, True), "queued": ("thinking", SPIN_PERIOD, True)}
+
+
+def enroll_parse(msg):
+    """heard = "i/n|stage|extra" (extra: queue position for queued, top-up size for failed). Old free-text status
+    lines ("3/25|Recording… speak now") map to stage "custom"."""
+    parts = (msg.get("heard") or "").split("|")
+    m = re.match(r"(\d+)/(\d+)$", parts[0].strip()) if parts else None
+    i, n = (int(m.group(1)), max(1, int(m.group(2)))) if m else (0, 0)
+    stage = parts[1].strip() if len(parts) > 1 else ""
+    extra = parts[2].strip() if len(parts) > 2 else ""
+    if stage not in ENROLL_STAGES:
+        stage, extra = "custom", stage
+    return i, n, stage, extra
+
+
+def anim_of(msg):
+    """(ring state, period s, loops) for a message whose portrait ring animates, else None. Enrollment stages animate
+    too: the get-ready fill (0.9 s, once), the clip-saved pulse (0.3 s, once), recording pulse, queued spin."""
+    if not msg or not msg.get("voice"):
+        return None
+    st = msg.get("state")
+    if st == "enroll":
+        return ENROLL_ANIM.get(enroll_parse(msg)[2])
+    return (st, ANIM[st], True) if st in ANIM else None
+
+
+def ordinal(k):
+    return f"{k}{'th' if 10 <= k % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(k % 10, 'th')}"
+
+
+def enroll_copy(phrase, i, n, stage, extra):
+    """(headline, sub-line, sub color, status line or None, bar fill 0..1 or None) for one enrollment screen."""
+    q = f"“{phrase}”"
+    clip = f"Clip {i} of {n}"
+    bar = (i - 1) / n if n else None
+    if stage == "prompt":
+        return f"Say {q}", "Say it the way you normally would, after each chime.", MUTED, \
+            f"{n} clips · about {max(1, round(n * 6 / 60))} min", 0.0
+    if stage == "ready":
+        return "Get ready…", f"Say {q} right after the chime.", MUTED, clip, bar
+    if stage == "recording":
+        return f"Say {q}", "Speak now", LISTENING, clip, bar
+    if stage == "loud":
+        return "Too loud", f"Step back a little or speak softer. Clip {i} will retry.", MUTED, clip, bar
+    if stage == "quiet":
+        return "Didn’t hear it", f"Say {q} right after the chime. Clip {i} will retry.", MUTED, clip, bar
+    if stage == "saved":
+        nxt = f"Clip {min(i + 1, n)} of {n}"
+        return "Got it", f"Clip {i} saved. Next one in a moment.", MUTED, nxt, i / n if n else None
+    if stage == "uploaded":
+        return f"All {n} clips saved", "Uploaded for training. You can use the station as usual.", MUTED, "Uploaded ✓", 1.0
+    if stage == "queued":
+        k = int(extra) if extra.isdigit() else 1
+        when = "training now, about 10 min" if k <= 1 else f"{ordinal(k)} in line, about {10 * k} min"
+        return "Training queued", f"{q} is {when}. We’ll show the result here.", MUTED, None, None
+    if stage == "passed":
+        return f"{q} is ready", "Try it now.", MUTED, None, None
+    if stage == "failed":
+        more = int(extra) if extra.isdigit() else 10
+        return f"Needs {more} more clips", f"A short top-up will make {q} more reliable.", MUTED, None, None
+    if stage == "error":
+        return "Enrollment stopped", "Nothing was lost. Try again later.", MUTED, None, None
+    return f"Say {q}" if phrase else "Wake word setup", extra, MUTED, clip if n else None, bar
+
+
+def draw_meter(surf, L, cx, cy, kind):
+    """7 rounded bars under the state label: live (teal, varied), full (text color: too loud), flat (faint: nothing)."""
+    bw, gap, hmax = max(2, L(16)), max(2, L(12)), L(90)
+    hs = {"live": (0.35, 0.6, 0.85, 1.0, 0.75, 0.5, 0.3), "full": (1.0,) * 7, "flat": (0.08,) * 7}[kind]
+    color = {"live": LISTENING, "full": TEXT, "flat": FAINT}[kind]
+    x0 = cx - (7 * bw + 6 * gap) // 2
+    for k, hh in enumerate(hs):
+        bh = max(bw // 2, int(hmax * hh))
+        pygame.draw.rect(surf, color, (x0 + k * (bw + gap), cy - bh // 2, bw, bh), border_radius=bw // 2)
+
+
+def draw_enroll(surf, L, now, msg, t=1.0):
+    """Enrollment screens 01-10 (docs/design.md, mockups): avatar with the stage ring at the left, headline, sub-line,
+    "Clip N of M" status and progress bar at the right; muted "Wake word setup · <name>" top bar. The persona's
+    portrait, or the Grok mark for a wake word without a persona."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     surf.fill(BG)
     draw_topbar_clock(surf, L, now)
-    text_at(surf, "body", L(56), "Wake word enrollment", MUTED, (L.m, L(34) + L(72) // 2), "midleft")
-    prompt, info = msg.get("text") or "", msg.get("heard") or ""
-    parts = info.split("|")
-    step = parts[0] if parts else ""
-    status = parts[1] if len(parts) > 1 else ""
-    width = L.w - 2 * L.m
-    f, lines, lh = fit_text("display", prompt, width, L(420), L(220), L(80), lh=1.0, max_lines=2)
-    y = L(330)
-    y = draw_lines(surf, f, lines, lh, TEXT, L.m, y, "center", width)
-    m = re.match(r"(\d+)/(\d+)", step)
-    if m:
-        i, n = int(m.group(1)), max(1, int(m.group(2)))
-        text_at(surf, "display", L(80), f"Clip {i} of {n}", LISTENING, (L.w // 2, y + L(110)), "center")
-        bar = pygame.Rect(L.m + L(200), y + L(200), width - L(400), L(24))
-        pygame.draw.rect(surf, SURFACE2, bar, border_radius=L(12))
-        pygame.draw.rect(surf, LISTENING, (bar.x, bar.y, int(bar.w * (i - 1) / n), bar.h), border_radius=L(12))
+    i, n, stage, extra = enroll_parse(msg)
+    prompt = msg.get("text") or ""
+    m = re.search(r"[“\"](.+?)[”\"]", prompt)
+    phrase = m.group(1) if m else prompt
+    who = msg.get("from") or VOICE_NAME
+    top = f"Wake word setup · {who if who != VOICE_NAME else (phrase or who)}"
+    ft = font("body", L(54))
+    text_at(surf, "body", L(54), top if ft.size(top)[0] <= L.w // 2 else ellipsize(ft, top, L.w // 2), MUTED,
+            (L.m, L(34) + L(72) // 2), "midleft")
+    ring, label, lcolor, meter = ENROLL_STAGES.get(stage, ("idle", "", MUTED, None))
+    d, ring_w = L(500), max(4, L(14))
+    left = L(160)
+    x = left + d + L(140)
+    width = L.w - L.m - x
+    top_row = L(34) + L(72)
+    col_h = d + L(110) + L(40) + (L(60) + L(45) if meter else 0)  # avatar, state label, level meter
+    photo_top = top_row + max(L(30), (L.h - top_row - L(60) - col_h) // 2)
+    img, pad = portrait(who, d, ring_w, ring, t, photo_ok=True)
+    origin = (left - pad, photo_top - pad)
+    surf.blit(img, origin)
+    LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
+    LAST_PORTRAIT_ARGS = (who, d, ring_w, True)
+    acx = left + d // 2
+    if label:
+        lr = text_at(surf, "display", L(64), label, lcolor, (acx, photo_top + d + L(110)), "center")
+        if meter:
+            draw_meter(surf, L, acx, lr.bottom + L(60), meter)
+    head, sub, scolor, status, bar = enroll_copy(phrase, i, n, stage, extra)
+    fh, hl, hstep = fit_text("display", head, width, L(240), L(120), L(64), lh=1.02, max_lines=2)
+    fs, sl, sstep = fit_text("body", sub, width, L(170), L(68), L(40), lh=1.18, max_lines=2) if sub else (None, [], 0)
+    st_h = L(80) + L(30) if status else 0
+    bar_h = L(24) + L(28) if bar is not None else 0
+    block = hstep * len(hl) + (L(16) + sstep * len(sl) if sl else 0) + (L(28) + st_h if status else 0) + bar_h
+    y = max(top_row + L(40), photo_top + d // 2 - block // 2)
+    y = draw_lines(surf, fh, hl, hstep, TEXT, x, y)
+    if sl:
+        y = draw_lines(surf, fs, sl, sstep, scolor, x, y + L(16))
     if status:
-        color = LISTENING if status.lower().startswith("recording") else MUTED
-        fs, sl, ss = fit_text("body", status, width, L(150), L(60), L(36), lh=1.05, max_lines=2)
-        draw_lines(surf, fs, sl, ss, color, L.m, L.h - L(90) - ss * len(sl), "center", width)
+        fst = font("display", L(80))
+        check = status.endswith(" ✓")  # Inter has no check glyph: draw it
+        stext = status[:-2] if check else status
+        stext = stext if fst.size(stext)[0] <= width - L(80) else ellipsize(fst, stext, width - L(80))
+        r = text_at(surf, "display", L(80), stext, LISTENING, (x, y + L(28)), "topleft")
+        if check:
+            u, cy = L(40), r.centery
+            pts = [(r.right + L(22), cy), (r.right + L(22) + u * 0.38, cy + u * 0.38), (r.right + L(22) + u, cy - u * 0.5)]
+            pygame.draw.lines(surf, LISTENING, False, pts, max(2, L(8)))
+        y = r.bottom + L(30)
+    if bar is not None:
+        track = pygame.Rect(x, y, width, L(24))
+        pygame.draw.rect(surf, SURFACE2, track, border_radius=L(12))
+        if bar > 0:
+            pygame.draw.rect(surf, LISTENING, (x, y, max(L(24), int(width * min(1.0, bar))), L(24)), border_radius=L(12))
 
 
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     state = msg.get("state", state)
     if state == "enroll":
-        LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
-        return draw_enroll(surf, L, now, msg)
+        return draw_enroll(surf, L, now, msg, t)
     surf.fill(BG)
     if state == "listening":
         pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
@@ -758,35 +914,52 @@ SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session}
 
 
 # ---------------------------------------------------------------- output
+MIN_SIZE, MAX_SIZE = (800, 480), (3840, 2160)  # supported framebuffer range (README "Resolution")
+
+
+def canvas_rect(w, h):
+    """Drawing area inside a w x h framebuffer: the whole screen within the supported range; larger screens are
+    letterboxed (centered, at most MAX_SIZE per axis). Smaller than MIN_SIZE draws at native size (best effort)."""
+    cw, ch = min(w, MAX_SIZE[0]), min(h, MAX_SIZE[1])
+    return pygame.Rect((w - cw) // 2, (h - ch) // 2, cw, ch)
+
+
 class Display:
     def __init__(self, fb=FB, size=None):
         self.fb = fb
         if size:
-            self.screen = pygame.Surface(size, depth=16)
+            self.full = pygame.Surface(size, depth=16)
         else:
             sysfs = "/sys/class/graphics/" + os.path.basename(fb)
             w, h = map(int, open(f"{sysfs}/virtual_size").read().split(","))
             bpp = int(open(f"{sysfs}/bits_per_pixel").read())
             stride = int(open(f"{sysfs}/stride").read())
-            self.screen = pygame.Surface((w, h), depth=bpp)
-            if self.screen.get_pitch() != stride:
-                raise SystemExit(f"fb stride {stride} != surface pitch {self.screen.get_pitch()}")
+            self.full = pygame.Surface((w, h), depth=bpp)
+            if self.full.get_pitch() != stride:
+                raise SystemExit(f"fb stride {stride} != surface pitch {self.full.get_pitch()}")
+        fw, fh = self.full.get_size()
+        if fw < MIN_SIZE[0] or fh < MIN_SIZE[1]:
+            print(f"display {fw}x{fh} is below the supported {MIN_SIZE[0]}x{MIN_SIZE[1]}; drawing best effort", flush=True)
+        self.view = canvas_rect(fw, fh)
+        self.full.fill(BG)
+        # painters draw into the canvas; a subsurface shares the framebuffer's pixels, so letterboxing is free
+        self.screen = self.full if self.view.size == (fw, fh) else self.full.subsurface(self.view)
         self.L = Layout(*self.screen.get_size())
 
     def flush(self):
         if self.fb:
             with open(self.fb, "wb") as f:  # 16bpp RGB565 surface matches the vc4 fbdev layout
-                f.write(self.screen.get_buffer().raw)
+                f.write(self.full.get_buffer().raw)
 
     def flush_rect(self, rect):
         """Write only rect's rows/columns. fb=None (demo, tests) is a no-op."""
         if not self.fb or not rect:
             return
-        rect = pygame.Rect(rect).clip(self.screen.get_rect())
+        rect = pygame.Rect(rect).clip(self.screen.get_rect()).move(self.view.topleft)  # canvas -> framebuffer coords
         if rect.w <= 0 or rect.h <= 0:
             return
-        bpp, pitch = self.screen.get_bytesize(), self.screen.get_pitch()
-        raw = self.screen.get_buffer().raw
+        bpp, pitch = self.full.get_bytesize(), self.full.get_pitch()
+        raw = self.full.get_buffer().raw
         x, y, w, h = rect
         with open(self.fb, "r+b") as f:
             for row in range(y, y + h):
@@ -810,7 +983,7 @@ class Display:
             self.flush()
         if snapshot and SNAP:
             try:
-                pygame.image.save(self.screen, SNAP)
+                pygame.image.save(self.full, SNAP)
             except Exception:
                 pass
 
@@ -823,16 +996,23 @@ def main():
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
     msg, until, last_key, anim_started = None, 0.0, None, None
 
-    def thinking():  # any animated ring state (thinking spin, listening pulse)
-        return bool(msg and msg.get("voice") and msg.get("state") in ANIM and anim_started)
+    def thinking():  # any animated ring (thinking spin, listening pulse, enrollment fill/pulse until it finishes)
+        a = anim_of(msg)
+        if not a or not anim_started:
+            return False
+        return a[2] or time.time() - anim_started <= a[1] + 0.1
+
+    def phase_now():
+        _, period, loops = anim_of(msg)
+        x = (time.time() - anim_started) / period
+        return x % 1.0 if loops else min(1.0, x)
 
     def paint(fade=False, snapshot=True):
         nonlocal last_key
         now = time.localtime()
         on = colon_blink_on()
         if thinking():
-            phase = ((time.time() - anim_started) / ANIM[msg["state"]]) % 1.0
-            disp.show(draw_session, now, msg, msg["state"], phase, fade=fade, snapshot=snapshot)
+            disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
         elif msg:
             disp.show(draw_session, now, msg, fade=fade, snapshot=snapshot)
@@ -853,9 +1033,9 @@ def main():
         rect, args = LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
         if not rect or not args or anim_started is None:
             return
-        state = msg["state"]
-        n = max(1, round(ANIM[state] * spin_fps()))
-        i = int(((time.time() - anim_started) / ANIM[state]) % 1.0 * n) % n
+        state, period, loops = anim_of(msg)
+        n = max(1, round(period * spin_fps()))
+        i = min(n, int(phase_now() * n)) if not loops else int(phase_now() * n) % n
         if any(k[0] != args for k in spin_frames):
             spin_frames.clear()
         frame = spin_frames.get((args, state, i))
@@ -901,12 +1081,14 @@ def main():
         if ev.type == STATE:
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
-                if ev.state in ANIM:
-                    if not anim_started or not msg or msg.get("state") != ev.state:
-                        anim_started = time.time()
+                new = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
+                if anim_of(new):
+                    if (not anim_started or not msg or msg.get("state") != ev.state
+                            or (ev.state == "enroll" and msg.get("heard") != ev.heard)):
+                        anim_started = time.time()  # each enrollment step restarts its fill/pulse
                 else:
                     anim_started = None
-                msg = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
+                msg = new
                 until = time.time() + hold
                 paint()
             elif msg and msg.get("voice"):
@@ -953,8 +1135,6 @@ def demo(out, size):
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
         ("listening", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
         ("listening-persona", draw_session, (now, {"from": "Kai", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
-        ("enroll", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll", "text": "Say “Hey Finn”",
-                                        "heard": "3/25|Recording… speak now"})),
         ("thinking", draw_session, (now, {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
         ("error", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),
@@ -973,10 +1153,18 @@ def demo(out, size):
     listen = {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"}
     for i, phase in enumerate((0.0, 0.25, 0.5)):
         shots.append((f"listening-pulse-{i}", draw_session, (now, listen, "listening", phase)))
+    for k, (stage, i, extra, t) in enumerate((("prompt", 1, "", 1), ("ready", 3, "", 0.6), ("recording", 3, "", 0.5),
+                                               ("loud", 3, "", 1), ("quiet", 3, "", 1), ("saved", 3, "", 0.5),
+                                               ("uploaded", 10, "", 1), ("queued", 0, "2", 0.3), ("passed", 0, "", 1),
+                                               ("failed", 0, "10", 1)), 1):
+        em = {"from": "Finn", "voice": True, "state": "enroll", "text": "“Hey Finn”", "heard": f"{i}/10|{stage}|{extra}"}
+        shots.append((f"enroll-{k:02d}-{stage}", draw_session, (now, em, "enroll", t)))
+    shots.append(("enroll-no-persona", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll",
+                                                             "text": "“Hey Nova”", "heard": "1/10|prompt|"}, "enroll", 1)))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)
-        pygame.image.save(disp.screen, os.path.join(out, f"{name}.png"))
+        pygame.image.save(disp.full, os.path.join(out, f"{name}.png"))
         print(os.path.join(out, f"{name}.png"))
 
 

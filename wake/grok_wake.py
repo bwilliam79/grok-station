@@ -134,7 +134,10 @@ CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0
 ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
 ENROLL_STATE = {"busy": False, "fast_until": 0}
 PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
-CLIP_S, LEAD_S = 2.4, 0.9  # recording window per clip, pause before the chime
+CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
+                                         # ring fills over it), too loud / didn't hear it hold before the retry
+ENROLL_COUNT, TOPUP_COUNT = 10, 10       # default clips per session; top-up offered when recall falls short
+SESSION_OPEN = threading.Event()         # a voice session is on screen: enrollment result notices wait for it
 
 
 def relay_post(path, body, ctype="application/octet-stream"):
@@ -175,7 +178,8 @@ def control_server():
                 return self._r(404, {"error": "not found"})
             try:
                 j = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1024)) or b"{}")
-                phrase, count = str(j.get("phrase", "")), int(j.get("count", 25))
+                phrase, count = str(j.get("phrase", "")), int(j.get("count", ENROLL_COUNT))
+                topup = bool(j.get("topup"))
             except Exception:
                 return self._r(400, {"error": "bad json"})
             allowed = enroll_phrases()
@@ -188,10 +192,10 @@ def control_server():
             if ENROLL_STATE["busy"]:
                 return self._r(409, {"error": "enrollment in progress"})
             try:
-                ENROLL_Q.put_nowait({"phrase": phrase, "persona": allowed[phrase], "count": count})
+                ENROLL_Q.put_nowait({"phrase": phrase, "persona": allowed[phrase], "count": count, "topup": topup})
             except queue.Full:
                 return self._r(409, {"error": "an enrollment is already queued"})
-            print(f"enroll queued: {phrase} x{count}", flush=True)
+            print(f"enroll queued: {phrase} x{count}{' (top-up)' if topup else ''}", flush=True)
             return self._r(202, {"ok": True, "phrase": phrase, "persona": allowed[phrase], "count": count})
 
         def log_message(self, *a):
@@ -217,39 +221,50 @@ def is_clipped(raw):
     return bool(np.mean(np.abs(raw.astype(np.int32)) >= 32000) > 0.001)
 
 
+def last_session(phrase):
+    """Newest earlier local session of phrase (for a top-up), or None."""
+    try:
+        ses = sorted(x for x in os.listdir(os.path.join(ENROLL_DIR, phrase)) if re.fullmatch(r"\d{8}-\d{6}", x))
+    except OSError:
+        return None
+    return ses[-1] if ses else None
+
+
 def enroll(req, read16, play):
-    """Record req["count"] clips with on-screen prompts and a count, upload each, then mark the session ready."""
+    """Record req["count"] clips with the enrollment screens (prompt, get ready, recording, too loud / didn't hear it,
+    saved), upload each, mark the session ready, then follow its training to a pass/fail notice."""
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
     words = phrase.replace("_", " ").title()
-    say = f"Say “{words}”"
+    say = f"“{words}”"
+    prior = last_session(phrase) if req.get("topup") else None
     ses = time.strftime("%Y%m%d-%H%M%S")
     d = os.path.join(ENROLL_DIR, phrase, ses)
     os.makedirs(d, exist_ok=True)
     ENROLL_STATE["busy"] = True
-    print(f"enroll start {phrase} x{n} session {ses}", flush=True)
+    show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
+    print(f"enroll start {phrase} x{n} session {ses}{f' (top-up of {prior})' if prior else ''}", flush=True)
     sent, i, tries = 0, 1, 0
     try:
-        post_state("enroll", text=say, heard=f"1/{n}|Speak naturally, about an arm’s length away")
+        show(1, "prompt")
         for _ in range(int(3 / 0.08)):
             read16()
         while i <= n:
-            post_state("enroll", text=say, heard=f"{i}/{n}|Get ready…")
+            show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
                 read16()
             subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
             for _ in range(4):  # skip the chime itself
                 read16()
-            post_state("enroll", text=say, heard=f"{i}/{n}|Recording… speak now")
+            show(i, "recording")
             raw = np.concatenate([read16(raw=True) for _ in range(int(CLIP_S / 0.08))])
             clipped = is_clipped(raw)  # judged on the mic signal before software gain
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
             if clip is None or clipped:
                 tries += 1
-                why = "Too loud, step back a little" if clipped else "Didn’t hear it, a bit louder please"
                 print(f"enroll clip {i} rejected ({'clipped' if clipped else 'quiet'})", flush=True)
-                post_state("enroll", text=say, heard=f"{i}/{n}|{why}")
-                for _ in range(int(1.5 / 0.08)):
+                show(i, "loud" if clipped else "quiet")
+                for _ in range(int(RETRY_S / 0.08)):
                     read16()
                 if tries >= 3 * n:
                     break
@@ -263,11 +278,16 @@ def enroll(req, read16, play):
                 sent += 1
             except Exception as e:
                 print(f"enroll upload {i} failed: {type(e).__name__}", flush=True)
+            if i < n:
+                show(i, "saved")
+                for _ in range(int(0.6 / 0.08)):
+                    read16()
             i += 1
         ok = False
-        if sent >= 10:
+        if sent >= (5 if prior else 10):
             try:
-                relay_post(f"/enroll/{phrase}/{ses}/done", json.dumps({"persona": persona, "count": sent}).encode(), "application/json")
+                body = {"persona": persona, "count": sent, **({"prior": prior} if prior else {})}
+                relay_post(f"/enroll/{phrase}/{ses}/done", json.dumps(body).encode(), "application/json")
                 ok = True
             except Exception as e:
                 print(f"enroll done failed: {type(e).__name__}", flush=True)
@@ -275,14 +295,39 @@ def enroll(req, read16, play):
         if ok:
             ENROLL_STATE["fast_until"] = time.time() + 3 * 3600
             SYNC_NOW.set()
-            post_state("enroll", text="Thanks! All done.",
-                       heard=f"|{sent} clips sent. Training takes about an hour; the station loads the new model on its own.")
+            post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|uploaded|")
+            threading.Thread(target=follow_training, args=(phrase, ses, say, persona), daemon=True).start()
         else:
-            post_state("error", text="Enrollment didn’t finish. Try again later.")
+            post_state("enroll", text=say, who=persona, heard=f"0/{n}|error|")
         time.sleep(6)
-        post_state("idle")
     finally:
         ENROLL_STATE["busy"] = False
+
+
+def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
+    """Poll the relay for this session's training status: show "Training queued" once, then "is ready" or
+    "Needs 10 more clips" when the result lands (waiting while a voice session is on screen)."""
+    t0, shown_queue = time.time(), False
+    while time.time() - t0 < limit:
+        raw = relay_get(f"/enroll/{phrase}/{ses}/status")
+        try:
+            j = json.loads(raw) if raw else {}
+        except ValueError:
+            j = {}
+        st = j.get("state")
+        if st == "queued" and not shown_queue and not SESSION_OPEN.is_set():
+            post_state("enroll", text=say, who=persona, heard=f"0/0|queued|{int(j.get('position', 1))}")
+            shown_queue = True
+        elif st in ("done", "failed"):
+            while SESSION_OPEN.is_set():
+                time.sleep(2)
+            passed = st == "done" and bool(j.get("passed"))
+            print(f"enroll result {phrase} {ses}: {'passed' if passed else 'not passed'}", flush=True)
+            post_state("enroll", text=say, who=persona, heard=f"0/0|{'passed' if passed else 'failed'}|{TOPUP_COUNT}")
+            if passed:
+                SYNC_NOW.set()
+            return
+        time.sleep(every)
 
 
 def sync_wakewords():
@@ -500,6 +545,7 @@ class Session:
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
         self.turns = 0  # finished turns; a multi-turn relay keeps the session open for a follow-up
+        SESSION_OPEN.set()
         self.persona = persona if SLUG_RE.match(persona or "") else "grok"
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
         threading.Thread(target=self.run, daemon=True).start()
@@ -649,6 +695,7 @@ class Session:
                 with wave.open(self.save, "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(b"".join(out))
             self.active = False
+            SESSION_OPEN.clear()
 
 
 def ask(path, save=None):
@@ -775,8 +822,11 @@ if __name__ == "__main__":
     elif len(sys.argv) == 2 and sys.argv[1] == "--sync":
         sync_personas()
         sync_wakewords()
-    elif len(sys.argv) in (3, 4) and sys.argv[1] == "--enroll":
-        body = json.dumps({"phrase": sys.argv[2], "count": int(sys.argv[3]) if len(sys.argv) == 4 else 25}).encode()
+    elif len(sys.argv) in (3, 4, 5) and sys.argv[1] == "--enroll":
+        args = [a for a in sys.argv[2:] if a != "--topup"]
+        top = "--topup" in sys.argv
+        n = int(args[1]) if len(args) > 1 else (TOPUP_COUNT if top else ENROLL_COUNT)
+        body = json.dumps({"phrase": args[0], "count": n, "topup": top}).encode()
         try:
             with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{CONTROL_PORT}/enroll", body,
                                                                {"Content-Type": "application/json"}), timeout=5) as r:

@@ -16,7 +16,6 @@ services:
     environment:
       XAI_MODEL: grok-voice-3.0
       XAI_VOICE: luna
-      MAX_SESSIONS_DAY: ${MAX_SESSIONS_DAY:-40}
       MAX_MINUTES_DAY: ${MAX_MINUTES_DAY:-20}
     secrets: [xai_api_key, relay_token, keyterms]
     volumes:

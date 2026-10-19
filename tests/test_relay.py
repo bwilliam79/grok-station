@@ -55,7 +55,7 @@ def fake_xai(transcripts):
 
 
 class MultiTurn(unittest.IsolatedAsyncioTestCase):
-    async def run_session(self, transcripts, listen=True, **cfg):
+    async def run_session(self, transcripts, listen=True, keep_usage=False, expect_reject=False, **cfg):
         old = {k: getattr(relay, k) for k in cfg}
         for k, v in cfg.items():
             setattr(relay, k, v)
@@ -65,9 +65,13 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
             relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
             rapp = web.Application(); rapp.router.add_get("/ws", relay.session)
             client = TestClient(TestServer(rapp)); await client.start_server()
-            if os.path.exists(relay.STATE):
+            if os.path.exists(relay.STATE) and not keep_usage:
                 os.remove(relay.STATE)
             events = []
+            if expect_reject:
+                r = await client.get("/ws", headers={"Authorization": "Bearer test-token"})
+                await client.close(); await xs.close()
+                return [r.status], xlog, relay.load_usage(), 0
             ws = await client.ws_connect("/ws", headers={"Authorization": "Bearer test-token"})
             loop = asyncio.get_running_loop()
             t0 = loop.time()
@@ -126,6 +130,39 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         ev, _, _, _ = await self.run_session(["q", "again"], MULTI_TURN=False)
         self.assertNotIn("turn_done", ev)
         self.assertEqual(ev[-1], "done")
+
+    async def test_no_daily_session_cap(self):
+        relay.save_usage({"day": relay.today(), "sessions": 500, "seconds": 0.0})
+        self.assertFalse(hasattr(relay, "MAX_SESSIONS_DAY"))
+        ev, _, u, _ = await self.run_session(["q"], MULTI_TURN=False, keep_usage=True)
+        self.assertEqual(ev[-1], "done")
+        self.assertEqual(u["sessions"], 501)
+
+    async def test_minutes_cap_still_applies(self):
+        relay.save_usage({"day": relay.today(), "sessions": 1, "seconds": relay.MAX_MINUTES_DAY * 60})
+        ev, _, _, _ = await self.run_session(["q"], keep_usage=True, expect_reject=True)
+        self.assertEqual(ev, [429])
+
+    def test_enroll_status(self):
+        d = tempfile.mkdtemp(); old = relay.ENROLL_DIR; relay.ENROLL_DIR = d
+        try:
+            mk = lambda ph, ses, *files: [os.makedirs(os.path.join(d, ph, ses), exist_ok=True)] + [
+                open(os.path.join(d, ph, ses, f), "w").write("{}") for f in files]
+            mk("hey_finn", "20261019-150740", "READY")
+            import time as _t; _t.sleep(0.02)
+            mk("hey_rhea", "20261019-151005", "READY")
+            self.assertEqual(relay.enroll_status("hey_rhea", "20261019-151005"), {"state": "queued", "position": 2})
+            self.assertEqual(relay.enroll_status("hey_finn", "20261019-150740")["position"], 1)
+            open(os.path.join(d, "hey_finn", "20261019-150740", "result.json"), "w").write('{"passed": false}')
+            open(os.path.join(d, "hey_finn", "20261019-150740", "DONE"), "w").write("")
+            self.assertEqual(relay.enroll_status("hey_finn", "20261019-150740"), {"state": "done", "passed": False})
+            self.assertEqual(relay.enroll_status("hey_rhea", "20261019-151005")["position"], 1)
+            mk("hey_hank", "20261019-151148")
+            self.assertEqual(relay.enroll_status("hey_hank", "20261019-151148"), {"state": "recording"})
+            open(os.path.join(d, "hey_hank", "20261019-151148", "FAILED"), "w").write("")
+            self.assertEqual(relay.enroll_status("hey_hank", "20261019-151148"), {"state": "failed"})
+        finally:
+            relay.ENROLL_DIR = old
 
     def test_end_phrases(self):
         for t in ("Thanks", "thank you so much", "That's all", "that’s it.", "no thanks", "bye", "okay thanks Grok"):

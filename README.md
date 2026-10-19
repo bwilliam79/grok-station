@@ -48,6 +48,22 @@ Preview without a Pi: `python3 app/grok_station.py --demo /tmp/out 2560x1706` re
 | `GROK_STATION_FADE` | `1` | `0` disables the fade back to idle |
 | `GROK_STATION_PORT` | `8787` | |
 
+## Resolution
+
+The display draws from the real framebuffer size; nothing assumes 2560×1706. Every size, margin, ring width and font
+is a spec value at 1920×1080 times `s = min(w/1920, h/1080)` (the limiting edge), placed relative to the real edges,
+and text auto-fits (wraps to its line limit, then shrinks to a floor, then ellipsizes).
+
+- **Supported:** 800×480 up to 3840×2160 (any aspect ratio in that range).
+- **Larger screens** are letterboxed: the UI draws in a centered 3840×2160 area (at most, per axis) on the
+  background color.
+- **Smaller screens** still draw at native size (best effort), with a log line saying the size is below the
+  supported minimum.
+
+Offscreen proof: `python3 app/grok_station.py --demo OUT WxH` renders every screen. The tests in `tests/test_display.py`
+render the enrollment screens at 800×480, 1280×720, 1920×1080, 2560×1706 and 3840×2160. They check that no ink
+crosses the side margins or the bottom safe area, and they cover the letterbox above 3840×2160.
+
 ## Layout
 
 | Path | Installed to |
@@ -159,7 +175,6 @@ follow-up ends it right away. Caps:
 - 60 s per turn (`MAX_SESSION`);
 - about 3 min per conversation (`MAX_TOTAL`, default 180);
 - the whole conversation's time counts against `MAX_MINUTES_DAY`;
-- one wake = one session against `MAX_SESSIONS_DAY`.
 
 The mic is muted while a reply plays, and the reply's echo is dropped before the follow-up opens.
 `MULTI_TURN=0` on the relay restores one answer per wake. Design: `docs/multiturn.md`.
@@ -179,12 +194,12 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   transcription toward names the station should recognize.
   `GET /health` returns `{"ok":true}`; with the token it adds key presence, today's usage and the caps. Logs carry
   event types and durations only, no transcripts or audio.
-- **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); daily caps
-  `MAX_SESSIONS_DAY` (40) and `MAX_MINUTES_DAY` (20), counted per America/Chicago day in `/state/usage.json` so
-  restarts don't reset them, return 429; 5 bad tokens in 10 min lock the source out for 15 min (429). Behind the
+- **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); a daily
+  minutes cap `MAX_MINUTES_DAY` (20; there is no daily session-count cap), counted per America/Chicago day in
+  `/state/usage.json` so restarts don't reset it, returns 429; sessions are still counted for the logs; 5 bad tokens in 10 min lock the source out for 15 min (429). Behind the
   `tls` front the source is the **client certificate** (Caddy sets `X-Client-Cert-Fp`; the relay trusts it only
   from the `tls` container), so bad tries with one certificate can't lock out the station; direct loopback callers
-  are keyed by address. Upstream audio is capped at `MAX_UP_SECONDS` (65) per session. 80% / 100% of a cap and
+  are keyed by address. Upstream audio is capped at `MAX_UP_SECONDS` (`MAX_TOTAL` + 5 = 185 with multi-turn, else 65) per session. 80% / 100% of a cap and
   lockouts raise an alert: a JSON file `{title, message, priority, tags}` dropped into the dir mounted at `/alerts`.
   Point `GROK_STATION_ALERTS` at a folder used only by this relay that your ntfy forwarder drains (stats-dashboard's
   ingest-relay drains `/drop/<name>` folders, labels each push with the folder name and caps it at 6/hour);
@@ -322,19 +337,44 @@ Stand where you'd normally talk to the station, about an arm's length away. Then
 `/show` token, or on the Pi:
 
 ```sh
-curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","count":25}' http://grok-station.local:8787/enroll
-/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn 25   # on the Pi
+curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn"}' http://grok-station.local:8787/enroll
+/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn          # on the Pi
+# top-up after "Needs 10 more clips" (trains on this session plus the previous one):
+curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","topup":true}' http://grok-station.local:8787/enroll
+/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn --topup
 ```
 
 **Clips:**
-- Record 25 clips (the allowed range is 10–40). A smaller default of 10 clips, topped up when recall falls short, is being evaluated.
+- The default is **10 clips** (about 1 min). If training misses the recall gate, the station shows "Needs 10 more
+  clips". A top-up records 10 more and trains on both sessions together.
+- **Advanced:** `"count"` (10–40) overrides the default; a top-up needs 5 or more clips.
 - Each clip goes like this: the screen says "Get ready…", a chime plays, then "Recording… speak now", and
   you say the phrase once, naturally.
 - Vary it a little: normal and quiet voice, a little faster or slower, facing slightly away.
-- 25 clips take about 2 minutes.
+- **Timing per clip:** a 0.9 s get-ready pause (the warm ring fills over it), the chime, 2.4 s of recording, and
+  a short "Got it" pulse. A rejected clip holds its message for 1.5 s, then retries.
 
-**What the screen shows:** the phrase, "Clip N of M", a progress bar, and a status line. The status line and heard
-text auto-fit inside the side margins, wrapping to at most 2 lines. Clips are trimmed to the speech and uploaded
+**What the screen shows** (`docs/design.md`, screens 01–10): the persona's portrait (or the Grok mark for a wake
+word without a persona) with a state ring and label, plus:
+- a headline and sub-line;
+- "Clip N of M" with a progress bar.
+
+The screens are, in order:
+1. Ready
+2. Get ready (warm arc fills)
+3. Recording (teal pulse + level bars)
+4. Too loud
+5. Didn't hear it (quiet ring + text, no red)
+6. Saved (one teal pulse)
+7. All clips saved / Uploaded ✓
+8. Training queued (lavender spin, place in line)
+9. "Hey Finn" is ready
+10. Needs 10 more clips
+
+The station polls `GET /enroll/<phrase>/<session>/status` on the relay every minute until training finishes. Then it
+shows the pass or fail notice, waiting until any voice session has ended. The numbers stay on the training host.
+
+All text auto-fits inside the safe area, up to 2 lines. Clips are trimmed to the speech and uploaded
 as you go. When you're done, the session is marked ready and the training host picks it up within a minute.
 
 Don't restart `grok-station-wake` during a session. The journal shows `enroll start …` and `enroll end …`.
@@ -383,8 +423,8 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
 - **Gain:** `WAKE_GAIN` in the wake env sets the software gain. It defaults to 2 when `WAKE_DEVICE_NAME` contains
   EMEET, and 4 otherwise (the Razer headset mic runs quiet). Gain affects detection and the uploaded clips, but not
   the clipping check. Restart `grok-station-wake` after a change, but only between enrollments.
-- **Recall below 0.80:** record another session of the same phrase (about 10 more clips, in a quieter spot, at
-  your normal distance). Each session trains on its own clips.
+- **Recall below 0.80:** run a top-up (`--topup`, 10 more clips, same speaker, normal distance). It trains on
+  the new clips plus the previous session's.
 - **False wakes too high:** usually the phrase sounds like common speech. Pick a more distinctive phrase.
 - **A job died or stalled:** look for `[watch] STALL` lines. A job that dies, or that has no file activity for
   30 min, is killed and restarted once. On the second failure the session is marked FAILED.

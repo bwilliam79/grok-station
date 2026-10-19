@@ -236,3 +236,80 @@ class ListeningRing(unittest.TestCase):
                 self.assertGreater(c.get_at((int(200 + 160 * math.cos(a)), int(200 + 160 * math.sin(a)))).a, 200)
             widths.append(sum(c.get_at((200 + x, 200)).a > 200 for x in range(140, 200)))
         self.assertGreater(widths[1], widths[0])  # thicker at the pulse peak
+
+
+SIZES = ((800, 480), (1280, 720), (1920, 1080), (2560, 1706), (3840, 2160))
+STAGES = [("prompt", 1, ""), ("ready", 3, ""), ("recording", 3, ""), ("loud", 3, ""), ("quiet", 3, ""), ("saved", 3, ""),
+          ("uploaded", 10, ""), ("queued", 0, "2"), ("passed", 0, ""), ("failed", 0, "10"), ("error", 0, "")]
+
+
+def enroll_msg(stage, i, extra, who="Finn", phrase="Hey Finn"):
+    return {"from": who, "voice": True, "state": "enroll", "text": f"“{phrase}”", "heard": f"{i}/10|{stage}|{extra}"}
+
+
+class EnrollScreens(unittest.TestCase):
+    def margins_clear(self, surf, L):
+        w, h = surf.get_size()
+        for x0, x1 in ((0, L.m - 2), (w - L.m + 2, w)):
+            self.assertIsNone(ink_box(surf, (x0, L(140), x1 - x0, h - L(140) - 2), gs.BG))
+        self.assertIsNone(ink_box(surf, (0, h - L(40), w, L(40)), gs.BG), "ink in the bottom safe area")
+
+    def test_all_stages_all_sizes(self):
+        for size in SIZES:
+            L = gs.Layout(*size)
+            surf = pygame.Surface(size)
+            for stage, i, extra in STAGES:
+                for phrase in ("Hey Finn", "Hey Bartholomew"):  # the longest allowed-looking phrase must still fit
+                    gs.draw_session(surf, L, time.localtime(), enroll_msg(stage, i, extra, phrase=phrase), "enroll", 1.0)
+                    self.margins_clear(surf, L)
+
+    def test_copy(self):
+        self.assertEqual(gs.enroll_copy("Hey Finn", 1, 10, "prompt", "")[3], "10 clips · about 1 min")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 3, 10, "ready", "")[3], "Clip 3 of 10")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 3, 10, "saved", "")[3], "Clip 4 of 10")
+        self.assertIn("2nd in line", gs.enroll_copy("Hey Finn", 0, 0, "queued", "2")[1])
+        self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "10")[0], "Needs 10 more clips")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "passed", "")[0], "“Hey Finn” is ready")
+        self.assertEqual(gs.enroll_parse({"heard": "3/25|Recording… speak now"})[2], "custom")  # old wake build
+
+    def test_no_persona_uses_grok_mark(self):
+        L = gs.Layout(1920, 1080)
+        surf = pygame.Surface((1920, 1080))
+        gs.draw_enroll(surf, L, time.localtime(), enroll_msg("prompt", 1, "", who=gs.VOICE_NAME, phrase="Hey Nova"))
+        self.assertEqual(gs.LAST_PORTRAIT_ARGS[0], gs.VOICE_NAME)
+
+    def test_anim_specs(self):
+        self.assertEqual(gs.anim_of(enroll_msg("ready", 1, ""))[1:], (0.9, False))
+        self.assertEqual(gs.anim_of(enroll_msg("saved", 1, ""))[1:], (0.3, False))
+        self.assertTrue(gs.anim_of(enroll_msg("recording", 1, ""))[2])
+        self.assertIsNone(gs.anim_of(enroll_msg("loud", 1, "")))
+
+    def coverage(self, painter, t):
+        c = pygame.Surface((400, 400), pygame.SRCALPHA)
+        painter(c, 200, 200, 150, 20, None, t)
+        return sum(c.get_at((x, y)).a > 200 for x in range(0, 400, 2) for y in range(0, 400, 2))
+
+    def test_ready_ring_fills(self):
+        a, b, c = (self.coverage(gs.ring_ready, t) for t in (0.1, 0.5, 1.0))
+        self.assertLess(a, b); self.assertLess(b, c)
+
+    def test_saved_pulse(self):
+        self.assertGreater(self.coverage(gs.ring_saved, 0.3), self.coverage(gs.ring_saved, 1.0))
+
+
+class Resolution(unittest.TestCase):
+    def test_canvas_rect(self):
+        self.assertEqual(gs.canvas_rect(2560, 1706), pygame.Rect(0, 0, 2560, 1706))
+        self.assertEqual(gs.canvas_rect(5120, 2880), pygame.Rect(640, 360, 3840, 2160))  # letterboxed
+        self.assertEqual(gs.canvas_rect(640, 400), pygame.Rect(0, 0, 640, 400))          # best effort below min
+
+    def test_letterbox_display(self):
+        d = gs.Display(fb=None, size=(5120, 2880))
+        self.assertEqual(d.screen.get_size(), (3840, 2160))
+        self.assertEqual(d.L.w, 3840)
+
+    def test_scale_is_proportional(self):
+        for size in SIZES:
+            L = gs.Layout(*size)
+            self.assertAlmostEqual(L.s, min(size[0] / 1920, size[1] / 1080))
+            self.assertGreater(L.m, 0)
