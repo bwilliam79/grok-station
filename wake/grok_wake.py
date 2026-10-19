@@ -499,6 +499,7 @@ class Session:
         self.echo_text = echo_text         # print transcripts: only for the manual --ask check, never the service log
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
+        self.turns = 0  # finished turns; a multi-turn relay keeps the session open for a follow-up
         self.persona = persona if SLUG_RE.match(persona or "") else "grok"
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
         threading.Thread(target=self.run, daemon=True).start()
@@ -522,7 +523,7 @@ class Session:
     def _sender(self, ws):
         self.ready.wait(5)  # hold buffered mic audio until the xAI session is configured
         try:
-            while self.feeding:
+            while self.active:  # multi-turn: feeding pauses during a reply and resumes for the follow-up
                 try:
                     ws.send(self.q.get(timeout=0.2))
                 except queue.Empty:
@@ -612,9 +613,23 @@ class Session:
                         self.reply += ev.get("text", "")
                     elif t == "xai_error":
                         print("relay: xai error", flush=True)
+                    elif t == "turn_done":
+                        # multi-turn: let the reply finish playing, then listen for a follow-up (no wake word)
+                        if player:
+                            player.stdin.close(); player.wait(timeout=90); player = None
+                        self.turns += 1
+                        print(f"relay: turn {self.turns} done, listening for a follow-up", flush=True)
+                        while not self.q.empty():  # mic audio queued during playback is the reply's echo
+                            self.q.get_nowait()
+                        self.heard, self.reply, self.t_first_audio, self.t_end_speech = "", "", None, None
+                        self.responding, self.feeding = False, True
+                        self.state("listening")
+                        ws.send(json.dumps({"type": "listening"}))
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
-                        if t == "timeout" and not self.t_first_audio:
+                        if t != "error" and self.turns and not self.t_first_audio:
+                            post_state("idle")  # follow-up window closed quietly (silence or "thanks")
+                        elif t == "timeout" and not self.t_first_audio:
                             self.state("notice", text="Didn’t catch that.")
                         elif t == "error":
                             self.state("error", text="Can’t reach Grok right now.")

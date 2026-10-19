@@ -7,7 +7,10 @@ as binary PCM16 24 kHz mono frames. The relay opens one xAI realtime session per
   {"type":"ready"} {"type":"speech_started"} {"type":"speech_stopped"} {"type":"heard","text":...}
   {"type":"response_started"} {"type":"reply_delta","text":...} {"type":"reply","text":...} {"type":"done"}
   {"type":"timeout","speech":bool} {"type":"xai_error","message":...} (non-fatal) {"type":"error","message":...}
-One question and answer per connection: the session closes after response.done, after NO_SPEECH seconds
+Multi-turn (MULTI_TURN=1, default; docs/multiturn.md): after each answer the relay sends {"type":"turn_done"}; the Pi
+plays it, then sends {"type":"listening"} and a follow-up turn opens with no wake word. "thanks"/"that's all" ends it
+({"type":"done"}); so do NO_SPEECH, MAX_SESSION per turn and MAX_TOTAL per connection. With MULTI_TURN=0:
+one question and answer per connection: the session closes after response.done, after NO_SPEECH seconds
 with no speech in progress and no response (measured from session start or the last speech_stopped, so a
 short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds.
 GET /health returns {"ok":true} (details only with the token).
@@ -39,14 +42,16 @@ KEY = secret("xai_api_key")
 TOKENS = [t.encode() for t in secret("relay_token", multi=True)]  # one per line: current (+ next, while rotating)
 MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
-NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))
+NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))  # MAX_SESSION is per turn
+MULTI_TURN = E("MULTI_TURN", "1") != "0"           # keep the session open for a follow-up after each reply
+MAX_TOTAL = float(E("MAX_TOTAL", "180"))            # all turns of one connection together
 INSTRUCTIONS = E("INSTRUCTIONS", (
     "You are Grok, a friendly voice assistant on a small display in a family home. "
     "Answer in one to three short spoken sentences, plainly and warmly. No lists, markdown, or emoji."))
 TZ = E("TZ_NAME", "America/Chicago")                  # for the "current date and time" line in the instructions
 KEYTERMS = [t.strip()[:50] for t in (secret("keyterms") or "Grok").split(",") if t.strip()][:100]  # transcription bias
 MAX_SESSIONS_DAY, MAX_MINUTES_DAY = int(E("MAX_SESSIONS_DAY", "40")), float(E("MAX_MINUTES_DAY", "20"))
-MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", "65"))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
+MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", str(MAX_TOTAL + 5 if MULTI_TURN else 65)))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
 STATE = E("STATE_FILE", "/state/usage.json")
 ALERT_DIR = E("ALERT_DIR", "/alerts")                  # optional: ntfy outbox (files <ms>-<hex>.json)
 LOCK_FAILS, LOCK_WINDOW, LOCK_FOR = 5, 600, 900
@@ -92,6 +97,16 @@ QUIET = {"response.output_audio.delta", "response.audio.delta", "response.output
 stats = {"sessions": 0, "seconds": 0.0, "busy": 0}
 fails, locked = {}, {}       # source -> [failure times], source -> locked-until (monotonic)
 alerted = set()              # (day, kind) already alerted
+
+
+END_RE = re.compile(r"^(ok(ay)?[ ,]+)?(thanks?( you)?( so much| a lot)?|no,? thanks?( you)?|that'?s (all|it)|that is all|"
+                    r"nothing( else)?|(good)?bye|all done|i'?m (good|done))([ ,]+(grok|that'?s all|bye|[a-z]+))?[.!]*$", re.I)
+
+
+def is_end_phrase(text):
+    """A short closing phrase ("thanks", "that's all") that ends a multi-turn session."""
+    t = " ".join(str(text).replace("’", "'").split()).strip(" .!,")
+    return bool(t) and len(t.split()) <= 6 and bool(END_RE.match(t))
 
 
 def log(*a):
@@ -484,6 +499,7 @@ async def session(req):
                 "voice": start["voice"] if start else VOICE, "instructions": instructions, "turn_detection": {"type": "server_vad"}, "tools": talk_tool(roster),
                 "audio": {"input": audio_in, "output": {"format": {"type": "audio/pcm", "rate": 24000}}}}})
             st = {"speaking": False, "responding": False, "speech": False, "quiet_since": time.monotonic(),
+                  "playing": False, "turn": 1, "turn_t0": time.monotonic(),
                   "persona": start["slug"] if start else "grok", "again": False, "audio": False, "switched": False}
             if start:
                 await pi.send_json({"type": "persona", "slug": start["slug"], "name": start["name"]})
@@ -505,6 +521,17 @@ async def session(req):
             async def pi_to_xai():
                 nonlocal n_up
                 async for m in pi:
+                    if m.type == WSMsgType.TEXT and MULTI_TURN and st["playing"]:
+                        try:
+                            ev = json.loads(m.data)
+                        except ValueError:
+                            continue
+                        if isinstance(ev, dict) and ev.get("type") == "listening":  # Pi finished playback: follow-up opens
+                            await up.send_json({"type": "input_audio_buffer.clear"})
+                            now = time.monotonic()
+                            st.update(playing=False, speech=False, quiet_since=now, turn_t0=now, turn=st["turn"] + 1)
+                            log(f"turn {st['turn']} open")
+                        continue
                     if m.type == WSMsgType.BINARY and m.data:
                         n_up += len(m.data)
                         if n_up > MAX_UP_SECONDS * 48000:
@@ -540,6 +567,11 @@ async def session(req):
                         await pi.send_json({"type": "response_started"})
                     elif t == "conversation.item.input_audio_transcription.completed":
                         await pi.send_json({"type": "heard", "text": ev.get("transcript", "")})
+                        if st["turn"] > 1 and is_end_phrase(ev.get("transcript", "")):
+                            if st["responding"]:
+                                await up.send_json({"type": "response.cancel"})
+                            await pi.send_json({"type": "done"})
+                            return "user ended"
                         target = backup_target(ev.get("transcript", ""), roster) if not st["switched"] else None
                         if target and target != st["persona"] and not st["audio"]:
                             log(f"backup rule: switching to {target}")
@@ -569,23 +601,41 @@ async def session(req):
                             st.update(again=False, responding=True, audio=False)
                             await up.send_json({"type": "response.create"})
                             continue
+                        who = "" if st["persona"] == "grok" else f" ({st['persona']})"
+                        if MULTI_TURN and time.monotonic() - t0 < MAX_TOTAL - NO_SPEECH:
+                            st.update(responding=False, speaking=False, playing=True, audio=False)
+                            await pi.send_json({"type": "turn_done", "turn": st["turn"]})
+                            log(f"turn {st['turn']} done{who}")
+                            continue
                         await pi.send_json({"type": "done"})
-                        return "response done" + ("" if st["persona"] == "grok" else f" ({st['persona']})")
+                        return "response done" + who
                     elif t == "error":
                         log("xai error", (ev.get("error") or {}).get("code") or (ev.get("error") or {}).get("type"))
                         await pi.send_json({"type": "xai_error", "message": str((ev.get("error") or {}).get("message", ""))[:200]})
                 return "xai closed"
 
             async def no_speech():
-                while st["speaking"] or st["responding"] or time.monotonic() - st["quiet_since"] < NO_SPEECH:
+                while (st["speaking"] or st["responding"] or st["playing"]
+                       or time.monotonic() - st["quiet_since"] < NO_SPEECH):
                     await asyncio.sleep(0.25)
                 await pi.send_json({"type": "timeout", "speech": st["speech"]})
+                if st["turn"] > 1:
+                    return f"no follow-up after turn {st['turn'] - 1}" if not st["speech"] else "no reply to noise (follow-up)"
                 return "no reply to noise" if st["speech"] else "no speech"
 
-            tasks = [asyncio.create_task(c()) for c in (pi_to_xai, xai_to_pi, no_speech)]
-            done, pending = await asyncio.wait(tasks, timeout=MAX_SESSION, return_when=asyncio.FIRST_COMPLETED)
-            why = next(iter(done)).result() if done else "max session"
-            if not done:
+            async def caps():
+                while True:
+                    now = time.monotonic()
+                    if now - t0 >= MAX_TOTAL:
+                        return "max total"
+                    if now - st["turn_t0"] >= MAX_SESSION:
+                        return "max turn"
+                    await asyncio.sleep(0.25)
+
+            tasks = [asyncio.create_task(c()) for c in (pi_to_xai, xai_to_pi, no_speech, caps)]
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            why = next(iter(done)).result()
+            if why in ("max total", "max turn"):
                 await pi.send_json({"type": "timeout", "speech": st["speech"]})
             for t in pending:
                 t.cancel()

@@ -6,7 +6,7 @@ cd "$(dirname "$0")"; mkdir -p enroll/inbox enroll/published enroll/jobs
 LOG=enroll/enroll.log; LOCK=enroll/.job
 say(){ echo "$(date '+%F %T %Z') [watch] $*" >> $LOG; }
 start(){ s=$1; n=$(( $(cat "$s/.tries" 2>/dev/null || echo 0) + 1 )); echo $n > "$s/.tries"
-  nohup caffeinate -i nice -n 10 ./enroll_train.sh "$s" >> enroll/jobs/stdout.log 2>&1 &
+  nohup $(command -v caffeinate >/dev/null && echo caffeinate -i) nice -n 10 ./enroll_train.sh "$s" >> enroll/jobs/stdout.log 2>&1 &
   echo "$! $s" > $LOCK; say "started job pid $! for $s (try $n)"; }
 if [ -f $LOCK ]; then read pid s < $LOCK
   if [ -f "$s/DONE" ]; then rm -f $LOCK

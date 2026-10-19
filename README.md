@@ -146,11 +146,23 @@ of one core with Hey Jarvis alone; `--bench` measures 10.6% of one core for all 
 
 ## Voice (proof of concept)
 
-One question and answer per wake: "Hey Grok" (or a teammate's wake word) → chime + **listening** → speak → **thinking** (Grok started a
+A wake starts a conversation: "Hey Grok" (or a teammate's wake word) → chime + **listening** → speak → **thinking** (Grok started a
 response) → **speaking** (reply plays on the speakerphone, text on screen) → idle. Mic audio keeps streaming until a
 response actually starts, so a short noise or the tail of the wake word (which can trip the server VAD without
 producing a reply) doesn't swallow the real question. The first `VOICE_SKIP_MS` (default 300) of post-wake audio
 is dropped for the same reason. Nothing heard (or only noise) for 10 s → "Didn't catch that." and idle.
+
+**Multi-turn (follow-ups without the wake word):** after each reply the session stays open about 10 s (the relay's
+`NO_SPEECH`). The screen goes back to the pulsing **listening** ring for the same persona, and you can just ask the
+next question. Silence closes the session quietly. A short "thanks", "that's all", "that's it" or "bye" on a
+follow-up ends it right away. Caps:
+- 60 s per turn (`MAX_SESSION`);
+- about 3 min per conversation (`MAX_TOTAL`, default 180);
+- the whole conversation's time counts against `MAX_MINUTES_DAY`;
+- one wake = one session against `MAX_SESSIONS_DAY`.
+
+The mic is muted while a reply plays, and the reply's echo is dropped before the follow-up opens.
+`MULTI_TURN=0` on the relay restores one answer per wake. Design: `docs/multiturn.md`.
 
 ```
 Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) ──▶ relay/ ──▶ wss://api.x.ai/v1/realtime
@@ -159,8 +171,9 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
 
 - **The xAI API key lives only on the relay host**, never on the Pi. The Pi holds a random device token.
 - `relay/relay.py` (aiohttp): `GET /ws` (`Authorization: Bearer $RELAY_TOKEN`) opens one xAI realtime session,
-  forwards mic audio up and reply audio, transcripts and turn events down, then closes after the reply, after
-  10 s with no speech in progress and no response (counted from the last end of speech), or at 60 s (cost guard;
+  forwards mic audio up and reply audio, transcripts and turn events down, then (multi-turn) sends `turn_done`
+  after each reply and closes after 10 s with no speech in progress and no response (counted from the last end
+  of speech or the start of the follow-up), on a closing phrase, at 60 s per turn or 180 s in total (cost guard;
   realtime voice bills by the minute). One session at a time. The instructions get the current local date and
   time (`TZ_NAME`, default America/Chicago); the optional `keyterms` secret (comma-separated) biases
   transcription toward names the station should recognize.
@@ -251,28 +264,136 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
 
 ## Enroll mode (real-voice wake words)
 
-Records 10-40 clips (default 25) of one phrase on the speakerphone, uploads them to the training host through the
-relay, and trains a model from real + synthetic speech. Architecture: `docs/enroll.md`; host scripts: `train/`.
-Never started by voice. Start it from the LAN with the `/show` token, or on the Pi:
+Enrollment teaches the station a wake phrase from real recordings of the person who will say it. The station
+records the clips, the relay passes them to a *training host*, and the training host trains and checks a model.
+If the model passes, the station picks it up automatically. It's never started by voice. Architecture:
+`docs/enroll.md`. Host scripts: `train/`.
+
+### 1. The training host
+
+The training host is any always-on machine you own that trains wake-word models. It can be the machine that
+runs the relay, or another one; the relay just needs a filesystem path to it (usually it's the same machine, with
+two folders mounted into the relay container). Requirements:
+
+- **Hardware:** an Apple Silicon Mac (generation runs on `mps`), or Linux with an NVIDIA GPU (`GEN_DEVICE=cuda`).
+  CPU-only works but is slow. 16 GB+ RAM.
+- **Disk:** about 25 GB for the shared training data, plus about 2–3 GB per phrase for its synthetic set and
+  features.
+- **Software:** Python 3.10+ and an openWakeWord training setup in one directory (for example
+  `~/wakeword-train`):
+  - `venv/` with openWakeWord and its training dependencies;
+  - an `openWakeWord/` checkout;
+  - the synthetic-speech generator `gen.py` with `phrases.py`;
+  - `mkcfg.py` and `sweep.sh`;
+  - `data/` holding `background/`, `rirs/`, the ACAV100M negative features and `validation_set_features.npy`.
+- **Time:** the first run of a new phrase generates its synthetic set (about 10 min on an M-series Mac). Every run
+  then trains for about 6–15 min. Jobs run one at a time under `nice 10`, so the machine stays usable.
+
+### 2. Set up the training host
+
+1. Copy `train/enroll_*.sh` and `train/enroll_*.py` into the training directory, then run
+   `chmod +x enroll_*.sh`.
+2. Run the watcher every 60 s. It starts one job per ready session and is the job's watchdog.
+   - **macOS:** copy `train/grok-enroll-watch.plist.example` to
+     `~/Library/LaunchAgents/grok-enroll-watch.plist` and fix the paths. Then run
+     `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/grok-enroll-watch.plist`.
+   - **Linux:** copy `train/grok-enroll-watch.{service,timer}.example` to `~/.config/systemd/user/` (drop
+     `.example`). Then run `systemctl --user enable --now grok-enroll-watch.timer` and
+     `loginctl enable-linger $USER`.
+   - **Important:** the launchd plist must set `AbandonProcessGroup` to true, and the systemd service must set
+     `KillMode=process`. Without that, the scheduler kills the training job the moment `enroll_watch.sh`
+     exits. The job then dies instantly with nothing in its logs, and after two tries the session is marked
+     FAILED.
+3. Create `enroll/inbox` and `enroll/published` in the training directory, and make the inbox writable by the
+   relay container (uid 10001): `chmod 777 enroll/inbox`.
+
+### 3. Connect the station
+
+- **Relay:** in the relay's `.env`, set `GROK_STATION_ENROLL=<training dir>/enroll/inbox` and
+  `GROK_STATION_WAKEWORDS=<training dir>/enroll/published`, then run `docker compose up -d --build relay`. Upload
+  routes need the relay token and mTLS, the same as voice sessions. Without these two paths, enrollment is
+  disabled.
+- **Station:** `GROK_RELAY_URL` and `GROK_RELAY_TOKEN` are already set for voice, and nothing else is needed.
+  Recorded clips are also kept on the Pi in `/opt/grok-station/wake/enroll/<phrase>/<session>/`.
+
+### 4. Start an enrollment
+
+Stand where you'd normally talk to the station, about an arm's length away. Then start it from the LAN with the
+`/show` token, or on the Pi:
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","count":25}' http://grok-station.local:8787/enroll
 /opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn 25   # on the Pi
 ```
 
-Phrases: any word in `wakewords.json` plus its `enroll` list (persona per phrase). The screen shows the phrase, "Clip N
-of M", a progress bar and the status (get ready → chime → recording; too quiet or clipped clips are retried; clipping is judged on the raw mic signal before software gain). The status line and heard text auto-fit inside the side margins, wrapping to at most 2 lines. Clips
-are trimmed to the speech, kept locally in `/opt/grok-station/wake/enroll/<phrase>/<session>/`, and posted to the relay
-(`POST /enroll/<phrase>/<session>/<NN>.wav`, then `.../done`; mTLS + relay token; 16 kHz mono WAV, ≤ 5 s, ≤ 40 per
-session). The relay writes them to `$GROK_STATION_ENROLL` on the training host, where `train/enroll_watch.sh`
-(launchd, every 60 s) starts `enroll_train.sh` under `nice 10` + `caffeinate`: synthetic set (generated once for a new
-phrase), 80 % of the real clips augmented ×200 into the positives, training, then the gate: false wakes ≤ 1.0/h on the
-validation set and recall ≥ 0.80 on the held-out real clips (clean + 15/10/5 dB background). A passing model and its
-threshold/patience are published to `$GROK_STATION_WAKEWORDS`; the relay serves them (`GET /wakewords`,
-`GET /wakeword/<name>.onnx`). The Pi syncs them at startup, hourly, and every 5 min for 3 h after an enrollment
-(`/opt/grok-station/wake/models/enrolled/`, sha256 checked) and reloads the detector between sessions; an enrolled
-model overrides the repo entry for that phrase. The watcher is also the job's watchdog (dead job or 30 min without
-log/file activity → killed, restarted once, then marked FAILED in `enroll/enroll.log`).
+**Clips:**
+- Record 25 clips (the allowed range is 10–40). A smaller default of 10 clips, topped up when recall falls short, is being evaluated.
+- Each clip goes like this: the screen says "Get ready…", a chime plays, then "Recording… speak now", and
+  you say the phrase once, naturally.
+- Vary it a little: normal and quiet voice, a little faster or slower, facing slightly away.
+- 25 clips take about 2 minutes.
+
+**What the screen shows:** the phrase, "Clip N of M", a progress bar, and a status line. The status line and heard
+text auto-fit inside the side margins, wrapping to at most 2 lines. Clips are trimmed to the speech and uploaded
+as you go. When you're done, the session is marked ready and the training host picks it up within a minute.
+
+Don't restart `grok-station-wake` during a session. The journal shows `enroll start …` and `enroll end …`.
+
+### 5. Add a new wake phrase and map it to a persona
+
+1. On the training host, add the phrase to `phrases.py`, the spellings the speech generator should say (for
+   example `"hey_hank": ["hey hank"]`).
+2. In `wake/wakewords.json`, add `{"name": "hey_hank", "persona": "hank"}` to the `enroll` list. Phrases are
+   `hey_` plus 2–16 lowercase letters.
+3. The persona slug must exist in the relay's private persona registry (`personas.json`, see Voice). If it doesn't,
+   the relay ignores it and Grok answers.
+4. Deploy `wakewords.json` to the Pi, then enroll the phrase as in step 4.
+
+When a model passes, it's published with its own threshold and patience. That entry overrides any repo entry for
+the same phrase, so no repo change is needed to start using it.
+
+### 6. Read the results
+
+Each job logs to `enroll/enroll.log` on the training host and writes `enroll/jobs/<phrase>-<session>/result.json`.
+`enroll/status.json` lists the sessions as recording, ready, done or failed. A typical log:
+
+```
+[hey_finn 20261019-150740] JOB start (persona finn, 25 clips)
+[hey_finn 20261019-150740] FEATURES real / TRAIN / EVAL real held-out
+[hey_finn 20261019-150740] RESULT {"recall_real": 0.65, "fa_h": 0.654, "threshold": 0.95, "patience": 3, "passed": false, ...}
+[hey_finn 20261019-150740] JOB DONE below the gate, not published
+```
+
+- **The gate:** recall is measured on a held-out 20 % of your real clips. Each clip is tested clean and mixed
+  with background at 15, 10 and 5 dB. A model passes with `recall_real ≥ 0.80` at a threshold/patience setting
+  that also has `fa_h ≤ 1.0` false wakes per hour on the validation set.
+- **Pass:** "JOB DONE published". The station syncs the new model every 5 min for 3 h after an enrollment (and
+  otherwise hourly, sha256 checked), then reloads between sessions.
+- **Fail:** "below the gate, not published". Nothing changes on the station.
+
+**Reduced-clip check:** `./enroll_check.sh enroll/inbox/<phrase>/<session> 10` re-trains a finished session on its
+first 10 clips only, and evaluates it on the same held-out clips as the full run. The result is logged as
+`JOB DONE check (pass|fail)` and never published.
+
+### 7. Troubleshooting
+
+- **"Too loud, step back a little":** more than 0.1 % of the raw mic samples hit full scale. This is checked
+  before software gain, so the gain setting can't cause it. Step back or talk more softly.
+- **"Didn't hear it, a bit louder please":** no speech above about −45 dBFS. Move closer, or raise the gain.
+- **Gain:** `WAKE_GAIN` in the wake env sets the software gain. It defaults to 2 when `WAKE_DEVICE_NAME` contains
+  EMEET, and 4 otherwise (the Razer headset mic runs quiet). Gain affects detection and the uploaded clips, but not
+  the clipping check. Restart `grok-station-wake` after a change, but only between enrollments.
+- **Recall below 0.80:** record another session of the same phrase (about 10 more clips, in a quieter spot, at
+  your normal distance). Each session trains on its own clips.
+- **False wakes too high:** usually the phrase sounds like common speech. Pick a more distinctive phrase.
+- **A job died or stalled:** look for `[watch] STALL` lines. A job that dies, or that has no file activity for
+  30 min, is killed and restarted once. On the second failure the session is marked FAILED.
+  - If a job died instantly with an empty log, check the `AbandonProcessGroup` / `KillMode=process` setting from
+    step 2.
+  - After fixing the cause, delete `FAILED` and `.tries` in the session's inbox folder, and the watcher retries it.
+- **Nothing happens after a session:** check that `enroll/status.json` shows the session as `ready`. If it does,
+  check the watcher with `launchctl print gui/$(id -u)/grok-enroll-watch` or
+  `systemctl --user status grok-enroll-watch.timer`, and look at `enroll/watch.err`.
 
 ## Credits
 

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ~/Library/LaunchAgents/grok-enroll-watch.plist; replace /Users/YOU/wakeword-train with your training dir. -->
+<plist version="1.0"><dict>
+<key>Label</key><string>grok-enroll-watch</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>/Users/YOU/wakeword-train/enroll_watch.sh</string></array>
+<key>StartInterval</key><integer>60</integer>
+<key>RunAtLoad</key><true/>
+<!-- Required: otherwise launchd kills the training job when enroll_watch.sh exits. -->
+<key>AbandonProcessGroup</key><true/>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>StandardErrorPath</key><string>/Users/YOU/wakeword-train/enroll/watch.err</string>
+</dict></plist>

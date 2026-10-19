@@ -1,0 +1,11 @@
+# ~/.config/systemd/user/grok-enroll-watch.service (Linux training host). Pair with the .timer below.
+# KillMode=process is the systemd equivalent of launchd's AbandonProcessGroup: the training job outlives the watcher.
+[Unit]
+Description=grok-station enroll watcher
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/wakeword-train
+Environment=GEN_DEVICE=cuda
+ExecStart=/bin/bash %h/wakeword-train/enroll_watch.sh
+KillMode=process

@@ -1,0 +1,10 @@
+# ~/.config/systemd/user/grok-enroll-watch.timer
+[Unit]
+Description=Run the grok-station enroll watcher every 60 s
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+
+[Install]
+WantedBy=timers.target
