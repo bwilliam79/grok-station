@@ -9,8 +9,23 @@ bot="${1:-}"; [[ " $BOTS " == *" $bot "* ]] || { echo "usage: grok-voice-add-web
 F="$HOME/docker/grok-station-secrets/webhooks.json"
 read -r -p "Webhook URL for $bot: " url
 [[ "$url" =~ ^https://[^[:space:]]+$ ]] || { echo "URL must start with https://" >&2; exit 2; }
-read -r -s -p "Webhook key for $bot (hidden): " key; echo >&2
-[ -n "$key" ] || { echo "empty key" >&2; exit 2; }
+# Read the key with one * per character (backspace works), then confirm by length and last 4. Empty key = error.
+read_key() {
+  local prompt="$1" c ans; key=""
+  printf '%s' "$prompt" >&2
+  while IFS= read -r -s -n1 c; do
+    [[ -z "$c" ]] && break                                   # Enter
+    if [[ "$c" == $'\x7f' || "$c" == $'\b' ]]; then
+      [[ -n "$key" ]] && { key="${key%?}"; printf '\b \b' >&2; }
+    else key+="$c"; printf '*' >&2; fi
+  done; echo >&2
+  key="${key//[$'\r\n\t ']/}"
+  [ -n "$key" ] || { echo "error: empty key, nothing saved" >&2; exit 2; }
+  printf 'key received: %d chars, ends …%s\n' "${#key}" "${key: -4}" >&2
+  read -r -p "Save it? [y/N] " ans
+  [[ "$ans" =~ ^[Yy] ]] || { echo "cancelled, nothing saved" >&2; exit 1; }
+}
+read_key "Webhook key for $bot (shows *): "
 umask 077
 BOT="$bot" URL="$url" KEY="$key" F="$F" /usr/bin/python3 - <<'PY'
 import json, os
