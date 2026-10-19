@@ -5,7 +5,7 @@ POST /show {"text": "...", "from": "Grok", "heard": "..."} with "Authorization: 
 Screens: idle (clock, date, weather), message/session, night clock, weather offline.
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
-The thinking ring spins and the clock colon blinks; both repaint only their own rectangle.
+The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
 """
 import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -291,8 +291,8 @@ def spin_fps():
 
 
 def colon_blink_on(now=None):
-    """Colon lit on even unix seconds. GROK_STATION_BLINK=0 keeps it on."""
-    if E("GROK_STATION_BLINK", "1") == "0":
+    """Steady colon by default; GROK_STATION_BLINK=1 blinks it (lit on even unix seconds)."""
+    if E("GROK_STATION_BLINK", "0") == "0":
         return True
     return int(time.time() if now is None else now) % 2 == 0
 
@@ -826,7 +826,7 @@ def main():
             wait = 1.0 / spin_fps()
         elif msg:
             wait = min(minute, max(0.05, until - t))
-        elif E("GROK_STATION_BLINK", "1") != "0":
+        elif E("GROK_STATION_BLINK", "0") != "0":
             delay = 1.0 - (t % 1.0)  # next whole second, for the colon
             if delay < 0.05:
                 delay += 1.0
@@ -866,7 +866,7 @@ def main():
                 spin_portrait()  # no full-screen repaint, no snapshot
             elif last_key is None or last_key[1] != time.localtime().tm_min:
                 paint(snapshot=False)
-            elif not msg and E("GROK_STATION_BLINK", "1") != "0":
+            elif not msg and E("GROK_STATION_BLINK", "0") != "0":
                 blink_colon()
 
 
