@@ -167,3 +167,21 @@ class FlushTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestListeningPulse(unittest.TestCase):
+    def test_pulse_changes_and_loops(self):
+        import grok_station as gs
+        f = lambda t: gs.portrait("Grok", 180, 10, "listening", t, photo_ok=False)[0].get_buffer().raw
+        self.assertNotEqual(f(0.0), f(0.5))   # ring differs mid-pulse
+        self.assertEqual(f(0.0), f(1.0))      # one loop per period
+        self.assertEqual(f(0.25), f(0.75))    # symmetric cosine pulse
+        self.assertEqual(gs.ANIM["listening"], 1.0)
+        self.assertIn("thinking", gs.ANIM)
+        self.assertNotIn("speaking", gs.ANIM); self.assertNotIn("idle", gs.ANIM)
+
+
+class TestListeningScreen(unittest.TestCase):
+    def test_no_wake_hint(self):
+        src = open(gs.__file__, encoding="utf-8").read()
+        self.assertNotIn("to wake\\u201d", src); self.assertNotIn("” to wake", src)

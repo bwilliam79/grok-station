@@ -38,6 +38,8 @@ VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking�
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
+PULSE_PERIOD = 1.0                                        # seconds per listening-ring pulse (~1 Hz)
+ANIM = {"thinking": SPIN_PERIOD, "listening": PULSE_PERIOD}  # animated ring states -> loop period
 PERSONAS_FILE = os.path.join(PORTRAIT_DIRS[1], "personas.json")  # cached by the wake client from the relay
 _personas = {"mtime": None, "names": {}}
 
@@ -473,12 +475,19 @@ def ring_idle(c, cx, cy, r, ring_w, glow, t):
 
 
 def ring_listening(c, cx, cy, r, ring_w, glow, t):
-    """Teal tick ring (Noor S2): thin base ring plus 72 radial ticks, every 6th one longer. Static for now."""
-    pygame.draw.circle(c, (*LISTENING[:3], 90), (cx, cy), r, max(2, int(ring_w / 4)))
+    """Teal tick ring (Noor S2): thin base ring plus 72 radial ticks, every 6th one longer. t is the pulse phase in
+    [0, 1): the ticks grow and a soft teal glow brightens and fades once per loop (smooth cosine, rest at t=0)."""
+    p = 0.5 - 0.5 * math.cos(2 * math.pi * (t % 1.0))
+    gw = max(2, int(ring_w * 1.4))
+    for i in range(gw, 0, -2):  # soft glow under the ticks, inside the portrait pad
+        a = int(70 * p * (1 - i / gw) ** 2)
+        if a:
+            pygame.draw.circle(c, (*LISTENING[:3], a), (cx, cy), r + ring_w * 0.9 + i, 2 * SS)
+    pygame.draw.circle(c, (*LISTENING[:3], int(90 + 60 * p)), (cx, cy), r, max(2, int(ring_w / 4)))
     r0 = r + ring_w * 0.7
     for i in range(72):
         a = 2 * math.pi * i / 72 - math.pi / 2
-        ln = ring_w * (2.2 if i % 6 == 0 else 1.4) * (0.75 + 0.25 * t)
+        ln = ring_w * (2.2 if i % 6 == 0 else 1.4) * (0.78 + 0.22 * p)
         p0 = (cx + r0 * math.cos(a), cy + r0 * math.sin(a))
         p1 = (cx + (r0 + ln) * math.cos(a), cy + (r0 + ln) * math.sin(a))
         pygame.draw.line(c, LISTENING, p0, p1, max(2, int(ring_w / 2.4)))
@@ -725,7 +734,6 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
         for i, hh in enumerate((0.45, 0.8, 1.0, 0.65, 0.35)):  # small static waveform glyph
             bh = int(L(56) * hh)
             pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
-        text_at(surf, "body", L(40), "Say “Hey Grok” to wake", MUTED, (L.m, L.h - L(70)), "midleft")
     elif state == "thinking":
         text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, photo_top + d + L(150)), "center")
     # measure the right column first so it can sit centered on the photo
@@ -813,18 +821,18 @@ def main():
     disp = Display()
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
-    msg, until, last_key, thinking_started = None, 0.0, None, None
+    msg, until, last_key, anim_started = None, 0.0, None, None
 
-    def thinking():
-        return bool(msg and msg.get("voice") and msg.get("state") == "thinking" and thinking_started)
+    def thinking():  # any animated ring state (thinking spin, listening pulse)
+        return bool(msg and msg.get("voice") and msg.get("state") in ANIM and anim_started)
 
     def paint(fade=False, snapshot=True):
         nonlocal last_key
         now = time.localtime()
         on = colon_blink_on()
         if thinking():
-            phase = ((time.time() - thinking_started) / SPIN_PERIOD) % 1.0
-            disp.show(draw_session, now, msg, "thinking", phase, fade=fade, snapshot=snapshot)
+            phase = ((time.time() - anim_started) / ANIM[msg["state"]]) % 1.0
+            disp.show(draw_session, now, msg, msg["state"], phase, fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
         elif msg:
             disp.show(draw_session, now, msg, fade=fade, snapshot=snapshot)
@@ -840,21 +848,23 @@ def main():
     spin_frames = {}  # (args, frame) -> opaque screen-format portrait; one revolution is rendered once, then reused
 
     def spin_portrait():
-        """One thinking-ring frame: blit a cached frame into the portrait rect and flush only that rect."""
+        """One animated-ring frame (thinking spin or listening pulse): blit a cached frame into the portrait rect and
+        flush only that rect. One loop per (portrait, state) is rendered once, then reused."""
         rect, args = LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
-        if not rect or not args or thinking_started is None:
+        if not rect or not args or anim_started is None:
             return
-        n = max(1, round(SPIN_PERIOD * spin_fps()))
-        i = int(((time.time() - thinking_started) / SPIN_PERIOD) % 1.0 * n) % n
+        state = msg["state"]
+        n = max(1, round(ANIM[state] * spin_fps()))
+        i = int(((time.time() - anim_started) / ANIM[state]) % 1.0 * n) % n
         if any(k[0] != args for k in spin_frames):
             spin_frames.clear()
-        frame = spin_frames.get((args, i))
+        frame = spin_frames.get((args, state, i))
         if frame is None:
             who, d, ring_w, photo_ok = args
             frame = pygame.Surface(rect.size, depth=disp.screen.get_bitsize())
             frame.fill(BG)
-            frame.blit(portrait(who, d, ring_w, "thinking", i / n, photo_ok=photo_ok)[0], (0, 0))
-            spin_frames[(args, i)] = frame
+            frame.blit(portrait(who, d, ring_w, state, i / n, photo_ok=photo_ok)[0], (0, 0))
+            spin_frames[(args, state, i)] = frame
         disp.screen.blit(frame, rect.topleft)
         disp.flush_rect(rect)
 
@@ -891,19 +901,19 @@ def main():
         if ev.type == STATE:
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
-                if ev.state == "thinking":
-                    if not thinking_started:
-                        thinking_started = time.time()
+                if ev.state in ANIM:
+                    if not anim_started or not msg or msg.get("state") != ev.state:
+                        anim_started = time.time()
                 else:
-                    thinking_started = None
+                    anim_started = None
                 msg = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 until = time.time() + hold
                 paint()
             elif msg and msg.get("voice"):
-                until, thinking_started = 0, None
+                until, anim_started = 0, None
             continue
         if ev.type == SHOW:
-            msg, until, thinking_started = ev.msg, time.time() + HOLD, None
+            msg, until, anim_started = ev.msg, time.time() + HOLD, None
             paint()
             print("rendered", flush=True)
         elif ev.type == WEATHER:
@@ -913,7 +923,7 @@ def main():
             break
         elif ev.type == pygame.NOEVENT:
             if msg and time.time() >= until:
-                msg, thinking_started = None, None
+                msg, anim_started = None, None
                 paint(fade=True)
                 print("back to idle", flush=True)
             elif thinking():
@@ -960,6 +970,9 @@ def demo(out, size):
     think = {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"}
     for i, phase in enumerate((0.0, 0.33, 0.66)):
         shots.append((f"thinking-spin-{i}", draw_session, (now, think, "thinking", phase)))
+    listen = {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"}
+    for i, phase in enumerate((0.0, 0.25, 0.5)):
+        shots.append((f"listening-pulse-{i}", draw_session, (now, listen, "listening", phase)))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)

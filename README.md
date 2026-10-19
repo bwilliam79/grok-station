@@ -22,8 +22,8 @@ and Inter 500 (body), bundled in `assets/fonts`. Sizes come from a 1080p spec an
 
 The display redraws once a minute (plus on messages and weather updates); otherwise the process sleeps in
 `pygame.event.wait`. The clock colon is steady (an optional blink, `GROK_STATION_BLINK=1`, repaints only the colon's
-rectangle once a second). While a voice session is **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
-15) by repainting only the portrait rectangle from a cached circle-cropped photo. The colon is centered between the
+rectangle once a second). While **listening**, the teal tick ring around every persona (Grok included) pulses once a second (ticks grow and a soft glow brightens, smooth cosine); while **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
+15) by repainting only the portrait rectangle from a cached circle-cropped photo. Each animation's loop (15 pulse frames, 18 spin frames) is rendered once per portrait, then reused. Speaking and idle rings are static. The listening screen has no wake-word hint (the station is already awake). The colon is centered between the
 hour and minute digits on their ink (not the font box), and the date is centered under HH:MM (AM/PM excluded).
 Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
 last good reading cached in `/var/cache/grok-station/weather.json`.
