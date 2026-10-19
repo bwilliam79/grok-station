@@ -307,7 +307,7 @@ async function wakePanel(el, opts = {}) {
   el.innerHTML = `<div class="card"><div class="inline"><h2>Wake words</h2><button class="btn p sm right" id="rec">Record a wake word</button></div>
     <p class="sub">Each word opens one teammate. Built-in words work right away; new ones need about a minute of your voice.</p>
     ${words.map(w => `<div class="row" style="flex-wrap:wrap">
-      <button class="tog${w.enabled ? " on" : ""}" role="switch" aria-checked="${w.enabled}" aria-label="${esc(WORD(w.name))} on" data-tog="${esc(w.name)}"${w.backup || !w.has_model ? " disabled" : ""}></button>
+      <button class="tog${w.enabled ? " on" : ""}" role="switch" aria-checked="${w.enabled}" aria-label="${esc(WORD(w.name))} on" data-tog="${esc(w.name)}"${w.backup ? ` disabled aria-disabled="true" title="Jarvis is the station's default wake word and can't be turned off"` : !w.has_model ? " disabled" : ""}></button>
       <div style="min-width:160px"><div class="lbl">${esc(WORD(w.name))}</div><div class="help">Opens ${esc(PERSONA(w.persona))}${w.backup ? " · backup word, always on" : ""}</div></div>
       <span class="pill ${w.backup ? "off" : w.enrolled ? "ok" : w.has_model ? (w.provisional ? "busy" : "ok") : "warn"}"><i></i>${w.backup ? "Backup" : w.enrolled ? "Your voice" : w.has_model ? (w.provisional ? "Starter model" : "Ready") : "Needs your voice"}</span>
       ${w.metrics ? `<span class="help mono">recall ${esc(w.metrics.recall)} · ${esc(w.metrics.fa_per_hour)}/h false</span>` : ""}

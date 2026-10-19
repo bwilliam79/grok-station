@@ -473,8 +473,8 @@ Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`
 
 ## Teammate handoff (off by default)
 A persona can ask its own Grok Bot and speak the answer, answer-only (T0), with per-bot tokens, limits, nonce binding
-and a privacy lint on both ends. Off until enabled per bot. Router mode (`grok-voice-add-router`) sends every handoff
-through one webhook; per-bot entries stay as fallback. See [docs/handoff.md](docs/handoff.md).
+and a privacy lint on both ends. Off until enabled per bot. Each bot uses its own webhook (set from the upcoming
+admin Bots page). Router mode is retired (routine runs can't SendToAgent). Waits up to 120 s, saying "Still asking <Bot>" at 20 s. See [docs/handoff.md](docs/handoff.md).
 
 ### Voice notes (T1, off)
 

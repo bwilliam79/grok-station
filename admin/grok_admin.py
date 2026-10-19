@@ -32,6 +32,7 @@ MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL = 12 * 3600, 900
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
+JARVIS_LOCKED = "Jarvis is the station's default wake word and can't be turned off"
 UNITS = ("grok-station", "grok-station-wake", "grok-station-admin")
 LOG_SINCE = {"15m": "-15min", "1h": "-1h", "6h": "-6h", "24h": "-24h", "7d": "-7d"}
 LOCK = threading.RLock()
@@ -701,8 +702,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_put_wakewords(self, p, q, j):
         name = p.split("/")[3] if p.count("/") >= 3 else ""
         known = {w["name"]: w for w in wakewords()}
-        if name not in known or known[name].get("backup"):
+        if name not in known:
             return self.send(404, {"error": "No such wake word."})
+        if known[name].get("backup"):
+            if j.get("enabled") is False:
+                return self.send(409, {"error": JARVIS_LOCKED})
+            return self.send(400, {"error": "The default wake word has no settings to change."})
         ov = read_json(path("wake-overrides.json"), {})
         o = ov.get(name, {})
         if "enabled" in j:

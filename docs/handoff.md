@@ -33,9 +33,8 @@ Logs and alerts carry request_id, agent, length and verdict only, never text. Ev
 1. tile-ingest: `node bin/gen-voice-token.js <bot>` stores the hash only. Hand the plaintext from the mode-600 handoff
    file to the bot, then delete that file.
 2. The bot creates its routine with the shared prompt (step 0 checks, delimiters, data allowlist, guest rule, T0, no
-   verbatim memory). The owner copies the routine's webhook URL and key from its panel and runs
-   `grok-voice-add-webhook <bot>` on the relay host, which prompts for both (the key is hidden) and merges them into
-   `webhooks.json` (mode 600). The relay calls it with `Authorization: Bearer <key>` and reloads the file on change.
+   verbatim memory). The routine's webhook URL and key go into `webhooks.json` (mode 600, relay host only); they will be set from the
+   upcoming admin Bots page (the old `grok-voice-add-webhook` script is removed). The relay calls it with `Authorization: Bearer <key>` and reloads the file on change.
    A bot with no route (no `_router`, and no webhook of its own) gets no `check_notes` tool, so its persona says its
    full notes can't be reached.
 3. Set `HANDOFF_ENABLED=1` and `VOICE_ENABLED=1` only with the owner's OK.
@@ -92,7 +91,10 @@ Approved with the reviewer's conditions. Everything below is in the code and tes
 4. Set `T1_ENABLED=1` in tile-ingest and the relay `.env`, then rebuild both (check for sessions and enrollments first).
 5. Run the live canary with Nix: the TV-during-read-back test, then a real confirm.
 
-## Router mode (one webhook)
+## Router mode (one webhook): RETIRED 2026-10-19
+
+**Retired.** A routine run can't SendToAgent, so a router routine can't forward a question to another bot. Webhooks are per bot again and will be set from the upcoming admin **Bots** page; the `grok-voice-add-router` and `grok-voice-add-webhook` scripts are removed. The relay still honours a `_router` entry if one is ever present (dormant code path, covered by tests); with none, each persona uses its own entry. The record below is kept for history.
+
 
 `webhooks.json` may include `_router` (`url`, `token`, `enabled` true by default) along with the per-bot entries. It
 has to pass the same checks as a bot entry. When `_router` is present, every handoff POSTs there: every roster persona
@@ -106,7 +108,7 @@ Per-bot entries are the fallback. With no `_router`, a handoff goes to that bot'
 neither gets no `check_notes` tool. The relay log line says whether the router is on and lists the bot names. It does
 not include the URL or the token.
 
-On the relay host, `tools/grok-voice-add-router` takes no arguments. It prompts `Router webhook URL: ` and a hidden
+(History; script since removed.) On the relay host, `tools/grok-voice-add-router` took no arguments. It prompts `Router webhook URL: ` and a hidden
 `Router webhook key (hidden): `, requires an `https://` URL, and merges `_router` into `webhooks.json` in place (mode
 600, same inode, per-bot entries left as they are). It confirms the relay container sees `_router`, restarting the
 relay when it is idle if the hot reload did not, and prints only `ok router`. It never echoes the URL or the key.
@@ -122,3 +124,12 @@ Nix's conditions for the router routine:
 7. Rhea-specific: the router is a separate webhook routine whose saved prompt only validates and forwards. It never answers, acts, emails, opens an approval, or passes anything into Rhea's regular chat. Rhea's own T0 answers go through the same forward path to herself with her rules attached.
 
 T1 and above: the router never carries an approval. Actions need the owner's on-screen confirm or an approval card. Once the router is live, Nix pauses their direct per-bot routine.
+
+## Waiting and failures (2026-10-19)
+- The station waits up to `REPLY_WAIT` = 120 s for an answer. After `STILL_AFTER` = 20 s it says "Still asking <Bot>." once, in
+  the persona's voice (xAI TTS, fixed template), while the "Checking with <Bot>…" wait screen stays up. The wait doesn't count
+  toward the per-turn or per-session caps, and the mic isn't forwarded or counted during it.
+- No answer gives an honest spoken result, e.g. "<Bot> didn't answer in time; try again or ask in the app." (timeout), with
+  matching lines for limit, POST failure and a rejected reply. The model is told not to guess.
+- Each POST logs `via=bot|router http=<status> post_ms=<ms>`; spoken and timeout lines add `wait_ms`. Still no text, URL or key.
+- `verdict=timeout` raises an ntfy alert (kind `handoff-timeout`, once per day), like post-failed and reject.

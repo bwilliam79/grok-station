@@ -22,7 +22,7 @@ frames at or above the threshold). A wake opens the session as that persona (rel
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
-import shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -860,6 +860,20 @@ class Session:
                         self.t1_card = None
                         print(f"t1: {'confirmed' if ev.get('ok') else 'not saved'}", flush=True)
                         self.state("thinking", heard=self.heard, text="Saving…" if ev.get("ok") else "Not saved.")
+                    elif t == "handoff_still":
+                        # "Still asking <bot>": play the short line, keep the thinking/wait screen as it is
+                        print("relay: handoff still", flush=True)
+                        try:
+                            pcm = base64.b64decode(str(ev.get("audio", ""))[:400000], validate=True)
+                        except ValueError:
+                            pcm = b""
+                        if pcm:
+                            try:
+                                p = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000", "-c", "1",
+                                                      "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                threading.Thread(target=p.communicate, args=(pcm,), daemon=True).start()
+                            except OSError:
+                                pass
                     elif t in ("timer_set", "timer_cancel"):
                         timer_event(ev)
                     elif t == "handoff_done":

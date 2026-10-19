@@ -299,7 +299,9 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         self.assertEqual(ov["hey_finn"], {"enabled": False, "threshold": 0.3})
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")).st_mode), 0o640)
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_hank", {"enabled": True})[0], 409)  # no model yet
-        self.assertEqual(c.req("PUT", "/api/wakewords/hey_jarvis", {"enabled": False})[0], 404)  # backup stays on
+        code, out = c.req("PUT", "/api/wakewords/hey_jarvis", {"enabled": False})   # default word can't be turned off
+        self.assertEqual((code, out["error"]), (409, "Jarvis is the station's default wake word and can't be turned off"))
+        self.assertTrue(next(w for w in c.req("GET", "/api/wakewords")[1]["words"] if w["name"] == "hey_jarvis")["enabled"])
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_finn", {"sensitivity": 2})[0], 400)
 
     def test_speaker_names_stay_on_pi(self):

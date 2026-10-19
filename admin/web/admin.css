@@ -87,6 +87,8 @@ select.sel{background:var(--gs-bg) url("data:image/svg+xml,%3Csvg xmlns='http://
 select.sel::after{display:none}
 input[type=range]{flex:1;accent-color:var(--gs-teal)}
 button.tog{padding:0;cursor:pointer}
+button.tog:disabled{opacity:.4;filter:grayscale(1);cursor:not-allowed}
+button.tog.on:disabled{background:var(--gs-surface-3);border-color:var(--gs-rule-2)}
 .app{min-height:100vh;height:auto}
 .side{position:sticky;top:0;height:100vh;overflow:auto}
 .nav{cursor:pointer;text-decoration:none;border:0;background:none;width:100%;text-align:left}

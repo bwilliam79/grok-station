@@ -180,6 +180,39 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await relay.ask_teammate(http, "jules", "q"), (None, "timeout"))
         self.assertLess(time.monotonic() - t0, 4.5)
 
+    async def test_timeout_alerts_and_says_still_once_with_honest_error(self):
+        self.mode = "silent"
+        alerts, stills = [], []
+        self._alert = relay.alert
+        relay.alert = lambda kind, title, msg, *a: alerts.append((kind, msg))
+        relay.STILL_AFTER = 0.5
+        async def on_still(): stills.append(1)
+        try:
+            async with ClientSession() as http:
+                self.assertEqual(await relay.ask_teammate(http, "jules", "secret question", None, on_still), (None, "timeout"))
+        finally:
+            relay.alert, relay.STILL_AFTER = self._alert, 20.0
+        self.assertEqual(stills, [1])                                    # spoken once, not on every poll
+        self.assertEqual(alerts[0][0], "handoff-timeout"); self.assertIn("verdict=timeout", alerts[0][1])
+        self.assertTrue(any("verdict=timeout wait_ms=" in l for l in self.lines))
+        self.assertFalse(any("secret question" in l for l in self.lines))
+        self.assertEqual(relay.handoff_error("Jules", "timeout"),
+                         'Say exactly: "Jules didn\'t answer in time; try again or ask in the app." Don\'t guess the answer.')
+
+    async def test_per_bot_path_logs_http_status_and_latency(self):
+        self.assertNotIn("_router", relay.webhooks())                  # router retired: per-bot entry is used
+        async with ClientSession() as http:
+            self.assertEqual((await relay.ask_teammate(http, "jules", "q"))[1], "ok")
+        self.assertEqual(self.paths, ["/hook"]); self.assertEqual(self.auths, ["Bearer t"])
+        line = [l for l in self.lines if " http=" in l][0]
+        self.assertRegex(line, r"agent=jules via=bot http=200 post_ms=\d+$")
+        self.assertNotIn("127.0.0.1", line)
+
+    def test_defaults(self):
+        src = open(relay.__file__).read()
+        self.assertIn('E("REPLY_WAIT", "120")', src); self.assertIn('E("STILL_AFTER", "20")', src)
+        self.assertNotIn("can't reach your \"\n", src); self.assertNotIn("full notes from the station yet", src)
+
     def test_hot_reload(self):
         self.assertNotIn("kai", relay.webhooks())
         time.sleep(0.01)
