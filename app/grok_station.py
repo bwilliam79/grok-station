@@ -33,8 +33,9 @@ MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
-VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4}  # safety timeouts per state
-VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that."}
+VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4, "enroll": 30}  # safety timeouts per state
+VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…"}
+WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
 PERSONAS_FILE = os.path.join(PORTRAIT_DIRS[1], "personas.json")  # cached by the wake client from the relay
@@ -171,11 +172,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._state()
         if not ipaddress.ip_address(self.client_address[0].removeprefix("::ffff:")).is_private:
             return self._reply(403, {"error": "lan only"})
-        if self.path != "/show":
+        if self.path not in ("/show", "/enroll"):
             return self._reply(404, {"error": "not found"})
         auth = self.headers.get("Authorization", "")
         if not TOKEN or not hmac.compare_digest(auth.encode(), f"Bearer {TOKEN}".encode()):
             return self._reply(401, {"error": "unauthorized"})
+        if self.path == "/enroll":
+            return self._enroll()
         try:
             n = int(self.headers.get("Content-Length", 0))
             if n > 8192:
@@ -193,6 +196,29 @@ class Handler(BaseHTTPRequestHandler):
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
         self._reply(200, {"ok": True})
+
+    def _enroll(self):
+        """LAN POST /enroll {"phrase":"hey_finn","count":25} (show token): hand it to the wake listener, which owns the mic."""
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            j = json.loads(self.rfile.read(min(n, 1024)) or b"{}")
+            body = json.dumps({"phrase": str(j.get("phrase", ""))[:24], "count": int(j.get("count", 25))}).encode()
+        except Exception:
+            return self._reply(400, {"error": "bad json"})
+        try:
+            req = urllib.request.Request(WAKE_CONTROL, body, {"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as r:
+                code, out = r.status, json.loads(r.read(4096))
+        except urllib.error.HTTPError as e:
+            code, out = e.code, {"error": "rejected by wake listener"}
+            try:
+                out = json.loads(e.read(4096))
+            except Exception:
+                pass
+        except Exception:
+            code, out = 503, {"error": "wake listener unreachable"}
+        print(f"enroll request from {self.client_address[0]}: {code}", flush=True)
+        self._reply(code, out)
 
     def _state(self):
         """Localhost-only, no token: the wake listener on the same Pi drives voice states."""
@@ -633,9 +659,37 @@ def draw_topbar_clock(surf, L, now):
     return r
 
 
+def draw_enroll(surf, L, now, msg):
+    """Enroll screen: the phrase to say, big; "Clip 3 of 25" + progress bar; status line (recording, retry, done)."""
+    surf.fill(BG)
+    draw_topbar_clock(surf, L, now)
+    text_at(surf, "body", L(56), "Wake word enrollment", MUTED, (L.m, L(34) + L(72) // 2), "midleft")
+    prompt, info = msg.get("text") or "", msg.get("heard") or ""
+    parts = info.split("|")
+    step = parts[0] if parts else ""
+    status = parts[1] if len(parts) > 1 else ""
+    width = L.w - 2 * L.m
+    f, lines, lh = fit_text("display", prompt, width, L(420), L(220), L(80), lh=1.0, max_lines=2)
+    y = L(330)
+    y = draw_lines(surf, f, lines, lh, TEXT, L.m, y, "center", width)
+    m = re.match(r"(\d+)/(\d+)", step)
+    if m:
+        i, n = int(m.group(1)), max(1, int(m.group(2)))
+        text_at(surf, "display", L(80), f"Clip {i} of {n}", LISTENING, (L.w // 2, y + L(110)), "center")
+        bar = pygame.Rect(L.m + L(200), y + L(200), width - L(400), L(24))
+        pygame.draw.rect(surf, SURFACE2, bar, border_radius=L(12))
+        pygame.draw.rect(surf, LISTENING, (bar.x, bar.y, int(bar.w * (i - 1) / n), bar.h), border_radius=L(12))
+    if status:
+        color = LISTENING if status.lower().startswith("recording") else MUTED
+        text_at(surf, "body", L(60), status, color, (L.w // 2, L.h - L(170)), "center")
+
+
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     state = msg.get("state", state)
+    if state == "enroll":
+        LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
+        return draw_enroll(surf, L, now, msg)
     surf.fill(BG)
     if state == "listening":
         pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
@@ -889,6 +943,8 @@ def demo(out, size):
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
         ("listening", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
         ("listening-persona", draw_session, (now, {"from": "Kai", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
+        ("enroll", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll", "text": "Say “Hey Finn”",
+                                        "heard": "3/25|Recording… speak now"})),
         ("thinking", draw_session, (now, {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
         ("error", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),

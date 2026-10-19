@@ -113,11 +113,211 @@ def sync_personas():
 
 def persona_loop():
     while True:
-        try:
-            sync_personas()
-        except Exception as e:
-            print(f"persona sync failed: {type(e).__name__}", flush=True)
-        time.sleep(3600)
+        for f in (sync_personas, sync_wakewords):
+            try:
+                f()
+            except Exception as e:
+                print(f"{f.__name__} failed: {type(e).__name__}", flush=True)
+        fast = time.time() < ENROLL_STATE.get("fast_until", 0)  # after an enrollment: poll for the new model
+        SYNC_NOW.wait(300 if fast else 3600)
+        SYNC_NOW.clear()
+
+
+# ---------------------------------------------------------------- enroll mode (docs/enroll.md)
+ENROLL_DIR = E("WAKE_ENROLL_DIR", "/opt/grok-station/wake/enroll")      # local copy of recorded clips
+ENROLLED_DIR = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled")  # models trained from real clips
+CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0.1 only
+ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
+ENROLL_STATE = {"busy": False, "fast_until": 0}
+PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
+CLIP_S, LEAD_S = 2.4, 0.9  # recording window per clip, pause before the chime
+
+
+def relay_post(path, body, ctype="application/octet-stream"):
+    base = re.sub(r"^ws", "http", RELAY_URL).rsplit("/ws", 1)[0]
+    req = urllib.request.Request(base + path, body, {"Authorization": f"Bearer {RELAY_TOKEN}", "Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=15, context=relay_ssl()) as r:
+        return r.status
+
+
+def enroll_phrases():
+    """phrase -> persona for every phrase that may be enrolled: configured words plus the config's "enroll" list."""
+    try:
+        with open(WAKE_CONFIG) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    out = {}
+    for w in cfg.get("words", []) + cfg.get("enroll", []):
+        n, ps = str(w.get("name", "")), str(w.get("persona", "grok"))
+        if PHRASE_RE.match(n) and SLUG_RE.match(ps):
+            out[n] = ps
+    return out
+
+
+def control_server():
+    """127.0.0.1:CONTROL_PORT POST /enroll {"phrase","count"}: queue one enrollment (the display's LAN /enroll and
+    `grok_wake.py --enroll` both land here). Never reachable from the LAN."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def _r(self, code, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(code); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+        def do_POST(self):
+            if self.path != "/enroll":
+                return self._r(404, {"error": "not found"})
+            try:
+                j = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1024)) or b"{}")
+                phrase, count = str(j.get("phrase", "")), int(j.get("count", 25))
+            except Exception:
+                return self._r(400, {"error": "bad json"})
+            allowed = enroll_phrases()
+            if phrase not in allowed:
+                return self._r(400, {"error": "unknown phrase", "phrases": sorted(allowed)})
+            if not 10 <= count <= 40:
+                return self._r(400, {"error": "count must be 10-40"})
+            if not RELAY_URL:
+                return self._r(503, {"error": "no relay configured"})
+            if ENROLL_STATE["busy"]:
+                return self._r(409, {"error": "enrollment in progress"})
+            try:
+                ENROLL_Q.put_nowait({"phrase": phrase, "persona": allowed[phrase], "count": count})
+            except queue.Full:
+                return self._r(409, {"error": "an enrollment is already queued"})
+            print(f"enroll queued: {phrase} x{count}", flush=True)
+            return self._r(202, {"ok": True, "phrase": phrase, "persona": allowed[phrase], "count": count})
+
+        def log_message(self, *a):
+            pass
+
+    ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), H).serve_forever()
+
+
+def trim_clip(pcm):
+    """Speech region by 20 ms frame energy (above max(-50 dBFS, peak - 30 dB)), padded 0.25 s. None if no speech."""
+    f = 320
+    n = len(pcm) // f
+    e = 20 * np.log10(np.sqrt(np.mean(pcm[:n * f].astype(np.float32).reshape(n, f) ** 2, 1)) / 32768 + 1e-9)
+    on = np.where(e > max(-50.0, e.max() - 30))[0]
+    if not len(on) or e.max() < -45:
+        return None
+    a, b = max(0, on[0] * f - 4000), min(len(pcm), (on[-1] + 1) * f + 4000)
+    return pcm[a:b] if b - a >= 8000 else None
+
+
+def enroll(req, read16, play):
+    """Record req["count"] clips with on-screen prompts and a count, upload each, then mark the session ready."""
+    phrase, persona, n = req["phrase"], req["persona"], req["count"]
+    words = phrase.replace("_", " ").title()
+    say = f"Say “{words}”"
+    ses = time.strftime("%Y%m%d-%H%M%S")
+    d = os.path.join(ENROLL_DIR, phrase, ses)
+    os.makedirs(d, exist_ok=True)
+    ENROLL_STATE["busy"] = True
+    print(f"enroll start {phrase} x{n} session {ses}", flush=True)
+    sent, i, tries = 0, 1, 0
+    try:
+        post_state("enroll", text=say, heard=f"1/{n}|Speak naturally, about an arm’s length away")
+        for _ in range(int(3 / 0.08)):
+            read16()
+        while i <= n:
+            post_state("enroll", text=say, heard=f"{i}/{n}|Get ready…")
+            for _ in range(int(LEAD_S / 0.08)):
+                read16()
+            subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
+            for _ in range(4):  # skip the chime itself
+                read16()
+            post_state("enroll", text=say, heard=f"{i}/{n}|Recording… speak now")
+            pcm = np.concatenate([read16() for _ in range(int(CLIP_S / 0.08))])
+            clip = trim_clip(pcm)
+            clipped = np.mean(np.abs(pcm.astype(np.int32)) >= 32000) > 0.001
+            if clip is None or clipped:
+                tries += 1
+                why = "Too loud, step back a little" if clipped else "Didn’t hear it, a bit louder please"
+                print(f"enroll clip {i} rejected ({'clipped' if clipped else 'quiet'})", flush=True)
+                post_state("enroll", text=say, heard=f"{i}/{n}|{why}")
+                for _ in range(int(1.5 / 0.08)):
+                    read16()
+                if tries >= 3 * n:
+                    break
+                continue
+            path = os.path.join(d, f"{i - 1:02d}.wav")
+            with wave.open(path, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(clip.astype("<i2").tobytes())
+            try:
+                with open(path, "rb") as f:
+                    relay_post(f"/enroll/{phrase}/{ses}/{i - 1:02d}.wav", f.read(), "audio/wav")
+                sent += 1
+            except Exception as e:
+                print(f"enroll upload {i} failed: {type(e).__name__}", flush=True)
+            i += 1
+        ok = False
+        if sent >= 10:
+            try:
+                relay_post(f"/enroll/{phrase}/{ses}/done", json.dumps({"persona": persona, "count": sent}).encode(), "application/json")
+                ok = True
+            except Exception as e:
+                print(f"enroll done failed: {type(e).__name__}", flush=True)
+        print(f"enroll end {phrase}: {i - 1} recorded, {sent} uploaded, {'ready' if ok else 'NOT submitted'}", flush=True)
+        if ok:
+            ENROLL_STATE["fast_until"] = time.time() + 3 * 3600
+            SYNC_NOW.set()
+            post_state("enroll", text="Thanks! All done.",
+                       heard=f"|{sent} clips sent. Training takes about an hour; the station loads the new model on its own.")
+        else:
+            post_state("error", text="Enrollment didn’t finish. Try again later.")
+        time.sleep(6)
+        post_state("idle")
+    finally:
+        ENROLL_STATE["busy"] = False
+
+
+def sync_wakewords():
+    """Fetch models published from real-voice enrollment (GET /wakewords, /wakeword/<name>.onnx). Each file is checked
+    against its sha256; wakewords.enrolled.json lists the active ones. Sets RELOAD when anything changed."""
+    if not RELAY_URL:
+        return
+    raw = relay_get("/wakewords")
+    try:
+        items = json.loads(raw)["wakewords"] if raw else None
+    except (ValueError, KeyError, TypeError):
+        items = None
+    if items is None:
+        return
+    import hashlib
+    os.makedirs(ENROLLED_DIR, exist_ok=True)
+    words, changed = [], False
+    for it in items:
+        name, persona, sha = str(it.get("name", "")), str(it.get("persona", "")), str(it.get("sha256", ""))
+        if not (PHRASE_RE.match(name) and SLUG_RE.match(persona) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+            continue
+        path = os.path.join(ENROLLED_DIR, name + ".onnx")
+        have = hashlib.sha256(open(path, "rb").read()).hexdigest() if os.path.isfile(path) else ""
+        if have != sha:
+            blob = relay_get(f"/wakeword/{name}.onnx")
+            if not blob or hashlib.sha256(blob).hexdigest() != sha:
+                print(f"wakeword {name}: download failed or checksum mismatch", flush=True)
+                continue
+            with open(path + ".tmp", "wb") as f:
+                f.write(blob)
+            os.replace(path + ".tmp", path)
+            changed = True
+            print(f"wakeword {name}: new enrolled model", flush=True)
+        words.append({"name": name, "persona": persona, "threshold": float(it.get("threshold", 0.5)),
+                      "patience": int(it.get("patience", 1)), "path": path, "enrolled": True})
+    cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
+    old = open(cfgp).read() if os.path.isfile(cfgp) else ""
+    new = json.dumps({"words": words}, indent=1)
+    if new != old:
+        with open(cfgp + ".tmp", "w") as f:
+            f.write(new)
+        os.replace(cfgp + ".tmp", cfgp)
+        changed = True
+    if changed:
+        RELOAD.set()
 
 
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
@@ -127,7 +327,8 @@ WORDS = {}  # model key -> {"name", "persona", "threshold", "patience", "provisi
 
 def _word(w):
     return {"name": str(w["name"]), "persona": str(w.get("persona", "grok")), "threshold": float(w.get("threshold", 0.5)),
-            "patience": max(1, int(w.get("patience", 1))), "provisional": bool(w.get("provisional", False))}
+            "patience": max(1, int(w.get("patience", 1))), "provisional": bool(w.get("provisional", False)),
+            "enrolled": bool(w.get("enrolled", False))}
 
 
 def load_model():
@@ -146,9 +347,17 @@ def load_model():
         WORDS[MODEL] = _word({"name": MODEL, "threshold": THRESH})
         return Model(wakeword_models=[MODEL], inference_framework="onnx")
     paths = []
-    for w in cfg.get("words", []):
-        w = _word(w)
-        path = os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
+    entries = {w["name"]: dict(w) for w in cfg.get("words", []) if "name" in w}
+    try:  # models trained from real-voice enrollment override (or add to) the repo config
+        with open(os.path.join(E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled"), "wakewords.enrolled.json")) as f:
+            for w in json.load(f).get("words", []):
+                if os.path.isfile(str(w.get("path", ""))):
+                    entries[w["name"]] = dict(w)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    for raw in entries.values():
+        w = _word(raw)
+        path = raw.get("path") or os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
         if not os.path.isfile(path):
             print(f"wake word {w['name']}: model missing, skipped", flush=True)
             continue
@@ -164,7 +373,7 @@ def load_model():
             WORDS.pop(k)
     for k, w in WORDS.items():
         print(f"wake word {k} -> {w['persona']} threshold={w['threshold']} patience={w['patience']}"
-              f"{' (provisional)' if w['provisional'] else ''}", flush=True)
+              f"{' (provisional)' if w['provisional'] else ''}{' (enrolled)' if w['enrolled'] else ''}", flush=True)
     print(f"loaded {len(WORDS)} wake words", flush=True)
     return model
 
@@ -441,6 +650,7 @@ def main():
     make_chime(CHIME)
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
+    threading.Thread(target=control_server, daemon=True).start()
     model = load_model()
     det = Detector()
     print(f"cooldown={COOLDOWN}s gain={GAIN}", flush=True)
@@ -463,6 +673,33 @@ def main():
             if not buf or len(buf) < CHUNK * DECIM * 2:
                 break
             x = np.frombuffer(buf, "<i2").astype(np.float32)
+            if not sess and not ENROLL_Q.empty():
+                def read16():
+                    nonlocal tail
+                    b = p.stdout.read(CHUNK * DECIM * 2)
+                    if not b or len(b) < CHUNK * DECIM * 2:
+                        raise EOFError
+                    y = np.frombuffer(b, "<i2").astype(np.float32)
+                    if DECIM > 1:
+                        yy = np.concatenate([tail, y]); tail = yy[-(len(_K) - 1):]
+                        y = np.convolve(yy, _K, "valid")[::DECIM]
+                    return np.clip(y * GAIN, -32768, 32767).astype("<i2")
+                try:
+                    enroll(ENROLL_Q.get_nowait(), read16, play)
+                except EOFError:
+                    break
+                except Exception as e:
+                    print(f"enroll failed: {type(e).__name__}", flush=True)
+                    post_state("error", text="Enrollment stopped.")
+                model.reset(); det.reset()
+                continue
+            if RELOAD.is_set() and not sess:
+                RELOAD.clear()
+                try:
+                    model = load_model(); det = Detector()
+                except Exception as e:
+                    print(f"wake model reload failed: {type(e).__name__}", flush=True)
+                continue
             if sess and not sess.active:
                 sess = None
                 model.reset()  # drop audio features from the session before listening again
@@ -512,6 +749,15 @@ if __name__ == "__main__":
         bench(int(sys.argv[2]) if len(sys.argv) == 3 else 30)
     elif len(sys.argv) == 2 and sys.argv[1] == "--sync":
         sync_personas()
+        sync_wakewords()
+    elif len(sys.argv) in (3, 4) and sys.argv[1] == "--enroll":
+        body = json.dumps({"phrase": sys.argv[2], "count": int(sys.argv[3]) if len(sys.argv) == 4 else 25}).encode()
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{CONTROL_PORT}/enroll", body,
+                                                               {"Content-Type": "application/json"}), timeout=5) as r:
+                print(r.read().decode())
+        except urllib.error.HTTPError as e:
+            print(e.read().decode()); sys.exit(1)
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "--ask":
         ask(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     else:

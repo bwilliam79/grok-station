@@ -70,3 +70,22 @@ class TestWake(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEnroll(unittest.TestCase):
+    def test_trim_clip(self):
+        sr = 16000
+        x = np.zeros(int(2.4 * sr), np.int16)
+        self.assertIsNone(gw.trim_clip(x))
+        x[sr // 2: sr // 2 + 12000] = (np.sin(np.arange(12000) / 5) * 8000).astype(np.int16)
+        y = gw.trim_clip(x)
+        self.assertTrue(12000 <= len(y) <= 12000 + 8000 + 640)
+
+    def test_enroll_phrases(self):
+        old = gw.WAKE_CONFIG
+        gw.WAKE_CONFIG = os.path.join(os.path.dirname(__file__), "..", "wake", "wakewords.json")
+        try:
+            ph = gw.enroll_phrases()
+        finally:
+            gw.WAKE_CONFIG = old
+        self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank"); self.assertEqual(ph["hey_rhea"], "rhea")

@@ -3,6 +3,8 @@
 # Usage counters persist in $GROK_STATION_STATE. ntfy drop folder (dedicated to this relay): $GROK_STATION_ALERTS.
 # Personas: private registry $GROK_STATION_PRIVATE/personas.json (dir 700, file 600, see personas.example.json) and two
 # read-only portrait dirs $GROK_STATION_PORTRAITS_A / _B (photos are never in git). Without them only Grok is on voice.
+# Enroll mode (docs/enroll.md): clip inbox $GROK_STATION_ENROLL (rw, writable by uid 10001) and published models
+# $GROK_STATION_WAKEWORDS (ro), both on the training host.
 # LAN clients connect through the `tls` service (Caddy, wss + client certificate) on $GROK_STATION_TLS_PORT (8791);
 # certs come from $GROK_STATION_PKI (server.crt, server.key, client-ca.crt). The relay's own port is published on the
 # host's loopback only (GROK_STATION_RELAY_BIND, default 127.0.0.1) for local health checks.
@@ -23,6 +25,8 @@ services:
       - ${GROK_STATION_PRIVATE:-./no-personas}:/config:ro
       - ${GROK_STATION_PORTRAITS_A:-./no-personas}:/portraits/a:ro
       - ${GROK_STATION_PORTRAITS_B:-./no-personas}:/portraits/b:ro
+      - ${GROK_STATION_ENROLL:-./no-enroll}:/enroll
+      - ${GROK_STATION_WAKEWORDS:-./no-wakewords}:/wakewords:ro
     ports:
       - "${GROK_STATION_RELAY_BIND:-127.0.0.1}:8790:8790"
     read_only: true

@@ -20,7 +20,7 @@ https://:8443 {
 			trust_pool file /pki/client-ca.crt
 		}
 	}
-	@relay path /ws /health /personas /portrait/*
+	@relay path /ws /health /personas /portrait/* /enroll/* /wakewords /wakeword/*
 	handle @relay {
 		reverse_proxy relay:8790 {
 			header_up X-Client-Cert-Fp {http.request.tls.client.fingerprint}

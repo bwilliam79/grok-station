@@ -249,6 +249,31 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
 - End-to-end check without talking: `grok_wake.py --ask question.wav [reply.wav]` (24 kHz mono) streams the
   file through the same path, plays the reply, and prints the end-of-speech → first-audio latency.
 
+## Enroll mode (real-voice wake words)
+
+Records 10-40 clips (default 25) of one phrase on the speakerphone, uploads them to the training host through the
+relay, and trains a model from real + synthetic speech. Architecture: `docs/enroll.md`; host scripts: `train/`.
+Never started by voice. Start it from the LAN with the `/show` token, or on the Pi:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","count":25}' http://grok-station.local:8787/enroll
+/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn 25   # on the Pi
+```
+
+Phrases: any word in `wakewords.json` plus its `enroll` list (persona per phrase). The screen shows the phrase, "Clip N
+of M", a progress bar and the status (get ready → chime → recording; too quiet or clipped clips are retried). Clips
+are trimmed to the speech, kept locally in `/opt/grok-station/wake/enroll/<phrase>/<session>/`, and posted to the relay
+(`POST /enroll/<phrase>/<session>/<NN>.wav`, then `.../done`; mTLS + relay token; 16 kHz mono WAV, ≤ 5 s, ≤ 40 per
+session). The relay writes them to `$GROK_STATION_ENROLL` on the training host, where `train/enroll_watch.sh`
+(launchd, every 60 s) starts `enroll_train.sh` under `nice 10` + `caffeinate`: synthetic set (generated once for a new
+phrase), 80 % of the real clips augmented ×200 into the positives, training, then the gate: false wakes ≤ 1.0/h on the
+validation set and recall ≥ 0.80 on the held-out real clips (clean + 15/10/5 dB background). A passing model and its
+threshold/patience are published to `$GROK_STATION_WAKEWORDS`; the relay serves them (`GET /wakewords`,
+`GET /wakeword/<name>.onnx`). The Pi syncs them at startup, hourly, and every 5 min for 3 h after an enrollment
+(`/opt/grok-station/wake/models/enrolled/`, sha256 checked) and reloads the detector between sessions; an enrolled
+model overrides the repo entry for that phrase. The watcher is also the job's watchdog (dead job or 30 min without
+log/file activity → killed, restarted once, then marked FAILED in `enroll/enroll.log`).
+
 ## Credits
 
 Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).

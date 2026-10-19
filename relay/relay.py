@@ -310,6 +310,102 @@ async def portrait_route(req):
     return web.json_response({"error": "not found"}, status=404)
 
 
+ENROLL_DIR = E("ENROLL_DIR", "/enroll")          # inbox for station enroll clips (host dir, rw); absent = disabled
+WAKEWORD_DIR = E("WAKEWORD_DIR", "/wakewords")   # trained models published by the training host (ro)
+PHRASE, SESSION, CLIP = re.compile(r"^hey_[a-z]{2,16}$"), re.compile(r"^\d{8}-\d{6}$"), re.compile(r"^(\d{2})\.wav$")
+MAX_CLIPS = 40
+
+
+def wav_ok(b):
+    """16 kHz mono PCM16 WAV, 0.3-5 s. Header parsed by hand; nothing else is accepted."""
+    import io, wave
+    try:
+        with wave.open(io.BytesIO(b)) as w:
+            return (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2) and 4800 <= w.getnframes() <= 80000
+    except Exception:
+        return False
+
+
+async def gate(req):
+    src = lock_key(req)
+    if locked_out(src):
+        return web.json_response({"error": "locked out"}, status=429)
+    if not authorized(req):
+        note_failure(src)
+        return web.json_response({"error": "unauthorized"}, status=401)
+    return None
+
+
+async def enroll_route(req):
+    """POST /enroll/<phrase>/<session>/<NN>.wav (clip) or .../done (JSON {"persona","count"}): write to the inbox."""
+    bad = await gate(req)
+    if bad:
+        return bad
+    ph, ses, item = (req.match_info.get(k, "") for k in ("phrase", "session", "item"))
+    if not (os.path.isdir(ENROLL_DIR) and PHRASE.match(ph) and SESSION.match(ses)):
+        return web.json_response({"error": "bad request"}, status=400)
+    d = os.path.join(ENROLL_DIR, ph, ses)
+    body = await req.content.read(200_001)
+    m = CLIP.match(item)
+    if m:
+        if int(m.group(1)) >= MAX_CLIPS or len(body) > 200_000 or not wav_ok(body):
+            return web.json_response({"error": "bad clip"}, status=400)
+        os.makedirs(d, exist_ok=True)
+        if os.path.exists(os.path.join(d, "READY")):
+            return web.json_response({"error": "session closed"}, status=409)
+        tmp = os.path.join(d, f".{item}.tmp")
+        with open(tmp, "wb") as f:
+            f.write(body)
+        os.replace(tmp, os.path.join(d, item))
+        log(f"enroll: {ph} {ses} clip {item}")
+        return web.json_response({"ok": True})
+    if item == "done":
+        try:
+            j = json.loads(body or b"{}")
+        except ValueError:
+            j = {}
+        persona = str(j.get("persona", ""))
+        n = len([f for f in os.listdir(d) if CLIP.match(f)]) if os.path.isdir(d) else 0
+        if n < 10 or not SLUG.match(persona):
+            return web.json_response({"error": "need 10+ clips and a persona slug"}, status=400)
+        with open(os.path.join(d, ".READY.tmp"), "w") as f:
+            json.dump({"phrase": ph, "persona": persona, "clips": n, "at": int(time.time())}, f)
+        os.replace(os.path.join(d, ".READY.tmp"), os.path.join(d, "READY"))
+        log(f"enroll: {ph} {ses} ready ({n} clips)")
+        return web.json_response({"ok": True, "clips": n})
+    return web.json_response({"error": "bad request"}, status=400)
+
+
+async def wakewords_route(req):
+    """GET /wakewords: published models (name, persona, threshold, patience, sha256, metrics)."""
+    bad = await gate(req)
+    if bad:
+        return bad
+    out = []
+    if os.path.isdir(WAKEWORD_DIR):
+        for f in sorted(os.listdir(WAKEWORD_DIR)):
+            if f.endswith(".json") and PHRASE.match(f[:-5]) and os.path.isfile(os.path.join(WAKEWORD_DIR, f[:-5] + ".onnx")):
+                try:
+                    with open(os.path.join(WAKEWORD_DIR, f)) as fh:
+                        j = json.load(fh)
+                    out.append({k: j[k] for k in ("name", "persona", "threshold", "patience", "sha256", "trained", "recall_real", "fa_h") if k in j})
+                except (OSError, ValueError, KeyError):
+                    continue
+    return web.json_response({"wakewords": out})
+
+
+async def wakeword_file(req):
+    bad = await gate(req)
+    if bad:
+        return bad
+    name = req.match_info.get("name", "")
+    f = os.path.join(WAKEWORD_DIR, name + ".onnx")
+    if PHRASE.match(name) and os.path.isfile(f) and os.path.getsize(f) <= 4 << 20:
+        with open(f, "rb") as fh:
+            return web.Response(body=fh.read(), content_type="application/octet-stream", headers={"Cache-Control": "no-store"})
+    return web.json_response({"error": "not found"}, status=404)
+
+
 async def load_voices():
     while not VOICES:
         await fetch_voices()
@@ -513,7 +609,8 @@ async def session(req):
 if __name__ == "__main__":
     app = web.Application()
     app.add_routes([web.get("/health", health), web.get("/ws", session), web.get("/personas", personas_route),
-                    web.get("/portrait/{slug}", portrait_route)])
+                    web.get("/portrait/{slug}", portrait_route), web.post("/enroll/{phrase}/{session}/{item}", enroll_route),
+                    web.get("/wakewords", wakewords_route), web.get("/wakeword/{name}.onnx", wakeword_file)])
     async def start_voices(_app):
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)

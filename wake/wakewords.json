@@ -9,5 +9,9 @@
   {"name": "hey_jules", "persona": "jules", "threshold": 0.95, "patience": 1},
   {"name": "hey_rhea", "persona": "rhea", "threshold": 0.8, "patience": 2, "provisional": true}
  ],
+ "enroll": [
+  {"name": "hey_finn", "persona": "finn"},
+  {"name": "hey_hank", "persona": "hank"}
+ ],
  "fallback": {"name": "hey_jarvis", "persona": "grok", "threshold": 0.5, "patience": 1}
 }
