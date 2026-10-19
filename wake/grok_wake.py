@@ -29,11 +29,15 @@ E = os.environ.get
 MODEL = E("WAKE_MODEL", "hey_jarvis")          # pre-trained placeholder until a custom "Hey Grok" model exists
 THRESH = float(E("WAKE_THRESHOLD", "0.5"))
 COOLDOWN = float(E("WAKE_COOLDOWN", "2"))
+def default_gain(device):
+    return "2" if "emeet" in device.lower() else "4"
+
+
 DEVICE = E("WAKE_DEVICE_NAME", "EMEET")        # matched against `arecord -l` / `aplay -l` card names (capture + playback)
 STATE_URL = E("WAKE_STATE_URL", "http://127.0.0.1:8787/state")
 CHIME = E("WAKE_CHIME", "/opt/grok-station/wake/chime.wav")
 LEVEL_EVERY = float(E("WAKE_LEVEL_EVERY", "30"))
-GAIN = float(E("WAKE_GAIN", "4"))                # software gain; headset mics run quiet
+GAIN = float(E("WAKE_GAIN", default_gain(DEVICE)))  # software gain: 2 for the EMEET, 4 for the quieter Razer
 CAP_RATE = int(E("WAKE_CAPTURE_RATE", "16000"))  # the device's native capture rate: 16000 (EMEET M0 Plus mic) or 48000
                                                  # (e.g. the Razer USB card, whose 16 kHz mode is muffled); 48k is decimated
 DECIM = CAP_RATE // 16000
@@ -208,6 +212,11 @@ def trim_clip(pcm):
     return pcm[a:b] if b - a >= 8000 else None
 
 
+def is_clipped(raw):
+    """True if more than 0.1% of the pre-gain samples sit at full scale."""
+    return bool(np.mean(np.abs(raw.astype(np.int32)) >= 32000) > 0.001)
+
+
 def enroll(req, read16, play):
     """Record req["count"] clips with on-screen prompts and a count, upload each, then mark the session ready."""
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
@@ -231,9 +240,10 @@ def enroll(req, read16, play):
             for _ in range(4):  # skip the chime itself
                 read16()
             post_state("enroll", text=say, heard=f"{i}/{n}|Recording… speak now")
-            pcm = np.concatenate([read16() for _ in range(int(CLIP_S / 0.08))])
+            raw = np.concatenate([read16(raw=True) for _ in range(int(CLIP_S / 0.08))])
+            clipped = is_clipped(raw)  # judged on the mic signal before software gain
+            pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
-            clipped = np.mean(np.abs(pcm.astype(np.int32)) >= 32000) > 0.001
             if clip is None or clipped:
                 tries += 1
                 why = "Too loud, step back a little" if clipped else "Didn’t hear it, a bit louder please"
@@ -674,7 +684,7 @@ def main():
                 break
             x = np.frombuffer(buf, "<i2").astype(np.float32)
             if not sess and not ENROLL_Q.empty():
-                def read16():
+                def read16(raw=False):
                     nonlocal tail
                     b = p.stdout.read(CHUNK * DECIM * 2)
                     if not b or len(b) < CHUNK * DECIM * 2:
@@ -683,7 +693,7 @@ def main():
                     if DECIM > 1:
                         yy = np.concatenate([tail, y]); tail = yy[-(len(_K) - 1):]
                         y = np.convolve(yy, _K, "valid")[::DECIM]
-                    return np.clip(y * GAIN, -32768, 32767).astype("<i2")
+                    return np.clip(y * (1.0 if raw else GAIN), -32768, 32767).astype("<i2")
                 try:
                     enroll(ENROLL_Q.get_nowait(), read16, play)
                 except EOFError:

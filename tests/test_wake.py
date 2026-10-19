@@ -68,6 +68,18 @@ class TestWake(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "wake", "models", w["name"] + ".onnx")))
 
 
+
+class GainClip(unittest.TestCase):
+    def test_default_gain(self):
+        self.assertEqual(gw.default_gain("EMEET"), "2")
+        self.assertEqual(gw.default_gain("Razer"), "4")
+
+    def test_clip_on_raw(self):
+        quiet = np.full(4000, 12000, np.int16)  # would clip after x4 gain, but the raw mic signal is fine
+        self.assertFalse(gw.is_clipped(quiet))
+        loud = quiet.copy(); loud[:100] = 32767
+        self.assertTrue(gw.is_clipped(loud))
+
 if __name__ == "__main__":
     unittest.main()
 

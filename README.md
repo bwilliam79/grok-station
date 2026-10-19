@@ -135,7 +135,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now grok-station-wake
 ```
 
 Optional overrides in `/etc/grok-station/wake.env`: `WAKE_MODEL`, `WAKE_THRESHOLD`, `WAKE_COOLDOWN`,
-`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain, default 4), `WAKE_CAPTURE_RATE` (default 16000;
+`WAKE_DEVICE_NAME`, `WAKE_STATE_URL`, `WAKE_GAIN` (software gain; default 2 when `WAKE_DEVICE_NAME` contains EMEET, else 4 for the quieter Razer), `WAKE_CAPTURE_RATE` (default 16000;
 set it to the device's native capture rate, see `/proc/asound/cardN/stream0`. The EMEET mic is 16 kHz only, so it
 is used as is and upsampled ×1.5 to 24 kHz for the voice session. Use 48000 for devices whose 16 kHz mode is poor,
 such as the Razer USB Sound Card (muffled, the wake word never scores); 48 kHz is decimated to 16 and 24 kHz).
@@ -261,7 +261,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","count":25}' htt
 ```
 
 Phrases: any word in `wakewords.json` plus its `enroll` list (persona per phrase). The screen shows the phrase, "Clip N
-of M", a progress bar and the status (get ready → chime → recording; too quiet or clipped clips are retried). Clips
+of M", a progress bar and the status (get ready → chime → recording; too quiet or clipped clips are retried; clipping is judged on the raw mic signal before software gain). The status line and heard text auto-fit inside the side margins, wrapping to at most 2 lines. Clips
 are trimmed to the speech, kept locally in `/opt/grok-station/wake/enroll/<phrase>/<session>/`, and posted to the relay
 (`POST /enroll/<phrase>/<session>/<NN>.wav`, then `.../done`; mTLS + relay token; 16 kHz mono WAV, ≤ 5 s, ≤ 40 per
 session). The relay writes them to `$GROK_STATION_ENROLL` on the training host, where `train/enroll_watch.sh`

@@ -690,7 +690,8 @@ def draw_enroll(surf, L, now, msg):
         pygame.draw.rect(surf, LISTENING, (bar.x, bar.y, int(bar.w * (i - 1) / n), bar.h), border_radius=L(12))
     if status:
         color = LISTENING if status.lower().startswith("recording") else MUTED
-        text_at(surf, "body", L(60), status, color, (L.w // 2, L.h - L(170)), "center")
+        fs, sl, ss = fit_text("body", status, width, L(150), L(60), L(36), lh=1.05, max_lines=2)
+        draw_lines(surf, fs, sl, ss, color, L.m, L.h - L(90) - ss * len(sl), "center", width)
 
 
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):

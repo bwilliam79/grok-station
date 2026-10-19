@@ -165,6 +165,39 @@ class FlushTests(unittest.TestCase):
             os.remove(path)
 
 
+
+LONG_STATUS = ["Speak naturally, about an arm’s length away", "Didn’t hear it, a bit louder please",
+               "Too loud, step back a little", "Recording… speak now", "Uploading failed, retrying the upload to the relay now "
+               "and again if needed, please keep still while we wait"]
+LONG_HEARD = ("could you please remind me tomorrow morning at seven thirty to call the pharmacy about the prescription refill "
+              "and also add milk eggs and bread to the shopping list")
+
+
+class FooterFit(unittest.TestCase):
+    def check_margins(self, surf, L):
+        h = surf.get_height()
+        for x0, x1 in ((0, L.m - 2), (L.w - L.m + 2, L.w)):
+            self.assertIsNone(ink_box(surf, (x0, L(140), x1 - x0, h - L(140)), gs.BG), "ink in side margin")
+
+    def test_enroll_status_fits(self):
+        for size in ((2560, 1706), (1920, 1080), (1280, 800)):
+            L = gs.Layout(*size)
+            surf = pygame.Surface(size)
+            for st in LONG_STATUS:
+                gs.draw_enroll(surf, L, time.localtime(), {"text": "Say “Hey Hank”", "heard": f"25/25|{st}"})
+                self.check_margins(surf, L)
+                f, lines, _ = gs.fit_text("body", st, L.w - 2 * L.m, L(150), L(60), L(36), lh=1.05, max_lines=2)
+                self.assertLessEqual(len(lines), 2)
+                self.assertTrue(all(f.size(l)[0] <= L.w - 2 * L.m for l in lines))
+
+    def test_heard_fits(self):
+        for size in ((2560, 1706), (1280, 800)):
+            L = gs.Layout(*size)
+            surf = pygame.Surface(size)
+            for who in ("", "Grok", "Piper"):
+                gs.draw_session(surf, L, time.localtime(), {"from": who, "heard": LONG_HEARD, "text": "Okay.", "state": "speaking"})
+                self.check_margins(surf, L)
+
 if __name__ == "__main__":
     unittest.main()
 
