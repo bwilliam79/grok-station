@@ -90,7 +90,7 @@ class Session:
     def __init__(self, play_dev, save=None):
         self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
-        self.heard, self.reply = "", ""
+        self.heard, self.reply, self.ready = "", "", threading.Event()
         threading.Thread(target=self.run, daemon=True).start()
 
     def feed(self, pcm24):
@@ -101,6 +101,7 @@ class Session:
                 pass
 
     def _sender(self, ws):
+        self.ready.wait(5)  # hold buffered mic audio until the xAI session is configured
         try:
             while self.feeding:
                 try:
@@ -114,16 +115,21 @@ class Session:
         from websockets.sync.client import connect
         player, out, t0 = None, [], time.time()
         try:
-            try:
-                ws = connect(RELAY_URL, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
-                             open_timeout=4, max_size=1 << 22)
-            except Exception as e:
+            for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
+                try:
+                    ws = connect(RELAY_URL, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
+                                 open_timeout=4, max_size=1 << 22, legacy=True)
+                    break
+                except Exception as e:
+                    err = e
+            else:
+                e = err
                 print(f"relay unreachable: {type(e).__name__}", flush=True)
                 post_state("error", text="Can’t reach Grok right now.")
                 return
             print(f"relay connected in {time.time() - t0:.2f}s", flush=True)
-            threading.Thread(target=self._sender, args=(ws,), daemon=True).start()
             with ws:
+                threading.Thread(target=self._sender, args=(ws,), daemon=True).start()
                 for m in ws:
                     if isinstance(m, bytes):
                         if self.t_first_audio is None:
@@ -142,7 +148,9 @@ class Session:
                         continue
                     ev = json.loads(m)
                     t = ev.get("type")
-                    if t == "speech_stopped":
+                    if t == "ready":
+                        self.ready.set()
+                    elif t == "speech_stopped":
                         self.feeding, self.t_end_speech = False, self.t_end_speech or time.time()
                         print("relay: speech stopped", flush=True)
                         post_state("thinking", heard=self.heard)

@@ -133,7 +133,7 @@ Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any 
   durations only, no transcripts or audio.
 - Run it: put `XAI_API_KEY=...` and `RELAY_TOKEN=...` in `relay/.env` (mode 600, gitignored), then
   `docker compose up -d --build` in `relay/`. It publishes port 8790 on the LAN; keep it off any public proxy.
-- Pi side: `/opt/grok-station/wake/venv/bin/pip install websockets`, then add to `/etc/grok-station/wake.env`
+- Pi side: `/opt/grok-station/wake/venv/bin/pip install "websockets>=17"`, then add to `/etc/grok-station/wake.env`
   (root, 600) `GROK_RELAY_URL=ws://<relay-host>:8790/ws` and `GROK_RELAY_TOKEN=...`. Without `GROK_RELAY_URL`
   the listener stays wake-word-only. `VOICE_GAIN` sets gain on audio sent to Grok (default = `WAKE_GAIN`).
 - Mic audio for Grok is decimated 48 → 24 kHz from the same capture as the wake word; the wake detector is paused
