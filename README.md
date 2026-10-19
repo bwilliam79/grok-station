@@ -434,6 +434,24 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
   check the watcher with `launchctl print gui/$(id -u)/grok-enroll-watch` or
   `systemctl --user status grok-enroll-watch.timer`, and look at `enroll/watch.err`.
 
+## Admin page (`http://grok-station.local`)
+A small web page on the station (port 80, home network only) so nobody has to SSH in. Design: Noor's admin UI spec (Hearth theme). Service `grok-station-admin` runs as its own `grok-admin` user; the few root actions go through one allowlisted helper (`/usr/local/lib/grok-station/grok-station-helper`, sudoers entry for that file only).
+
+**First run, no default password.** Until an admin password exists the station shows **Setup needed** with a one-time 6-character code (grouped 3+3, no 0/O/1/I; new on every boot until used) and voice stays off: a wake word gives the chime and no conversation, enrollment is refused. Open the page, type the code, choose a password (at least 10 characters, stored as a salted scrypt hash). Five wrong codes or passwords lock sign-in for 15 minutes.
+
+**Setup wizard** (resumes where you left off; "Run setup again" in System): 1 code and password, 2 Wi-Fi (skip if wired; required when the station is on its setup hotspot), 3 xAI key (lives on the voice service computer, never on the station), 4 voice relay address + station token (tested before saving), 5 time zone, town/ZIP lookup, °F/°C, 6 wake words, 7 audio test, done.
+
+**Pages:** Home (status, live screen preview, mic level, tiles) · xAI key and relay · Wake words (on/off, sensitivity, record a voice; speaker names stay on the station, training only sees ids like `spk-3f9a`) · Personas (read-only; the registry lives on the voice service computer) · Audio · Display · Time and location · Network (IPs, rename the station, scan, join, forget; the current connection stays up while joining) · System (update from GitHub, health, logs, restart voice, reboot, change password). Laptop sidebar, tablet icon rail, phone tab bar.
+
+**Secrets are write-only.** The page never gets a stored secret back: it shows `••••` + last 4, Replace and Test. A new token only replaces the old one after it tests OK. Nothing secret in logs, URLs or browser storage.
+
+**No network?** 90 s after boot with no connection and no saved Wi-Fi in range, the station starts its own hotspot (`grok-station-XXXX`) and shows QR codes to join it and open `http://10.42.0.1`. It never starts while connected and stops once home Wi-Fi is back.
+
+**Forgot the password?** Physical access only, never by voice: either put an empty file named `grok-station-reset` on the SD card's boot partition and power on (the file is deleted after use), or run `sudo grok-station reset-admin`. Only the password is wiped; the station shows **Password reset** with a new code and every other setting is kept.
+
+Install: `install.sh` runs `tools/install-files.sh` (also used by the page's updater). Tests: `python3 -m pytest tests/test_admin.py`.
+Not yet: spoken setup lines need recorded clips in `wake/lines/` (chime only for now); the xAI key and personas are changed on the voice service computer; display brightness depends on the monitor.
+
 ## Credits
 
 Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).

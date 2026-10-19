@@ -22,7 +22,7 @@ frames at or above the threshold). A wake opens the session as that persona (rel
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
-import json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
+import shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -132,7 +132,22 @@ ENROLL_DIR = E("WAKE_ENROLL_DIR", "/opt/grok-station/wake/enroll")      # local 
 ENROLLED_DIR = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled")  # models trained from real clips
 CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0.1 only
 ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
-ENROLL_STATE = {"busy": False, "fast_until": 0}
+ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None}
+# Admin page (admin/grok_admin.py): until setup is done the station connects no one. The admin service writes
+# SETUP_FILE ({"mode": "setup"|"reset"|"hotspot", ...}) while setup is pending and removes it when a password is set.
+SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
+OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
+SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
+LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
+
+
+def setup_mode():
+    try:
+        with open(SETUP_FILE) as f:
+            m = json.load(f).get("mode")
+        return m if m in ("setup", "reset", "hotspot") else None
+    except (OSError, ValueError, AttributeError):
+        return None
 PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
 CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
                                          # ring fills over it), too loud / didn't hear it hold before the retry
@@ -173,7 +188,23 @@ def control_server():
             self.send_response(code); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
+        def do_GET(self):
+            if self.path != "/status":
+                return self._r(404, {"error": "not found"})
+            return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "session": LIVE["session"],
+                                 "enrolling": ENROLL_STATE["busy"], "last_enroll": ENROLL_STATE["last"],
+                                 "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
+                                 "setup": setup_mode()})
+
         def do_POST(self):
+            if self.path == "/reload":
+                RELOAD.set()
+                return self._r(202, {"ok": True})
+            if self.path == "/test-sound":
+                if LIVE["session"] or ENROLL_STATE["busy"] or not LIVE["play"]:
+                    return self._r(409, {"error": "busy"})
+                subprocess.Popen(["aplay", "-q", "-D", LIVE["play"], CHIME], stderr=subprocess.DEVNULL)
+                return self._r(202, {"ok": True})
             if self.path != "/enroll":
                 return self._r(404, {"error": "not found"})
             try:
@@ -189,6 +220,8 @@ def control_server():
                 return self._r(400, {"error": "count must be 10-40"})
             if not RELAY_URL:
                 return self._r(503, {"error": "no relay configured"})
+            if setup_mode():
+                return self._r(423, {"error": "setup needed"})
             if ENROLL_STATE["busy"]:
                 return self._r(409, {"error": "enrollment in progress"})
             try:
@@ -242,6 +275,7 @@ def enroll(req, read16, play):
     os.makedirs(d, exist_ok=True)
     ENROLL_STATE["busy"] = True
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
+    ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time()}
     print(f"enroll start {phrase} x{n} session {ses}{f' (top-up of {prior})' if prior else ''}", flush=True)
     sent, i, tries = 0, 1, 0
     try:
@@ -410,6 +444,18 @@ def load_model():
                     entries[w["name"]] = dict(w)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
+    try:  # admin page: per-word on/off and sensitivity (Pi-local, survives relay syncs)
+        with open(OVERRIDES) as f:
+            ov = json.load(f)
+    except (OSError, ValueError):
+        ov = {}
+    for name, o in (ov.items() if isinstance(ov, dict) else []):
+        if name in entries and isinstance(o, dict):
+            if o.get("enabled") is False:
+                entries.pop(name)
+                print(f"wake word {name}: turned off on the admin page", flush=True)
+            elif isinstance(o.get("threshold"), (int, float)) and 0.05 <= o["threshold"] <= 0.99:
+                entries[name]["threshold"] = float(o["threshold"])
     for raw in entries.values():
         w = _word(raw)
         path = raw.get("path") or os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
@@ -740,6 +786,7 @@ def main():
             time.sleep(5)
             continue
         play = find_card("aplay") or cap
+        LIVE["play"] = play
         print(f"capture {cap} playback {play}", flush=True)
         p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw"],
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
@@ -779,6 +826,7 @@ def main():
                 except Exception as e:
                     print(f"wake model reload failed: {type(e).__name__}", flush=True)
                 continue
+            LIVE["session"] = bool(sess and sess.active)
             if sess and not sess.active:
                 sess = None
                 model.reset()  # drop audio features from the session before listening again
@@ -796,7 +844,9 @@ def main():
             sc = scores(model, pcm)
             s = max(sc.values(), default=0.0)
             hit = det.feed(sc)
-            rms_sum += float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2))); n += 1
+            r = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+            rms_sum += r; n += 1
+            LIVE["dbfs"], LIVE["at"] = round(float(20 * np.log10(max(r, 1) / 32768)), 1), time.time()  # admin mic meter
             peak = max(peak, s)
             for k, v in sc.items():
                 peaks[k] = max(peaks.get(k, 0.0), v)
@@ -806,6 +856,14 @@ def main():
                 slug = WORDS[hit]["persona"]
                 print(f"WAKE {hit} score={sc.get(hit, 0.0):.3f} persona={slug}", flush=True)
                 det.reset()
+                mode = setup_mode()
+                if mode:  # not set up (or password reset / no network): chime + spoken line, no relay session
+                    print(f"wake ignored: {mode} pending", flush=True)
+                    line = os.path.join(SETUP_LINES, mode + ".wav")
+                    subprocess.Popen(f"aplay -q -D {shlex.quote(play)} {shlex.quote(CHIME)}" +
+                                     (f"; aplay -q -D {shlex.quote(play)} {shlex.quote(line)}" if os.path.isfile(line) else ""),
+                                     shell=True, stderr=subprocess.DEVNULL)
+                    continue
                 subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
                 threading.Thread(target=post_state, args=("listening",), kwargs={"who": persona_name(slug)}, daemon=True).start()
                 if RELAY_URL:

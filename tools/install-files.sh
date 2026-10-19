@@ -1,0 +1,26 @@
+#!/bin/sh
+# Install grok-station program files from an unpacked repo dir (used by install.sh and the admin page's updater).
+# usage: install-files.sh <repo dir> <version>
+set -eu
+S=$1; V=${2:-dev}
+id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G adm -M -d /nonexistent -s /usr/sbin/nologin grok-admin
+install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets /usr/local/lib/grok-station
+install -m755 "$S/app/grok_station.py" /opt/grok-station/grok_station.py.new && mv /opt/grok-station/grok_station.py.new /opt/grok-station/grok_station.py
+if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
+  install -o grok -g grok -m644 "$S/wake/grok_wake.py" /opt/grok-station/wake/grok_wake.py.new && mv /opt/grok-station/wake/grok_wake.py.new /opt/grok-station/wake/grok_wake.py
+fi
+[ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ] && install -d -o grok -g grok /opt/grok-station/wake/lines && install -o grok -g grok -m644 "$S"/wake/lines/*.wav /opt/grok-station/wake/lines/
+install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
+install -m644 "$S"/admin/web/index.html "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/
+install -m644 "$S"/admin/web/assets/* /opt/grok-station/admin/web/assets/
+install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
+install -o root -g root -m755 "$S/tools/grok-station" /usr/local/bin/grok-station
+install -o root -g root -m440 "$S/admin/sudoers.example" /etc/sudoers.d/grok-station-admin.new && visudo -cf /etc/sudoers.d/grok-station-admin.new >/dev/null && mv /etc/sudoers.d/grok-station-admin.new /etc/sudoers.d/grok-station-admin
+install -m644 "$S"/systemd/grok-station.service "$S"/systemd/grok-station-admin.service /etc/systemd/system/
+[ -d /opt/grok-station/wake ] && install -m644 "$S"/systemd/grok-station-wake.service /etc/systemd/system/
+echo "$V" > /opt/grok-station/VERSION
+systemctl daemon-reload
+systemctl enable grok-station-admin.service >/dev/null 2>&1 || true
+systemctl restart grok-station || true
+[ -d /opt/grok-station/wake ] && systemctl restart grok-station-wake || true
+systemctl restart grok-station-admin

@@ -1,0 +1,25 @@
+[Unit]
+Description=grok-station admin web page (LAN, port 80)
+After=network-online.target grok-station.service
+Wants=network-online.target
+
+[Service]
+User=grok-admin
+Group=grok
+SupplementaryGroups=adm
+UMask=0027
+StateDirectory=grok-station/admin
+StateDirectoryMode=0750
+RuntimeDirectory=grok-station-admin
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+# Reset by boot-partition file (deleted after use), before the page starts
+ExecStartPre=+/usr/local/bin/grok-station boot-check
+ExecStart=/usr/bin/python3 /opt/grok-station/admin/grok_admin.py
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=always
+RestartSec=3
+MemoryMax=120M
+
+[Install]
+WantedBy=multi-user.target

@@ -86,16 +86,21 @@ SUN = hexc("F2C46A")
 NIGHT_TEXT, NIGHT_DIM, BLACK = hexc("9A7752"), hexc("5E4934"), hexc("000000")
 
 _fonts = {}
+MONO_FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"]
+SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")  # written by the admin page while setup is pending
+WARM_WHITE = hexc("FFF6E8")
 
 
 def font(kind, px):
     files = {"display": "InterTight-SemiBold.ttf", "night": "InterTight-Medium.ttf",
-             "body": "Inter-Medium.ttf", "italic": "Inter-MediumItalic.ttf"}
-    key = (kind, max(8, int(px)))
+             "body": "Inter-Medium.ttf", "italic": "Inter-MediumItalic.ttf", "mono": "InterTight-SemiBold.ttf"}
+    key = (kind, max(14 if kind == "mono" else 8, int(px)))
     if key not in _fonts:
         if len(_fonts) > 40:
             _fonts.clear()
         path = os.path.join(ASSETS, "fonts", files[kind])
+        if kind == "mono":  # system mono if present (setup code); Inter Tight otherwise (the code alphabet is unambiguous)
+            path = next((p for p in MONO_FONTS if os.path.exists(p)), path)
         _fonts[key] = pygame.font.Font(path if os.path.exists(path) else None, key[1])
     return _fonts[key]
 
@@ -910,7 +915,166 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     draw_lines(surf, f, lines, step, TEXT, x, y)
 
 
-SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session}
+# ---------------------------------------------------------------- setup needed / password reset / hotspot (admin page)
+def read_setup():
+    try:
+        with open(SETUP_FILE) as f:
+            d = json.load(f)
+        return d if d.get("mode") in ("setup", "reset", "hotspot") and re.fullmatch(r"[2-9A-HJ-NP-Z]{6}", str(d.get("code", ""))) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def lock_ring(surf, cx, cy, d, ring_w):
+    pygame.draw.circle(surf, hexc("33270F"), (cx, cy), d // 2)
+    pygame.draw.circle(surf, AMBER, (cx, cy), d // 2, ring_w)
+    u = d / 24 * 0.5  # icon is half the ring diameter on a 24-unit grid
+    x0, y0 = cx - 12 * u, cy - 12 * u
+    sw = max(2, round(1.6 * u))
+    body = pygame.Rect(round(x0 + 5 * u), round(y0 + 11 * u), round(14 * u), round(10 * u))
+    pygame.draw.rect(surf, AMBER, body, sw, border_radius=round(2 * u))
+    arc = pygame.Rect(round(x0 + 8 * u), round(y0 + 4 * u), round(8 * u), round(8 * u))
+    pygame.draw.arc(surf, AMBER, arc, 0, 3.1416, sw)
+    pygame.draw.line(surf, AMBER, (arc.left + sw // 2, arc.centery), (arc.left + sw // 2, body.top), sw)
+    pygame.draw.line(surf, AMBER, (arc.right - sw // 2 - 1, arc.centery), (arc.right - sw // 2 - 1, body.top), sw)
+
+
+def code_box(surf, se, code, x, y, code_px=0.0938, align="left"):
+    """Amber-bordered setup-code box (label + 3+3 code). Returns its rect."""
+    lab = font("body", round(0.0328 * se)).render("Setup code", True, MUTED)
+    f = font("mono", round(code_px * se))
+    txt = f.render(f"{code[:3]} {code[3:]}", True, SPEAKING)
+    padx, pady, gap = round(0.0375 * se), round(0.0164 * se), round(0.0082 * se)
+    w = max(lab.get_width(), txt.get_width()) + 2 * padx
+    h = lab.get_height() + gap + txt.get_height() + 2 * pady
+    r = pygame.Rect(0, y, w, h)
+    if align == "center":
+        r.centerx = x
+    else:
+        r.left = x
+    pygame.draw.rect(surf, SURFACE, r, border_radius=round(0.0188 * se))
+    pygame.draw.rect(surf, AMBER, r, max(2, round(0.0018 * se)), border_radius=round(0.0188 * se))
+    surf.blit(lab, (r.centerx - lab.get_width() // 2, r.top + pady))
+    surf.blit(txt, (r.centerx - txt.get_width() // 2, r.top + pady + lab.get_height() + gap))
+    return r
+
+
+def topbar(surf, se, label, now):
+    m = round(0.075 * se)
+    y = round(0.0516 * se)
+    lab = font("body", round(0.0422 * se)).render(label, True, MUTED)
+    hhmm, ampm = clock_parts(now)
+    clk = font("display", round(0.0563 * se)).render(f"{hhmm} {ampm}", True, hexc("D9CFC2"))
+    hgt = max(lab.get_height(), clk.get_height())
+    surf.blit(lab, (m, y + (hgt - lab.get_height()) // 2))
+    surf.blit(clk, (surf.get_width() - m - clk.get_width(), y + (hgt - clk.get_height()) // 2))
+
+
+def draw_setup(surf, L, now, d):
+    """Setup needed (first run) or Password reset: amber lock ring beside (or above, on narrow screens) the steps."""
+    surf.fill(BG)
+    w, h = surf.get_size()
+    se = min(w, h)
+    m = round(0.075 * se)
+    reset = d.get("mode") == "reset"
+    topbar(surf, se, "Admin password reset" if reset else "Setup needed", now)
+    host = str(d.get("host") or "grok-station.local")[:40]
+    lines = [("display", 0.0938, "Password reset" if reset else "Setup needed", TEXT, 0),
+             ("body", 0.0498, "On your phone or laptop, open", hexc("E6DCCF"), 0.0164),
+             ("display", 0.0627, host, LISTENING, 0.0059),
+             ("body", 0.0498, "and enter the new code:" if reset else "and enter this code:", hexc("E6DCCF"), 0.0164)]
+    rend = [(font(k, round(px * se)).render(t, True, c), round(gap * se)) for k, px, t, c, gap in lines]
+    ring_d, ring_w, gap = round(0.2345 * se), max(3, round(0.0111 * se)), round(0.0703 * se)
+    code_h = round(0.0328 * se * 1.25 + 0.0938 * se * 1.2 + 0.0082 * se + 2 * 0.0164 * se)
+    text_w = max(r.get_width() for r, _ in rend)
+    text_h = sum(r.get_height() + g for r, g in rend) + round(0.0141 * se) + code_h
+    top, bottom = round(0.1524 * se), h - round(0.1172 * se)
+    side = ring_d + gap + text_w <= w - 2 * m
+    if side:
+        x0 = (w - (ring_d + gap + text_w)) // 2
+        cy = (top + bottom) // 2
+        lock_ring(surf, x0 + ring_d // 2, cy, ring_d, ring_w)
+        x, y = x0 + ring_d + gap, cy - text_h // 2
+        align = "left"
+    else:  # stacked: ring above, text centered
+        ring_d = round(ring_d * 0.7)
+        total = ring_d + round(0.03 * se) + text_h
+        y0 = max(top, (top + bottom - total) // 2)
+        lock_ring(surf, w // 2, y0 + ring_d // 2, ring_d, ring_w)
+        x, y, align = w // 2, y0 + ring_d + round(0.03 * se), "center"
+    for r, g in rend:
+        y += g
+        surf.blit(r, (x if align == "left" else x - r.get_width() // 2, y))
+        y += r.get_height()
+    code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
+    foot = font("body", round(0.0328 * se)).render("Voice stays off until a new password is set" if reset
+                                                    else "Voice stays off until setup is done", True, MUTED)
+    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+
+
+def draw_qr(surf, matrix, x, y, size):
+    """QR at an integer module size with a 2-module quiet zone on a warm-white rounded tile. Returns the tile rect."""
+    n = len(matrix)
+    mod = max(1, size // (n + 4))
+    tile = pygame.Rect(x, y, mod * (n + 4), mod * (n + 4))
+    pygame.draw.rect(surf, WARM_WHITE, tile, border_radius=max(4, round(tile.w * 0.05)))
+    for r, row in enumerate(matrix):
+        for c, bit in enumerate(row):
+            if bit == "1":
+                surf.fill(BG, (x + (c + 2) * mod, y + (r + 2) * mod, mod, mod))
+    return tile
+
+
+def draw_hotspot(surf, L, now, d):
+    """No network: three numbered steps (join Wi-Fi QR, open setup QR, enter the code)."""
+    surf.fill(BG)
+    w, h = surf.get_size()
+    se = min(w, h)
+    m = round(0.075 * se)
+    topbar(surf, se, "No network · Setup hotspot on", now)
+    head = font("display", round(0.0762 * se)).render("Connect to set me up", True, TEXT)
+    hy = round(0.1524 * se)
+    surf.blit(head, ((w - head.get_width()) // 2, hy))
+    cols = 3
+    col_w = (w - 2 * m) // cols
+    qr = min(round(0.276 * se), col_w - round(0.02 * se))
+    y0 = hy + head.get_height() + round(0.04 * se)
+    steps = [("Join my Wi-Fi", d.get("qr_join"), [(str(d.get("ssid", ""))[:32], LISTENING), (str(d.get("password", ""))[:32], TEXT)]),
+             ("Open setup", d.get("qr_open"), [(str(d.get("url", "http://10.42.0.1"))[:40], LISTENING)]),
+             ("Enter the code", None, [])]
+    for i, (title, matrix, sub) in enumerate(steps):
+        cx = m + col_w * i + col_w // 2
+        num_d = round(0.0516 * se)
+        tf = font("display", round(0.0498 * se))
+        t = tf.render(title, True, TEXT)
+        if num_d + round(0.015 * se) + t.get_width() > col_w:
+            tf = font("display", round(0.0498 * se * col_w / (num_d + t.get_width() + round(0.015 * se) + 1)))
+            t = tf.render(title, True, TEXT)
+        rowx = cx - (num_d + round(0.015 * se) + t.get_width()) // 2
+        pygame.draw.circle(surf, SPEAKING, (rowx + num_d // 2, y0 + num_d // 2), num_d // 2)
+        n = font("display", round(num_d * 0.6)).render(str(i + 1), True, BG)
+        surf.blit(n, (rowx + (num_d - n.get_width()) // 2, y0 + (num_d - n.get_height()) // 2))
+        surf.blit(t, (rowx + num_d + round(0.015 * se), y0 + (num_d - t.get_height()) // 2))
+        y = y0 + num_d + round(0.03 * se)
+        if i < 2:
+            if matrix:
+                tile = draw_qr(surf, matrix, cx - qr // 2, y, qr)
+            else:
+                tile = pygame.Rect(cx - qr // 2, y, qr, qr)
+                pygame.draw.rect(surf, SURFACE2, tile, border_radius=round(qr * 0.05))
+            y = tile.bottom + round(0.015 * se)
+            for text, color in sub:
+                f = font("mono", round(0.0352 * se))
+                r = f.render(text, True, color)
+                surf.blit(r, (cx - r.get_width() // 2, y))
+                y += r.get_height()
+        else:
+            code_box(surf, se, d["code"], cx, y + qr // 4, code_px=min(0.0692, 0.0692 * col_w / (0.42 * se)), align="center")
+    foot = font("body", round(0.0328 * se)).render("Plug in a network cable instead and this goes away", True, MUTED)
+    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+
+
+SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot}
 
 
 # ---------------------------------------------------------------- output
@@ -1007,10 +1171,17 @@ def main():
         x = (time.time() - anim_started) / period
         return x % 1.0 if loops else min(1.0, x)
 
+    setup = {"doc": None, "checked": 0.0}
+
     def paint(fade=False, snapshot=True):
         nonlocal last_key
         now = time.localtime()
         on = colon_blink_on()
+        sd = setup["doc"]
+        if sd:  # until setup is done this is the idle screen and the screen on wake (voice is off)
+            disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
+            last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
+            return
         if thinking():
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -1077,7 +1248,18 @@ def main():
             wait = min(delay, minute)
         else:
             wait = minute
+        if time.time() - setup["checked"] >= 2:
+            setup["checked"] = time.time()
+            sd = read_setup()
+            if sd != setup["doc"]:
+                setup["doc"], msg, anim_started = sd, None, None
+                paint(fade=True)
+                print(f"setup screen: {sd['mode'] if sd else 'off'}", flush=True)
+        if setup["doc"]:
+            wait = min(wait, 2.0)
         ev = pygame.event.wait(max(1, int(wait * 1000)))
+        if setup["doc"] and ev.type in (STATE, SHOW):
+            continue  # nothing else is shown until setup is done
         if ev.type == STATE:
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
@@ -1161,6 +1343,12 @@ def demo(out, size):
         shots.append((f"enroll-{k:02d}-{stage}", draw_session, (now, em, "enroll", t)))
     shots.append(("enroll-no-persona", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll",
                                                              "text": "“Hey Nova”", "heard": "1/10|prompt|"}, "enroll", 1)))
+    sd = {"mode": "setup", "code": "K7P4QX", "host": "grok-station.local"}
+    shots.append(("setup-needed", draw_setup, (now, sd)))
+    shots.append(("setup-reset", draw_setup, (now, dict(sd, mode="reset", code="R4M9TW"))))
+    demo_qr = [("".join("1" if ((r * 7 + c * 3) % 5 < 2 or (r < 7 and c < 7)) else "0" for c in range(29))) for r in range(29)]
+    shots.append(("setup-hotspot", draw_hotspot, (now, dict(sd, mode="hotspot", ssid="grok-station-7F3A", password="hearth-4821",
+                                                            url="http://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr))))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)

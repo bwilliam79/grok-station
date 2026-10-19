@@ -1,0 +1,3 @@
+# /etc/sudoers.d/grok-station-admin: the admin page (user grok-admin) may run only the root-owned helper, which validates
+# every argument itself. The helper lives outside /opt/grok-station so the service user can't replace it.
+grok-admin ALL=(root) NOPASSWD: /usr/local/lib/grok-station/grok-station-helper

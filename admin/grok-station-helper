@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""grok-station-helper: the admin page's only privileged path (root via sudo, see admin/sudoers.example).
+Fixed subcommands, input validated here (never trust the caller), JSON on stdin/stdout, secrets never echoed."""
+import configparser, io, json, os, re, shutil, ssl, subprocess, sys, tarfile, tempfile, urllib.request, uuid
+
+ENV = {"display": "/etc/grok-station/env", "wake": "/etc/grok-station/wake.env"}
+TLS = "/etc/grok-station/tls"
+NM_DIR = "/etc/NetworkManager/system-connections"
+REPO = "bwilliam79/grok-station"
+HOTSPOT = "grok-hotspot"
+SETTINGS = {  # section -> {key: (env file, validator)}
+    "display": {"GROK_STATION_HOLD": ("display", r"^([5-9]|[1-9]\d|[1-5]\d\d|600)$"),
+                "GROK_STATION_NIGHT": ("display", r"^((\d|1\d|2[0-3])-(\d|1\d|2[0-3]))?$"),
+                "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$"),
+                "GROK_STATION_FADE": ("display", r"^[01]$")},
+    "time": {"GROK_STATION_LAT": ("display", r"^-?\d{1,2}(\.\d{1,4})?$"), "GROK_STATION_LON": ("display", r"^-?\d{1,3}(\.\d{1,4})?$"),
+             "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$")},
+    "audio": {"WAKE_DEVICE_NAME": ("wake", r"^[A-Za-z0-9 _.-]{1,40}$"), "WAKE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"),
+              "VOICE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"), "WAKE_CAPTURE_RATE": ("wake", r"^(16000|48000)$")},
+}
+
+
+def out(obj, code=0):
+    print(json.dumps(obj))
+    sys.exit(code)
+
+
+def fail(msg):
+    out({"error": msg}, 1)
+
+
+def stdin_json():
+    try:
+        j = json.loads(sys.stdin.read(8192) or "{}")
+        return j if isinstance(j, dict) else {}
+    except ValueError:
+        fail("bad input")
+
+
+def run(*a, timeout=30, check=False):
+    p = subprocess.run(list(a), capture_output=True, timeout=timeout)
+    if check and p.returncode:
+        raise RuntimeError(a[0])
+    return p.returncode, p.stdout.decode(errors="replace")
+
+
+def env_read(name):
+    vals = {}
+    try:
+        for line in open(ENV[name]):
+            m = re.match(r"^([A-Z_][A-Z0-9_]*)=(.*)$", line.strip())
+            if m:
+                vals[m.group(1)] = m.group(2).strip().strip('"')
+    except OSError:
+        pass
+    return vals
+
+
+def env_write(name, updates):
+    f = ENV[name]
+    try:
+        lines = open(f).read().splitlines()
+    except OSError:
+        lines = []
+    seen = set()
+    for i, line in enumerate(lines):
+        m = re.match(r"^([A-Z_][A-Z0-9_]*)=", line)
+        if m and m.group(1) in updates:
+            k = m.group(1)
+            lines[i] = f'{k}="{updates[k]}"' if " " in updates[k] else f"{k}={updates[k]}"
+            seen.add(k)
+    for k, v in updates.items():
+        if k not in seen:
+            lines.append(f'{k}="{v}"' if " " in v else f"{k}={v}")
+    tmp = f + ".tmp"
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(tmp, f)
+
+
+def settings_get(sec):
+    if sec not in SETTINGS:
+        fail("unknown section")
+    vals = {}
+    for k, (fname, _) in SETTINGS[sec].items():
+        vals[k] = env_read(fname).get(k)
+    if sec == "time":
+        _, tz = run("timedatectl", "show", "-p", "Timezone", "--value")
+        vals["timezone"] = tz.strip()
+    out({"values": vals})
+
+
+def settings_set(sec):
+    if sec not in SETTINGS:
+        fail("unknown section")
+    j = stdin_json()
+    upd = {}
+    for k, v in j.items():
+        if k == "timezone" and sec == "time":
+            continue
+        if k not in SETTINGS[sec]:
+            fail(f"unknown setting {k}")
+        v = str(v)
+        if not re.fullmatch(SETTINGS[sec][k][1], v):
+            fail(f"bad value for {k}")
+        upd.setdefault(SETTINGS[sec][k][0], {})[k] = v
+    if sec == "time" and "timezone" in j:
+        tz = str(j["timezone"])
+        if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}", tz) or not os.path.isfile("/usr/share/zoneinfo/" + tz):
+            fail("unknown time zone")
+        run("timedatectl", "set-timezone", tz, check=True)
+    for fname, u in upd.items():
+        env_write(fname, u)
+    if "display" in upd:
+        run("systemctl", "restart", "grok-station")
+    out({"ok": True, "restart_wake": "wake" in upd})
+
+
+def secret_status():
+    t = env_read("wake").get("GROK_RELAY_TOKEN", "")
+    out({"secrets": {"relay_token": {"set": bool(t), "last4": t[-4:] if t else None}}})
+
+
+def relay_test():
+    j = {} if sys.stdin.isatty() else stdin_json()
+    env = env_read("wake")
+    url = j.get("url") or env.get("GROK_RELAY_URL", "")
+    tok = j.get("token") or env.get("GROK_RELAY_TOKEN", "")
+    m = re.fullmatch(r"wss://([A-Za-z0-9.-]{1,253})(?::(\d{1,5}))?(/[A-Za-z0-9._~/-]*)?", url or "")
+    if not m:
+        fail("No relay address is set.")
+    if not tok:
+        fail("No station token is set.")
+    host, port = m.group(1), m.group(2) or "443"
+    checks = {"tls": False, "token": False, "xai_key": None}
+    try:
+        ctx = ssl.create_default_context(cafile=f"{TLS}/ca.crt")
+        ctx.load_cert_chain(f"{TLS}/client.crt", f"{TLS}/client.key")
+        req = urllib.request.Request(f"https://{host}:{port}/health", headers={"Authorization": f"Bearer {tok}"})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
+            h = json.loads(r.read(65536) or b"{}")
+        checks["tls"] = True
+        checks["token"] = "key" in h  # details only come back with a valid token
+        checks["xai_key"] = h.get("key")
+    except ssl.SSLError:
+        out({"error": "The secure connection failed (certificate).", "checks": checks}, 1)
+    except Exception:
+        out({"error": "Couldn't reach the voice service.", "checks": checks}, 1)
+    try:
+        exp = ssl._ssl._test_decode_cert(f"{TLS}/client.crt").get("notAfter")
+    except Exception:
+        exp = None
+    checks["client_cert_expires"] = exp
+    if not checks["token"]:
+        out({"error": "The voice service didn't accept the station token.", "checks": checks}, 1)
+    out({"ok": True, "checks": checks})
+
+
+def relay_save():
+    j = stdin_json()
+    upd = {}
+    if j.get("token"):
+        if not re.fullmatch(r"[\x21-\x7e]{16,200}", str(j["token"])) or '"' in j["token"]:
+            fail("bad token")
+        upd["GROK_RELAY_TOKEN"] = j["token"]
+    if j.get("url"):
+        if not re.fullmatch(r"wss://[A-Za-z0-9.-]{1,253}(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?", str(j["url"])):
+            fail("bad url")
+        upd["GROK_RELAY_URL"] = j["url"]
+    if upd:
+        env_write("wake", upd)
+    out({"ok": True})
+
+
+def nm(*a, timeout=30):
+    return run("nmcli", "-t", *a, timeout=timeout)
+
+
+def split_t(line):
+    return [x.replace("\\:", ":") for x in re.split(r"(?<!\\):", line)]
+
+
+def net_status():
+    _, devs = nm("-f", "DEVICE,TYPE,STATE,CONNECTION", "dev")
+    wired = wifi = False
+    hotspot = False
+    for l in devs.splitlines():
+        d, t, st, con = (split_t(l) + ["", "", "", ""])[:4]
+        if st.startswith("connected"):
+            if con == HOTSPOT:
+                hotspot = True
+            elif t == "ethernet":
+                wired = True
+            elif t == "wifi":
+                wifi = True
+    _, addrs = run("ip", "-4", "-o", "addr", "show")
+    ips = {m.group(1): m.group(2) for m in re.finditer(r"^\d+: (\S+)\s+inet (\d+\.\d+\.\d+\.\d+)", addrs, re.M) if m.group(1) != "lo"}
+    _, aps = nm("-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "no")
+    cur, visible = None, set()
+    for l in aps.splitlines():
+        use, ssid, sig, sec = (split_t(l) + ["", "", "", ""])[:4]
+        if ssid:
+            visible.add(ssid)
+        if use == "*" and ssid:
+            cur = {"ssid": ssid, "signal": int(sig or 0), "secure": bool(sec)}
+    _, cons = nm("-f", "NAME,TYPE", "con", "show")
+    saved = []
+    for l in cons.splitlines():
+        name, t = (split_t(l) + ["", ""])[:2]
+        if t == "802-11-wireless" and name != HOTSPOT:
+            ssid = ssid_of(name)
+            saved.append({"name": name, "ssid": ssid, "managed": name.startswith("netplan-")})
+    out({"connected": wired or wifi, "wired": wired, "wifi": cur if wifi else None, "ips": ips, "hotspot": hotspot,
+         "saved": [{"ssid": s["ssid"], "managed": s["managed"]} for s in saved],
+         "saved_in_range": any(s["ssid"] in visible for s in saved)})
+
+
+def ssid_of(con):
+    _, o = nm("-g", "802-11-wireless.ssid", "con", "show", con)
+    return o.strip()
+
+
+def wifi_scan():
+    _, aps = nm("-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes", timeout=30)
+    nets = {}
+    for l in aps.splitlines():
+        use, ssid, sig, sec = (split_t(l) + ["", "", "", ""])[:4]
+        if ssid and (ssid not in nets or int(sig or 0) > nets[ssid]["signal"]):
+            nets[ssid] = {"ssid": ssid, "signal": int(sig or 0), "secure": bool(sec and sec != "--"), "in_use": use == "*"}
+    out({"networks": sorted(nets.values(), key=lambda n: -n["signal"])})
+
+
+def wifi_join():
+    j = stdin_json()
+    ssid, pw, hidden = str(j.get("ssid", "")), j.get("password"), bool(j.get("hidden"))
+    if not 1 <= len(ssid.encode()) <= 32 or any(c in ssid for c in "\n\r\x00"):
+        fail("bad network name")
+    if pw is not None and (not 8 <= len(str(pw)) <= 63 or any(c in str(pw) for c in "\n\r\x00")):
+        fail("bad password")
+    cid = str(uuid.uuid4())
+    name = "gs-" + re.sub(r"[^A-Za-z0-9_-]", "_", ssid)[:24]
+    cp = configparser.ConfigParser(interpolation=None)
+    cp.optionxform = str
+    cp["connection"] = {"id": name, "uuid": cid, "type": "wifi", "autoconnect": "true"}
+    cp["wifi"] = {"mode": "infrastructure", "ssid": ssid, **({"hidden": "true"} if hidden else {})}
+    if pw:
+        cp["wifi-security"] = {"key-mgmt": "wpa-psk", "psk": str(pw)}
+    cp["ipv4"] = {"method": "auto"}
+    cp["ipv6"] = {"method": "auto"}
+    f = os.path.join(NM_DIR, f"{name}.nmconnection")
+    buf = io.StringIO()
+    cp.write(buf)
+    with open(os.open(f, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
+        fh.write(buf.getvalue())
+    nm("con", "reload")
+    rc, _ = nm("con", "up", "uuid", cid, timeout=50)
+    if rc:
+        nm("con", "delete", "uuid", cid)  # NetworkManager falls back to the previous network
+        fail("Couldn't join that network. The old network stays on.")
+    out({"ok": True})
+
+
+def wifi_forget():
+    ssid = str(stdin_json().get("ssid", ""))
+    _, cons = nm("-f", "NAME,TYPE,DEVICE", "con", "show")
+    for l in cons.splitlines():
+        name, t, dev = (split_t(l) + ["", "", ""])[:3]
+        if t == "802-11-wireless" and name != HOTSPOT and ssid_of(name) == ssid:
+            if name.startswith("netplan-"):
+                fail("This network was set up when the station was installed; change it from the system image.")
+            if dev:
+                fail("That's the network the station is using now. Join another one first.")
+            nm("con", "delete", name)
+            out({"ok": True})
+    fail("Not a saved network.")
+
+
+def hotspot_start():
+    j = stdin_json()
+    ssid, pw = str(j.get("ssid", "")), str(j.get("password", ""))
+    if not re.fullmatch(r"grok-station-[0-9A-F]{4}", ssid) or not re.fullmatch(r"hearth-\d{4}", pw):
+        fail("bad hotspot")
+    _, st = nm("-f", "DEVICE,TYPE,STATE", "dev")
+    if any(split_t(l)[2].startswith("connected") and split_t(l)[1] in ("ethernet", "wifi") for l in st.splitlines() if l.count(":") >= 2):
+        fail("a network is up; no hotspot")
+    rc, _ = nm("dev", "wifi", "hotspot", "ifname", "wlan0", "con-name", HOTSPOT, "ssid", ssid, "password", pw, timeout=40)
+    if rc:
+        fail("hotspot failed")
+    out({"ok": True, "url": "http://10.42.0.1"})
+
+
+def hotspot_stop():
+    nm("con", "down", HOTSPOT)
+    nm("con", "delete", HOTSPOT)
+    out({"ok": True})
+
+
+def set_hostname(h):
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?", h):
+        fail("bad hostname")
+    run("hostnamectl", "set-hostname", h, check=True)
+    try:
+        lines = open("/etc/hosts").read().splitlines()
+        lines = [l for l in lines if not l.startswith("127.0.1.1")] + [f"127.0.1.1\t{h}"]
+        open("/etc/hosts", "w").write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    run("systemctl", "restart", "avahi-daemon")
+    out({"ok": True})
+
+
+def restart(what):
+    unit = {"display": "grok-station", "wake": "grok-station-wake", "admin": "grok-station-admin"}.get(what)
+    if not unit:
+        fail("unknown service")
+    run("systemctl", "restart", unit)
+    out({"ok": True})
+
+
+def update(sha):
+    """Install a specific commit of the public repo (files only; no apt). The previous files stay on failure."""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        fail("bad version")
+    d = tempfile.mkdtemp(prefix="gs-update-")
+    try:
+        url = f"https://codeload.github.com/{REPO}/tar.gz/{sha}"
+        with urllib.request.urlopen(url, timeout=60) as r, tarfile.open(fileobj=io.BytesIO(r.read(50 * 1024 * 1024)), mode="r:gz") as t:
+            t.extractall(d, filter="data")
+        src = os.path.join(d, os.listdir(d)[0])
+        for f in ("app/grok_station.py", "wake/grok_wake.py", "admin/grok_admin.py", "admin/grok-station-helper", "tools/grok-station"):
+            if not os.path.isfile(os.path.join(src, f)):
+                fail("update is missing files")
+        run(sys.executable, "-m", "py_compile", os.path.join(src, "app/grok_station.py"), os.path.join(src, "wake/grok_wake.py"),
+            os.path.join(src, "admin/grok_admin.py"), check=True)
+        rc, _ = run("sh", os.path.join(src, "tools/install-files.sh"), src, sha[:7], timeout=120)
+        if rc:
+            fail("install step failed")
+    except SystemExit:
+        raise
+    except Exception:
+        fail("Update failed; the old version is still running.")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    out({"ok": True})
+
+
+def main():
+    a = sys.argv[1:]
+    if not a:
+        fail("usage")
+    cmd = a[0]
+    if cmd == "env-get" and len(a) == 2 and a[1] in ENV:
+        v = env_read(a[1])
+        out({"values": {k: x for k, x in v.items() if "TOKEN" not in k and "KEY" not in k}})
+    if cmd == "settings-get" and len(a) == 2:
+        settings_get(a[1])
+    if cmd == "settings-set" and len(a) == 2:
+        settings_set(a[1])
+    if cmd == "secret-status":
+        secret_status()
+    if cmd == "relay-test":
+        relay_test()
+    if cmd == "relay-save":
+        relay_save()
+    if cmd == "net-status":
+        net_status()
+    if cmd == "wifi-scan":
+        wifi_scan()
+    if cmd == "wifi-join":
+        wifi_join()
+    if cmd == "wifi-forget":
+        wifi_forget()
+    if cmd == "hotspot-start":
+        hotspot_start()
+    if cmd == "hotspot-stop":
+        hotspot_stop()
+    if cmd == "hostname" and len(a) == 2:
+        set_hostname(a[1])
+    if cmd == "restart" and len(a) == 2:
+        restart(a[1])
+    if cmd == "reboot":
+        subprocess.Popen(["systemctl", "reboot"])
+        out({"ok": True})
+    if cmd == "update" and len(a) == 2:
+        update(a[1])
+    fail("unknown command")
+
+
+if __name__ == "__main__":
+    main()
