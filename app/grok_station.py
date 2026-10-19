@@ -35,6 +35,29 @@ REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken repl
 VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that."}
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
+PERSONAS_FILE = os.path.join(PORTRAIT_DIRS[1], "personas.json")  # cached by the wake client from the relay
+_personas = {"mtime": None, "names": {}}
+
+
+def persona_names():
+    """casefolded name/slug/alias -> (display name, slug) for every voice persona, Grok included."""
+    try:
+        mt = os.stat(PERSONAS_FILE).st_mtime
+    except OSError:
+        mt = None
+    if mt != _personas["mtime"]:
+        names = {}
+        try:
+            with open(PERSONAS_FILE) as f:
+                for p in json.load(f).get("personas", []):
+                    slug, name = str(p.get("slug", "")), " ".join(str(p.get("name", "")).split())[:MAX_FROM]
+                    if re.fullmatch(r"[a-z]{2,16}", slug) and name:
+                        for k in (slug, name, *[str(a) for a in p.get("aliases", [])]):
+                            names[" ".join(k.split()).casefold()] = (name, slug)
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+        _personas.update(mtime=mt, names=names)
+    return {VOICE_NAME.casefold(): (VOICE_NAME, "grok"), **_personas["names"]}
 
 
 def hexc(s):
@@ -154,8 +177,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, {"error": "bad json"})
         if not text:
             return self._reply(400, {"error": "text required"})
-        if who.casefold() == VOICE_NAME.casefold():
-            who = ""  # /show can't speak as the voice assistant (no Grok name or portrait on posted messages)
+        if " ".join(who.split()).casefold() in persona_names():
+            who = ""  # /show can't speak as Grok or any voice persona (no persona name or portrait on posted messages)
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
         self._reply(200, {"ok": True})
@@ -172,12 +195,13 @@ class Handler(BaseHTTPRequestHandler):
             state = j.get("state")
             heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
             text = str(j.get("text") or "").strip()[:MAX_TEXT]
+            who = persona_names().get(" ".join(str(j.get("who") or VOICE_NAME).split()).casefold(), (VOICE_NAME, "grok"))[0]
         except Exception:
             return self._reply(400, {"error": "bad json"})
         if state not in ("idle", *VOICE_HOLDS):
             return self._reply(400, {"error": "state must be idle, " + ", ".join(VOICE_HOLDS)})
-        pygame.event.post(pygame.event.Event(STATE, state=state, heard=heard, text=text, done=bool(j.get("done"))))
-        print(f"state {state}", flush=True)
+        pygame.event.post(pygame.event.Event(STATE, state=state, heard=heard, text=text, done=bool(j.get("done")), who=who))
+        print(f"state {state} who={who}", flush=True)
         self._reply(200, {"ok": True})
 
     def log_message(self, *a):
@@ -371,11 +395,13 @@ def offline_icon(px, stroke_px):
 
 # ---------------------------------------------------------------- portrait + state ring
 def find_portrait(name):
-    slug = re.sub(r"[^a-z0-9_-]", "", name.lower().replace(" ", "-"))
+    hit = persona_names().get(" ".join(name.split()).casefold())
+    slug = hit[1] if hit else re.sub(r"[^a-z0-9_-]", "", name.lower().replace(" ", "-"))
     for d in PORTRAIT_DIRS:
-        p = os.path.join(d, slug + ".png")
-        if slug and os.path.isfile(p):
-            return p
+        for ext in (".png", ".jpg"):
+            p = os.path.join(d, slug + ext)
+            if slug and os.path.isfile(p):
+                return p
     return None
 
 
@@ -649,7 +675,7 @@ def main():
         if ev.type == STATE:
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
-                msg = {"from": VOICE_NAME, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
+                msg = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 until = time.time() + hold
                 paint()
             elif msg and msg.get("voice"):

@@ -11,6 +11,10 @@ The wake detector is paused during a session so the reply can't re-trigger it.
 A wss:// GROK_RELAY_URL uses mutual TLS: the server must chain to GROK_RELAY_CA (only that CA is trusted) and the
 client presents GROK_RELAY_CERT / GROK_RELAY_KEY. Each defaults to a systemd credential (relay-ca.crt,
 relay-client.crt, relay-client.key in $CREDENTIALS_DIRECTORY; see systemd/grok-station-wake-tls.conf).
+Personas: the relay may switch the session to a teammate ({"type":"persona","slug","name"}); the display then shows
+that name and portrait. At startup (and hourly) the client caches GET /personas and each GET /portrait/<slug> into
+GROK_STATION_PORTRAITS (default /opt/grok-station/portraits, never in git); the display reads personas.json there to
+keep /show from posting as any persona.
 """
 import json, os, queue, re, subprocess, sys, threading, time, urllib.request, wave
 import numpy as np
@@ -31,6 +35,7 @@ CHUNK = 1280                                     # 80 ms at 16 kHz, what openWak
 RELAY_URL, RELAY_TOKEN = E("GROK_RELAY_URL", ""), E("GROK_RELAY_TOKEN", "")
 VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Grok
 VOICE_SKIP = float(E("VOICE_SKIP_MS", "300")) / 1000  # drop this much post-wake audio (tail of the wake word)
+PORTRAITS = E("GROK_STATION_PORTRAITS", "/opt/grok-station/portraits")
 D24 = CAP_RATE // 24000
 _K24 = np.sinc(np.arange(-24, 25) / max(1, D24)) * np.hamming(49); _K24 /= _K24.sum()
 
@@ -45,6 +50,61 @@ def relay_ssl():
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
     ctx.load_cert_chain(cred("GROK_RELAY_CERT", "relay-client.crt"), cred("GROK_RELAY_KEY", "relay-client.key"))
     return ctx
+
+
+def relay_get(path):
+    """GET a relay path (https with the same mTLS + token as the voice session). Returns bytes or None."""
+    base = re.sub(r"^ws", "http", RELAY_URL).rsplit("/ws", 1)[0]
+    try:
+        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {RELAY_TOKEN}"})
+        with urllib.request.urlopen(req, timeout=8, context=relay_ssl()) as r:
+            return r.read(2 << 20)
+    except Exception as e:
+        print(f"relay get {path.split('/')[1]} failed: {type(e).__name__}", flush=True)
+        return None
+
+
+def sync_personas():
+    """Cache the persona list and portraits for the display. Files are written atomically; bad data is ignored."""
+    raw = relay_get("/personas") if RELAY_URL else None
+    try:
+        items = json.loads(raw)["personas"] if raw else None
+    except (ValueError, KeyError, TypeError):
+        items = None
+    if items is None:
+        return
+    os.makedirs(PORTRAITS, exist_ok=True)
+    got = 0
+    for p in items:
+        slug = str(p.get("slug", ""))
+        if not re.fullmatch(r"[a-z]{2,16}", slug) or slug == "grok":
+            continue
+        img = relay_get(f"/portrait/{slug}")
+        if img and img[:3] == b"\xff\xd8\xff" or img and img[:8] == b"\x89PNG\r\n\x1a\n":
+            ext = "png" if img[:4] == b"\x89PNG" else "jpg"
+            for old in ("png", "jpg"):
+                if old != ext and os.path.exists(os.path.join(PORTRAITS, f"{slug}.{old}")):
+                    os.remove(os.path.join(PORTRAITS, f"{slug}.{old}"))
+            tmp = os.path.join(PORTRAITS, f".{slug}.tmp")
+            with open(tmp, "wb") as f:
+                f.write(img)
+            os.replace(tmp, os.path.join(PORTRAITS, f"{slug}.{ext}"))
+            got += 1
+    tmp = os.path.join(PORTRAITS, ".personas.tmp")
+    with open(tmp, "w") as f:
+        json.dump({"personas": [{"slug": str(p.get("slug", ""))[:16], "name": str(p.get("name", ""))[:20],
+                                 "aliases": [str(a)[:30] for a in p.get("aliases", [])][:5]} for p in items]}, f)
+    os.replace(tmp, os.path.join(PORTRAITS, "personas.json"))
+    print(f"personas synced: {len(items)} names, {got} portraits", flush=True)
+
+
+def persona_loop():
+    while True:
+        try:
+            sync_personas()
+        except Exception as e:
+            print(f"persona sync failed: {type(e).__name__}", flush=True)
+        time.sleep(3600)
 
 
 def load_model():
@@ -74,7 +134,7 @@ def make_chime(path):
 
 
 def post_state(state, **kw):
-    print(f"display -> {state}", flush=True)
+    print(f"display -> {state}{' (' + kw['who'] + ')' if kw.get('who') else ''}", flush=True)
     try:
         req = urllib.request.Request(STATE_URL, json.dumps({"state": state, **kw}).encode(), {"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=2).read()
@@ -109,6 +169,10 @@ class Session:
         self.echo_text = echo_text         # print transcripts: only for the manual --ask check, never the service log
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
+        self.who = "Grok"  # the persona speaking; the relay's persona event changes it
+
+    def state(self, state, **kw):
+        post_state(state, who=self.who, **kw)
         threading.Thread(target=self.run, daemon=True).start()
 
     def feed(self, pcm24):
@@ -150,7 +214,7 @@ class Session:
             else:
                 e = err
                 print(f"relay unreachable: {type(e).__name__}", flush=True)
-                post_state("error", text="Can’t reach Grok right now.")
+                self.state("error", text="Can’t reach Grok right now.")
                 return
             print(f"relay connected in {time.time() - t0:.2f}s", flush=True)
             with ws:
@@ -161,7 +225,7 @@ class Session:
                             self.feeding, self.t_first_audio = False, time.time()
                             lat = self.t_first_audio - (self.t_end_speech or self.t_first_audio)
                             print(f"first audio {lat:.2f}s after end of speech", flush=True)
-                            post_state("speaking", heard=self.heard, text=self.reply or "…")
+                            self.state("speaking", heard=self.heard, text=self.reply or "…")
                             player = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000",
                                                        "-c", "1", "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
                         if self.save is not None:
@@ -175,31 +239,37 @@ class Session:
                     t = ev.get("type")
                     if t == "ready":
                         self.ready.set()
+                    elif t == "persona":
+                        name = " ".join(str(ev.get("name", "")).split())[:20]
+                        if name:
+                            self.who, self.reply = name, ""
+                            print(f"persona: {name}", flush=True)
+                            self.state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text="…")
                     elif t == "speech_stopped":
                         # keep streaming: a short noise may get no response, and the real question follows
                         self.t_end_speech = time.time()
                         print("relay: speech stopped", flush=True)
                         if not self.responding:
-                            post_state("listening")  # refreshes the listening screen's timeout
+                            self.state("listening")  # refreshes the listening screen's timeout
                     elif t == "speech_started":
                         print("relay: speech started", flush=True)
                         if not self.responding:
-                            post_state("listening")
+                            self.state("listening")
                     elif t == "response_started":
                         self.feeding, self.responding = False, True  # one answer per wake: mic stops here
                         print("relay: response started", flush=True)
                         if not self.t_first_audio:
-                            post_state("thinking", heard=self.heard)
+                            self.state("thinking", heard=self.heard)
                     elif t == "heard":
                         self.heard = " ".join(ev.get("text", "").split())
                         print(f"heard: {self.heard!r}" if self.echo_text else f"heard: {len(self.heard)} chars", flush=True)
                         if self.heard or self.responding:
-                            post_state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
+                            self.state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
                     elif t == "reply":
                         self.reply = ev.get("text", "").strip()
                         print(f"reply: {self.reply!r}" if self.echo_text else f"reply: {len(self.reply)} chars", flush=True)
                         if self.t_first_audio:
-                            post_state("speaking", heard=self.heard, text=self.reply)
+                            self.state("speaking", heard=self.heard, text=self.reply)
                     elif t == "reply_delta":
                         self.reply += ev.get("text", "")
                     elif t == "xai_error":
@@ -207,19 +277,19 @@ class Session:
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
                         if t == "timeout" and not self.t_first_audio:
-                            post_state("notice", text="Didn’t catch that.")
+                            self.state("notice", text="Didn’t catch that.")
                         elif t == "error":
-                            post_state("error", text="Can’t reach Grok right now.")
+                            self.state("error", text="Can’t reach Grok right now.")
                         break
             self.feeding = False
             if player:
                 player.stdin.close()
                 player.wait(timeout=90)
-                post_state("speaking", heard=self.heard, text=self.reply or "…", done=True)
+                self.state("speaking", heard=self.heard, text=self.reply or "…", done=True)
             print(f"session over in {time.time() - t0:.1f}s", flush=True)
         except Exception as e:
             print(f"session failed: {type(e).__name__}", flush=True)
-            post_state("error", text="Can’t reach Grok right now.")
+            self.state("error", text="Can’t reach Grok right now.")
         finally:
             self.feeding = False
             if self.save is not None and out:
@@ -250,6 +320,8 @@ def ask(path, save=None):
 
 def main():
     make_chime(CHIME)
+    if RELAY_URL:
+        threading.Thread(target=persona_loop, daemon=True).start()
     model = load_model()
     print(f"model={MODEL} threshold={THRESH} cooldown={COOLDOWN}s gain={GAIN}", flush=True)
     while True:
@@ -308,6 +380,8 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--test":
         test(sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] == "--sync":
+        sync_personas()
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "--ask":
         ask(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     else:

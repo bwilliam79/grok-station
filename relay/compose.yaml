@@ -1,6 +1,8 @@
 # LAN-only voice relay. Secrets are files outside the repo (dir mode 700, files 600), mounted at /run/secrets:
 #   $GROK_STATION_SECRETS/xai_api_key   $GROK_STATION_SECRETS/relay_token (one token per line)   .../keyterms (optional)
-# Usage counters persist in $GROK_STATION_STATE. Optional ntfy outbox dir: $GROK_STATION_ALERTS.
+# Usage counters persist in $GROK_STATION_STATE. ntfy drop folder (dedicated to this relay): $GROK_STATION_ALERTS.
+# Personas: private registry $GROK_STATION_PRIVATE/personas.json (dir 700, file 600, see personas.example.json) and two
+# read-only portrait dirs $GROK_STATION_PORTRAITS_A / _B (photos are never in git). Without them only Grok is on voice.
 # LAN clients connect through the `tls` service (Caddy, wss + client certificate) on $GROK_STATION_TLS_PORT (8791);
 # certs come from $GROK_STATION_PKI (server.crt, server.key, client-ca.crt). The relay's own port is published on the
 # host's loopback only (GROK_STATION_RELAY_BIND, default 127.0.0.1) for local health checks.
@@ -18,6 +20,9 @@ services:
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
       - ${GROK_STATION_ALERTS:-./no-alerts}:/alerts
+      - ${GROK_STATION_PRIVATE:-./no-personas}:/config:ro
+      - ${GROK_STATION_PORTRAITS_A:-./no-personas}:/portraits/a:ro
+      - ${GROK_STATION_PORTRAITS_B:-./no-personas}:/portraits/b:ro
     ports:
       - "${GROK_STATION_RELAY_BIND:-127.0.0.1}:8790:8790"
     read_only: true
@@ -35,8 +40,10 @@ services:
     logging:
       options: {max-size: "1m", max-file: "3"}
   tls:
-    image: caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    build: {context: ., dockerfile: Dockerfile.caddy}
+    image: grok-station-tls:local
     container_name: grok-station-tls
+    user: "10002:10002"
     restart: unless-stopped
     depends_on: [relay]
     ports:
@@ -45,9 +52,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${GROK_STATION_PKI:?set GROK_STATION_PKI}:/pki:ro
     read_only: true
-    tmpfs: [/tmp, /data, /config]
+    tmpfs: ["/tmp:uid=10002,gid=10002", "/data:uid=10002,gid=10002", "/config:uid=10002,gid=10002"]
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]  # the image's caddy binary carries this file capability; exec fails without it
     security_opt: ["no-new-privileges:true"]
     pids_limit: 64
     cpus: 0.5

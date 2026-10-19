@@ -4,3 +4,4 @@ env
 __pycache__/
 .env
 relay/no-alerts/
+relay/no-personas/

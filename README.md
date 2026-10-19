@@ -142,11 +142,14 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   event types and durations only, no transcripts or audio.
 - **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); daily caps
   `MAX_SESSIONS_DAY` (40) and `MAX_MINUTES_DAY` (20), counted per America/Chicago day in `/state/usage.json` so
-  restarts don't reset them, return 429; 5 bad tokens from one source in 10 min lock it out for 15 min (429);
-  upstream audio is capped at `MAX_UP_SECONDS` (65) per session. 80% / 100% of a cap and lockouts raise an alert:
-  a JSON file `{title, message, priority, tags}` dropped into the dir mounted at `/alerts` (point
-  `GROK_STATION_ALERTS` at an ntfy forwarder's outbox), otherwise a log line. Behind Docker port publishing the
-  source address may be the VM gateway, so a lockout can apply to every client, the Pi included, for 15 min.
+  restarts don't reset them, return 429; 5 bad tokens in 10 min lock the source out for 15 min (429). Behind the
+  `tls` front the source is the **client certificate** (Caddy sets `X-Client-Cert-Fp`; the relay trusts it only
+  from the `tls` container), so bad tries with one certificate can't lock out the station; direct loopback callers
+  are keyed by address. Upstream audio is capped at `MAX_UP_SECONDS` (65) per session. 80% / 100% of a cap and
+  lockouts raise an alert: a JSON file `{title, message, priority, tags}` dropped into the dir mounted at `/alerts`.
+  Point `GROK_STATION_ALERTS` at a folder used only by this relay that your ntfy forwarder drains (stats-dashboard's
+  ingest-relay drains `/drop/<name>` folders, labels each push with the folder name and caps it at 6/hour);
+  otherwise it's a log line.
 - **Container:** read-only root, `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, 64 pids, 0.5 CPU,
   128 MB with no swap, non-root user, base image pinned by digest, dependencies installed with
   `--require-hashes` (`requirements.txt` is `pip-compile --generate-hashes` output from `requirements.in`).
@@ -158,8 +161,9 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   LAN clients go through the `tls` service. Keep both off any public proxy or tunnel.
 - **TLS front (`tls` service, `relay/Caddyfile`):** Caddy on LAN port `GROK_STATION_TLS_PORT` (8791) terminates
   TLS 1.3 and requires a client certificate signed by your private CA (`client_auth require_and_verify`), then
-  proxies only `/ws` and `/health` to the relay; anything else is 404. No ACME, no admin API, no plain-HTTP
-  listener, same container hardening as the relay. The device token is still required behind it. Restrict the port
+  proxies only `/ws`, `/health`, `/personas` and `/portrait/<slug>` to the relay; anything else is 404. No ACME,
+  no admin API, no plain-HTTP listener, same container hardening as the relay, and it runs as a non-root user
+  (`relay/Dockerfile.caddy` copies the binary to drop its bind-port file capability; 8443 doesn't need it). The device token is still required behind it. Restrict the port
   to the station's address in the host firewall too. Set `GROK_STATION_PKI=<dir>` in `relay/.env`; that dir holds
   `server.crt`, `server.key` (600) and `client-ca.crt` only, never the CA key. One-time setup with openssl
   (EC P-256; keep the CA dir mode 700 on the relay host, outside the repo):
@@ -193,6 +197,24 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
 - Mic audio for Grok is decimated 48 → 24 kHz from the same capture as the wake word; the wake detector is paused
   during a session (and reset after) so the reply can't re-trigger it. Mic streaming stops when the VAD reports
   end of speech. If the relay is unreachable the screen shows "Can't reach Grok right now." for 5 s.
+- **Personas (teammates on voice).** Optional private registry `personas.json` in `GROK_STATION_PRIVATE` (dir 700,
+  file 600, mounted read-only at `/config`; format in `relay/personas.example.json`) plus up to two read-only
+  portrait dirs (`GROK_STATION_PORTRAITS_A` / `_B`). Keep the registry and photos out of git. Each entry:
+  `slug` (`^[a-z]{2,16}$`), `name`, `aliases` (≤ 5), `voice` (must be in `GET /v1/tts/voices`, checked at startup),
+  `portrait` (file name), `prompt` (≤ 200 words), `facts` (≤ 10 lines of ≤ 140 chars; links, @, 6+ digit runs, IPs,
+  `.lan/.local/.internal` names and hidden characters are rejected), `on_voice`. Unknown fields or a failed check skip
+  the entry (logged by slug). The file is re-read when it changes. Every persona prompt gets a fixed safety line from
+  the code (shared room, guest-safe, no personal data, never claims an action).
+  - Grok gets a `talk_to(persona, question)` tool listing the roster. "Ask Sam …", "let me talk to Lee", "back to
+    Grok" switch the **same** realtime session to that persona's voice and instructions (`session.update`), and the
+    persona answers. A backup rule in the relay switches on "ask/tell/talk to/switch to <name or alias>" if the model
+    didn't. The relay sends `{"type":"persona","slug","name"}`, and the display shows that name and portrait.
+  - Personas answer live from their prompt and facts only. Anything beyond that gets "I can't reach my full notes
+    from the station yet". Handing questions to the real teammate isn't built yet.
+  - `GET /personas` (token) lists slugs, names and aliases; `GET /portrait/<slug>` (token) serves a registry
+    persona's photo only. The Pi caches both in `GROK_STATION_PORTRAITS` (default `/opt/grok-station/portraits`,
+    owned by the listener user) at startup and hourly (`grok_wake.py --sync` runs it once). The display reads
+    `personas.json` there: `/show` can't post as Grok or any persona name, slug or alias, and `.jpg` portraits work.
 - End-to-end check without talking: `grok_wake.py --ask question.wav [reply.wav]` (24 kHz mono) streams the
   file through the same path, plays the reply, and prints the end-of-speech → first-audio latency.
 
