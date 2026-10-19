@@ -88,9 +88,10 @@ def test(path):
 class Session:
     """One question and answer through the relay. Feed it 24 kHz PCM16 bytes with feed(); runs in a thread."""
 
-    def __init__(self, play_dev, save=None, skip=VOICE_SKIP):
+    def __init__(self, play_dev, save=None, skip=VOICE_SKIP, echo_text=False):
         self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
         self.skip = int(skip * 24000) * 2  # bytes of 24 kHz PCM16 still to drop
+        self.echo_text = echo_text         # print transcripts: only for the manual --ask check, never the service log
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
         threading.Thread(target=self.run, daemon=True).start()
@@ -175,20 +176,20 @@ class Session:
                             post_state("thinking", heard=self.heard)
                     elif t == "heard":
                         self.heard = " ".join(ev.get("text", "").split())
-                        print(f"heard: {self.heard!r}", flush=True)
+                        print(f"heard: {self.heard!r}" if self.echo_text else f"heard: {len(self.heard)} chars", flush=True)
                         if self.heard or self.responding:
                             post_state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
                     elif t == "reply":
                         self.reply = ev.get("text", "").strip()
-                        print(f"reply: {self.reply!r}", flush=True)
+                        print(f"reply: {self.reply!r}" if self.echo_text else f"reply: {len(self.reply)} chars", flush=True)
                         if self.t_first_audio:
                             post_state("speaking", heard=self.heard, text=self.reply)
                     elif t == "reply_delta":
                         self.reply += ev.get("text", "")
                     elif t == "xai_error":
-                        print(f"relay: xai error {ev.get('message', '')}".rstrip(), flush=True)
+                        print("relay: xai error", flush=True)
                     elif t in ("done", "timeout", "error"):
-                        print(f"relay: {t} {ev.get('message', '')}".rstrip(), flush=True)
+                        print(f"relay: {t}", flush=True)
                         if t == "timeout" and not self.t_first_audio:
                             post_state("notice", text="Didn’t catch that.")
                         elif t == "error":
@@ -201,7 +202,7 @@ class Session:
                 post_state("speaking", heard=self.heard, text=self.reply or "…", done=True)
             print(f"session over in {time.time() - t0:.1f}s", flush=True)
         except Exception as e:
-            print(f"session failed: {type(e).__name__}: {e}", flush=True)
+            print(f"session failed: {type(e).__name__}", flush=True)
             post_state("error", text="Can’t reach Grok right now.")
         finally:
             self.feeding = False
@@ -217,7 +218,7 @@ def ask(path, save=None):
         assert w.getframerate() == 24000 and w.getnchannels() == 1 and w.getsampwidth() == 2, "need 24 kHz mono s16"
         pcm = w.readframes(w.getnframes())
     post_state("listening")
-    s = Session(find_card("aplay") or "default", save)
+    s = Session(find_card("aplay") or "default", save, echo_text=True)
     step = 1920 * 2  # 80 ms
     for i in range(0, len(pcm), step):
         s.feed(pcm[i:i + step]); time.sleep(0.08)

@@ -1,16 +1,37 @@
-# LAN-only voice relay. Secrets live in ./.env next to this file (mode 600, never committed):
-#   XAI_API_KEY=...   RELAY_TOKEN=...
+# LAN-only voice relay. Secrets are files outside the repo (dir mode 700, files 600), mounted at /run/secrets:
+#   $GROK_STATION_SECRETS/xai_api_key   $GROK_STATION_SECRETS/relay_token (one token per line)   .../keyterms (optional)
+# Usage counters persist in $GROK_STATION_STATE. Optional ntfy outbox dir: $GROK_STATION_ALERTS.
 services:
   relay:
     build: .
     container_name: grok-station-relay
     restart: unless-stopped
-    env_file: .env
     environment:
       XAI_MODEL: grok-voice-3.0
       XAI_VOICE: luna
+      MAX_SESSIONS_DAY: ${MAX_SESSIONS_DAY:-40}
+      MAX_MINUTES_DAY: ${MAX_MINUTES_DAY:-20}
+    secrets: [xai_api_key, relay_token, keyterms]
+    volumes:
+      - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
+      - ${GROK_STATION_ALERTS:-./no-alerts}:/alerts
     ports:
       - "8790:8790"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 64
+    cpus: 0.5
     mem_limit: 128m
+    memswap_limit: 128m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=3)"]
+      interval: 60s
+      timeout: 5s
     logging:
       options: {max-size: "1m", max-file: "3"}
+secrets:
+  xai_api_key: {file: "${GROK_STATION_SECRETS:?set GROK_STATION_SECRETS}/xai_api_key"}
+  relay_token: {file: "${GROK_STATION_SECRETS}/relay_token"}
+  keyterms: {file: "${GROK_STATION_SECRETS}/keyterms"}

@@ -9,14 +9,34 @@ as binary PCM16 24 kHz mono frames. The relay opens one xAI realtime session per
   {"type":"timeout","speech":bool} {"type":"xai_error","message":...} (non-fatal) {"type":"error","message":...}
 One question and answer per connection: the session closes after response.done, after NO_SPEECH seconds
 with no speech in progress and no response (measured from session start or the last speech_stopped, so a
-short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds. GET /health for checks.
+short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds.
+GET /health returns {"ok":true} (details only with the token).
+
+Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env. Requests with an Origin header
+(browsers) are refused; one session at a time (atomic check-and-set); daily caps on sessions and minutes are
+persisted in /state; 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
+capped. Alerts (cap, 80% of cap, lockout) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
-import asyncio, base64, datetime, hmac, json, os, time
+import asyncio, base64, datetime, hmac, json, os, secrets, time
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, WSMsgType
 
 E = os.environ.get
-KEY, TOKEN = E("XAI_API_KEY", ""), E("RELAY_TOKEN", "")
+
+
+def secret(name, multi=False):
+    """Read /run/secrets/<name> (compose secrets); env fallback only for local runs."""
+    try:
+        with open(f"/run/secrets/{name}") as f:
+            v = f.read()
+    except OSError:
+        v = E(name.upper(), "")
+    lines = [l.strip() for l in v.splitlines() if l.strip()]
+    return lines if multi else (lines[0] if lines else "")
+
+
+KEY = secret("xai_api_key")
+TOKENS = [t.encode() for t in secret("relay_token", multi=True)]  # one per line: current (+ next, while rotating)
 MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))
@@ -24,32 +44,120 @@ INSTRUCTIONS = E("INSTRUCTIONS", (
     "You are Grok, a friendly voice assistant on a small display in a family home. "
     "Answer in one to three short spoken sentences, plainly and warmly. No lists, markdown, or emoji."))
 TZ = E("TZ_NAME", "America/Chicago")                  # for the "current date and time" line in the instructions
-KEYTERMS = [t.strip()[:50] for t in E("KEYTERMS", "Grok").split(",") if t.strip()][:100]  # transcription bias
+KEYTERMS = [t.strip()[:50] for t in (secret("keyterms") or "Grok").split(",") if t.strip()][:100]  # transcription bias
+MAX_SESSIONS_DAY, MAX_MINUTES_DAY = int(E("MAX_SESSIONS_DAY", "40")), float(E("MAX_MINUTES_DAY", "20"))
+MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", "65"))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
+STATE = E("STATE_FILE", "/state/usage.json")
+ALERT_DIR = E("ALERT_DIR", "/alerts")                  # optional: ntfy outbox (files <ms>-<hex>.json)
+LOCK_FAILS, LOCK_WINDOW, LOCK_FOR = 5, 600, 900
 URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
 QUIET = {"response.output_audio.delta", "response.audio.delta", "response.output_audio_transcript.delta",
          "response.audio_transcript.delta", "conversation.item.input_audio_transcription.updated"}
 stats = {"sessions": 0, "seconds": 0.0, "busy": 0}
+fails, locked = {}, {}       # source -> [failure times], source -> locked-until (monotonic)
+alerted = set()              # (day, kind) already alerted
 
 
 def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
-async def health(_):
-    return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, **{k: round(v, 1) for k, v in stats.items()}})
+def today():
+    return datetime.datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d")
+
+
+def load_usage():
+    try:
+        with open(STATE) as f:
+            u = json.load(f)
+        if u.get("day") == today():
+            return u
+    except (OSError, ValueError):
+        pass
+    return {"day": today(), "sessions": 0, "seconds": 0.0}
+
+
+def save_usage(u):
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(u, f)
+    os.replace(tmp, STATE)
+
+
+def alert(kind, title, message, priority=4):
+    """Once per day per kind; queue for the ntfy forwarder if ALERT_DIR is mounted, else log only."""
+    key = (today(), kind)
+    if key in alerted:
+        return
+    alerted.add(key)
+    log("ALERT", kind, title)
+    if os.path.isdir(ALERT_DIR):
+        try:
+            with open(os.path.join(ALERT_DIR, f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json"), "w") as f:
+                json.dump({"title": title, "message": message, "priority": priority, "tags": ["grok-station"]}, f)
+        except OSError as e:
+            log("alert write failed", type(e).__name__)
+
+
+def authorized(req):
+    got = req.headers.get("Authorization", "").encode()
+    ok = False
+    for t in TOKENS:  # check every token so timing doesn't reveal which one matched
+        ok |= hmac.compare_digest(got, b"Bearer " + t)
+    return ok
+
+
+def locked_out(src):
+    until = locked.get(src, 0)
+    return until > time.monotonic()
+
+
+def note_failure(src):
+    now = time.monotonic()
+    f = [t for t in fails.get(src, []) if now - t < LOCK_WINDOW] + [now]
+    fails[src] = f
+    if len(f) >= LOCK_FAILS:
+        locked[src], fails[src] = now + LOCK_FOR, []
+        log(f"lockout: {src} after {len(f)} bad tokens; 15 min")
+        alert(f"lockout-{src}", "grok-station relay: bad-token lockout", f"{len(f)} bad tokens in 10 min from {src}; locked 15 min.")
+
+
+async def health(req):
+    if not authorized(req):
+        return web.json_response({"ok": True})
+    u = load_usage()
+    return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"], "today": u,
+                              "caps": {"sessions": MAX_SESSIONS_DAY, "minutes": MAX_MINUTES_DAY}})
 
 
 async def session(req):
-    if not TOKEN or not hmac.compare_digest(req.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()):
+    src = req.remote or "?"
+    if "Origin" in req.headers:
+        return web.json_response({"error": "origin not allowed"}, status=403)  # browsers always send Origin
+    if locked_out(src):
+        return web.json_response({"error": "locked out"}, status=429)
+    if not TOKENS or not authorized(req):
+        note_failure(src)
         return web.json_response({"error": "unauthorized"}, status=401)
     if not KEY:
         return web.json_response({"error": "no xai key configured"}, status=503)
+    u = load_usage()
+    if u["sessions"] >= MAX_SESSIONS_DAY or u["seconds"] >= MAX_MINUTES_DAY * 60:
+        alert("cap", "grok-station relay: daily cap reached",
+              f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (caps {MAX_SESSIONS_DAY} / {MAX_MINUTES_DAY:g} min).")
+        return web.json_response({"error": "daily cap reached"}, status=429)
     if stats["busy"]:
         return web.json_response({"error": "busy"}, status=409)  # one device, one session at a time
-    pi = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
-    await pi.prepare(req)
-    stats["busy"] += 1
+    stats["busy"] = 1  # check-and-set with no await in between: the event loop can't interleave another request
+    u["sessions"] += 1
+    save_usage(u)
     t0, n_up, n_down, why = time.monotonic(), 0, 0, "?"
+    pi = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
+    try:
+        await pi.prepare(req)
+    except Exception:
+        stats["busy"] = 0
+        raise
     try:
         async with ClientSession() as http, http.ws_connect(URL, headers={"Authorization": f"Bearer {KEY}"},
                                                            heartbeat=20, max_msg_size=1 << 24) as up:
@@ -68,6 +176,8 @@ async def session(req):
                 async for m in pi:
                     if m.type == WSMsgType.BINARY and m.data:
                         n_up += len(m.data)
+                        if n_up > MAX_UP_SECONDS * 48000:
+                            return "upstream audio cap"
                         await up.send_json({"type": "input_audio_buffer.append", "audio": base64.b64encode(m.data).decode()})
                 return "pi closed"
 
@@ -129,12 +239,18 @@ async def session(req):
         if not pi.closed:
             await pi.send_json({"type": "error", "message": "relay could not reach xAI"})
     finally:
-        stats["busy"] -= 1
+        stats["busy"] = 0
         dt = time.monotonic() - t0
         stats["sessions"] += 1
         stats["seconds"] += dt
+        u = load_usage()
+        u["seconds"] += dt
+        save_usage(u)
+        if u["sessions"] >= 0.8 * MAX_SESSIONS_DAY or u["seconds"] >= 0.8 * MAX_MINUTES_DAY * 60:
+            alert("cap80", "grok-station relay: 80% of daily cap",
+                  f"{u['sessions']} sessions, {u['seconds'] / 60:.1f} min today (caps {MAX_SESSIONS_DAY} / {MAX_MINUTES_DAY:g} min).", 3)
         log(f"session end: {why}; {dt:.1f}s; up {n_up / 48000:.1f}s audio; down {n_down / 48000:.1f}s audio; "
-            f"total {stats['sessions']} sessions {stats['seconds'] / 60:.2f} min")
+            f"today {u['sessions']} sessions {u['seconds'] / 60:.2f} min")
         await pi.close()
     return pi
 
@@ -142,5 +258,7 @@ async def session(req):
 if __name__ == "__main__":
     app = web.Application()
     app.add_routes([web.get("/health", health), web.get("/ws", session)])
-    log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} keyterms={len(KEYTERMS)} tz={TZ}")
+    log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
+        f"keyterms={len(KEYTERMS)} tz={TZ} caps={MAX_SESSIONS_DAY}/day {MAX_MINUTES_DAY:g} min/day "
+        f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")
     web.run_app(app, port=PORT, print=None, access_log=None)

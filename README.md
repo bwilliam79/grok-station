@@ -37,7 +37,7 @@ Preview without a Pi: `python3 app/grok_station.py --demo /tmp/out 2560x1706` re
 | Variable | Default | |
 | --- | --- | --- |
 | `GROK_STATION_TOKEN` | (required) | Bearer token for `/show` |
-| `GROK_STATION_LAT` / `GROK_STATION_LON` | `36.19` / `-94.13` | Weather location |
+| `GROK_STATION_LAT` / `GROK_STATION_LON` | (none) | Weather location; weather is off until both are set |
 | `GROK_STATION_UNITS` | `fahrenheit` | or `celsius` |
 | `GROK_STATION_HOLD` | `60` | Seconds a message stays up |
 | `GROK_STATION_NIGHT` | `22-6` | Night clock hours (24h start-end); empty disables |
@@ -67,6 +67,8 @@ It runs as `grok` (groups video/render/input).
 
 - `POST /show`: header `Authorization: Bearer <token>`, JSON `{"text": "...", "from": "Grok", "heard": "..."}`.
   `text` is required (max 500 chars); `from` (speaker name, max 40) and `heard` (what was asked, max 300) are optional.
+  `from` equal to the voice assistant's name (`GROK_STATION_VOICE_NAME`, default Grok) is dropped, so a posted
+  message can't appear as the assistant.
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
 - `GET /health`: 200.
 - `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
@@ -134,12 +136,33 @@ Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any 
   forwards mic audio up and reply audio, transcripts and turn events down, then closes after the reply, after
   10 s with no speech in progress and no response (counted from the last end of speech), or at 60 s (cost guard;
   realtime voice bills by the minute). One session at a time. The instructions get the current local date and
-  time (`TZ_NAME`, default America/Chicago); `KEYTERMS` (comma-separated, optional, in `.env`) biases
+  time (`TZ_NAME`, default America/Chicago); the optional `keyterms` secret (comma-separated) biases
   transcription toward names the station should recognize.
-  `GET /health` reports whether a key is loaded plus session count and total seconds. Logs carry event types and
-  durations only, no transcripts or audio.
-- Run it: put `XAI_API_KEY=...` and `RELAY_TOKEN=...` in `relay/.env` (mode 600, gitignored), then
-  `docker compose up -d --build` in `relay/`. It publishes port 8790 on the LAN; keep it off any public proxy.
+  `GET /health` returns `{"ok":true}`; with the token it adds key presence, today's usage and the caps. Logs carry
+  event types and durations only, no transcripts or audio.
+- **Guards:** requests with an `Origin` header (any browser) get 403; one session at a time (409); daily caps
+  `MAX_SESSIONS_DAY` (40) and `MAX_MINUTES_DAY` (20), counted per America/Chicago day in `/state/usage.json` so
+  restarts don't reset them, return 429; 5 bad tokens from one source in 10 min lock it out for 15 min (429);
+  upstream audio is capped at `MAX_UP_SECONDS` (65) per session. 80% / 100% of a cap and lockouts raise an alert:
+  a JSON file `{title, message, priority, tags}` dropped into the dir mounted at `/alerts` (point
+  `GROK_STATION_ALERTS` at an ntfy forwarder's outbox), otherwise a log line. Behind Docker port publishing the
+  source address may be the VM gateway, so a lockout can apply to every client, the Pi included, for 15 min.
+- **Container:** read-only root, `/tmp` tmpfs, all capabilities dropped, `no-new-privileges`, 64 pids, 0.5 CPU,
+  128 MB with no swap, non-root user, base image pinned by digest, dependencies installed with
+  `--require-hashes` (`requirements.txt` is `pip-compile --generate-hashes` output from `requirements.in`).
+- Run it: create a secrets dir outside the repo (mode 700) holding `xai_api_key`, `relay_token` and `keyterms`
+  (each mode 600; `keyterms` may be empty), plus a state dir. In `relay/.env` (gitignored, paths only) set
+  `GROK_STATION_SECRETS=<dir>`, `GROK_STATION_STATE=<dir>` and optionally `GROK_STATION_ALERTS=<dir>`, then
+  `docker compose up -d --build`. Secrets are compose file mounts at `/run/secrets/*`, not environment
+  variables, so `docker inspect` doesn't show them. It publishes port 8790 on the LAN; keep it off any public proxy.
+- **Rotating tokens** (use `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`; never reuse a token
+  between the relay, `/show`, or anything else):
+  - Relay device token: add the new token as a second line of `relay_token` and `docker compose up -d` (both are
+    accepted), set `GROK_RELAY_TOKEN` in the Pi's `/etc/grok-station/wake.env` and
+    `sudo systemctl restart grok-station-wake`, confirm a session works, then delete the old line and
+    `docker compose up -d` again.
+  - `/show` token: set the new `GROK_STATION_TOKEN` in `/etc/grok-station/env`, `sudo systemctl restart
+    grok-station`, then update every sender (e.g. the Apple Shortcut) right away; there is no overlap window.
 - Pi side: `/opt/grok-station/wake/venv/bin/pip install "websockets>=17"`, then add to `/etc/grok-station/wake.env`
   (root, 600) `GROK_RELAY_URL=ws://<relay-host>:8790/ws` and `GROK_RELAY_TOKEN=...`. Without `GROK_RELAY_URL`
   the listener stays wake-word-only. `VOICE_GAIN` sets gain on audio sent to Grok (default = `WAKE_GAIN`).

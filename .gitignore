@@ -3,3 +3,4 @@ env
 *token*
 __pycache__/
 .env
+relay/no-alerts/

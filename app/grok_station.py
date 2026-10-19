@@ -23,7 +23,7 @@ ASSETS = E("GROK_STATION_ASSETS") or next((p for p in (os.path.join(HERE, "asset
 PORTRAIT_DIRS = [os.path.join(ASSETS, "portraits"), E("GROK_STATION_PORTRAITS", "/opt/grok-station/portraits")]
 HOLD = float(E("GROK_STATION_HOLD", "60"))            # seconds a message stays up after the last one
 NIGHT = E("GROK_STATION_NIGHT", "22-6")               # night clock hours, start-end (24h), "" disables
-LAT, LON = E("GROK_STATION_LAT", "36.19"), E("GROK_STATION_LON", "-94.13")
+LAT, LON = E("GROK_STATION_LAT", ""), E("GROK_STATION_LON", "")  # no default: weather is off until both are set
 UNITS = E("GROK_STATION_UNITS", "fahrenheit")         # or celsius
 WX_CACHE = E("GROK_STATION_WEATHER_CACHE", "/var/cache/grok-station/weather.json")
 WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after failure, offline after
@@ -84,6 +84,8 @@ class Weather:
             pass
 
     def offline(self, now=None):
+        if not (LAT and LON):
+            return False  # weather not configured: show nothing rather than an offline badge
         now = now or time.time()
         return now - (self.ok_at or self.started) > WX_STALE
 
@@ -97,6 +99,9 @@ class Weather:
                 "hi": round(day["temperature_2m_max"][0]), "lo": round(day["temperature_2m_min"][0])}
 
     def loop(self):
+        if not (LAT and LON):
+            print("weather off: set GROK_STATION_LAT and GROK_STATION_LON", flush=True)
+            return
         while True:
             try:
                 self.data, self.ok_at = self.fetch(), time.time()
@@ -149,6 +154,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, {"error": "bad json"})
         if not text:
             return self._reply(400, {"error": "text required"})
+        if who.casefold() == VOICE_NAME.casefold():
+            who = ""  # /show can't speak as the voice assistant (no Grok name or portrait on posted messages)
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
         self._reply(200, {"ok": True})
