@@ -5,6 +5,7 @@ POST /show {"text": "...", "from": "Grok", "heard": "..."} with "Authorization: 
 Screens: idle (clock, date, weather), message/session, night clock, weather offline.
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
+The thinking ring spins and the clock colon blinks; both repaint only their own rectangle.
 """
 import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,6 +36,7 @@ REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken repl
 VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that."}
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
+SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
 PERSONAS_FILE = os.path.join(PORTRAIT_DIRS[1], "personas.json")  # cached by the wake client from the relay
 _personas = {"mtime": None, "names": {}}
 
@@ -280,6 +282,21 @@ def draw_lines(surf, f, lines, step, color, x, y, align="left", width=0):
     return y
 
 
+def spin_fps():
+    """Thinking-ring frames per second (GROK_STATION_SPIN_FPS, default 15)."""
+    try:
+        return min(60.0, max(1.0, float(E("GROK_STATION_SPIN_FPS", "15"))))
+    except ValueError:
+        return 15.0
+
+
+def colon_blink_on(now=None):
+    """Colon lit on even unix seconds. GROK_STATION_BLINK=0 keeps it on."""
+    if E("GROK_STATION_BLINK", "1") == "0":
+        return True
+    return int(time.time() if now is None else now) % 2 == 0
+
+
 def clock_parts(now):
     return time.strftime("%-I:%M", now), time.strftime("%p", now)
 
@@ -442,10 +459,12 @@ def ring_listening(c, cx, cy, r, ring_w, glow, t):
 
 
 def ring_thinking(c, cx, cy, r, ring_w, glow, t):
-    """Violet arc (Noor S3): faint full track plus a bright 270° arc with rounded ends. Static for now."""
+    """Violet arc (Noor S3): faint full track plus a bright 270° arc with rounded ends.
+    t is a rotation phase in [0, 1); the arc's start angle advances by 2*pi*t."""
     rr = r + ring_w / 2
     pygame.draw.circle(c, (*THINKING[:3], 60), (cx, cy), rr, max(2, int(ring_w / 3)))
-    a0, a1 = -math.pi / 2, -math.pi / 2 + 1.5 * math.pi
+    a0 = -math.pi / 2 + 2 * math.pi * (t % 1.0)
+    a1 = a0 + 1.5 * math.pi
     steps = 180
     for i in range(steps + 1):  # thick arc as overlapping dots: pygame.draw.arc leaves gaps at this width
         a = a0 + (a1 - a0) * i / steps
@@ -454,6 +473,44 @@ def ring_thinking(c, cx, cy, r, ring_w, glow, t):
 
 # Voice states register a painter here; "error" and "notice" reuse the quiet idle ring.
 RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle}
+
+_photo_cache = {}  # (path, mtime, d, k, initial, photo_ok) -> circle-cropped surface
+LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
+LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
+LAST_DIGITS_RECT = None
+
+
+def _circle_photo(name, d, k, photo_ok):
+    """Circle-cropped photo or monogram. image.load + smoothscale run once per key (at most 8 kept)."""
+    path = find_portrait(name) if photo_ok else None  # /show messages never get a photo, only the monogram
+    try:
+        mt = os.stat(path).st_mtime if path else None
+    except OSError:
+        path, mt = None, None
+    initial = (name[:1] or "?").upper()
+    key = (path, mt, d, k, initial, bool(photo_ok))
+    hit = _photo_cache.get(key)
+    if hit is not None:
+        return hit
+    r = d * k // 2
+    photo = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+    if path:
+        img = pygame.image.load(path)
+        iw, ih = img.get_size()
+        sc = 2 * r / min(iw, ih)
+        img = pygame.transform.smoothscale(img, (max(2 * r, int(iw * sc)), max(2 * r, int(ih * sc))))
+        photo.blit(img, ((2 * r - img.get_width()) // 2, int((2 * r - img.get_height()) * 0.3)))
+    else:
+        photo.fill(SURFACE2)
+        mono = font("display", d * k * 0.42).render(initial, True, TEXT)
+        photo.blit(mono, mono.get_rect(center=(r, r)))
+    mask = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+    pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
+    photo.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+    if len(_photo_cache) >= 8:
+        _photo_cache.pop(next(iter(_photo_cache)))
+    _photo_cache[key] = photo
+    return photo
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
@@ -465,36 +522,60 @@ def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
     c = pygame.Surface((size, size), pygame.SRCALPHA)
     cx = cy = size // 2
     r = d * k // 2
-    path = find_portrait(name) if photo_ok else None  # /show messages never get a photo, only the monogram
-    photo = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
-    if path:
-        img = pygame.image.load(path)
-        iw, ih = img.get_size()
-        sc = 2 * r / min(iw, ih)
-        img = pygame.transform.smoothscale(img, (max(2 * r, int(iw * sc)), max(2 * r, int(ih * sc))))
-        photo.blit(img, ((2 * r - img.get_width()) // 2, int((2 * r - img.get_height()) * 0.3)))
-    else:
-        photo.fill(SURFACE2)
-        mono = font("display", d * k * 0.42).render((name[:1] or "?").upper(), True, TEXT)
-        photo.blit(mono, mono.get_rect(center=(r, r)))
-    mask = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
-    pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
-    photo.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-    c.blit(photo, (cx - r, cy - r))
+    c.blit(_circle_photo(name, d, k, photo_ok), (cx - r, cy - r))
     RINGS.get(state, ring_speaking)(c, cx, cy, r + int(ring_w * k * 0.6), ring_w * k, glow * k, t)
     return pygame.transform.smoothscale(c, (size // k, size // k)), pad
 
 
 # ---------------------------------------------------------------- screens
-def draw_idle(surf, L, now, wx):
+def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True):
+    """Draw HH:MM. The colon's ink sits in the middle of the hour/minute ink gap and on the
+    vertical ink center of digits 0-9 (not the font line box). Hour and minute stay on their
+    normal advances, so the gap width matches a single render of the string.
+    Returns (digits_rect, colon_rect): digits_rect unions the advance box and the ink (no AM/PM)."""
+    global LAST_COLON_RECT, LAST_COLON_GLYPH, LAST_DIGITS_RECT
+    f = font(kind, px)
+    hour, minute = hhmm.split(":", 1)
+    top = baseline - f.get_ascent()
+    pens, pen = [], 0
+    for m in f.metrics(hhmm) or []:
+        pens.append(pen)
+        pen += m[4] if m else 0
+    ci = hhmm.index(":")
+    hour_img, min_img = f.render(hour, True, color), f.render(minute, True, color)
+    col_img = f.render(":", True, color)
+    surf.blit(hour_img, (x, top))
+    min_x = x + pens[ci + 1]
+    surf.blit(min_img, (min_x, top))
+    hbr, mbr, cbr = hour_img.get_bounding_rect(), min_img.get_bounding_rect(), col_img.get_bounding_rect()
+    gap_cx = (x + hbr.right + min_x + mbr.left) / 2.0
+    ref = f.render("0123456789", True, color).get_bounding_rect()
+    col_x = int(round(gap_cx - (cbr.x + cbr.w / 2.0)))
+    col_y = int(round(top + ref.y + ref.h / 2.0 - (cbr.y + cbr.h / 2.0)))
+    if colon_on:
+        surf.blit(col_img, (col_x, col_y))
+    colon_rect = pygame.Rect(col_x + cbr.x, col_y + cbr.y, max(1, cbr.w), max(1, cbr.h))
+    digits = pygame.Rect(x, top, f.size(hhmm)[0], f.get_height())
+    digits = digits.union(pygame.Rect(x + hbr.x, top + hbr.y, hbr.w, hbr.h))
+    digits = digits.union(pygame.Rect(min_x + mbr.x, top + mbr.y, mbr.w, mbr.h)).union(colon_rect)
+    LAST_COLON_RECT, LAST_COLON_GLYPH, LAST_DIGITS_RECT = colon_rect, (col_img, (col_x, col_y)), digits
+    return digits, colon_rect
+
+
+def draw_idle(surf, L, now, wx, colon_on=True):
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
     clock_px = L(320)
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
-    r = baseline_text(surf, "display", clock_px, hhmm, TEXT, L.m - L(8), base)
-    baseline_text(surf, "display", L(84), ampm, MUTED, r.right + L(18), base)
-    text_at(surf, "body", L(60), time.strftime("%A, %B %-d", now), TEXT, (L.m, base + L(40)))
+    x = L.m - L(8)
+    digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base, colon_on)
+    baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base)
+    date = time.strftime("%A, %B %-d", now)
+    dimg = font("body", L(60)).render(date, True, TEXT)
+    dbr = dimg.get_bounding_rect()
+    bx = int(round(digits.x + digits.w / 2.0 - (dbr.x + dbr.w / 2.0)))
+    surf.blit(dimg, (bx, base + L(40)))
     if wx.offline():
         draw_offline_badge(surf, L, base)
     elif wx.data:
@@ -532,7 +613,7 @@ def draw_next_up(surf, L, now):
     return
 
 
-def draw_night(surf, L, now):
+def draw_night(surf, L, now, colon_on=True):
     surf.fill(BLACK)
     hhmm, ampm = clock_parts(now)
     f, fm = font("night", L(340)), font("night", L(90))
@@ -541,7 +622,7 @@ def draw_night(surf, L, now):
     dx, dy = L((-8, 8, 8, -8)[shift]), L((-8, -8, 8, 8)[shift])
     x = (L.w - (wc + L(20) + wm)) // 2 + dx
     base = L.h // 2 + int(f.get_ascent() * 0.36) + dy
-    baseline_text(surf, "night", L(340), hhmm, NIGHT_TEXT, x, base)
+    draw_clock(surf, "night", L(340), hhmm, NIGHT_TEXT, x, base, colon_on)
     baseline_text(surf, "night", L(90), ampm, NIGHT_DIM, x + wc + L(20), base)
 
 
@@ -553,6 +634,7 @@ def draw_topbar_clock(surf, L, now):
 
 
 def draw_session(surf, L, now, msg, state="speaking", t=1.0):
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     state = msg.get("state", state)
     surf.fill(BG)
     if state == "listening":
@@ -561,6 +643,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     who, heard, text = msg.get("from", ""), msg.get("heard", ""), msg["text"]
     top_row = L(34) + L(72)
     if not who:
+        LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
         # plain {text}: big centered message, heard (if any) above it
         width = L.w - 2 * L.m
         y0, y1 = top_row + L(60), L.h - L(110)
@@ -579,13 +662,16 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     bottom = L.h - L(96)
     photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
     img, pad = portrait(who, d, ring_w, state, t, photo_ok=bool(msg.get("voice")))
-    surf.blit(img, (left - pad, photo_top - pad))
+    origin = (left - pad, photo_top - pad)
+    surf.blit(img, origin)
+    LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
+    LAST_PORTRAIT_ARGS = (who, d, ring_w, bool(msg.get("voice")))
     if state == "listening":
         lr = text_at(surf, "display", L(64), "Listening", LISTENING, (left + d // 2 + L(40), photo_top + d + L(150)), "center")
         for i, hh in enumerate((0.45, 0.8, 1.0, 0.65, 0.35)):  # small static waveform glyph
             bh = int(L(56) * hh)
             pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
-        text_at(surf, "body", L(40), "Say “Hey Jarvis” to wake (placeholder)", MUTED, (L.m, L.h - L(70)), "midleft")
+        text_at(surf, "body", L(40), "Say “Hey Grok” to wake", MUTED, (L.m, L.h - L(70)), "midleft")
     elif state == "thinking":
         text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, photo_top + d + L(150)), "center")
     # measure the right column first so it can sit centered on the photo
@@ -630,6 +716,22 @@ class Display:
             with open(self.fb, "wb") as f:  # 16bpp RGB565 surface matches the vc4 fbdev layout
                 f.write(self.screen.get_buffer().raw)
 
+    def flush_rect(self, rect):
+        """Write only rect's rows/columns. fb=None (demo, tests) is a no-op."""
+        if not self.fb or not rect:
+            return
+        rect = pygame.Rect(rect).clip(self.screen.get_rect())
+        if rect.w <= 0 or rect.h <= 0:
+            return
+        bpp, pitch = self.screen.get_bytesize(), self.screen.get_pitch()
+        raw = self.screen.get_buffer().raw
+        x, y, w, h = rect
+        with open(self.fb, "r+b") as f:
+            for row in range(y, y + h):
+                off = row * pitch + x * bpp
+                f.seek(off)
+                f.write(raw[off:off + w * bpp])
+
     def show(self, painter, *args, fade=False, snapshot=True):
         if fade and FADE:
             nxt = self.screen.copy()
@@ -657,21 +759,51 @@ def main():
     disp = Display()
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
-    msg, until, last_key = None, 0.0, None
+    msg, until, last_key, thinking_started = None, 0.0, None, None
+
+    def thinking():
+        return bool(msg and msg.get("voice") and msg.get("state") == "thinking" and thinking_started)
 
     def paint(fade=False, snapshot=True):
         nonlocal last_key
         now = time.localtime()
-        if msg:
+        on = colon_blink_on()
+        if thinking():
+            phase = ((time.time() - thinking_started) / SPIN_PERIOD) % 1.0
+            disp.show(draw_session, now, msg, "thinking", phase, fade=fade, snapshot=snapshot)
+            key = ("session", now.tm_min)
+        elif msg:
             disp.show(draw_session, now, msg, fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
         elif is_night(now):
-            disp.show(draw_night, now, fade=fade, snapshot=snapshot)
+            disp.show(draw_night, now, on, fade=fade, snapshot=snapshot)
             key = ("night", now.tm_min)
         else:
-            disp.show(draw_idle, now, wx, fade=fade, snapshot=snapshot)
+            disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
             key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data))
         last_key = key
+
+    def spin_portrait():
+        """One thinking-ring frame: repaint and flush only the portrait rect."""
+        rect, args = LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+        if not rect or not args or thinking_started is None:
+            return
+        phase = ((time.time() - thinking_started) / SPIN_PERIOD) % 1.0
+        who, d, ring_w, photo_ok = args
+        disp.screen.fill(BG, rect)
+        img, _pad = portrait(who, d, ring_w, "thinking", phase, photo_ok=photo_ok)
+        disp.screen.blit(img, rect.topleft)
+        disp.flush_rect(rect)
+
+    def blink_colon():
+        """Redraw only the colon glyph (or the background behind it) and flush that rect."""
+        if not LAST_COLON_RECT or not LAST_COLON_GLYPH:
+            return
+        bg = BLACK if last_key and last_key[0] == "night" else BG
+        disp.screen.fill(bg, LAST_COLON_RECT)
+        if colon_blink_on():
+            disp.screen.blit(*LAST_COLON_GLYPH)
+        disp.flush_rect(LAST_COLON_RECT)
 
     paint()
     threading.Thread(target=wx.loop, daemon=True).start()
@@ -680,21 +812,35 @@ def main():
     print(f"listening on :{PORT}", flush=True)
     while True:
         t = time.time()
-        wait = 60.2 - (t % 60)  # wake just after the minute boundary; no busy loop
-        if msg:
-            wait = min(wait, max(0.05, until - t))
-        ev = pygame.event.wait(int(wait * 1000))
+        minute = 60.2 - (t % 60)  # wake just after the minute boundary; no busy loop
+        if thinking():
+            wait = 1.0 / spin_fps()
+        elif msg:
+            wait = min(minute, max(0.05, until - t))
+        elif E("GROK_STATION_BLINK", "1") != "0":
+            delay = 1.0 - (t % 1.0)  # next whole second, for the colon
+            if delay < 0.05:
+                delay += 1.0
+            wait = min(delay, minute)
+        else:
+            wait = minute
+        ev = pygame.event.wait(max(1, int(wait * 1000)))
         if ev.type == STATE:
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
+                if ev.state == "thinking":
+                    if not thinking_started:
+                        thinking_started = time.time()
+                else:
+                    thinking_started = None
                 msg = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 until = time.time() + hold
                 paint()
             elif msg and msg.get("voice"):
-                until = 0
+                until, thinking_started = 0, None
             continue
         if ev.type == SHOW:
-            msg, until = ev.msg, time.time() + HOLD
+            msg, until, thinking_started = ev.msg, time.time() + HOLD, None
             paint()
             print("rendered", flush=True)
         elif ev.type == WEATHER:
@@ -704,11 +850,15 @@ def main():
             break
         elif ev.type == pygame.NOEVENT:
             if msg and time.time() >= until:
-                msg = None
+                msg, thinking_started = None, None
                 paint(fade=True)
                 print("back to idle", flush=True)
+            elif thinking():
+                spin_portrait()  # no full-screen repaint, no snapshot
             elif last_key is None or last_key[1] != time.localtime().tm_min:
                 paint(snapshot=False)
+            elif not msg and E("GROK_STATION_BLINK", "1") != "0":
+                blink_colon()
 
 
 def demo(out, size):
@@ -741,6 +891,9 @@ def demo(out, size):
     off = Weather()
     off.ok_at = off.started = time.time() - 7200
     shots.append(("offline", draw_idle, (now, off)))
+    think = {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"}
+    for i, phase in enumerate((0.0, 0.33, 0.66)):
+        shots.append((f"thinking-spin-{i}", draw_session, (now, think, "thinking", phase)))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)
