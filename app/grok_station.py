@@ -6,7 +6,7 @@ Screens: idle (clock, date, weather), message/session, night clock, weather offl
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 """
-import hmac, ipaddress, json, math, os, re, sys, threading, time, urllib.request
+import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
@@ -39,6 +39,13 @@ PERSONAS_FILE = os.path.join(PORTRAIT_DIRS[1], "personas.json")  # cached by the
 _personas = {"mtime": None, "names": {}}
 
 
+def name_key(s):
+    """Comparison form of a name: NFKC, format/control characters (zero-width, bidi, soft hyphen) removed, casefolded,
+    letters and digits only. "Grok.", "H a n k!", "Hank\u200b" and "Ha\u00adnk" all reduce to the plain name."""
+    s = "".join(c for c in unicodedata.normalize("NFKC", str(s)) if unicodedata.category(c) not in ("Cf", "Cc"))
+    return "".join(c for c in unicodedata.normalize("NFKC", s.casefold()) if c.isalnum())
+
+
 def persona_names():
     """casefolded name/slug/alias -> (display name, slug) for every voice persona, Grok included."""
     try:
@@ -53,11 +60,12 @@ def persona_names():
                     slug, name = str(p.get("slug", "")), " ".join(str(p.get("name", "")).split())[:MAX_FROM]
                     if re.fullmatch(r"[a-z]{2,16}", slug) and name:
                         for k in (slug, name, *[str(a) for a in p.get("aliases", [])]):
-                            names[" ".join(k.split()).casefold()] = (name, slug)
+                            if name_key(k):
+                                names[name_key(k)] = (name, slug)
         except (OSError, ValueError, AttributeError, TypeError):
             pass
         _personas.update(mtime=mt, names=names)
-    return {VOICE_NAME.casefold(): (VOICE_NAME, "grok"), **_personas["names"]}
+    return {name_key(VOICE_NAME): (VOICE_NAME, "grok"), "grok": (VOICE_NAME, "grok"), **_personas["names"]}
 
 
 def hexc(s):
@@ -177,8 +185,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._reply(400, {"error": "bad json"})
         if not text:
             return self._reply(400, {"error": "text required"})
-        if " ".join(who.split()).casefold() in persona_names():
-            who = ""  # /show can't speak as Grok or any voice persona (no persona name or portrait on posted messages)
+        names = persona_names()
+        if who and (name_key(who) in names or any(name_key(w) in names for w in re.split(r"[\s\W_]+", who) if w)):
+            who = ""  # /show can't speak as Grok or any voice persona, however the name is spelled or padded
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
         self._reply(200, {"ok": True})
@@ -195,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
             state = j.get("state")
             heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
             text = str(j.get("text") or "").strip()[:MAX_TEXT]
-            who = persona_names().get(" ".join(str(j.get("who") or VOICE_NAME).split()).casefold(), (VOICE_NAME, "grok"))[0]
+            who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
         except Exception:
             return self._reply(400, {"error": "bad json"})
         if state not in ("idle", *VOICE_HOLDS):
@@ -395,8 +404,11 @@ def offline_icon(px, stroke_px):
 
 # ---------------------------------------------------------------- portrait + state ring
 def find_portrait(name):
-    hit = persona_names().get(" ".join(name.split()).casefold())
-    slug = hit[1] if hit else re.sub(r"[^a-z0-9_-]", "", name.lower().replace(" ", "-"))
+    """Portrait for a voice persona (Grok or a registry name) only; anything else gets the monogram."""
+    hit = persona_names().get(name_key(name))
+    if not hit:
+        return None
+    slug = hit[1]
     for d in PORTRAIT_DIRS:
         for ext in (".png", ".jpg"):
             p = os.path.join(d, slug + ext)
@@ -444,7 +456,7 @@ def ring_thinking(c, cx, cy, r, ring_w, glow, t):
 RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle}
 
 
-def portrait(name, d, ring_w, state="speaking", t=1.0):
+def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
     """Circle-cropped photo (or monogram) with the state ring, supersampled. Returns (surface, offset)."""
     k = 2
     glow = int(ring_w * 2.2)
@@ -453,7 +465,7 @@ def portrait(name, d, ring_w, state="speaking", t=1.0):
     c = pygame.Surface((size, size), pygame.SRCALPHA)
     cx = cy = size // 2
     r = d * k // 2
-    path = find_portrait(name)
+    path = find_portrait(name) if photo_ok else None  # /show messages never get a photo, only the monogram
     photo = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
     if path:
         img = pygame.image.load(path)
@@ -566,7 +578,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     width = L.w - L.m - x
     bottom = L.h - L(96)
     photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
-    img, pad = portrait(who, d, ring_w, state, t)
+    img, pad = portrait(who, d, ring_w, state, t, photo_ok=bool(msg.get("voice")))
     surf.blit(img, (left - pad, photo_top - pad))
     if state == "listening":
         lr = text_at(surf, "display", L(64), "Listening", LISTENING, (left + d // 2 + L(40), photo_top + d + L(150)), "center")
@@ -712,13 +724,13 @@ def demo(out, size):
     wx.data, wx.ok_at = {"temp": 64, "code": 2, "day": False, "hi": 71, "lo": 52}, time.time()
     shots = [
         ("idle", draw_idle, (now, wx)),
-        ("session", draw_session, (now, {"from": "Grok", "heard": "what's the weather like tomorrow",
+        ("session", draw_session, (now, {"from": "Grok", "voice": True, "heard": "what's the weather like tomorrow",
                                           "text": "Tomorrow looks mild: partly sunny, a high of 71 and a low of 52, "
                                                   "with a light breeze in the afternoon. No rain expected."})),
         ("session-monogram", draw_session, (now, {"from": "Rhea", "heard": "", "text": "Done. The lights are set to warm white."})),
-        ("listening", draw_session, (now, {"from": "Grok", "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
-        ("thinking", draw_session, (now, {"from": "Grok", "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
-        ("error", draw_session, (now, {"from": "Grok", "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
+        ("listening", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I’m listening.", "state": "listening"})),
+        ("thinking", draw_session, (now, {"from": "Grok", "voice": True, "heard": "What is the capital of France?", "text": "Thinking…", "state": "thinking"})),
+        ("error", draw_session, (now, {"from": "Grok", "voice": True, "heard": "", "text": "Can’t reach Grok right now.", "state": "error"})),
         ("text", draw_session, (now, {"from": "", "heard": "", "text": "Dinner in 10 minutes"})),
         ("night", draw_night, (time.strptime("2026-10-18 23:07", "%Y-%m-%d %H:%M"),)),
     ]

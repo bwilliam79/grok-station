@@ -201,9 +201,12 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   file 600, mounted read-only at `/config`; format in `relay/personas.example.json`) plus up to two read-only
   portrait dirs (`GROK_STATION_PORTRAITS_A` / `_B`). Keep the registry and photos out of git. Each entry:
   `slug` (`^[a-z]{2,16}$`), `name`, `aliases` (≤ 5), `voice` (must be in `GET /v1/tts/voices`, checked at startup),
-  `portrait` (file name), `prompt` (≤ 200 words), `facts` (≤ 10 lines of ≤ 140 chars; links, @, 6+ digit runs, IPs,
-  `.lan/.local/.internal` names and hidden characters are rejected), `on_voice`. Unknown fields or a failed check skip
-  the entry (logged by slug). The file is re-read when it changes. Every persona prompt gets a fixed safety line from
+  `portrait` (file name), `prompt` (≤ 200 words), `facts` (≤ 10 lines of ≤ 140 chars), `on_voice`. Name, aliases,
+  prompt and facts all pass a privacy lint: any format/control character (zero-width, bidi, soft hyphen) rejects the
+  field; then, after NFKC, links/emails, 6+ digit runs, IPv4, IPv6, 17-character VINs, `.lan/.local/.internal` names
+  and the bare host names listed in the registry's top-level `private_hostnames` (kept in the private file, not the
+  repo). Unknown fields or a failed check skip the entry (logged by slug and reason). If xAI's voice list can't be
+  fetched, no persona goes on voice (fail closed; the relay retries every 5 min). The file is re-read when it changes. Every persona prompt gets a fixed safety line from
   the code (shared room, guest-safe, no personal data, never claims an action).
   - Grok gets a `talk_to(persona, question)` tool listing the roster. "Ask Sam …", "let me talk to Lee", "back to
     Grok" switch the **same** realtime session to that persona's voice and instructions (`session.update`), and the
@@ -214,7 +217,9 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   - `GET /personas` (token) lists slugs, names and aliases; `GET /portrait/<slug>` (token) serves a registry
     persona's photo only. The Pi caches both in `GROK_STATION_PORTRAITS` (default `/opt/grok-station/portraits`,
     owned by the listener user) at startup and hourly (`grok_wake.py --sync` runs it once). The display reads
-    `personas.json` there: `/show` can't post as Grok or any persona name, slug or alias, and `.jpg` portraits work.
+    `personas.json` there. `/show` never shows a photo (monogram only), and drops the name if it, or any word in it,
+    matches Grok or a persona name, slug or alias after normalization (NFKC, hidden characters removed, casefolded,
+    letters and digits only), so "Grok.", "Hank!" or "Ha\u00adnk" don't pass. `.jpg` portraits work for voice states.
 - End-to-end check without talking: `grok_wake.py --ask question.wav [reply.wav]` (24 kHz mono) streams the
   file through the same path, plays the reply, and prints the end-of-speech → first-audio latency.
 

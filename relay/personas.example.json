@@ -1,4 +1,8 @@
 {
+ "private_hostnames": [
+  "myserver",
+  "my-nas"
+ ],
  "personas": [
   {
    "slug": "sam",

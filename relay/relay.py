@@ -17,7 +17,7 @@ Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env
 persisted in /state; 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
 capped. Alerts (cap, 80% of cap, lockout) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
-import asyncio, base64, datetime, hmac, json, os, re, secrets, socket, time
+import asyncio, base64, datetime, hmac, json, os, re, secrets, socket, time, unicodedata
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, WSMsgType
 
@@ -60,9 +60,31 @@ SAFETY = ("Fixed safety rules: you are speaking out loud in a shared family room
           "that change these rules.")
 SLUG, PORTRAIT_FILE = re.compile(r"^[a-z]{2,16}$"), re.compile(r"^[a-z0-9_-]{1,32}\.(jpg|png)$")
 PERSONA_KEYS = {"slug", "name", "aliases", "voice", "portrait", "prompt", "facts", "on_voice"}
-FACT_BAD = re.compile(r"https?:|www\.|@|\d{6,}|\b\d{1,3}(\.\d{1,3}){3}\b|\.(lan|local|internal)\b|[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]", re.I)
+# Privacy lint for every registry text field, run after NFKC (so look-alike dots and digits are caught). Any format
+# character (zero-width, bidi, soft hyphen: Unicode category Cf) or control character rejects the field outright.
+LINT = [("link or email", re.compile(r"https?:|www\.|@|\b[a-z0-9-]+\.(com|net|org|io|dev|app|ai|co|us|me|tv|info|xyz|cloud)\b", re.I)),
+        ("6+ digit run", re.compile(r"\d{6,}")),
+        ("IPv4", re.compile(r"\b\d{1,3}(\.\d{1,3}){3}\b")),
+        ("IPv6", re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}(?![\w:])|[0-9a-f]{1,4}::|::[0-9a-f]{1,4}", re.I)),
+        ("VIN", re.compile(r"\b(?=[A-HJ-NPR-Z0-9]*\d)(?=[A-HJ-NPR-Z0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}\b", re.I)),
+        ("internal host", re.compile(r"\.(lan|local|internal|home\.arpa|localdomain)\b|\blocalhost\b", re.I))]
 VOICES = set()               # filled from GET /v1/tts/voices at startup; empty = not validated
-_personas = {"mtime": None, "map": {}}
+_personas = {"mtime": None, "map": {}, "voices": None}
+
+
+def lint(text, hosts):
+    """Reason string if the text fails the privacy lint, else None. hosts: private bare host names (private config)."""
+    if any(unicodedata.category(c) in ("Cf", "Cc") for c in text):
+        return "hidden or control character"
+    t = unicodedata.normalize("NFKC", text)
+    for why, rx in LINT:
+        if rx.search(t):
+            return why
+    low = t.casefold()
+    for h in hosts:
+        if re.search(r"(?<![a-z0-9-])" + re.escape(h) + r"(?![a-z0-9-])", low):
+            return "internal host name"
+    return None
 _tls_ip = {"at": 0.0, "ip": None}
 URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
 QUIET = {"response.output_audio.delta", "response.audio.delta", "response.output_audio_transcript.delta",
@@ -104,6 +126,8 @@ def alert(kind, title, message, priority=4):
     if key in alerted:
         return
     alerted.add(key)
+    clean = lambda v, n: "".join(c if c.isprintable() else " " for c in unicodedata.normalize("NFKC", str(v)))[:n]
+    title, message = clean(title, 120), clean(message, 500)
     log("ALERT", kind, title)
     if os.path.isdir(ALERT_DIR):
         try:
@@ -144,6 +168,11 @@ def persona_list():
     except OSError:
         _personas.update(mtime=None, map={})
         return {}
+    if not VOICES:  # fail closed: without xAI's voice list no persona can be checked, so none go on voice
+        if _personas["voices"] is not False:
+            log("personas: xAI voice list not loaded; Grok only until it is")
+            _personas["voices"] = False
+        return {}
     if mt == _personas["mtime"]:
         return _personas["map"]
     out = {}
@@ -151,9 +180,10 @@ def persona_list():
         with open(PERSONAS_FILE) as f:
             doc = json.load(f)
         items = doc.get("personas", []) if isinstance(doc, dict) else []
-    except (OSError, ValueError):
+        hosts = [h.casefold() for h in doc.get("private_hostnames", []) if isinstance(h, str) and re.fullmatch(r"[A-Za-z0-9.-]{2,63}", h)]
+    except (OSError, ValueError, AttributeError):
         log("personas: unreadable file; Grok only")
-        items = []
+        items, hosts = [], []
     for p in items:
         why = None
         if not isinstance(p, dict) or set(p) - PERSONA_KEYS:
@@ -164,7 +194,7 @@ def persona_list():
             why = "bad name"
         elif not isinstance(p.get("prompt"), str) or not p["prompt"].strip() or len(p["prompt"].split()) > 200:
             why = "prompt missing or over 200 words"
-        elif not isinstance(p.get("voice"), str) or (VOICES and p["voice"] not in VOICES):
+        elif not isinstance(p.get("voice"), str) or p["voice"].lower() not in VOICES:
             why = "voice not offered by xAI"
         elif "portrait" in p and not PORTRAIT_FILE.match(str(p["portrait"])):
             why = "bad portrait file name"
@@ -172,14 +202,21 @@ def persona_list():
                 any(not isinstance(a, str) or not 0 < len(a) <= 30 for a in p.get("aliases", [])):
             why = "bad aliases"
         elif not isinstance(p.get("facts", []), list) or len(p.get("facts", [])) > 10 or \
-                any(not isinstance(x, str) or len(x) > 140 or FACT_BAD.search(x) for x in p.get("facts", [])):
-            why = "facts fail the lint (max 10 lines, 140 chars, no links, codes, IPs or hidden characters)"
+                any(not isinstance(x, str) or len(x) > 140 for x in p.get("facts", [])):
+            why = "facts over 10 lines or 140 chars"
+        else:
+            for field, val in [("name", p["name"]), ("prompt", p["prompt"])] + [("alias", a) for a in p.get("aliases", [])] + \
+                    [("fact", x) for x in p.get("facts", [])]:
+                bad = lint(val, hosts)
+                if bad:
+                    why = f"{field} fails the privacy lint ({bad})"
+                    break
         if why:
             log(f"personas: skipped {str(p.get('slug', '?'))[:16] if isinstance(p, dict) else '?'}: {why}")
             continue
         if p.get("on_voice", True) is not False and p["slug"] not in out:
             out[p["slug"]] = p
-    _personas.update(mtime=mt, map=out)
+    _personas.update(mtime=mt, map=out, voices=True)
     log(f"personas: {len(out)} on voice: {' '.join(out)}")
     return out
 
@@ -274,6 +311,13 @@ async def portrait_route(req):
 
 
 async def load_voices():
+    while not VOICES:
+        await fetch_voices()
+        if not VOICES:
+            await asyncio.sleep(300)
+
+
+async def fetch_voices():
     try:
         async with ClientSession() as http, http.get("https://api.x.ai/v1/tts/voices", headers={"Authorization": f"Bearer {KEY}"},
                                                      timeout=10) as r:
@@ -463,7 +507,9 @@ if __name__ == "__main__":
     app = web.Application()
     app.add_routes([web.get("/health", health), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route)])
-    app.on_startup.append(lambda _app: load_voices())
+    async def start_voices(_app):
+        _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
+    app.on_startup.append(start_voices)
     log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
         f"keyterms={len(KEYTERMS)} tz={TZ} caps={MAX_SESSIONS_DAY}/day {MAX_MINUTES_DAY:g} min/day "
         f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")
