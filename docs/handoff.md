@@ -37,3 +37,6 @@ Logs and alerts carry request_id, agent, length and verdict only, never text. Ev
    `webhooks.json` (mode 600). The relay calls it with `Authorization: Bearer <key>` and reloads the file on change.
    A bot without a webhook gets no `check_notes` tool, so its persona says its full notes can't be reached.
 3. Set `HANDOFF_ENABLED=1` and `VOICE_ENABLED=1` only with the owner's OK.
+
+## Token identity limit (Nix, 2026-10-19)
+All bots' routines run as the same box user, so any bot can read every voice token. The voice token therefore does not prove which bot is replying. The real control is the nonce-to-persona binding (403 persona-mismatch), which limits a rogue reply to a request already issued to that persona. That's acceptable for T0 answers. **Nothing above T0 may be authorized by the token alone:** T1+ must be gated by the owner's on-screen confirm or an approval card in his chat.
