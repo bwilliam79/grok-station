@@ -783,16 +783,25 @@ def main():
             key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data))
         last_key = key
 
+    spin_frames = {}  # (args, frame) -> opaque screen-format portrait; one revolution is rendered once, then reused
+
     def spin_portrait():
-        """One thinking-ring frame: repaint and flush only the portrait rect."""
+        """One thinking-ring frame: blit a cached frame into the portrait rect and flush only that rect."""
         rect, args = LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
         if not rect or not args or thinking_started is None:
             return
-        phase = ((time.time() - thinking_started) / SPIN_PERIOD) % 1.0
-        who, d, ring_w, photo_ok = args
-        disp.screen.fill(BG, rect)
-        img, _pad = portrait(who, d, ring_w, "thinking", phase, photo_ok=photo_ok)
-        disp.screen.blit(img, rect.topleft)
+        n = max(1, round(SPIN_PERIOD * spin_fps()))
+        i = int(((time.time() - thinking_started) / SPIN_PERIOD) % 1.0 * n) % n
+        if any(k[0] != args for k in spin_frames):
+            spin_frames.clear()
+        frame = spin_frames.get((args, i))
+        if frame is None:
+            who, d, ring_w, photo_ok = args
+            frame = pygame.Surface(rect.size, depth=disp.screen.get_bitsize())
+            frame.fill(BG)
+            frame.blit(portrait(who, d, ring_w, "thinking", i / n, photo_ok=photo_ok)[0], (0, 0))
+            spin_frames[(args, i)] = frame
+        disp.screen.blit(frame, rect.topleft)
         disp.flush_rect(rect)
 
     def blink_colon():
