@@ -17,7 +17,8 @@ if [ -f $LOCK ]; then read pid s < $LOCK
   fi
 fi
 if [ ! -f $LOCK ]; then
-  for r in enroll/inbox/hey_*/*/READY; do [ -f "$r" ] || continue; s=$(dirname "$r")
+  # oldest READY first (FIFO), so the station's "Nth in line" matches the order jobs actually run
+  for r in $(ls -1tr enroll/inbox/hey_*/*/READY 2>/dev/null); do [ -f "$r" ] || continue; s=$(dirname "$r")
     [ -f "$s/DONE" ] || [ -f "$s/FAILED" ] || { start "$s"; break; }; done
 fi
 python3 - <<'P' 2>/dev/null
