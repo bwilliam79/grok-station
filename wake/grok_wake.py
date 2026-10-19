@@ -170,10 +170,10 @@ class Session:
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
         self.who = "Grok"  # the persona speaking; the relay's persona event changes it
+        threading.Thread(target=self.run, daemon=True).start()
 
     def state(self, state, **kw):
         post_state(state, who=self.who, **kw)
-        threading.Thread(target=self.run, daemon=True).start()
 
     def feed(self, pcm24):
         if self.skip > 0:
