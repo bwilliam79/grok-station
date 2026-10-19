@@ -27,6 +27,7 @@ _K = np.sinc(np.arange(-32, 33) / DECIM) * np.hamming(65); _K /= _K.sum()  # low
 CHUNK = 1280                                     # 80 ms at 16 kHz, what openWakeWord expects
 RELAY_URL, RELAY_TOKEN = E("GROK_RELAY_URL", ""), E("GROK_RELAY_TOKEN", "")
 VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Grok
+VOICE_SKIP = float(E("VOICE_SKIP_MS", "300")) / 1000  # drop this much post-wake audio (tail of the wake word)
 D24 = CAP_RATE // 24000
 _K24 = np.sinc(np.arange(-24, 25) / max(1, D24)) * np.hamming(49); _K24 /= _K24.sum()
 
@@ -87,13 +88,20 @@ def test(path):
 class Session:
     """One question and answer through the relay. Feed it 24 kHz PCM16 bytes with feed(); runs in a thread."""
 
-    def __init__(self, play_dev, save=None):
+    def __init__(self, play_dev, save=None, skip=VOICE_SKIP):
         self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
+        self.skip = int(skip * 24000) * 2  # bytes of 24 kHz PCM16 still to drop
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
-        self.heard, self.reply, self.ready = "", "", threading.Event()
+        self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
         threading.Thread(target=self.run, daemon=True).start()
 
     def feed(self, pcm24):
+        if self.skip > 0:
+            n = min(self.skip, len(pcm24))
+            self.skip -= n
+            pcm24 = pcm24[n:]
+            if not pcm24:
+                return
         if self.feeding:
             try:
                 self.q.put_nowait(pcm24)
@@ -133,7 +141,7 @@ class Session:
                 for m in ws:
                     if isinstance(m, bytes):
                         if self.t_first_audio is None:
-                            self.t_first_audio = time.time()
+                            self.feeding, self.t_first_audio = False, time.time()
                             lat = self.t_first_audio - (self.t_end_speech or self.t_first_audio)
                             print(f"first audio {lat:.2f}s after end of speech", flush=True)
                             post_state("speaking", heard=self.heard, text=self.reply or "…")
@@ -151,15 +159,25 @@ class Session:
                     if t == "ready":
                         self.ready.set()
                     elif t == "speech_stopped":
-                        self.feeding, self.t_end_speech = False, self.t_end_speech or time.time()
+                        # keep streaming: a short noise may get no response, and the real question follows
+                        self.t_end_speech = time.time()
                         print("relay: speech stopped", flush=True)
-                        post_state("thinking", heard=self.heard)
+                        if not self.responding:
+                            post_state("listening")  # refreshes the listening screen's timeout
                     elif t == "speech_started":
                         print("relay: speech started", flush=True)
+                        if not self.responding:
+                            post_state("listening")
+                    elif t == "response_started":
+                        self.feeding, self.responding = False, True  # one answer per wake: mic stops here
+                        print("relay: response started", flush=True)
+                        if not self.t_first_audio:
+                            post_state("thinking", heard=self.heard)
                     elif t == "heard":
                         self.heard = " ".join(ev.get("text", "").split())
                         print(f"heard: {self.heard!r}", flush=True)
-                        post_state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
+                        if self.heard or self.responding:
+                            post_state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
                     elif t == "reply":
                         self.reply = ev.get("text", "").strip()
                         print(f"reply: {self.reply!r}", flush=True)
@@ -167,10 +185,14 @@ class Session:
                             post_state("speaking", heard=self.heard, text=self.reply)
                     elif t == "reply_delta":
                         self.reply += ev.get("text", "")
+                    elif t == "xai_error":
+                        print(f"relay: xai error {ev.get('message', '')}".rstrip(), flush=True)
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t} {ev.get('message', '')}".rstrip(), flush=True)
-                        if t != "done":
-                            post_state("error", text="I didn’t catch that." if t == "timeout" else "Grok had a problem. Try again.")
+                        if t == "timeout" and not self.t_first_audio:
+                            post_state("notice", text="Didn’t catch that.")
+                        elif t == "error":
+                            post_state("error", text="Can’t reach Grok right now.")
                         break
             self.feeding = False
             if player:

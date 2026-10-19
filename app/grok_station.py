@@ -30,10 +30,10 @@ WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after fai
 FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
-LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "8"))  # seconds the listening screen stays up
+LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
-VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5}  # safety timeouts per state
-VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now."}
+VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4}  # safety timeouts per state
+VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that."}
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 
 
@@ -407,8 +407,8 @@ def ring_thinking(c, cx, cy, r, ring_w, glow, t):
         pygame.draw.circle(c, THINKING, (cx + rr * math.cos(a), cy + rr * math.sin(a)), ring_w / 2)
 
 
-# Voice states register a painter here; "error" reuses the quiet idle ring.
-RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle}
+# Voice states register a painter here; "error" and "notice" reuse the quiet idle ring.
+RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle}
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0):

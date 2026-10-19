@@ -71,8 +71,9 @@ It runs as `grok` (groups video/render/input).
 - `GET /health`: 200.
 - `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
   Used by the wake listener on the same Pi. States: `listening` (teal tick ring, `GROK_STATION_LISTEN_HOLD` s,
-  default 8), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
-  `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `error` (short notice, 5 s), `idle`.
+  default 12), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
+  `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `notice` ("Didn't catch that.", 4 s), `error` (relay
+  unreachable, 5 s), `idle`.
   Each state has a safety timeout back to idle. 403 from any other address.
 
 Anything on the LAN with the token can post to it (a script, a home automation, an Apple Shortcut using
@@ -117,8 +118,11 @@ score. On a Pi 5 the listener uses about 11% of one core and ~200 MB RSS.
 
 ## Voice (proof of concept)
 
-One question and answer per wake: "Hey Jarvis" → chime + **listening** → speak → **thinking** (server VAD heard
-you stop) → **speaking** (reply plays on the headset, text on screen) → idle.
+One question and answer per wake: "Hey Jarvis" → chime + **listening** → speak → **thinking** (Grok started a
+response) → **speaking** (reply plays on the headset, text on screen) → idle. Mic audio keeps streaming until a
+response actually starts, so a short noise or the tail of the wake word (which can trip the server VAD without
+producing a reply) doesn't swallow the real question. The first `VOICE_SKIP_MS` (default 300) of post-wake audio
+is dropped for the same reason. Nothing heard (or only noise) for 10 s → "Didn't catch that." and idle.
 
 ```
 Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any LAN host) ──▶ wss://api.x.ai/v1/realtime
@@ -128,7 +132,10 @@ Pi: grok_wake.py ──LAN WebSocket, device token──▶ relay/ (Docker, any 
 - **The xAI API key lives only on the relay host**, never on the Pi. The Pi holds a random device token.
 - `relay/relay.py` (aiohttp): `GET /ws` (`Authorization: Bearer $RELAY_TOKEN`) opens one xAI realtime session,
   forwards mic audio up and reply audio, transcripts and turn events down, then closes after the reply, after
-  10 s with no speech, or at 60 s (cost guard; realtime voice bills by the minute). One session at a time.
+  10 s with no speech in progress and no response (counted from the last end of speech), or at 60 s (cost guard;
+  realtime voice bills by the minute). One session at a time. The instructions get the current local date and
+  time (`TZ_NAME`, default America/Chicago); `KEYTERMS` (comma-separated, optional, in `.env`) biases
+  transcription toward names the station should recognize.
   `GET /health` reports whether a key is loaded plus session count and total seconds. Logs carry event types and
   durations only, no transcripts or audio.
 - Run it: put `XAI_API_KEY=...` and `RELAY_TOKEN=...` in `relay/.env` (mode 600, gitignored), then
