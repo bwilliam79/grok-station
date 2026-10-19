@@ -130,6 +130,7 @@ def note_failure(src):
     now = time.monotonic()
     f = [t for t in fails.get(src, []) if now - t < LOCK_WINDOW] + [now]
     fails[src] = f
+    log(f"bad token from {src} ({len(f)}/{LOCK_FAILS} in 10 min)")
     if len(f) >= LOCK_FAILS:
         locked[src], fails[src] = now + LOCK_FOR, []
         log(f"lockout: {src} after {len(f)} bad tokens; 15 min")
@@ -242,8 +243,11 @@ def lock_key(req):
 
 
 async def personas_route(req):
+    src = lock_key(req)
+    if locked_out(src):
+        return web.json_response({"error": "locked out"}, status=429)
     if not authorized(req):
-        note_failure(lock_key(req))
+        note_failure(src)
         return web.json_response({"error": "unauthorized"}, status=401)
     roster = persona_list()
     return web.json_response({"personas": [{"slug": "grok", "name": "Grok", "aliases": []}] + [
