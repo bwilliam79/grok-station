@@ -22,7 +22,7 @@ and Inter 500 (body), bundled in `assets/fonts`. Sizes come from a 1080p spec an
 
 The display redraws once a minute (plus on messages and weather updates); otherwise the process sleeps in
 `pygame.event.wait`. The clock colon is steady (an optional blink, `GROK_STATION_BLINK=1`, repaints only the colon's
-rectangle once a second). While **listening**, the teal tick ring around every persona (Grok included) pulses once a second (ticks grow and a soft glow brightens, smooth cosine); while **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
+rectangle once a second). While **listening**, a solid teal ring (the thinking arc's style, but full and continuous, no ticks) around every persona (Grok included) pulses once a second (thickens, brightens and glows, smooth cosine); while **thinking** the violet ring spins (one turn per 1.2 s, `GROK_STATION_SPIN_FPS`, default
 15) by repainting only the portrait rectangle from a cached circle-cropped photo. Each animation's loop (15 pulse frames, 18 spin frames) is rendered once per portrait, then reused. Speaking and idle rings are static. The listening screen has no wake-word hint (the station is already awake). The colon is centered between the
 hour and minute digits on their ink (not the font box), and the date is centered under HH:MM (AM/PM excluded).
 Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`. Weather is from [Open-Meteo](https://open-meteo.com/) (no key), refreshed every 15 min,
@@ -76,7 +76,7 @@ It runs as `grok` (groups video/render/input).
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
 - `GET /health`: 200.
 - `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
-  Used by the wake listener on the same Pi. States: `listening` (teal tick ring, `GROK_STATION_LISTEN_HOLD` s,
+  Used by the wake listener on the same Pi. States: `listening` (solid pulsing teal ring, `GROK_STATION_LISTEN_HOLD` s,
   default 12), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
   `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `notice` ("Didn't catch that.", 4 s), `error` (relay
   unreachable, 5 s), `idle`.
@@ -115,7 +115,7 @@ shared. A wake opens the session as that persona: the Pi connects to `/ws?person
 the session with that persona's voice and instructions (unknown slugs fall back to Grok) and sends the `persona`
 event so the display shows them from the first "listening" frame. The persona event keeps the current phase
 (listening stays listening; the violet ring spins only once a response has started), so a teammate's listening
-screen matches Grok's: same tick ring, with their portrait (Grok's is the logo). Without a config file the old single
+screen matches Grok's: same solid pulsing ring, with their portrait (Grok's is the logo). Without a config file the old single
 `WAKE_MODEL` / `WAKE_THRESHOLD` behaviour applies. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
 the voice relay below (when configured).
 

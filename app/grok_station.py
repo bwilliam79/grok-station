@@ -475,22 +475,21 @@ def ring_idle(c, cx, cy, r, ring_w, glow, t):
 
 
 def ring_listening(c, cx, cy, r, ring_w, glow, t):
-    """Teal tick ring (Noor S2): thin base ring plus 72 radial ticks, every 6th one longer. t is the pulse phase in
-    [0, 1): the ticks grow and a soft teal glow brightens and fades once per loop (smooth cosine, rest at t=0)."""
-    p = 0.5 - 0.5 * math.cos(2 * math.pi * (t % 1.0))
+    """Teal solid ring, same style as the thinking arc but full and continuous, no ticks. t is the pulse phase in
+    [0, 1): once per loop the ring thickens and brightens and a soft glow swells (smooth cosine, rest at t=0)."""
+    p = round(0.5 - 0.5 * math.cos(2 * math.pi * (t % 1.0)), 4)  # rounded: mirror phases render identically
+    rr = r + ring_w / 2
     gw = max(2, int(ring_w * 1.4))
-    for i in range(gw, 0, -2):  # soft glow under the ticks, inside the portrait pad
-        a = int(70 * p * (1 - i / gw) ** 2)
+    for i in range(gw, 0, -2):  # soft glow outside the ring, inside the portrait pad
+        a = int(80 * p * (1 - i / gw) ** 2)
         if a:
-            pygame.draw.circle(c, (*LISTENING[:3], a), (cx, cy), r + ring_w * 0.9 + i, 2 * SS)
-    pygame.draw.circle(c, (*LISTENING[:3], int(90 + 60 * p)), (cx, cy), r, max(2, int(ring_w / 4)))
-    r0 = r + ring_w * 0.7
-    for i in range(72):
-        a = 2 * math.pi * i / 72 - math.pi / 2
-        ln = ring_w * (2.2 if i % 6 == 0 else 1.4) * (0.78 + 0.22 * p)
-        p0 = (cx + r0 * math.cos(a), cy + r0 * math.sin(a))
-        p1 = (cx + (r0 + ln) * math.cos(a), cy + (r0 + ln) * math.sin(a))
-        pygame.draw.line(c, LISTENING, p0, p1, max(2, int(ring_w / 2.4)))
+            pygame.draw.circle(c, (*LISTENING[:3], a), (cx, cy), rr + ring_w * 0.5 + i, 2 * SS)
+    w = ring_w * (0.8 + 0.3 * p)
+    color = tuple(int(v * (0.72 + 0.28 * p)) for v in LISTENING[:3])
+    steps = 240
+    for i in range(steps):  # thick ring as overlapping dots (round, gap-free), like ring_thinking
+        a = 2 * math.pi * i / steps
+        pygame.draw.circle(c, color, (cx + rr * math.cos(a), cy + rr * math.sin(a)), w / 2)
 
 
 def ring_thinking(c, cx, cy, r, ring_w, glow, t):

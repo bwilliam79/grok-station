@@ -218,3 +218,21 @@ class TestListeningScreen(unittest.TestCase):
     def test_no_wake_hint(self):
         src = open(gs.__file__, encoding="utf-8").read()
         self.assertNotIn("to wake\\u201d", src); self.assertNotIn("” to wake", src)
+
+
+class ListeningRing(unittest.TestCase):
+    def render(self, t):
+        c = pygame.Surface((400, 400), pygame.SRCALPHA)
+        gs.ring_listening(c, 200, 200, 150, 20, None, t)
+        return c
+
+    def test_solid_continuous_and_pulses(self):
+        import math
+        widths = []
+        for t in (0.0, 0.5):
+            c = self.render(t)
+            for k in range(360):  # every angle on the ring centerline is opaque: no gaps, no ticks
+                a = math.radians(k)
+                self.assertGreater(c.get_at((int(200 + 160 * math.cos(a)), int(200 + 160 * math.sin(a)))).a, 200)
+            widths.append(sum(c.get_at((200 + x, 200)).a > 200 for x in range(140, 200)))
+        self.assertGreater(widths[1], widths[0])  # thicker at the pulse peak
