@@ -1769,6 +1769,12 @@ def draw_confirm(surf, L, now, msg):
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
+def thinking_body(text):
+    """Drop a placeholder 'Thinking' body so it isn't repeated under the transcript."""
+    t = (text or "").strip().rstrip(".\u2026").strip()
+    return "" if t.lower() in ("", "thinking") else text
+
+
 def _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, photo_top, d, card, stack):
     """Name, heard quote, reply and (when present) the tool card. Returns the y under the block."""
     global LAST_CARD_RECT
@@ -1894,6 +1900,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
             pygame.draw.rect(surf, LISTENING, (lr.left - L(110) + i * L(18), lr.centery - bh // 2, L(9), bh), border_radius=L(5))
         label_bottom = lr.bottom
     elif state == "thinking":
+        text = thinking_body(text)  # the label under the avatar already says Thinking
         label_bottom = text_at(surf, "display", L(64), "Thinking", THINKING, (left + d // 2, label_y), "center").bottom
     top_min = max(top_row + L(40), label_bottom + L(12)) if stack else top_row + L(40)
     _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, photo_top, d, card, stack)

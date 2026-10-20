@@ -592,3 +592,17 @@ class ToolCards(unittest.TestCase):
             if rect.top <= y < rect.bottom:
                 continue
             self.assertEqual(before[y * pitch:(y + 1) * pitch], after[y * pitch:(y + 1) * pitch], f"row {y}")
+
+
+class ThinkingBodyTest(unittest.TestCase):
+    def test_placeholder_dropped(self):
+        for v in ("Thinking\u2026", "Thinking...", "Thinking", "", None):
+            self.assertEqual(gs.thinking_body(v), "")
+
+    def test_real_text_kept(self):
+        self.assertEqual(gs.thinking_body("Checking with Ash"), "Checking with Ash")
+
+    def test_draw_session_thinking_renders(self):
+        surf = pygame.Surface((1024, 600))
+        msg = {"from": "Grok", "voice": True, "heard": "Hi", "text": "Thinking\u2026", "state": "thinking"}
+        gs.draw_session(surf, gs.Layout(1024, 600), time.localtime(), msg, "thinking", 0.0)
