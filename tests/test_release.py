@@ -1,49 +1,18 @@
-"""Signed release manifests: minisign, trust, rotation, planning, staged apply."""
+"""Release manifests: HTTPS fetch, planning, and staged apply. No signing."""
 
-import base64, hashlib, inspect, json, os, re, stat, sys, tempfile, unittest
+import inspect, json, os, re, ssl, stat, sys, tempfile, unittest
 from datetime import datetime, timedelta, timezone
-
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))
 import release
 
 
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
-PRIMARY_ID = bytes.fromhex("a000000000000001")
-BACKUP_ID = bytes.fromhex("b000000000000002")
 _AUDIT_LINE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z \S+ \S+ \S+ .+$")
 
 
 def iso(when):
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def public_bytes(sk):
-    return sk.public_key().public_bytes(encoding=Encoding.Raw, format=PublicFormat.Raw)
-
-
-def minisign_pub(sk, key_id, comment=True):
-    raw = b"Ed" + key_id + public_bytes(sk)
-    blob = base64.b64encode(raw).decode("ascii")
-    if not comment:
-        return blob
-    return f"untrusted comment: minisign public key {key_id.hex()}\n{blob}\n"
-
-
-def minisign_sig(sk, key_id, message, trusted="timestamp:1700000000", prehash=False):
-    """Build a minisign file. Global signature is sig || trusted-comment line."""
-    payload = hashlib.blake2b(message, digest_size=64).digest() if prehash else message
-    sig = sk.sign(payload)
-    line = "trusted comment: " + trusted
-    global_sig = sk.sign(sig + line.encode("utf-8"))
-    body = (b"ED" if prehash else b"Ed") + key_id + sig
-    return (
-        "untrusted comment: signature\n"
-        + base64.b64encode(body).decode("ascii") + "\n"
-        + line + "\n"
-        + base64.b64encode(global_sig).decode("ascii") + "\n")
 
 
 def manifest_doc():
@@ -65,11 +34,6 @@ def manifest_doc():
 
 def dumps(doc):
     return json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("utf-8")
-
-
-def signed(sk, key_id, doc, prehash=False):
-    raw = dumps(doc)
-    return raw, minisign_sig(sk, key_id, raw, prehash=prehash)
 
 
 class Ops:
@@ -161,178 +125,7 @@ class Ops:
         self.resumes += 1
 
 
-class Keyed(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.primary_sk = Ed25519PrivateKey.generate()
-        cls.backup_sk = Ed25519PrivateKey.generate()
-        cls.primary_pub = minisign_pub(cls.primary_sk, PRIMARY_ID)
-        cls.backup_pub = minisign_pub(cls.backup_sk, BACKUP_ID)
-
-    def store(self, revoked=None, path=None):
-        return release.TrustStore(self.primary_pub, self.backup_pub, revoked or [], path=path)
-
-
-class MinisignTests(Keyed):
-    def test_public_key_comment_is_optional(self):
-        with_comment = release.parse_public_key(self.primary_pub)
-        bare = release.parse_public_key(minisign_pub(self.primary_sk, PRIMARY_ID, comment=False))
-        self.assertEqual(with_comment.key_id, PRIMARY_ID)
-        self.assertEqual(with_comment.public, public_bytes(self.primary_sk))
-        self.assertEqual(bare.key_id, with_comment.key_id)
-        self.assertEqual(bare.public, with_comment.public)
-        self.assertEqual(len(with_comment.public), 32)
-
-    def test_ed25519_message_and_global_signature(self):
-        message = b"release-manifest"
-        sig = minisign_sig(self.primary_sk, PRIMARY_ID, message)
-        parsed = release.parse_signature(sig)
-        self.assertEqual(parsed.algorithm, b"Ed")
-        self.assertEqual(parsed.key_id, PRIMARY_ID)
-        self.assertEqual(len(parsed.sig), 64)
-        self.assertTrue(release.verify_signature(self.primary_pub, message, sig))
-        changed = sig.replace("untrusted comment: signature", "untrusted comment: note", 1)
-        self.assertTrue(release.verify_signature(self.primary_pub, message, changed))
-
-    def test_prehashed_blake2b_512(self):
-        message = b"m" * 200
-        self.assertEqual(len(hashlib.blake2b(message, digest_size=64).digest()), 64)
-        sig = minisign_sig(self.primary_sk, PRIMARY_ID, message, prehash=True)
-        self.assertEqual(release.parse_signature(sig).algorithm, b"ED")
-        self.assertTrue(release.verify_signature(self.primary_pub, message, sig))
-        # Labeling a raw signature as ED must fail: ED verifies the 64-byte hash.
-        lines = minisign_sig(self.primary_sk, PRIMARY_ID, message, prehash=False).splitlines()
-        blob = bytearray(base64.b64decode(lines[1]))
-        self.assertEqual(bytes(blob[:2]), b"Ed")
-        blob[:2] = b"ED"
-        lines[1] = base64.b64encode(bytes(blob)).decode("ascii")
-        forged = "\n".join(lines) + "\n"
-        with self.assertRaises(release.ManifestError) as ctx:
-            release.verify_signature(self.primary_pub, message, forged)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-
-    def test_keyid_must_match_even_when_the_signature_bytes_verify(self):
-        message = b"release-manifest"
-        lines = minisign_sig(self.primary_sk, PRIMARY_ID, message).splitlines()
-        blob = bytearray(base64.b64decode(lines[1]))
-        blob[2:10] = b"\xff" * 8
-        lines[1] = base64.b64encode(bytes(blob)).decode("ascii")
-        moved = "\n".join(lines) + "\n"
-        with self.assertRaises(release.ManifestError) as ctx:
-            release.verify_signature(self.primary_pub, message, moved)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-
-    def test_tampered_message_trusted_comment_or_global_signature_rejected(self):
-        message = b"release-manifest"
-        sig = minisign_sig(self.primary_sk, PRIMARY_ID, message)
-        flipped = bytearray(message)
-        flipped[0] ^= 1
-        with self.assertRaises(release.ManifestError) as ctx:
-            release.verify_signature(self.primary_pub, bytes(flipped), sig)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        trusted = sig.replace("timestamp:1700000000", "timestamp:1700000001", 1)
-        with self.assertRaises(release.ManifestError):
-            release.verify_signature(self.primary_pub, message, trusted)
-        lines = sig.splitlines()
-        glob = bytearray(base64.b64decode(lines[3]))
-        glob[0] ^= 1
-        lines[3] = base64.b64encode(bytes(glob)).decode("ascii")
-        with self.assertRaises(release.ManifestError):
-            release.verify_signature(self.primary_pub, message, "\n".join(lines) + "\n")
-        other = Ed25519PrivateKey.generate()
-        other_pub = minisign_pub(other, bytes.fromhex("c000000000000003"))
-        with self.assertRaises(release.ManifestError):
-            release.verify_signature(other_pub, message, sig)
-
-
-class TrustTests(Keyed):
-    def test_primary_or_backup_signature_accepted(self):
-        raw, primary_sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        _raw_b, backup_sig = signed(self.backup_sk, BACKUP_ID, manifest_doc())
-        store = self.store()
-        self.assertEqual(store.verify_manifest(raw, primary_sig).key_id, PRIMARY_ID)
-        self.assertEqual(store.verify_manifest(raw, backup_sig).key_id, BACKUP_ID)
-        stranger = Ed25519PrivateKey.generate()
-        _raw_s, stranger_sig = signed(stranger, bytes.fromhex("c000000000000003"), manifest_doc())
-        with self.assertRaises(release.ManifestError) as ctx:
-            store.verify_manifest(raw, stranger_sig)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-
-    def test_revoked_keyid_rejected(self):
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        store = self.store(revoked=[PRIMARY_ID.hex().upper()])
-        with self.assertRaises(release.ManifestError) as ctx:
-            store.verify_manifest(raw, sig)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        _raw_b, backup_sig = signed(self.backup_sk, BACKUP_ID, manifest_doc())
-        self.assertEqual(store.verify_manifest(raw, backup_sig).key_id, BACKUP_ID)
-
-    def test_prehashed_release_verifies(self):
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc(), prehash=True)
-        doc = release.load_trusted_manifest(raw, sig, self.store(), now=NOW)
-        self.assertEqual(doc["version"], "v1.2.0")
-
-    def test_rotation_requires_current_backup_key(self):
-        fresh = Ed25519PrivateKey.generate()
-        fresh_id = bytes.fromhex("d000000000000004")
-        body = {
-            "new_primary": self.backup_pub,
-            "new_backup": minisign_pub(fresh, fresh_id),
-            "revoked": [PRIMARY_ID.hex()],
-            "issued_at": iso(NOW),
-        }
-        raw = dumps(body)
-        primary_sig = minisign_sig(self.primary_sk, PRIMARY_ID, raw)
-        store = self.store()
-        before = (store.primary.key_id, store.backup.key_id, list(store.revoked))
-        with self.assertRaises(release.ManifestError) as ctx:
-            store.apply_rotation(raw, primary_sig, now=NOW)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        self.assertEqual((store.primary.key_id, store.backup.key_id, list(store.revoked)), before)
-        broken = dict(body)
-        broken["new_primary"] = "not-a-key"
-        bad_raw = dumps(broken)
-        bad_sig = minisign_sig(self.backup_sk, BACKUP_ID, bad_raw)
-        with self.assertRaises(release.ManifestError) as ctx:
-            store.apply_rotation(bad_raw, bad_sig, now=NOW)
-        self.assertEqual(ctx.exception.reason, "bad-format")
-        self.assertEqual(store.primary.key_id, PRIMARY_ID)
-
-    def test_c21_old_primary_rejected_after_rotation(self):
-        fresh = Ed25519PrivateKey.generate()
-        fresh_id = bytes.fromhex("d000000000000004")
-        fresh_pub = minisign_pub(fresh, fresh_id)
-        release_raw, release_sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "trust.json")
-            store = self.store(revoked=["aaaaaaaaaaaaaaaa"], path=path)
-            store.save(path)
-            self.assertEqual(store.verify_manifest(release_raw, release_sig).key_id, PRIMARY_ID)
-            rotation = dumps({
-                "new_primary": self.backup_pub,
-                "new_backup": fresh_pub,
-                "revoked": [PRIMARY_ID.hex()],
-                "issued_at": iso(NOW),
-            })
-            event = store.apply_rotation(rotation, minisign_sig(self.backup_sk, BACKUP_ID, rotation), now=NOW)
-            self.assertEqual(event, "release-key-rotated")
-            with self.assertRaises(release.ManifestError) as ctx:
-                store.verify_manifest(release_raw, release_sig)
-            self.assertEqual(ctx.exception.reason, "unsigned")
-            promoted, promoted_sig = signed(self.backup_sk, BACKUP_ID, manifest_doc())
-            self.assertEqual(store.verify_manifest(promoted, promoted_sig).key_id, BACKUP_ID)
-            newer, newer_sig = signed(fresh, fresh_id, manifest_doc())
-            self.assertEqual(store.verify_manifest(newer, newer_sig).key_id, fresh_id)
-            loaded = release.TrustStore.load(path)
-            self.assertEqual(loaded.primary.key_id, BACKUP_ID)
-            self.assertEqual(loaded.backup.key_id, fresh_id)
-            self.assertEqual(loaded.revoked, ["aaaaaaaaaaaaaaaa", PRIMARY_ID.hex()])
-            line = release.format_audit(iso(NOW), "release", "-", "release-key-rotated", "-")
-            self.assertEqual(line, iso(NOW) + " release - release-key-rotated -")
-            self.assertNotIn(PRIMARY_ID.hex(), line)
-
-
-class ManifestTests(Keyed):
+class ManifestTests(unittest.TestCase):
     def test_strict_version_and_digest(self):
         mutations = []
         doc = manifest_doc(); doc["version"] = "1.2.0"; mutations.append(doc)
@@ -342,45 +135,46 @@ class ManifestTests(Keyed):
         doc = manifest_doc(); doc["components"]["station"]["tarball"] = "../station.tar.gz"; mutations.append(doc)
         doc = manifest_doc(); doc["expires"] = iso(NOW + timedelta(days=30, seconds=1)); mutations.append(doc)
         for doc in mutations:
-            raw, sig = signed(self.primary_sk, PRIMARY_ID, doc)
             with self.assertRaises(release.ManifestError) as ctx:
-                release.load_trusted_manifest(raw, sig, self.store(), now=NOW)
+                release.parse_manifest(doc, now=NOW)
             self.assertEqual(ctx.exception.reason, "bad-format", doc.get("version"))
+        raw = dumps(manifest_doc())
+        raw = raw[:-1] + b",}"
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.parse_manifest(raw, now=NOW)
+        self.assertEqual(ctx.exception.reason, "bad-format")
 
     def test_validity_window_and_skew_boundaries(self):
-        store = self.store()
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        self.assertEqual(release.load_trusted_manifest(raw, sig, store, now=NOW)["version"], "v1.2.0")
+        self.assertEqual(release.parse_manifest(manifest_doc(), now=NOW)["version"], "v1.2.0")
+        self.assertEqual(release.load_trusted_manifest(dumps(manifest_doc()), now=NOW)["version"], "v1.2.0")
         # issued_at == now + 5 min is allowed; one second later is future.
         for extra, reason in ((timedelta(minutes=5), None), (timedelta(minutes=5, seconds=1), "future")):
             issued = NOW + extra
             doc = manifest_doc()
             doc["issued_at"] = iso(issued)
             doc["expires"] = iso(issued + timedelta(days=1))
-            raw, sig = signed(self.primary_sk, PRIMARY_ID, doc)
             if reason is None:
-                release.load_trusted_manifest(raw, sig, store, now=NOW)
+                release.parse_manifest(doc, now=NOW)
             else:
                 with self.assertRaises(release.ManifestError) as ctx:
-                    release.load_trusted_manifest(raw, sig, store, now=NOW)
+                    release.parse_manifest(doc, now=NOW)
                 self.assertEqual(ctx.exception.reason, reason)
+                self.assertIsNone(release.present_check_error(ctx.exception))
         # now == expires is allowed; one second later is expired.
         doc = manifest_doc()
         doc["issued_at"] = iso(NOW - timedelta(days=1))
         doc["expires"] = iso(NOW)
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, doc)
-        release.load_trusted_manifest(raw, sig, store, now=NOW)
+        release.parse_manifest(doc, now=NOW)
         with self.assertRaises(release.ManifestError) as ctx:
-            release.load_trusted_manifest(raw, sig, store, now=NOW + timedelta(seconds=1))
+            release.parse_manifest(doc, now=NOW + timedelta(seconds=1))
         self.assertEqual(ctx.exception.reason, "expired")
 
     def test_c20_expired_notice_and_audit(self):
         doc = manifest_doc()
         doc["issued_at"] = iso(NOW - timedelta(days=10))
         doc["expires"] = iso(NOW - timedelta(seconds=1))
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, doc)
-        store = self.store()
-        result = release.check_update("v1.0.0", raw, sig=sig, trust=store, now=NOW)
+        raw = dumps(doc)
+        result = release.check_update("v1.0.0", raw, now=NOW)
         self.assertFalse(result.ok)
         self.assertEqual(result.reason, "expired")
         self.assertEqual(result.audit, "update-check-expired")
@@ -389,46 +183,33 @@ class ManifestTests(Keyed):
         self.assertEqual(result.title, "Can't check")
         self.assertEqual(result.message, "Update info is out of date. Updates may be hidden.")
         with self.assertRaises(release.ManifestError) as ctx:
-            release.load_trusted_manifest(raw, sig, store, now=NOW)
+            release.load_trusted_manifest(raw, now=NOW)
         self.assertEqual(ctx.exception.reason, "expired")
         notice = release.present_check_error(ctx.exception)
         self.assertEqual(notice["audit"], "update-check-expired")
         self.assertEqual(notice["title"], "Can't check")
         # A dict cached earlier is stale once `now` passes expires.
-        cached = release.load_trusted_manifest(raw, sig, store, now=NOW - timedelta(days=1))
+        cached = release.load_trusted_manifest(raw, now=NOW - timedelta(days=1))
         stale = release.check_update("v1.0.0", cached, now=NOW)
         self.assertEqual(stale.audit, "update-check-expired")
 
-    def test_unsigned_is_not_reported_as_expired(self):
+    def test_future_is_not_reported_as_expired(self):
         doc = manifest_doc()
-        doc["issued_at"] = iso(NOW - timedelta(days=10))
-        doc["expires"] = iso(NOW - timedelta(seconds=1))
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, doc)
-        lines = sig.splitlines()
-        blob = bytearray(base64.b64decode(lines[1]))
-        blob[-1] ^= 1
-        lines[1] = base64.b64encode(bytes(blob)).decode("ascii")
-        bad = "\n".join(lines) + "\n"
+        doc["issued_at"] = iso(NOW + timedelta(minutes=5, seconds=1))
+        doc["expires"] = iso(NOW + timedelta(days=1))
         with self.assertRaises(release.ManifestError) as ctx:
-            release.load_trusted_manifest(raw, bad, self.store(), now=NOW)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        with self.assertRaises(release.ManifestError) as ctx:
-            release.check_update("v1.0.0", raw, now=NOW)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        fresh, fresh_sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        with self.assertRaises(release.ManifestError) as ctx:
-            release.parse_manifest(fresh, now=NOW)
-        self.assertEqual(ctx.exception.reason, "unsigned")
-        self.assertEqual(
-            release.parse_manifest(fresh, fresh_sig, self.store(), now=NOW)["version"], "v1.2.0")
+            release.check_update("v1.0.0", doc, now=NOW)
+        self.assertEqual(ctx.exception.reason, "future")
+        self.assertIsNone(release.present_check_error(ctx.exception))
 
     def test_check_update_reports_a_newer_release(self):
-        raw, sig = signed(self.primary_sk, PRIMARY_ID, manifest_doc())
-        result = release.check_update("v1.0.0", raw, sig=sig, trust=self.store(), now=NOW)
+        raw = dumps(manifest_doc())
+        result = release.check_update("v1.0.0", raw, now=NOW)
         self.assertTrue(result.ok)
         self.assertTrue(result.update)
         self.assertEqual(result.version, "v1.2.0")
         self.assertIsNone(result.audit)
+        self.assertEqual(release.parse_manifest(raw, now=NOW)["version"], "v1.2.0")
         doc = manifest_doc()
         doc["version"] = "v1.10.0"
         numeric = release.check_update("v1.9.0", doc, now=NOW)
@@ -436,6 +217,133 @@ class ManifestTests(Keyed):
         same = release.check_update("v1.2.0", manifest_doc(), now=NOW)
         self.assertFalse(same.update)
         self.assertEqual(same.reason, "current")
+
+
+class FetchTests(unittest.TestCase):
+    def _fetch(self, body=b"{}"):
+        seen = {}
+
+        def fetcher(url, context):
+            seen["url"] = url
+            seen["context"] = context
+            seen["calls"] = seen.get("calls", 0) + 1
+            if isinstance(body, Exception):
+                raise body
+            return body
+
+        return fetcher, seen
+
+    def test_default_url_and_tls_verification(self):
+        self.assertEqual(
+            release.MANIFEST_URL,
+            "https://github.com/bwilliam79/grok-station/releases/latest/download/manifest.json",
+        )
+        fetcher, seen = self._fetch(b"manifest-body")
+        got = release.fetch_manifest(fetcher)
+        self.assertEqual(got, b"manifest-body")
+        self.assertEqual(seen["calls"], 1)
+        self.assertEqual(seen["url"], release.MANIFEST_URL)
+        context = seen["context"]
+        self.assertIsInstance(context, ssl.SSLContext)
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        self.assertGreaterEqual(context.minimum_version, ssl.TLSVersion.TLSv1_2)
+        src = inspect.getsource(release)
+        self.assertNotIn("CERT_NONE", src)
+        self.assertNotIn("check_hostname = False", src)
+        self.assertNotIn("verify=False", src)
+        for name in ("Minisign", "minisign", "TrustStore", "verify_signature", "parse_public_key"):
+            self.assertNotIn(name, src)
+        with self.assertRaises(ValueError):
+            release.ManifestError("unsigned")
+
+    def test_allowed_hosts_are_fetched(self):
+        allowed = (
+            "https://github.com/bwilliam79/grok-station/releases/download/v1.2.0/manifest.json",
+            "https://GitHub.com/bwilliam79/grok-station/releases/latest/download/manifest.json",
+            "https://github.com:443/bwilliam79/grok-station/releases/latest/download/manifest.json",
+            "https://objects.githubusercontent.com/example/manifest.json",
+            "https://objects.githubusercontent.com/example/manifest.json?name=manifest.json",
+        )
+        for url in allowed:
+            fetcher, seen = self._fetch(b"ok")
+            self.assertEqual(release.fetch_manifest(fetcher, url), b"ok", url)
+            self.assertEqual(seen["url"], url)
+            self.assertEqual(seen["context"].verify_mode, ssl.CERT_REQUIRED)
+
+    def test_http_wrong_host_and_tricks_are_rejected(self):
+        rejected = (
+            "http://github.com/bwilliam79/grok-station/releases/latest/download/manifest.json",
+            "https://example.invalid/manifest.json",
+            "https://github.com.example.invalid/manifest.json",
+            "https://evil.github.com/manifest.json",
+            "https://api.github.com/repos/bwilliam79/grok-station/releases/latest",
+            "https://objects.githubusercontent.com.example.invalid/manifest.json",
+            "https://githubusercontent.com/manifest.json",
+            "https://user@github.com/bwilliam79/grok-station/releases/latest/download/manifest.json",
+            "https://user:secret@github.com/manifest.json",
+            "https://github.com:4443/manifest.json",
+            "https://192.0.2.1/manifest.json",
+            "https://github.com/manifest.json#frag",
+            "ftp://github.com/manifest.json",
+            "https://github.com./manifest.json",
+            "https://github.com%2eexample.invalid/manifest.json",
+            "https://github.com\\@evil.example/manifest.json",
+            " https://github.com/manifest.json",
+            "https://github.com/manifest.json\n",
+            "",
+        )
+        for url in rejected:
+            called = []
+
+            def fetcher(target, _context, called=called):
+                called.append(target)
+                return b"no"
+
+            with self.assertRaises(release.ManifestError) as ctx:
+                release.fetch_manifest(fetcher, url)
+            self.assertEqual(called, [], url)
+            self.assertEqual(ctx.exception.reason, "fetch-failed", url)
+            self.assertNotIn("example.invalid", str(ctx.exception))
+            self.assertNotIn("192.0.2.1", str(ctx.exception))
+            self.assertNotIn("secret", str(ctx.exception))
+
+    def test_size_cap(self):
+        cap = release.MAX_MANIFEST_BYTES
+        fetcher, _seen = self._fetch(b"x" * cap)
+        self.assertEqual(len(release.fetch_manifest(fetcher)), cap)
+        over, _seen = self._fetch(b"x" * (cap + 1))
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.fetch_manifest(over)
+        self.assertEqual(ctx.exception.reason, "fetch-failed")
+        self.assertEqual(ctx.exception.detail, "size")
+        text, _seen = self._fetch("y" * (cap + 1))
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.fetch_manifest(text)
+        self.assertEqual(ctx.exception.detail, "size")
+
+    def test_transport_and_body_failures(self):
+        down, _seen = self._fetch(OSError("down"))
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.fetch_manifest(down)
+        self.assertEqual(ctx.exception.reason, "fetch-failed")
+        self.assertEqual(ctx.exception.detail, "transport")
+        self.assertIsNone(ctx.exception.__cause__)
+        empty, _seen = self._fetch(None)
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.fetch_manifest(empty)
+        self.assertEqual(ctx.exception.detail, "body")
+        with self.assertRaises(release.ManifestError) as ctx:
+            release.fetch_manifest(None)
+        self.assertEqual(ctx.exception.detail, "fetcher")
+
+    def test_fetched_manifest_parses_without_a_signature(self):
+        body = dumps(manifest_doc())
+        fetcher, seen = self._fetch(body)
+        parsed = release.parse_manifest(release.fetch_manifest(fetcher), now=NOW)
+        self.assertEqual(parsed["version"], "v1.2.0")
+        self.assertEqual(parsed["components"]["station"]["sha256"], "ab" * 32)
+        self.assertTrue(seen["context"].check_hostname)
 
 
 class RequestTests(unittest.TestCase):

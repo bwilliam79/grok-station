@@ -690,7 +690,7 @@ class RelayCLI:
         print("This will remove the relay and cannot be undone.")
         print("Accounts: user grok-relay, group grok-relay, docker group membership")
         print("Docker project grok-relay: containers, images, and volumes (--volumes --rmi all)")
-        print("Credentials (values are not shown): client certificate, private key, pinned CA, xAI key, minisign public keys")
+        print("Credentials (values are not shown): client certificate, private key, pinned CA, xAI key")
         print("Directories: " + ", ".join((paths.config, paths.state, paths.log, paths.cache)))
         if self.system.platform() == "darwin":
             print("Firewall: pf anchor grok-relay")
@@ -845,12 +845,6 @@ class RelayCLI:
                 self.system.remove_file(path)
             except Exception:
                 failed = True
-        try:
-            for name in self.system.listdir(self.paths.minisign):
-                self.system.remove_file(os.path.join(self.paths.minisign, name))
-            self.system.remove_tree(self.paths.minisign)
-        except Exception:
-            failed = True
         if self.system.platform() == "darwin":
             try:
                 # Not found (44) means the item is already gone.
@@ -1054,7 +1048,7 @@ class RelayCLI:
         left = []
         for path in (
             self.paths.config, self.paths.state, self.paths.log, self.paths.cache,
-            self.paths.cert, self.paths.key, self.paths.ca, self.paths.minisign,
+            self.paths.cert, self.paths.key, self.paths.ca,
         ):
             if path and self.system.exists(path):
                 left.append(path)

@@ -1,22 +1,23 @@
-"""Signed release manifests and staged updates.
+"""Release manifests and staged updates.
 
-Pure logic. Callers inject the clock, the disk check, and every disk or
-process operation. This module does not open a network connection.
+Pure logic. Callers inject the clock, the disk check, the manifest fetcher,
+and every disk or process operation. This module does not open a socket.
 
-Minisign (Ed25519):
-  public key line = base64("Ed" || key id (8) || public key (32))
-  signature line  = base64("Ed"|"ED" || key id (8) || signature (64))
-  "Ed" signs the message. "ED" signs BLAKE2b-512 (hashlib.blake2b, 64 bytes).
-  The global signature is Ed25519 over signature(64) || trusted-comment line
-  (the "trusted comment: ..." line, prefix included, newline excluded).
-  The key id in the signature must equal the key id in the public key.
+A release is a JSON manifest fetched over HTTPS from GitHub (MANIFEST_URL).
+There is no signature. Relay images are pinned by digest from the manifest.
+The station tarball is checked by sha256. issued_at and expires span at most
+30 days. An expired manifest is "Can't check". A future-dated manifest is
+rejected. Signing may be added later.
 """
 
-import base64, hashlib, json, os, re
+import json, os, re, ssl
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+MANIFEST_URL = (
+    "https://github.com/bwilliam79/grok-station/releases/latest/download/manifest.json"
+)
+_MANIFEST_HOSTS = frozenset({"github.com", "objects.githubusercontent.com"})
 
 BUSY_WAIT_S = 600
 DISK_MIN_MB = 500
@@ -24,19 +25,18 @@ SOAK_S = 600
 MAX_VALIDITY = timedelta(days=30)
 FUTURE_SKEW = timedelta(minutes=5)
 MAX_MANIFEST_BYTES = 64 * 1024
-MAX_SIG_BYTES = 16 * 1024
 MAX_REQUEST_CHARS = 1024
 
 EXPIRED_TITLE = "Can't check"
 EXPIRED_MESSAGE = "Update info is out of date. Updates may be hidden."
 EXPIRED_AUDIT = "update-check-expired"
+_REASONS = ("expired", "future", "bad-format", "fetch-failed")
 
 _VERSION = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TARBALL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 _IMAGE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
-_KEYID = re.compile(r"^[0-9a-fA-F]{16}$")
 _TOKEN = re.compile(r"^[A-Za-z0-9._:-]+$")
 _REQUEST_BODY = re.compile(
     r'\A\s*\{\s*"version"\s*:\s*"(v[0-9]+\.[0-9]+\.[0-9]+)"\s*\}\s*\Z')
@@ -44,59 +44,28 @@ _LONG_HEX = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 _SHA_PREFIXED = re.compile(r"\bsha256:[0-9a-fA-F]{16,}\b", re.IGNORECASE)
 _IPV4 = re.compile(r"\b[0-9]{1,3}(?:\.[0-9]{1,3}){3}\b")
 _RELEASE_KEYS = {"version", "min_version_floor", "issued_at", "expires", "components", "compat"}
-_ROTATION_KEYS = {"new_primary", "new_backup", "revoked", "issued_at"}
 _REQUIRED_OPS = ("stage", "switch", "health", "rollback", "is_busy", "disk_free_mb", "clock")
 
 __all__ = [
-    "ManifestError", "MinisignPublicKey", "MinisignSignature",
-    "parse_public_key", "parse_signature", "verify_signature", "format_public_key",
-    "TrustStore", "parse_manifest", "load_trusted_manifest",
+    "ManifestError", "MANIFEST_URL", "fetch_manifest",
+    "parse_manifest", "load_trusted_manifest",
     "check_update", "check_now", "scheduled_check", "present_check_error",
     "validate_update_request", "Decision", "plan_update", "Plan", "Updater",
     "load_settings", "set_autocheck", "format_audit",
     "EXPIRED_TITLE", "EXPIRED_MESSAGE", "EXPIRED_AUDIT",
-    "BUSY_WAIT_S", "DISK_MIN_MB", "SOAK_S",
+    "BUSY_WAIT_S", "DISK_MIN_MB", "SOAK_S", "MAX_MANIFEST_BYTES",
 ]
 
 
 class ManifestError(Exception):
-    """A manifest cannot be used. `reason` is unsigned, expired, future, or bad-format."""
+    """A manifest cannot be used. `reason` is expired, future, bad-format, or fetch-failed."""
 
     def __init__(self, reason, detail=None):
-        if reason not in ("unsigned", "expired", "future", "bad-format"):
+        if reason not in _REASONS:
             raise ValueError("reason")
         self.reason = reason
         self.detail = detail
         super().__init__(reason if not detail else f"{reason}: {detail}")
-
-
-class MinisignPublicKey:
-    def __init__(self, key_id, public):
-        if len(key_id) != 8 or len(public) != 32:
-            raise ManifestError("bad-format", "public key")
-        self.key_id = bytes(key_id)
-        self.public = bytes(public)
-
-    @property
-    def key_id_hex(self):
-        return self.key_id.hex()
-
-    def __repr__(self):
-        return f"MinisignPublicKey({self.key_id_hex})"
-
-
-class MinisignSignature:
-    def __init__(self, algorithm, key_id, sig, trusted_comment, global_sig, untrusted_comment):
-        self.algorithm = algorithm
-        self.key_id = key_id
-        self.sig = sig
-        self.trusted_comment = trusted_comment
-        self.global_sig = global_sig
-        self.untrusted_comment = untrusted_comment
-
-    @property
-    def trusted_comment_bytes(self):
-        return self.trusted_comment.encode("utf-8")
 
 
 class Decision:
@@ -176,117 +145,6 @@ class ApplyResult:
         return f"ApplyResult(ok={self.ok!r}, status={self.status!r}, reason={self.reason!r})"
 
 
-def _b64decode(text, reason):
-    try:
-        return base64.b64decode(text, validate=True)
-    except Exception:
-        raise ManifestError(reason, "base64")
-
-
-def parse_public_key(data):
-    """Parse a minisign public key. The untrusted-comment line is optional."""
-    if isinstance(data, MinisignPublicKey):
-        return data
-    if isinstance(data, bytes):
-        try:
-            data = data.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ManifestError("bad-format", "public key")
-    if not isinstance(data, str):
-        raise ManifestError("bad-format", "public key")
-    lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
-    if not lines:
-        raise ManifestError("bad-format", "public key")
-    if lines[0].startswith("untrusted comment:"):
-        lines = lines[1:]
-    if len(lines) != 1:
-        raise ManifestError("bad-format", "public key")
-    raw = _b64decode(lines[0], "bad-format")
-    if len(raw) != 42 or raw[:2] != b"Ed":
-        raise ManifestError("bad-format", "public key")
-    return MinisignPublicKey(raw[2:10], raw[10:42])
-
-
-def format_public_key(key):
-    key = parse_public_key(key)
-    blob = base64.b64encode(b"Ed" + key.key_id + key.public).decode("ascii")
-    return f"untrusted comment: minisign public key {key.key_id_hex}\n{blob}\n"
-
-
-def parse_signature(data):
-    """Parse a .minisig file: untrusted comment, signature, trusted comment, global signature."""
-    if isinstance(data, MinisignSignature):
-        return data
-    if isinstance(data, bytes):
-        try:
-            data = data.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ManifestError("unsigned", "encoding")
-    if not isinstance(data, str):
-        raise ManifestError("unsigned", "signature")
-    if len(data) > MAX_SIG_BYTES:
-        raise ManifestError("unsigned", "size")
-    lines = data.splitlines()
-    while lines and lines[0] == "":
-        lines.pop(0)
-    while lines and lines[-1] == "":
-        lines.pop()
-    if len(lines) != 4:
-        raise ManifestError("unsigned", "signature")
-    if not lines[0].startswith("untrusted comment:"):
-        raise ManifestError("unsigned", "untrusted comment")
-    trusted = lines[2]
-    if not trusted.startswith("trusted comment:"):
-        raise ManifestError("unsigned", "trusted comment")
-    raw = _b64decode(lines[1].strip(), "unsigned")
-    if len(raw) != 74 or raw[:2] not in (b"Ed", b"ED"):
-        raise ManifestError("unsigned", "signature")
-    global_sig = _b64decode(lines[3].strip(), "unsigned")
-    if len(global_sig) != 64:
-        raise ManifestError("unsigned", "global signature")
-    return MinisignSignature(raw[:2], raw[2:10], raw[10:74], trusted, global_sig, lines[0])
-
-
-def verify_signature(public_key, message, signature):
-    """Verify the message signature and the global signature. Key ids must match.
-
-    Returns True. Raises ManifestError('unsigned') on any failure.
-    """
-    public_key = parse_public_key(public_key)
-    signature = parse_signature(signature)
-    if isinstance(message, str):
-        message = message.encode("utf-8")
-    if not isinstance(message, (bytes, bytearray)):
-        raise ManifestError("unsigned", "message")
-    message = bytes(message)
-    if signature.key_id != public_key.key_id:
-        raise ManifestError("unsigned", "keyid")
-    try:
-        key = Ed25519PublicKey.from_public_bytes(public_key.public)
-        if signature.algorithm == b"Ed":
-            key.verify(signature.sig, message)
-        elif signature.algorithm == b"ED":
-            digest = hashlib.blake2b(message, digest_size=64).digest()
-            key.verify(signature.sig, digest)
-        else:
-            raise ManifestError("unsigned", "algorithm")
-        # Global signature covers the raw 64-byte signature and the trusted-comment line.
-        key.verify(signature.global_sig, signature.sig + signature.trusted_comment_bytes)
-    except InvalidSignature:
-        raise ManifestError("unsigned", "signature")
-    return True
-
-
-def _keyid_hex(value):
-    if isinstance(value, bytes):
-        if len(value) != 8:
-            raise ManifestError("bad-format", "keyid")
-        return value.hex()
-    if isinstance(value, str) and _KEYID.fullmatch(value):
-        return value.lower()
-    raise ManifestError("bad-format", "keyid")
-
-
 def _json_pairs(pairs):
     obj = {}
     for key, value in pairs:
@@ -324,121 +182,74 @@ def _atomic_json(path, doc):
         raise
 
 
-class TrustStore:
-    """Primary and backup public keys plus revoked key ids (lowercase hex)."""
+def _require_manifest_url(url):
+    """https only, and only github.com or objects.githubusercontent.com."""
+    if not isinstance(url, str) or not url:
+        raise ManifestError("fetch-failed", "url")
+    if any(ord(ch) < 33 or ord(ch) == 127 for ch in url) or "\\" in url or "@" in url:
+        raise ManifestError("fetch-failed", "url")
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        raise ManifestError("fetch-failed", "url")
+    if parts.scheme != "https":
+        raise ManifestError("fetch-failed", "scheme")
+    host = parts.hostname
+    if host not in _MANIFEST_HOSTS:
+        raise ManifestError("fetch-failed", "host")
+    if parts.port not in (None, 443):
+        raise ManifestError("fetch-failed", "port")
+    if parts.username is not None or parts.password is not None or parts.fragment:
+        raise ManifestError("fetch-failed", "url")
+    netloc = parts.netloc.lower()
+    if netloc not in (host, host + ":443"):
+        raise ManifestError("fetch-failed", "host")
+    return url
 
-    def __init__(self, primary, backup, revoked=None, path=None):
-        self.primary = parse_public_key(primary)
-        self.backup = parse_public_key(backup)
-        if self.primary.key_id == self.backup.key_id:
-            raise ManifestError("bad-format", "keyid")
-        self.revoked = []
-        self._revoked = set()
-        for item in revoked or []:
-            self._add_revoked(item)
-        self.path = path
 
-    def _add_revoked(self, item):
-        norm = _keyid_hex(item)
-        if norm not in self._revoked:
-            self._revoked.add(norm)
-            self.revoked.append(norm)
+def _tls_context():
+    """Certificate and hostname checks on. Never a context that skips them."""
+    try:
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+    except Exception:
+        raise ManifestError("fetch-failed", "tls") from None
+    if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
+        raise ManifestError("fetch-failed", "tls")
+    return context
 
-    @classmethod
-    def load(cls, path):
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
-        if len(text) > MAX_MANIFEST_BYTES:
-            raise ManifestError("bad-format", "size")
-        doc = _load_json(text)
-        if not isinstance(doc, dict) or "primary" not in doc or "backup" not in doc:
-            raise ManifestError("bad-format", "trust")
-        if set(doc) - {"primary", "backup", "revoked"}:
-            raise ManifestError("bad-format", "trust")
-        revoked = doc.get("revoked", [])
-        if not isinstance(revoked, list):
-            raise ManifestError("bad-format", "revoked")
-        return cls(doc["primary"], doc["backup"], revoked, path=path)
 
-    def save(self, path=None):
-        path = path or self.path
-        if not path:
-            raise ValueError("path")
-        _atomic_json(path, {
-            "primary": format_public_key(self.primary),
-            "backup": format_public_key(self.backup),
-            "revoked": list(self.revoked),
-        })
-        self.path = path
+def fetch_manifest(fetcher, url=None):
+    """Download a release manifest. `fetcher(url, context)` returns the body.
 
-    def verify_manifest(self, data, sig):
-        """Accept a primary or backup signature whose key id is not revoked.
-
-        Returns the public key that verified. Raises ManifestError('unsigned') otherwise.
-        """
-        if isinstance(data, str):
-            data = data.encode("utf-8")
-        if not isinstance(data, (bytes, bytearray)):
-            raise ManifestError("unsigned", "message")
-        signature = parse_signature(sig)
-        key = None
-        for candidate in (self.primary, self.backup):
-            if candidate.key_id == signature.key_id:
-                key = candidate
-                break
-        if key is None or key.key_id_hex in self._revoked:
-            raise ManifestError("unsigned", "key")
-        verify_signature(key, bytes(data), signature)
-        return key
-
-    def apply_rotation(self, data, sig, now=None):
-        """Replace both keys. The signature must be from the current backup key.
-
-        A primary-only signature is rejected. Revoked key ids are added.
-        Returns the audit event `release-key-rotated`. The previous primary is
-        no longer a trusted key, so a release it signed no longer verifies.
-        """
-        if isinstance(data, str):
-            raw = data.encode("utf-8")
-        elif isinstance(data, (bytes, bytearray)):
-            raw = bytes(data)
-        else:
-            raise ManifestError("bad-format", "rotation")
-        if len(raw) > MAX_MANIFEST_BYTES:
-            raise ManifestError("bad-format", "size")
-        if self.backup.key_id_hex in self._revoked:
-            raise ManifestError("unsigned", "revoked")
-        verify_signature(self.backup, raw, sig)
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            raise ManifestError("bad-format", "encoding")
-        doc = _load_json(text)
-        if not isinstance(doc, dict) or set(doc) != _ROTATION_KEYS:
-            raise ManifestError("bad-format", "rotation")
-        if not isinstance(doc["new_primary"], str) or not isinstance(doc["new_backup"], str):
-            raise ManifestError("bad-format", "rotation")
-        if not isinstance(doc["revoked"], list):
-            raise ManifestError("bad-format", "revoked")
-        issued = _parse_time(doc["issued_at"])
-        if now is not None and issued > _coerce_now(now) + FUTURE_SKEW:
-            raise ManifestError("future")
-        new_primary = parse_public_key(doc["new_primary"])
-        new_backup = parse_public_key(doc["new_backup"])
-        if new_primary.key_id == new_backup.key_id:
-            raise ManifestError("bad-format", "keyid")
-        added = [_keyid_hex(item) for item in doc["revoked"]]
-        banned = set(self._revoked)
-        banned.update(added)
-        if new_primary.key_id_hex in banned or new_backup.key_id_hex in banned:
-            raise ManifestError("bad-format", "revoked")
-        for item in added:
-            self._add_revoked(item)
-        self.primary = new_primary
-        self.backup = new_backup
-        if self.path:
-            self.save(self.path)
-        return "release-key-rotated"
+    `url` defaults to MANIFEST_URL. It must be https on github.com or
+    objects.githubusercontent.com. `context` has TLS certificate and hostname
+    verification on; the fetcher must use that context and must not follow a
+    redirect onto another host. The body is capped at MAX_MANIFEST_BYTES.
+    Raises ManifestError('fetch-failed') on a rejected URL, a transport error,
+    or an oversized body. This function does not open a socket.
+    """
+    if url is None:
+        url = MANIFEST_URL
+    url = _require_manifest_url(url)
+    if not callable(fetcher):
+        raise ManifestError("fetch-failed", "fetcher")
+    context = _tls_context()
+    try:
+        body = fetcher(url, context)
+    except Exception:
+        raise ManifestError("fetch-failed", "transport") from None
+    if isinstance(body, str):
+        body = body.encode("utf-8")
+    elif isinstance(body, bytearray):
+        body = bytes(body)
+    if not isinstance(body, bytes):
+        raise ManifestError("fetch-failed", "body")
+    if len(body) > MAX_MANIFEST_BYTES:
+        raise ManifestError("fetch-failed", "size")
+    return body
 
 
 def _parse_time(value):
@@ -547,20 +358,21 @@ def _decode_release(data):
     return raw, doc
 
 
-def load_trusted_manifest(data, sig, trust, now=None):
-    """Verify `sig` with `trust`, then validate the release. Raises ManifestError."""
-    raw, doc = _decode_release(data)
-    _validate_release_shape(doc)
-    if sig is None or trust is None:
-        raise ManifestError("unsigned", "missing signature")
-    trust.verify_manifest(raw, sig)
+def parse_manifest(data, now=None):
+    """Validate a release manifest. Raises ManifestError. There is no signature."""
+    if isinstance(data, dict):
+        doc = data
+        _validate_release_shape(doc)
+    else:
+        _raw, doc = _decode_release(data)
+        _validate_release_shape(doc)
     _validate_release_time(doc, _coerce_now(now))
     return doc
 
 
-def parse_manifest(data, sig=None, trust=None, *, now=None):
-    """Validate a release. A missing or bad signature is `unsigned`."""
-    return load_trusted_manifest(data, sig, trust, now=now)
+def load_trusted_manifest(data, now=None):
+    """Validate a fetched manifest. Trust is the HTTPS fetch, not a signature."""
+    return parse_manifest(data, now=now)
 
 
 def present_check_error(err):
@@ -599,25 +411,19 @@ def _compare_installed(installed, doc):
         title=None, message=None, skipped=False)
 
 
-def check_update(installed, manifest, *, now=None, sig=None, trust=None):
+def check_update(installed, manifest, *, now=None):
     """Compare `installed` with a release manifest.
 
     An expired manifest does not raise: the caller shows "Can't check" and
     "Update info is out of date. Updates may be hidden." and audits
-    `update-check-expired`. Other failures raise ManifestError.
-    A dict manifest was already verified; bytes are verified when sig and trust
-    are passed, and rejected as unsigned when they are not.
+    `update-check-expired`. A future or badly formed manifest raises
+    ManifestError. Dict and bytes are parsed the same way.
     """
     if not isinstance(installed, str) or _VERSION.fullmatch(installed) is None:
         raise ManifestError("bad-format", "installed")
     now_dt = _coerce_now(now)
     try:
-        if isinstance(manifest, dict):
-            _validate_release_shape(manifest)
-            _validate_release_time(manifest, now_dt)
-            doc = manifest
-        else:
-            doc = load_trusted_manifest(manifest, sig, trust, now=now_dt)
+        doc = parse_manifest(manifest, now=now_dt)
     except ManifestError as err:
         if err.reason == "expired":
             return _expired_result(installed)
