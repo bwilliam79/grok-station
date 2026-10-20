@@ -536,6 +536,18 @@ A small web page on the station (HTTPS on port 443, home network only) so nobody
 Install: `install.sh` runs `tools/install-files.sh` (also used by the page's updater). Tests: `python3 -m pytest tests/test_admin.py`.
 Not yet: spoken setup lines need recorded clips in `wake/lines/` (chime only for now); the xAI key is changed on the voice service computer; display brightness depends on the monitor.
 
+## Relay pairing
+
+A relay installer pairs to the station on the local network. The logic is in `admin/pairing.py` (station) and `relay/pair_client.py` (installer). It is not wired into the admin page.
+
+The station opens a window only after a fresh admin step-up (5 minutes or less). The window lasts 10 minutes and shows an 8-character code as `XXXX-XXXX` (40 bits, base32). The code is not stored. The station keeps HMAC-SHA256 of the station certificate fingerprint, using the code as the key. Five bad proofs lock the window; a later proof is refused even if it is correct. An expired or already-used code is refused. The pairing port listens only while `port_should_be_open` is true, and it closes on success, cancel, lockout, or timeout. Sources outside RFC 1918, IPv6 ULA (`fc00::/7`), link-local, or loopback are refused.
+
+The installer fetches the station certificate (the transport is injected; these modules do not open sockets), prints the full SHA-256 fingerprint as 4 lines of 4 groups of 4 hex digits, and asks the operator to type `yes`. Anything else stops before a key, a request, or a proof is sent. After `yes`, the installer makes an EC P-256 key locally, sends a request whose only name is `relay-<16 hex>`, and prints the relay fingerprint. The admin confirms the fingerprints match, and only then does the station sign a 365-day client certificate (client auth only). A request for server auth, or any other name, is refused. The xAI key is read with a hidden prompt; the screen may show its last 4 characters.
+
+Audit lines are `<time> admin station <event> <detail>`. They do not include the code, a key, an address, or a host name. A signed certificate is recorded as `pair-csr-signed` plus the first 8 hex digits of the serial; removing one is `unpair` plus those 8 digits.
+
+Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`.
+
 ## Credits
 
 Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`assets/fonts/OFL.txt`).
