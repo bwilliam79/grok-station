@@ -27,7 +27,8 @@ json.dump({"models_dir": os.path.join(TMP, "models"), "words": [{"name": "hey_fi
            "enroll": [{"name": "hey_hank", "persona": "hank"}], "fallback": {"name": "hey_jarvis", "threshold": 0.5}}, open(WAKE_CFG, "w"))
 os.environ.update(ADMIN_STATE_DIR=os.path.join(TMP, "state"), ADMIN_RUN_DIR=os.path.join(TMP, "run"), ADMIN_HELPER=f"{sys.executable} {HELPER}",
                   ADMIN_WAKE_CTL="http://127.0.0.1:9", WAKE_CONFIG=WAKE_CFG, WAKE_ENROLLED_DIR=os.path.join(TMP, "enrolled"),
-                  ADMIN_PERSONAS=os.path.join(TMP, "personas.json"), FAKE_LOG=os.path.join(TMP, "helper.log"))
+                  ADMIN_PERSONAS=os.path.join(TMP, "personas.json"), FAKE_LOG=os.path.join(TMP, "helper.log"),
+                  ADMIN_RELAY_ENV=os.path.join(TMP, "missing-admin-relay.env"))
 os.makedirs(os.environ["ADMIN_STATE_DIR"]); os.makedirs(os.environ["ADMIN_RUN_DIR"])
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 import grok_admin as ga  # noqa: E402
@@ -454,6 +455,87 @@ class DisplaySetupScreens(unittest.TestCase):
         self.assertIsNone(gs.read_setup())
         json.dump({"mode": "nope", "code": "K7P4QX"}, open(os.environ["GROK_SETUP_FILE"], "w"))
         self.assertIsNone(gs.read_setup())
+
+
+class Bots(unittest.TestCase):
+    """Bots page: proxied to the relay (faked here); password re-entry; keys never kept, logged or echoed on the Pi."""
+    URL, KEY = "https://api2.cursor.sh/v1/hooks/abc123", "sk-test-0123456789-WXYZ"
+
+    def setUp(self):
+        self.c = signed_in()
+        self.calls = []
+        self._rc = ga.relay_call
+        def fake(method, path, payload=None, timeout=10):
+            self.calls.append((method, path, payload))
+            if path == "/admin/bots" and method == "GET":
+                return 200, {"bots": [{"slug": "kai", "name": "Kai", "voice": "eve", "source": "registry",
+                                       "webhook": {"configured": True, "last4": "WXYZ", "saved_at": 1},
+                                       "status": {"state": "connected", "last_answered_at": 1, "last_error": None, "last_error_at": None}}],
+                             "voices": ["eve"]}
+            if path == "/admin/bots" and method == "POST":
+                return 201, {"ok": True, "slug": payload["slug"], "voice_token": "vt_" + "A" * 43}
+            if path.endswith("/webhook") and method == "PUT":
+                return 200, {"ok": True, "last4": payload["key"][-4:]}
+            if path.endswith("/test") and method == "POST":
+                return 202, {"test_id": "t1abc"}
+            return 200, {"ok": True}
+        ga.relay_call = fake
+
+    def tearDown(self):
+        ga.relay_call = self._rc
+
+    def disk_blob(self):
+        out = b""
+        for d in (os.environ["ADMIN_STATE_DIR"], os.environ["ADMIN_RUN_DIR"]):
+            for n in os.listdir(d):
+                try:
+                    out += open(os.path.join(d, n), "rb").read()
+                except OSError:
+                    pass
+        return out
+
+    def test_list_proxied(self):
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(st, 200); self.assertEqual(j["bots"][0]["webhook"]["last4"], "WXYZ")
+
+    def test_save_needs_password_and_key_is_not_kept(self):
+        body = {"url": self.URL, "key": self.KEY}
+        self.assertEqual(self.c.req("PUT", "/api/bots/kai/webhook", body)[0], 403)            # no password
+        self.assertEqual(self.c.req("PUT", "/api/bots/kai/webhook", dict(body, password="wrong-wrong-1"))[0], 403)
+        self.assertEqual(len([c for c in self.calls if c[0] == "PUT"]), 0)                    # relay never called
+        st, j = self.c.req("PUT", "/api/bots/kai/webhook", dict(body, password=GOOD))
+        self.assertEqual(st, 200); self.assertNotIn(self.KEY, json.dumps(j))
+        self.assertNotIn(self.KEY.encode(), self.disk_blob()); self.assertNotIn(self.URL.encode(), self.disk_blob())
+
+    def test_url_allowlist_rejected_locally(self):
+        for bad in ("http://api2.cursor.sh/x", "https://api2.cursor.sh.evil.example/x", "https://u:p@api2.cursor.sh/x",
+                    "https://api2.cursor.sh:8443/x", "https://example.com/x"):
+            st, j = self.c.req("PUT", "/api/bots/kai/webhook", {"url": bad, "key": self.KEY, "password": GOOD})
+            self.assertEqual(st, 400, bad); self.assertNotIn(self.KEY, json.dumps(j))
+        self.assertEqual(len([c for c in self.calls if c[0] == "PUT"]), 0)
+
+    def test_add_rename_remove_need_password_token_once(self):
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve"})[0], 403)
+        st, j = self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve", "password": GOOD})
+        self.assertIn(st, (200, 201)); self.assertTrue(j["voice_token"].startswith("vt_"))
+        self.assertNotIn(j["voice_token"].encode(), self.disk_blob())
+        self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane"})[0], 403)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane", "password": GOOD})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {"password": GOOD})[0], 200)
+
+    def test_test_needs_no_password_and_unconfigured_message(self):
+        st, j = self.c.req("POST", "/api/bots/kai/test", {})
+        self.assertEqual((st, j.get("test_id")), (202, "t1abc"))
+        ga.relay_call = lambda *a, **k: None
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(st, 200); self.assertEqual(j["message"], ga.RELAY_UNCONFIGURED)
+
+    def test_page_has_bots_and_no_personas_or_t1_ui(self):
+        js = open(os.path.join(os.path.dirname(__file__), "..", "admin", "web", "app.js")).read()
+        self.assertIn('["bots", "Bots"]', js); self.assertNotIn('["personas"', js)
+        self.assertIn('autocomplete="off"', js); self.assertIn("Waiting for", js)
+        for s in ("Voice note", "yes, save it", "call button"):
+            self.assertNotIn(s, js)
 
 
 if __name__ == "__main__":

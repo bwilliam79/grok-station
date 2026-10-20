@@ -456,16 +456,18 @@ A small web page on the station (HTTPS on port 443, home network only) so nobody
 
 **Setup wizard** (resumes where you left off; "Run setup again" in System): 1 code and password, 2 Wi-Fi (skip if wired; required when the station is on its setup hotspot), 3 xAI key (lives on the voice service computer, never on the station), 4 voice relay address + station token (tested before saving), 5 time zone, town/ZIP lookup, °F/°C, 6 wake words, 7 audio test, done.
 
-**Pages:** Home (status, live screen preview, mic level, tiles) · xAI key and relay · Wake words (on/off, sensitivity, record a voice; speaker names stay on the station, training only sees ids like `spk-3f9a`) · Personas (read-only; the registry lives on the voice service computer) · Audio · Display · Time and location · Network (IPs, rename the station, scan, join, forget; the current connection stays up while joining) · System (update from GitHub, health, logs, restart voice, reboot, change password). Laptop sidebar, tablet icon rail, phone tab bar.
+**Pages:** Home (status, live screen preview, mic level, tiles) · xAI key and relay · Wake words (on/off, sensitivity, record a voice; speaker names stay on the station, training only sees ids like `spk-3f9a`) · Bots (teammates and their webhooks; guest mode) · Audio · Display · Time and location · Network (IPs, rename the station, scan, join, forget; the current connection stays up while joining) · System (update from GitHub, health, logs, restart voice, reboot, change password). Laptop sidebar, tablet icon rail, phone tab bar.
 
-**Secrets are write-only.** The page never gets a stored secret back: it shows `••••` + last 4, Replace and Test. A new token only replaces the old one after it tests OK. Nothing secret in logs, URLs or browser storage.
+**Bots.** The Bots page, under Station, lists every teammate the voice service knows, including ones added here. A portrait comes from the station's cached photo, or a monogram when there isn't one. Each row is Connected, Not configured, or Error. Configure pastes that bot's webhook address and key from its routine panel in Grok Bot. The key is write-only: after a save the page shows `••••` and the last 4, and the station does not keep the key (not on disk, not in the log, not in the browser). Saving or removing a webhook, and adding, renaming, or removing a bot, asks for the admin password again. A wrong password counts toward the same 15-minute sign-in lockout. Test sends one question and waits up to 2 minutes. Add bot shows a voice token once, in the page only; it is not saved on the station. Guest mode is the switch on this page. It is stored in `t1.json`, which the wake listener already reads. The page's server calls the relay admin API; the browser never does. The connection is `/etc/grok-station/admin-relay.env` (mode 600, owned by `grok-admin`, never shown): an `https` URL, a CA file used instead of the system store, a client certificate, and the admin token file. Until that file is set, the page says the station can't reach the relay yet and lists each teammate as not configured.
+
+**Secrets are write-only.** The page never gets a stored secret back: it shows `••••` + last 4, Replace and Test. A new token only replaces the old one after it tests OK. Nothing secret in logs, URLs or browser storage. Webhook keys follow the same rule and are not kept on the station at all.
 
 **No network?** 90 s after boot with no connection and no saved Wi-Fi in range, the station starts its own hotspot (`grok-station-XXXX`) and shows QR codes to join it and open `https://10.42.0.1`. It never starts while connected and stops once home Wi-Fi is back.
 
 **HTTPS only.** Passwords and keys go through this page, so it is never served over plain HTTP:
 
 - **Ports.** Port 443 serves the page. Port 80 only answers with a `301` to the same path on `https://`, with no page content and no cookies.
-- **Headers and cookies.** Responses carry `Strict-Transport-Security`, and the session cookie is `HttpOnly; Secure; SameSite=Strict`.
+- **Headers and cookies.** Responses carry `Strict-Transport-Security`, and the session cookie is `HttpOnly; Secure; SameSite=Strict`. A session ends after 30 minutes with no requests, and after 12 hours at most.
 - **The certificate.** Each station makes its own self-signed certificate (`sudo grok-station tls-cert`, run at install and before every start of the admin service):
   - files in `/var/lib/grok-station/tls/`; the key is `key.pem`, mode 600, owned by `grok-admin`, and never leaves the station or goes in the repo;
   - an EC P-256 key, valid for 825 days, for `<hostname>.local`, `<hostname>` and the hotspot `10.42.0.1`;
@@ -475,7 +477,7 @@ A small web page on the station (HTTPS on port 443, home network only) so nobody
 **Forgot the password?** Physical access only, never by voice: either put an empty file named `grok-station-reset` on the SD card's boot partition and power on (the file is deleted after use), or run `sudo grok-station reset-admin`. Only the password is wiped; the station shows **Password reset** with a new code and every other setting is kept.
 
 Install: `install.sh` runs `tools/install-files.sh` (also used by the page's updater). Tests: `python3 -m pytest tests/test_admin.py`.
-Not yet: spoken setup lines need recorded clips in `wake/lines/` (chime only for now); the xAI key and personas are changed on the voice service computer; display brightness depends on the monitor.
+Not yet: spoken setup lines need recorded clips in `wake/lines/` (chime only for now); the xAI key is changed on the voice service computer; display brightness depends on the monitor.
 
 ## Credits
 

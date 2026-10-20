@@ -404,7 +404,7 @@ async function wizard(step) {
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
     root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
-      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="personas">Personas</a> · <a href="#" data-p="display">Display</a>.</p>
+      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
       <div class="field"><button class="btn p" id="fin">Go to Home</button></div></div></div>`;
     const fin = async p => { await api("POST", "/api/wizard", {step: 8, done: true}); S.page = p; boot(); };
     $("#fin").onclick = () => fin("home");
@@ -446,21 +446,25 @@ async function wizard(step) {
 const ICON = {
   home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   voice: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
-  wake: '<path d="M4 12h2l2-6 4 12 3-9 2 3h3"/>', personas: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6 6 0 0 1 3.5 5.5"/>',
+  wake: '<path d="M4 12h2l2-6 4 12 3-9 2 3h3"/>', bots: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6 6 0 0 1 3.5 5.5"/>',
   audio: '<path d="M11 5L6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>', display: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   time: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', network: '<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
   system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
-const PAGES = {home: ["Home", pageHome], voice: ["xAI key and relay", pageVoice], wake: ["Wake words", el => wakePanel(el)], personas: ["Personas", pagePersonas],
+const PAGES = {home: ["Home", pageHome], voice: ["xAI key and relay", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
   audio: ["Audio", el => audioPanel(el)], display: ["Display", el => displayPanel(el)], time: ["Time and location", el => timePanel(el)],
   network: ["Network", el => wifiPanel(el)], system: ["System", pageSystem], more: ["More", pageMore]};
 const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "xAI key and relay"]]],
-  ["Station", [["wake", "Wake words"], ["personas", "Personas"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
+  ["Station", [["wake", "Wake words"], ["bots", "Bots"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
   ["", [["system", "System"]]]];
 const TABS = [["home", "Home", "home"], ["wake", "Voice", "wake"], ["audio", "Station", "audio"], ["system", "System", "system"], ["more", "More", "more"]];
 
+function closeFloats() {
+  document.querySelectorAll("body > .drawer, body > .sheet").forEach(n => { if (n._cancel) n._cancel(); n.remove(); });
+}
 function shell() {
+  closeFloats();
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
   root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><span class="mk"></span><div><b>grok-station</b><span>● ${esc(S.state.host)}</span></div></div>
@@ -507,20 +511,329 @@ async function pageVoice(el) {
   el.innerHTML = `<div class="cols"><div id="x"></div><div id="r"></div></div>`;
   xaiPanel($("#x", el)); relayPanel($("#r", el));
 }
-async function pagePersonas(el) {
-  const [r, g] = await Promise.all([api("GET", "/api/personas"), api("GET", "/api/t1")]);
-  const d = r.data || {}, guest = !!(g.data || {}).guest;
-  el.innerHTML = `<div class="card"><div class="row"><button class="tog${guest ? " on" : ""}" role="switch" aria-checked="${guest}" id="guest" aria-label="Guest mode"></button>
-    <div><div class="lbl">Guest mode</div><div class="help">Turns off saving voice notes from the station while guests are over.</div></div></div>
-    <p class="note">Voice notes (when turned on for a teammate) need someone at the station: the note is shown and read back, then you say “yes, save it” or press the speaker's call button. They're off from 10 PM to 7 AM and unless the call button was pressed in the last 30 minutes.</p></div>
-    <div class="banner off" style="margin-top:16px">${esc(d.where || "")}</div><div class="tiles" style="margin-top:16px">${(d.personas || []).map(p => `<div class="tile">
-    <div style="font:600 17px var(--disp)">${esc(p.name)}</div><div class="help">Voice: ${esc(p.voice || "default")}</div>
-    <div class="help">${p.wake_word ? "Wake word: " + esc(WORD(p.wake_word)) : "Opened by name in a conversation"}</div></div>`).join("") || `<p class="help">No personas found on this station.</p>`}</div>`;
+function clockTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  let h = d.getHours();
+  const ap = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return h + ":" + String(d.getMinutes()).padStart(2, "0") + " " + ap;
+}
+function mss(s) {
+  s = Math.max(0, Math.floor(Number(s) || 0));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
+function slugify(name) {
+  let s = String(name || "").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  if (!/^[a-z]/.test(s)) s = ("b" + s).replace(/^-+/, "");
+  s = s.slice(0, 24).replace(/-+$/g, "");
+  if (s === "grok") s = "grok-bot";
+  return s.length >= 2 ? s : "";
+}
+function botPill(b) {
+  const st = b.status || {};
+  if (st.state === "connected") {
+    const when = st.last_answered_at ? "Last answered " + clockTime(st.last_answered_at) : "Connected";
+    return `<span class="pill ok"><i></i>${esc(when)}</span>`;
+  }
+  if (st.state === "error") {
+    const msg = String(st.last_error || "Error");
+    return `<span class="pill bad"><i></i>${esc(msg.length > 80 ? msg.slice(0, 79) + "…" : msg)}</span>`;
+  }
+  return `<span class="pill off"><i></i>Paste its webhook to connect</span>`;
+}
+function avatar(slug, name, lg) {
+  const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
+  return `<span class="avwrap${lg ? " lg" : ""}"><img class="av" alt="" src="/api/portrait/${esc(slug)}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
+}
+function askPassword(title, text, label, send) {
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(400px,100%)">
+    <h2>${esc(title)}</h2><p class="sub">${esc(text)}</p>
+    <div class="field"><label for="pwv">Admin password</label><input class="inp" type="password" id="pwv" autocomplete="current-password" required></div>
+    <div id="pwe"></div>
+    <div class="field inline"><button class="btn p" id="pwgo">${esc(label)}</button><button class="btn g" type="button" id="pwno">Cancel</button></div></form>`;
+  document.body.appendChild(d);
+  const close = () => d.remove();
+  $("#pwno", d).onclick = close;
+  d.querySelector("form").onsubmit = async ev => {
+    ev.preventDefault();
+    const inp = $("#pwv", d);
+    const pw = inp.value;
+    inp.value = "";
+    busyBtn($("#pwgo", d), true);
+    const r = await send(pw);
+    busyBtn($("#pwgo", d), false, label);
+    if (r && r.ok) close();
+    else errBox($("#pwe", d), (r && r.data && r.data.error) || "Couldn't do that.");
+  };
+  $("#pwv", d).focus();
+}
+function paintBots(el, bots) {
+  const n = s => bots.filter(b => (b.status || {}).state === s).length;
+  const count = $("#bcount", el);
+  if (count) count.textContent = `${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured`;
+  const list = $("#blist", el);
+  if (!list) return;
+  list.innerHTML = bots.map(b => `<div class="botrow">${avatar(b.slug, b.name)}
+    <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div></div>
+    <button class="btn sm" data-bot="${esc(b.slug)}">Configure</button></div>`).join("") || `<p class="help">No bots yet.</p>`;
+  list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
+}
+async function refreshBots(el) {
+  const r = await api("GET", "/api/bots");
+  if (!r.ok || !$("#blist", el)) return null;
+  const msg = $("#bmsg", el);
+  if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
+  paintBots(el, r.data.bots || []);
+  return r.data;
+}
+function openBot(bot, el) {
+  if (!bot) return;
+  closeFloats();
+  const d = document.createElement("div");
+  d.className = "drawer bots";
+  d.id = "botdrawer";
+  d.setAttribute("role", "dialog");
+  d.setAttribute("aria-label", "Configure " + (bot.name || "bot"));
+  let testTimer = null, testId = null;
+  const stopPoll = () => { if (testTimer) { clearInterval(testTimer); testTimer = null; } };
+  const cancelTest = async () => {
+    stopPoll();
+    const id = testId;
+    testId = null;
+    if (id) await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`, {});
+  };
+  d._cancel = cancelTest;
+  const saved = !!(bot.webhook && bot.webhook.configured);
+  d.innerHTML = `<div class="inline">${avatar(bot.slug, bot.name, true)}
+      <div style="min-width:0"><div class="lbl">${esc(bot.name)}</div><div style="margin-top:4px">${botPill(bot)}</div>
+        ${bot.voice ? `<div class="help">Voice: ${esc(bot.voice)}</div>` : ""}</div>
+      <button class="btn g sm right" id="dx">Close</button></div>
+    <p class="note">Copy these from the bot's routine panel in Grok Bot.</p>
+    <div id="saved"${saved ? "" : " hidden"} class="secret"><span class="dots">•••• ${esc((bot.webhook && bot.webhook.last4) || "")}</span>
+      <span class="pill ok"><i></i>Saved</span><button class="btn sm" id="repl" type="button">Replace</button></div>
+    <div id="fields"${saved ? " hidden" : ""}>
+      <div class="field"><label for="burl">Webhook URL</label><input class="inp" id="burl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+      <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+      <p class="note" id="pasted" hidden>Pasted · not saved</p>
+    </div>
+    <div class="field inline"><button class="btn" id="test" type="button">Test</button><button class="btn p" id="save" type="button" disabled>Save</button></div>
+    <div id="tbox"></div>
+    ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
+    <div class="botfoot"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
+  document.body.appendChild(d);
+  const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
+  const sync = () => {
+    const url = $("#burl", d).value.trim(), key = $("#bkey", d).value, dirty = url.length + key.length > 0;
+    $("#pasted", d).hidden = !dirty;
+    $("#save", d).disabled = !(url && key);
+    $("#test", d).disabled = !!testId || (dirty ? !(url && key) : !(bot.webhook && bot.webhook.configured));
+  };
+  if (!saved) fieldsOn();
+  $("#repl", d) && ($("#repl", d).onclick = () => { $("#burl", d).value = ""; $("#bkey", d).value = ""; fieldsOn(); sync(); });
+  $("#burl", d).oninput = $("#bkey", d).oninput = sync;
+  sync();
+  $("#dx", d).onclick = async () => { await cancelTest(); d.remove(); };
+  const showResult = (res) => {
+    stopPoll();
+    testId = null;
+    const btn = $("#test", d);
+    if (btn) { btn.textContent = "Test"; btn.disabled = false; }
+    sync();
+    const box = $("#tbox", d);
+    if (!box) return;
+    if (res.state === "ok") {
+      const secs = res.answered_in_s == null ? "" : oneDecimal(res.answered_in_s) + " s";
+      box.innerHTML = `<div class="banner ok"><span class="pill ok"><i></i>Answered in ${esc(secs)}</span></div>`;
+      return;
+    }
+    if (res.state === "cancelled") { box.innerHTML = `<p class="note">Cancelled.</p>`; return; }
+    const err = res.error || "No answer after 2 min";
+    const hint = !res.error || res.error === "No answer after 2 min";
+    box.innerHTML = `<div class="banner bad"><span class="pill bad"><i></i>${esc(err)}</span></div>` +
+      (hint ? `<p class="note">Check both values are from this bot's routine panel, then test again.</p>` : "");
+  };
+  const startPoll = (id) => {
+    testId = id;
+    let sec = 0, busy = false;
+    const paint = () => {
+      const clock = $("#tclock", d), bar = $("#tfill", d);
+      if (clock) clock.textContent = mss(sec);
+      if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%";
+    };
+    $("#tbox", d).innerHTML = `<div class="twait"><div class="inline"><span class="spin"></span><b>Waiting for ${esc(bot.name)}… <span id="tclock">0:00</span></b></div>
+      <div class="tbar"><i id="tfill"></i></div>
+      <p class="note">Bots can take a while to answer. Gives up after 2 min.</p>
+      <a href="#" id="tcancel">Cancel</a></div>`;
+    $("#tcancel", d).onclick = async ev => { ev.preventDefault(); await cancelTest(); showResult({state: "cancelled"}); };
+    testTimer = setInterval(async () => {
+      if (!$("#tclock", d)) { stopPoll(); return; }
+      sec += 1;
+      paint();
+      if (busy) return;
+      busy = true;
+      try {
+        const r = await api("GET", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`);
+        if (!$("#tclock", d)) return;
+        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer after 2 min"}); return; }
+        if (typeof r.data.elapsed_s === "number") { sec = Math.max(sec, r.data.elapsed_s); paint(); }
+        if (r.data.state === "waiting" && sec >= 125) { showResult({state: "failed", error: "No answer after 2 min"}); return; }
+        if (r.data.state !== "waiting") showResult(r.data);
+      } finally { busy = false; }
+    }, 1000);
+    S.timers.push(testTimer);
+  };
+  $("#test", d).onclick = async () => {
+    if (testId) return;
+    const url = $("#fields", d).hidden ? "" : $("#burl", d).value.trim();
+    const key = $("#fields", d).hidden ? "" : $("#bkey", d).value;
+    const body = {};
+    if (url || key) { body.url = url; body.key = key; }
+    const btn = $("#test", d);
+    btn.disabled = true;
+    btn.textContent = "Testing…";
+    const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/test`, body);
+    if (!r.ok || !r.data.test_id) {
+      btn.textContent = "Test";
+      sync();
+      showResult({state: "failed", error: (r.data && r.data.error) || "Couldn't start the test."});
+      return;
+    }
+    startPoll(r.data.test_id);
+  };
+  $("#save", d).onclick = () => {
+    const url = $("#burl", d).value.trim();
+    const key = $("#bkey", d).value;
+    if (!(url && key)) return;
+    askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", async pw => {
+      $("#bkey", d).value = "";
+      sync();
+      const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, {url, key, password: pw});
+      if (r.ok) {
+        bot.webhook = {configured: true, last4: r.data.last4, saved_at: Math.floor(Date.now() / 1000)};
+        $("#burl", d).value = "";
+        const dots = $(".dots", d);
+        if (dots) dots.textContent = "•••• " + (r.data.last4 || "");
+        $("#saved", d).hidden = false;
+        $("#fields", d).hidden = true;
+        if (!$("#delhook", d)) {
+          const holder = document.createElement("div");
+          holder.className = "field";
+          holder.innerHTML = `<button class="btn dg" id="delhook" type="button">Remove…</button>`;
+          $("#tbox", d).insertAdjacentElement("afterend", holder);
+          $("#delhook", d).onclick = removeHook;
+        }
+        toast("Saved.");
+        refreshBots(el);
+      }
+      return r;
+    });
+  };
+  const removeHook = () => askPassword(`Remove ${bot.name}'s bot?`, `This deletes the webhook address and key. ${bot.name} stays on the station.`, "Remove", async pw => {
+    const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, {password: pw});
+    if (r.ok) {
+      bot.webhook = {configured: false, last4: null, saved_at: null};
+      toast("Webhook removed.");
+      d.remove();
+      refreshBots(el);
+    }
+    return r;
+  });
+  if ($("#delhook", d)) $("#delhook", d).onclick = removeHook;
+  $("#ren", d).onclick = () => {
+    const box = document.createElement("div");
+    box.className = "sheet";
+    box.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(400px,100%)">
+      <h2>Rename</h2><p class="sub">${esc(bot.name)}</p>
+      <div class="field"><label for="rname">Name</label><input class="inp" id="rname" maxlength="40" required value="${esc(bot.name)}"></div>
+      <div class="field"><label for="rpw">Admin password</label><input class="inp" type="password" id="rpw" autocomplete="current-password" required></div>
+      <div id="rpe"></div>
+      <div class="field inline"><button class="btn p" id="rgo">Rename</button><button class="btn g" type="button" id="rno">Cancel</button></div></form>`;
+    document.body.appendChild(box);
+    $("#rno", box).onclick = () => box.remove();
+    box.querySelector("form").onsubmit = async ev => {
+      ev.preventDefault();
+      const name = $("#rname", box).value.trim();
+      const pw = $("#rpw", box).value;
+      $("#rpw", box).value = "";
+      const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, {name, password: pw});
+      if (!r.ok) return errBox($("#rpe", box), r.data.error);
+      box.remove();
+      toast("Renamed.");
+      d.remove();
+      refreshBots(el);
+    };
+  };
+  $("#delbot", d).onclick = () => askPassword(`Remove ${bot.name}?`, "This removes the bot from the station. A registry teammate is hidden. An added bot is deleted.", "Remove bot", async pw => {
+    const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}`, {password: pw});
+    if (r.ok) { toast("Removed."); d.remove(); refreshBots(el); }
+    return r;
+  });
+}
+function addBot(voices, el) {
+  closeFloats();
+  const d = document.createElement("div");
+  d.className = "sheet";
+  const opts = (voices || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(440px,100%)">
+    <h2>Add bot</h2><p class="sub">A new teammate. You'll get a voice token to paste into its routine, once.</p>
+    <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
+    <div class="field"><label for="aslug">Slug</label><input class="inp mono" id="aslug" maxlength="24" pattern="[a-z][a-z0-9-]{1,23}" required autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label for="avoice">Voice</label><select class="sel" id="avoice" required>${opts || `<option value="">No voices yet</option>`}</select></div>
+    <div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>
+    <div id="ape"></div>
+    <div class="field inline"><button class="btn p" id="ago">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
+  document.body.appendChild(d);
+  let slugEdited = false;
+  $("#aname", d).oninput = () => { if (!slugEdited) $("#aslug", d).value = slugify($("#aname", d).value); };
+  $("#aslug", d).oninput = () => { slugEdited = true; };
+  $("#ano", d).onclick = () => d.remove();
+  d.querySelector("form").onsubmit = async ev => {
+    ev.preventDefault();
+    const name = $("#aname", d).value.trim();
+    const slug = $("#aslug", d).value.trim();
+    const voice = $("#avoice", d).value;
+    const pw = $("#apw", d).value;
+    $("#apw", d).value = "";
+    busyBtn($("#ago", d), true);
+    const r = await api("POST", "/api/bots", {name, slug, voice, password: pw});
+    if (!r.ok) { busyBtn($("#ago", d), false, "Add bot"); return errBox($("#ape", d), r.data.error); }
+    refreshBots(el);
+    const token = r.data.voice_token || "";
+    d.querySelector(".card").innerHTML = `<h2>Voice token</h2>
+      <p class="sub">Give this to ${esc(name)}'s routine as its voice token. It won't be shown again.</p>
+      <div class="tokenbox" id="tok">${esc(token)}</div>
+      <div class="field inline"><button class="btn sm" id="copy" type="button">Copy</button><button class="btn g sm" id="done" type="button">Close</button></div>`;
+    $("#copy", d).onclick = async () => {
+      const t = $("#tok", d).textContent;
+      try { await navigator.clipboard.writeText(t); toast("Copied."); }
+      catch (e) { toast("Select the token and copy it.", "warn"); }
+    };
+    $("#done", d).onclick = () => { d.remove(); refreshBots(el); };
+  };
+}
+async function pageBots(el) {
+  const [r, g] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/guest")]);
+  const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
+  const guest = !!(g.data || {}).guest;
+  const bots = data.bots || [];
+  const n = s => bots.filter(b => (b.status || {}).state === s).length;
+  el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
+    <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
+      <button class="btn p sm right" id="add">Add bot</button></div>
+      <div id="blist"></div></div>
+    <div class="card"><div class="row"><button class="tog${guest ? " on" : ""}" role="switch" aria-checked="${guest}" id="guest" aria-label="Guest mode"></button>
+      <div><div class="lbl">Guest mode</div><div class="help">On while guests are over.</div></div></div></div>`;
+  paintBots(el, bots);
+  $("#add", el).onclick = () => addBot(data.voices || [], el);
   $("#guest", el).onclick = async () => {
     const on = !$("#guest", el).classList.contains("on");
-    const x = await api("PUT", "/api/t1", {guest: on});
-    if (x.ok) { $("#guest", el).classList.toggle("on", on); $("#guest", el).setAttribute("aria-checked", on); toast(on ? "Guest mode on." : "Guest mode off."); }
-    else toast(x.data.error, "bad");
+    const x = await api("PUT", "/api/guest", {guest: on});
+    if (x.ok) { $("#guest", el).classList.toggle("on", on); $("#guest", el).setAttribute("aria-checked", String(on)); toast(on ? "Guest mode on." : "Guest mode off."); }
+    else toast((x.data && x.data.error) || "Couldn't change guest mode.", "bad");
   };
 }
 async function pageSystem(el) {
@@ -585,7 +898,7 @@ async function pageSystem(el) {
   };
 }
 function pageMore(el) {
-  el.innerHTML = `<div class="card">${[["voice", "xAI key and relay"], ["personas", "Personas"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]].map(([k, t]) =>
+  el.innerHTML = `<div class="card">${[["voice", "xAI key and relay"], ["bots", "Bots"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]].map(([k, t]) =>
     `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${t}<span class="right help">›</span></a>`).join("")}
     <div class="row"><button class="btn g" id="again">Run setup again</button></div><div class="row"><button class="btn g" id="out2">Sign out</button></div></div>`;
   $("#again", el).onclick = async () => { await api("POST", "/api/wizard", {step: 2, done: false}); boot(); };

@@ -7,8 +7,8 @@ Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sig
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. Speaker names stay on this Pi.
 Stdlib only.
 """
-import base64, hashlib, hmac, http.cookies, ipaddress, json, os, re, secrets, shutil, subprocess, threading, time
-import urllib.parse, urllib.request
+import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl
+import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 E = os.environ.get
@@ -30,7 +30,7 @@ REPO = "bwilliam79/grok-station"
 CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # no 0/O, 1/I
 MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
-SESSION_TTL, SETUP_TTL = 12 * 3600, 900
+SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
 JARVIS_LOCKED = "Jarvis is the station's default wake word and can't be turned off"
 UNITS = ("grok-station", "grok-station-wake", "grok-station-admin")
@@ -193,18 +193,37 @@ class Auth:
 
     def new_session(self):
         t = secrets.token_urlsafe(32)
-        self.sessions[hashlib.sha256(t.encode()).hexdigest()] = now() + SESSION_TTL
+        t0 = now()
+        self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0}
         return t
 
     def valid(self, token):
         if not token or self.setup_required():
             return False
         k = hashlib.sha256(token.encode()).hexdigest()
-        exp = self.sessions.get(k)
-        if not exp or exp < now():
+        rec = self.sessions.get(k)
+        t = now()
+        if not isinstance(rec, dict) or rec.get("exp", 0) < t or t - rec.get("seen", 0) > IDLE_TTL:
             self.sessions.pop(k, None)
             return False
+        rec["seen"] = t  # idle window slides on each authenticated request
         return True
+
+    def reauth(self, pw):
+        """Admin password again for a bot change. Wrong guesses share the login lockout.
+
+        Returns None, "wrong", or "locked". A wrong password is "wrong" even on the try that
+        trips the lock; the next try is "locked".
+        """
+        with LOCK:
+            if self.locked():
+                return "locked"
+            rec = self.rec
+            if not rec or not check_password(str(pw or ""), rec):
+                self.note_fail()
+                return "wrong"
+            self.fails.clear()
+            return None
 
     def logout(self, token):
         if token:
@@ -359,8 +378,313 @@ def lan_ok(ip):
 
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,23}$")  # persona slug; "grok" is reserved and rejected separately
+WEBHOOK_HOST = "api2.cursor.sh"
+RELAY_ENV = E("ADMIN_RELAY_ENV", "/etc/grok-station/admin-relay.env")
+RELAY_UNCONFIGURED = "The station can't reach the relay's admin API yet"
+RELAY_DOWN = "Can't reach the voice service right now."
+RELAY_ACTOR = "admin"
+BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/admin.css": ("admin.css", "text/css; charset=utf-8")}
+
+
+def slug_ok(slug):
+    return isinstance(slug, str) and SLUG_RE.fullmatch(slug) is not None and slug != "grok"
+
+
+def webhook_url_ok(url):
+    """https only, host exactly api2.cursor.sh, no userinfo, port 443 or omitted, path non-empty, <= 512."""
+    if not isinstance(url, str) or not 12 <= len(url) <= 512:
+        return False
+    if any(c in url for c in " \t\r\n\\"):
+        return False
+    u = urllib.parse.urlsplit(url)
+    if u.scheme != "https" or u.username or u.password or u.fragment:
+        return False
+    hostport = u.netloc
+    if not hostport or "@" in hostport or hostport.startswith("["):
+        return False
+    if hostport.count(":") > 1:
+        return False
+    host, port = hostport, None
+    if ":" in hostport:
+        host, port = hostport.rsplit(":", 1)
+        if port != "443":
+            return False
+    if host.lower().rstrip(".") != WEBHOOK_HOST or u.hostname != WEBHOOK_HOST:
+        return False
+    return bool(u.path)
+
+
+def webhook_key_ok(key):
+    return isinstance(key, str) and re.fullmatch(r"[\x21-\x7e]{8,400}", key) is not None
+
+
+def voice_token_ok(tok):
+    return isinstance(tok, str) and re.fullmatch(r"vt_[\x21-\x7e]{4,180}", tok) is not None
+
+
+def clean_name(v):
+    if not isinstance(v, str):
+        return None
+    name = " ".join(v.split())
+    if not name or len(name) > 40 or any(ord(c) < 32 for c in name):
+        return None
+    return name
+
+
+def voice_ok(v):
+    return isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", v) is not None
+
+
+def _epoch(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    n = int(v)
+    if n < 0 or n > 4_000_000_000:
+        return None
+    return n
+
+
+def _num(v, limit=3600):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    x = float(v)
+    if x < 0 or x > limit:
+        return None
+    return round(x, 3)
+
+
+def public_error(msg, secrets=()):
+    """A short relay error safe to show. Anything with a URL, a key, or odd characters becomes generic."""
+    generic = "The voice service refused that."
+    if not isinstance(msg, str):
+        return generic
+    msg = " ".join(msg.split())
+    if not msg or len(msg) > 200 or not re.fullmatch(r"[\x20-\x7e]+", msg):
+        return generic
+    low = msg.lower()
+    if "http:" in low or "https:" in low or "bearer " in low:
+        return generic
+    for s in secrets:
+        if isinstance(s, str) and len(s) >= 8 and s.lower() in low:
+            return generic
+    return msg
+
+
+def scrub_note(msg):
+    """last_error shown on the bot row: short, no URL."""
+    if not isinstance(msg, str):
+        return None
+    msg = " ".join(msg.split())[:180]
+    if not msg or not re.fullmatch(r"[\x20-\x7e]+", msg):
+        return None
+    low = msg.lower()
+    if "http:" in low or "https:" in low or "bearer " in low:
+        return None
+    return msg
+
+
+def audit(persona, action, last4=None):
+    """One journal line per change. last4 only; the key itself is never written."""
+    tail = last4 if isinstance(last4, str) and re.fullmatch(r"[A-Za-z0-9]{4}", last4) else "-"
+    print(f"audit persona={persona} action={action} last4={tail} time={int(now())}", flush=True)
+
+
+def _private_file(p):
+    """True when the file exists and is not group- or world-readable."""
+    try:
+        st = os.stat(p)
+    except OSError:
+        return False
+    return not (st.st_mode & 0o077)
+
+
+def _env_file(p):
+    vals = {}
+    try:
+        with open(p) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        vals[k.strip()] = v.strip().strip('"').strip("'")
+    return vals
+
+
+def relay_settings():
+    """Admin relay settings from the env file, or None when the station isn't set up to call it.
+
+    Refuses a non-https URL, a world/group-readable env file, key, or token, and a pin that isn't
+    64 hex chars. The token stays in the returned dict for this call only and is never logged.
+    """
+    if not _private_file(RELAY_ENV):
+        return None
+    vals = _env_file(RELAY_ENV)
+    if not vals:
+        return None
+    url = vals.get("ADMIN_RELAY_URL", "")
+    u = urllib.parse.urlsplit(url)
+    if u.scheme != "https" or not u.hostname or u.username or u.password:
+        return None
+    ca, cert, key, tokf = (vals.get(k, "") for k in
+                           ("ADMIN_RELAY_CA", "ADMIN_RELAY_CERT", "ADMIN_RELAY_KEY", "ADMIN_RELAY_TOKEN_FILE"))
+    if not ca or not cert or not key or not tokf:
+        return None
+    if not os.path.isfile(ca) or not os.path.isfile(cert) or not _private_file(key) or not _private_file(tokf):
+        return None
+    try:
+        token = open(tokf).read().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return None
+    if not token or len(token) > 400:
+        return None
+    pin = vals.get("ADMIN_RELAY_PIN", "").strip().lower()
+    if pin and not re.fullmatch(r"[0-9a-f]{64}", pin):
+        return None
+    origin = f"https://{u.hostname}:{u.port or 443}"
+    return {"origin": origin, "ca": ca, "cert": cert, "key": key, "token": token, "pin": pin}
+
+
+def relay_ssl_context(cfg):
+    """Verify the relay with only the pinned CA file (not the system store) and present the client cert."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.load_verify_locations(cafile=cfg["ca"])  # fresh context: this CA only, no load_default_certs
+    ctx.load_cert_chain(certfile=cfg["cert"], keyfile=cfg["key"])
+    ctx.check_hostname = False  # the optional SHA-256 pin below is the name check
+    return ctx
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+def _pinned_connection(pin):
+    class Conn(http.client.HTTPSConnection):
+        def connect(self):
+            super().connect()
+            if not pin:
+                return
+            der = self.sock.getpeercert(binary_form=True) or b""
+            got = hashlib.sha256(der).hexdigest()
+            if not hmac.compare_digest(got, pin):
+                try:
+                    self.sock.close()
+                finally:
+                    raise ssl.SSLCertVerificationError("pin mismatch")
+    return Conn
+
+
+def relay_call(method, path, payload=None, timeout=10):
+    """Call the relay admin API. None means the station has no relay admin config.
+
+    A failed call is (503, {error}). The exception text is not logged (it can contain the URL).
+    """
+    cfg = relay_settings()
+    if not cfg:
+        return None
+    ctx = relay_ssl_context(cfg)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),  # never send the admin token via a proxy
+        _RelayHTTPS(ctx, _pinned_connection(cfg["pin"])),
+        _NoRedirect(),
+    )
+    data = None if payload is None else json.dumps(payload).encode()
+    headers = {"Authorization": "Bearer " + cfg["token"], "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(cfg["origin"] + path, data=data, headers=headers, method=method)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read(1 << 20)
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            raw = e.read(1 << 20)
+        except Exception:
+            raw = b""
+    except Exception as e:
+        print(f"relay admin failed: {type(e).__name__}", flush=True)
+        return 503, {"error": RELAY_DOWN}
+    try:
+        parsed = json.loads(raw.decode() or "{}")
+    except ValueError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return status, parsed
+
+
+class _RelayHTTPS(urllib.request.HTTPSHandler):
+    def __init__(self, context, conn_cls):
+        super().__init__(context=context)
+        self._conn_cls = conn_cls
+
+    def https_open(self, req):
+        return self.do_open(self._conn_cls, req, context=self._context)
+
+
+def safe_bot(b):
+    """The fields the browser may see. Anything else from the relay (tokens, urls, keys) is dropped."""
+    if not isinstance(b, dict) or not slug_ok(b.get("slug")):
+        return None
+    wh = b.get("webhook") if isinstance(b.get("webhook"), dict) else {}
+    st = b.get("status") if isinstance(b.get("status"), dict) else {}
+    last4 = wh.get("last4")
+    if not (isinstance(last4, str) and re.fullmatch(r"[A-Za-z0-9]{4}", last4)):
+        last4 = None
+    state = st.get("state")
+    if state not in ("connected", "error", "not_configured"):
+        state = "not_configured"
+    saved = _epoch(wh.get("saved_at"))
+    return {
+        "slug": b["slug"],
+        "name": clean_name(b.get("name")) or b["slug"],
+        "voice": b.get("voice") if voice_ok(b.get("voice")) else None,
+        "source": b.get("source") if b.get("source") in ("registry", "added") else "registry",
+        "webhook": {"configured": bool(wh.get("configured")), "last4": last4, "saved_at": saved},
+        "status": {
+            "state": state,
+            "last_answered_at": _epoch(st.get("last_answered_at")),
+            "last_error": scrub_note(st.get("last_error")),
+            "last_error_at": _epoch(st.get("last_error_at")),
+        },
+    }
+
+
+def safe_voices(vs):
+    out = []
+    if isinstance(vs, list):
+        for v in vs:
+            if voice_ok(v) and v not in out:
+                out.append(v)
+    return out[:50]
+
+
+def local_bots():
+    """Personas cached on the station, each shown as not configured (used when the relay admin API isn't set)."""
+    doc = read_json(PERSONAS, {})
+    items = doc.get("personas", doc) if isinstance(doc, dict) else doc
+    out = []
+    for x in items if isinstance(items, list) else []:
+        if isinstance(x, dict) and slug_ok(x.get("slug")):
+            out.append({
+                "slug": x["slug"],
+                "name": clean_name(x.get("name")) or x["slug"],
+                "voice": x.get("voice") if voice_ok(x.get("voice")) else None,
+                "source": "registry",
+                "webhook": {"configured": False, "last4": None, "saved_at": None},
+                "status": {"state": "not_configured", "last_answered_at": None, "last_error": None, "last_error_at": None},
+            })
+    return out
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -438,6 +762,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    def do_PATCH(self):
+        self.route("PATCH")
+
     def route(self, method):
         u = urllib.parse.urlsplit(self.path)
         p, q = u.path, dict(urllib.parse.parse_qsl(u.query))
@@ -448,7 +775,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static(p)
             if not p.startswith("/api/"):
                 return self.send(404, {"error": "not found"})
-            j = self.body() if method in ("POST", "PUT") else {}
+            j = self.body() if method in ("POST", "PUT", "PATCH", "DELETE") else {}
         except ValueError:
             return self.send(400, {"error": "bad request"})
         open_routes = {("GET", "/api/state"), ("POST", "/api/setup/code"), ("POST", "/api/setup/password"),
@@ -781,16 +1108,275 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"personas": out, "editable": False,
                                "where": "The persona registry lives on the voice service computer; this page shows it read-only."})
 
-    # T1 voice notes: guest mode switch (read by the wake listener, sent to the relay with each session)
-    def api_get_t1(self, p, q, j):
+    # Guest mode. The wake listener reads t1.json (same file either way); the page calls /api/guest.
+    def _guest_doc(self):
         d = read_json(path("t1.json"), {})
-        return self.send(200, {"guest": d.get("guest") is True, "changed_at": d.get("changed_at")})
+        return {"guest": d.get("guest") is True, "changed_at": d.get("changed_at")}
 
-    def api_put_t1(self, p, q, j):
+    def _guest_put(self, j):
         if not isinstance(j.get("guest"), bool):
             return self.send(400, {"error": "bad value"})
         write_json(path("t1.json"), {"guest": j["guest"], "changed_at": int(now())}, 0o640)
         return self.send(200, {"ok": True, "guest": j["guest"]})
+
+    def api_get_guest(self, p, q, j):
+        return self.send(200, self._guest_doc())
+
+    def api_put_guest(self, p, q, j):
+        return self._guest_put(j)
+
+    def api_get_t1(self, p, q, j):
+        return self.api_get_guest(p, q, j)
+
+    def api_put_t1(self, p, q, j):
+        return self.api_put_guest(p, q, j)
+
+    def api_get_portrait(self, p, q, j):
+        parts = p.split("/")
+        if len(parts) != 4 or not slug_ok(parts[3]):
+            return self.send(404, {"error": "not found"})
+        base = os.path.realpath(os.path.dirname(PERSONAS))
+        for ext, ctype in (("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg")):
+            f = os.path.realpath(os.path.join(base, parts[3] + "." + ext))
+            if not (f.startswith(base + os.sep) and os.path.isfile(f)):
+                continue
+            try:
+                if os.path.getsize(f) > 2_000_000:
+                    continue
+                with open(f, "rb") as fh:
+                    return self.send(200, body=fh.read(), ctype=ctype)
+            except OSError:
+                return self.send(404, {"error": "not found"})
+        return self.send(404, {"error": "not found"})
+
+    # -- bots (proxied to the relay; webhook keys are not stored here)
+    def need_password(self, j):
+        why = AUTH.reauth(j.get("password") if isinstance(j, dict) else None)
+        if why == "locked":
+            self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
+            return False
+        if why:
+            self.send(403, {"error": "Password is wrong."})
+            return False
+        return True
+
+    def relay_fail(self, status, data, secrets=()):
+        if not status or status >= 500:
+            return self.send(503, {"error": RELAY_DOWN})
+        code = status if status in (400, 401, 403, 404, 409, 429) else 502
+        return self.send(code, {"error": self.shown_error(data, secrets)})
+
+    def shown_error(self, data, secrets=()):
+        """Relay error text safe for the browser: no key, URL, admin token, or voice token."""
+        err = data.get("error") if isinstance(data, dict) else None
+        extra = list(secrets)
+        cfg = relay_settings()
+        if cfg:
+            extra.append(cfg["token"])
+        if isinstance(data, dict):
+            for k in ("key", "url", "token", "password", "voice_token"):
+                v = data.get(k)
+                if isinstance(v, str):
+                    extra.append(v)
+        return public_error(err, extra)
+
+    def bots_unconfigured(self):
+        return self.send(503, {"error": RELAY_UNCONFIGURED})
+
+    def api_get_bots(self, p, q, j):
+        m = BOT_PATH.fullmatch(p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        slug, kind, tid = m.groups()
+        if slug is None and kind is None:
+            return self.bots_list()
+        if slug and kind == "test" and tid and slug_ok(slug):
+            return self.bots_test_get(slug, tid)
+        return self.send(404, {"error": "not found"})
+
+    def api_post_bots(self, p, q, j):
+        m = BOT_PATH.fullmatch(p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        slug, kind, tid = m.groups()
+        if slug is None and kind is None:
+            return self.bots_add(j)
+        if slug and kind == "test" and not tid and slug_ok(slug):
+            return self.bots_test_start(slug, j)
+        return self.send(404, {"error": "not found"})
+
+    def api_patch_bots(self, p, q, j):
+        m = BOT_PATH.fullmatch(p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        slug, kind, tid = m.groups()
+        if slug and kind is None and not tid and slug_ok(slug):
+            return self.bots_rename(slug, j)
+        return self.send(404, {"error": "not found"})
+
+    def api_put_bots(self, p, q, j):
+        m = BOT_PATH.fullmatch(p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        slug, kind, tid = m.groups()
+        if slug and kind == "webhook" and not tid and slug_ok(slug):
+            return self.bots_webhook_put(slug, j)
+        return self.send(404, {"error": "not found"})
+
+    def api_delete_bots(self, p, q, j):
+        m = BOT_PATH.fullmatch(p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        slug, kind, tid = m.groups()
+        if not slug or not slug_ok(slug):
+            return self.send(404, {"error": "not found"})
+        if kind is None and not tid:
+            return self.bots_remove(slug, j)
+        if kind == "webhook" and not tid:
+            return self.bots_webhook_delete(slug, j)
+        if kind == "test" and tid:
+            return self.bots_test_delete(slug, tid)
+        return self.send(404, {"error": "not found"})
+
+    def bots_list(self):
+        got = relay_call("GET", "/admin/bots")
+        if got is None:
+            return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED})
+        status, data = got
+        if status != 200:
+            return self.relay_fail(status, data)
+        bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
+        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices"))})
+
+    def bots_add(self, j):
+        slug, name, voice = j.get("slug"), clean_name(j.get("name")), j.get("voice")
+        if not slug_ok(slug):
+            return self.send(400, {"error": "Use a short lowercase name. \"grok\" is reserved."})
+        if not name:
+            return self.send(400, {"error": "Type a name."})
+        if not voice_ok(voice):
+            return self.send(400, {"error": "Pick a voice."})
+        if not self.need_password(j):
+            return
+        got = relay_call("POST", "/admin/bots", {"slug": slug, "name": name, "voice": voice, "actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        tok = data.get("voice_token")
+        if status not in (200, 201) or data.get("ok") is False or not voice_token_ok(tok):
+            if status in (200, 201):
+                return self.send(502, {"error": "The voice service didn't return a voice token."})
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit(slug, "add")
+        return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
+
+    def bots_rename(self, slug, j):
+        name = clean_name(j.get("name"))
+        if not name:
+            return self.send(400, {"error": "Type a name."})
+        if not self.need_password(j):
+            return
+        got = relay_call("PATCH", "/admin/bots/" + slug, {"name": name, "actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit(slug, "rename")
+        return self.send(200, {"ok": True})
+
+    def bots_remove(self, slug, j):
+        if not self.need_password(j):
+            return
+        got = relay_call("DELETE", "/admin/bots/" + slug, {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit(slug, "remove")
+        return self.send(200, {"ok": True})
+
+    def bots_webhook_put(self, slug, j):
+        url, key = j.get("url"), j.get("key")
+        if not webhook_url_ok(url):
+            return self.send(400, {"error": "That webhook address isn't allowed."})
+        if not webhook_key_ok(key):
+            return self.send(400, {"error": "That webhook key isn't valid."})
+        if not self.need_password(j):
+            return
+        got = relay_call("PUT", "/admin/bots/" + slug + "/webhook", {"url": url, "key": key, "actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (key, url, j.get("password")))
+        last4 = key[-4:]
+        audit(slug, "webhook-save", last4)
+        return self.send(200, {"ok": True, "last4": last4})
+
+    def bots_webhook_delete(self, slug, j):
+        if not self.need_password(j):
+            return
+        got = relay_call("DELETE", "/admin/bots/" + slug + "/webhook", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit(slug, "webhook-remove")
+        return self.send(200, {"ok": True})
+
+    def bots_test_start(self, slug, j):
+        body = {}
+        url, key = j.get("url"), j.get("key")
+        if url not in (None, ""):
+            if not webhook_url_ok(url):
+                return self.send(400, {"error": "That webhook address isn't allowed."})
+            body["url"] = url
+        if key not in (None, ""):
+            if not webhook_key_ok(key):
+                return self.send(400, {"error": "That webhook key isn't valid."})
+            body["key"] = key
+        got = relay_call("POST", "/admin/bots/" + slug + "/test", body)
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        tid = data.get("test_id")
+        if status != 202 or not (isinstance(tid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", tid)):
+            if status == 202:
+                return self.send(502, {"error": "The voice service didn't start the test."})
+            return self.relay_fail(status, data, (key if isinstance(key, str) else "", url if isinstance(url, str) else "",
+                                       j.get("password") if isinstance(j.get("password"), str) else ""))
+        return self.send(202, {"test_id": tid})
+
+    def bots_test_get(self, slug, tid):
+        got = relay_call("GET", "/admin/bots/" + slug + "/test/" + tid)
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200:
+            return self.relay_fail(status, data)
+        state = data.get("state")
+        if state not in ("waiting", "ok", "failed", "cancelled"):
+            state = "failed"
+        err = data.get("error")
+        elapsed = _num(data.get("elapsed_s"))
+        return self.send(200, {
+            "state": state,
+            "elapsed_s": 0.0 if elapsed is None else elapsed,
+            "answered_in_s": _num(data.get("answered_in_s")),
+            "error": None if err in (None, "") else self.shown_error(data),
+        })
+
+    def bots_test_delete(self, slug, tid):
+        got = relay_call("DELETE", "/admin/bots/" + slug + "/test/" + tid, {})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data)
+        return self.send(200, {"ok": True})
 
     # system
     def api_get_system(self, p, q, j):
