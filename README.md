@@ -658,6 +658,20 @@ The relay updates first. When it still runs with the installed station, it soaks
 
 The admin page shows this at `GET /api/updates`: installed station and relay versions, the available release, a can't-check warning, the plan, whether a station-only update is allowed, the automatic-check toggle, and recent update audit lines. `POST /api/updates/check` and `PUT /api/updates/autocheck` (`{"on": true}` or false) need the admin password or an open step-up window. Automatic checking stays off until it is turned on. `POST /api/updates/apply` takes `{"version":"vX.Y.Z"}` and sends only that object to the relay's `POST /admin/update` over mTLS. Only after the relay accepts it does the helper stage the station update (`station-update` and the same version). If the relay does not update, the station is left as it is. The old commit-hash install at `/api/system/update` is gone.
 
+## Relay install
+
+Download `relay/relay-install.sh` (macOS or Linux) or `relay/relay-install.ps1` (Windows) from GitHub releases over HTTPS. Do not fetch the installer from the station. `--dry-run` (or `-DryRun`) prints the plan and changes nothing. The Windows script is a normal script: do not relax the host script policy to run it.
+
+The installer checks the release manifest with `relay/release.py` and refuses an expired one. It creates the `grok-relay` user, adds that user to the `docker` group, and pulls images by the digests in the manifest. The xAI key is read with a hidden prompt (`read -s` on macOS/Linux, `Read-Host -AsSecureString` on Windows) and stored mode 600. It is never passed as an argument, an environment variable, or a history line. The installer then asks for the station address and the pairing code, reads the station certificate over TLS without verifying it (nothing is sent on that connection), pins that certificate, and only then sends the pairing request. It prints both fingerprints. A service is installed, plus an updater timer (every minute, `grok-relay update-run`) and a daily check. The daily check stays off until autocheck is turned on. A `grok-relay` shim is installed at `/usr/local/bin/grok-relay`.
+
+`grok-relay check-update` does not fetch while autocheck is off. `grok-relay update-run` reads the queued version, fetches the manifest again, and applies only the digests from that manifest.
+
+## Releases
+
+Releases are unsigned for now. The manifest is fetched over HTTPS from GitHub. A redirect is followed only to `github.com` or `objects.githubusercontent.com`, only over HTTPS, at most 5 hops, and only with TLS certificate and hostname checks left on. Relay images are pinned by digest from the manifest. The host updater (not the container) runs `docker compose` with those digests, waits for `/healthz` to return 200 within 60 seconds, and rolls back if that gate fails.
+
+`tools/release/make-manifest.py` writes `manifest.json` from `--version`, `--floor`, a station tarball (sha256 of the file), `--image name=sha256:digest` (repeatable), `--station-min-relay`, and `--relay-min-station`. `issued_at` is the current UTC time and `expires` is 30 days later. The script checks the document with `relay/release.py`. It does not sign anything.
+
 ## pii-guard (personal info check)
 
 This repo must not contain personal info: names, emails, home addresses or locations, LAN addresses, MACs or personal hostnames. `tools/pii-guard` enforces that. It reads extended regexes, one per line, from a local file that is **never committed**, because the list is itself personal: `~/.config/pii-guard/patterns` (mode 600), or the path in `$PII_GUARD_PATTERNS`. When it finds a match, it reports the file and line but never the matched text.

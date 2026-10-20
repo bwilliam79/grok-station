@@ -30,6 +30,8 @@ https://:8443 {
 	handle @relay {
 		reverse_proxy relay:8790 {
 			header_up X-Client-Cert-Fp {http.request.tls.client.fingerprint}
+			# The station control channel sets X-Client-Cert. A bot on this site must not.
+			header_up -X-Client-Cert
 		}
 	}
 	handle {
@@ -49,6 +51,34 @@ https://:8444 {
 	@avatar path /voice/avatar
 	handle @avatar {
 		reverse_proxy relay:8790
+	}
+	handle {
+		respond 404
+	}
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Station control channel (LAN only, same as :8443). The client is the station, not a bot.
+# client_auth require_and_verify against the pinned station CA mounted at /station-ca/ca.crt
+# (trusted_ca_cert_file). Only /admin/* is forwarded. The relay checks the forwarded leaf again
+# (chain, EKU clientAuth, station SAN, revocation file). Bots keep using :8443 and :8444.
+https://:8445 {
+	tls /pki/server.crt /pki/server.key {
+		protocols tls1.3
+		client_auth {
+			mode require_and_verify
+			trusted_ca_cert_file /station-ca/ca.crt
+		}
+	}
+	@control path /admin/* /admin/*/* /admin/*/*/* /admin/*/*/*/*
+	handle @control {
+		reverse_proxy relay:8790 {
+			header_up X-Client-Cert {http.request.tls.client.certificate_pem}
+			header_up X-Client-Cert-Fp {http.request.tls.client.fingerprint}
+		}
 	}
 	handle {
 		respond 404

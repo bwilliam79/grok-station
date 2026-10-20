@@ -63,6 +63,8 @@ services:
       - ${GROK_STATION_AUDIT:-./voice/audit}:/voice/audit
       # T1 confirm events (read by tile-ingest, which alone holds the receipt key)
       - ${GROK_STATION_VOICE:-./no-voice}/confirms:/voice/confirms
+      # Pinned station CA (ca.crt) and revocation.json. Read by GET /admin/status and POST /admin/update.
+      - ${GROK_STATION_STATION_CA:-./no-station-ca}:/station-ca:ro
     ports:
       - "${GROK_STATION_RELAY_BIND:-127.0.0.1}:8790:8790"
     read_only: true
@@ -90,9 +92,13 @@ services:
       - "${GROK_STATION_TLS_PORT:-8791}:8443"
       # POST /voice/avatar only (Caddy :8444, TLS, no client cert). Bots upload portraits here.
       - "${GROK_STATION_AVATAR_PORT:-8792}:8444"
+      # Station control channel (Caddy :8445, mTLS, pinned station CA). Keep this on the LAN.
+      - "${GROK_STATION_CONTROL_PORT:-8793}:8445"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${GROK_STATION_PKI:?set GROK_STATION_PKI}:/pki:ro
+      # Pinned station CA and its revocation JSON. The relay also mounts this path.
+      - ${GROK_STATION_STATION_CA:-./no-station-ca}:/station-ca:ro
     read_only: true
     tmpfs: ["/tmp:uid=10002,gid=10002", "/data:uid=10002,gid=10002", "/config:uid=10002,gid=10002"]
     cap_drop: [ALL]

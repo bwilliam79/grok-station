@@ -125,10 +125,6 @@ function Remove-RelaySecrets {
             Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
     }
-    $minisign = Join-Path $ConfigDir "minisign"
-    if (Test-Path -LiteralPath $minisign) {
-        Remove-Item -LiteralPath $minisign -Recurse -Force -ErrorAction SilentlyContinue
-    }
     # Deletes the stored target. The value is not printed.
     & cmdkey /delete:grok-relay | Out-Null
 }
@@ -192,7 +188,7 @@ if (-not (Test-Elevated)) {
 Write-Host "This will remove the relay and cannot be undone."
 Write-Host "Accounts: user grok-relay, group grok-relay, docker group membership"
 Write-Host "Docker project grok-relay: containers, images, and volumes (--volumes --rmi all)"
-Write-Host "Credentials (values are not shown): client certificate, private key, pinned CA, xAI key, minisign public keys"
+Write-Host "Credentials (values are not shown): client certificate, private key, pinned CA, xAI key"
 Write-Host ("Directories: " + $ConfigDir + ", " + $StateDir + ", " + $LogDir + ", " + $CacheDir)
 Write-Host "Firewall: rules whose name or description is grok-relay"
 Write-Host "Services: services and scheduled tasks named grok-relay"

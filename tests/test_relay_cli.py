@@ -71,7 +71,7 @@ class FakeSystem:
     def _install(self):
         paths = cli.paths_for(self.platform_name)
         self.paths = paths
-        self.dirs = {paths.config, paths.state, paths.log, paths.cache, paths.minisign}
+        self.dirs = {paths.config, paths.state, paths.log, paths.cache}
         self.dirs.update(paths.systemd_dirs)
         if paths.launchd_dir:
             self.dirs.add(paths.launchd_dir)
@@ -80,7 +80,6 @@ class FakeSystem:
             paths.key: KEY_CANARY,
             paths.ca: b"CA-PIN-CANARY\n",
             paths.xai_key: XAI_CANARY,
-            os.path.join(paths.minisign, "relay.pub"): b"minisign public key\n",
             paths.paired: b"yes\n",
             paths.shim: b"#!/bin/sh\n",
         }

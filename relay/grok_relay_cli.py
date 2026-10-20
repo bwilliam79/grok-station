@@ -23,6 +23,10 @@ import urllib.request
 
 from cryptography import x509
 
+import host_update
+import release
+import release_fetch
+
 VERSION = "1"
 ACTOR = "relay"
 USER = "grok-relay"
@@ -86,7 +90,7 @@ class RunResult:
 
 
 class Paths:
-    def __init__(self, config, state, log, cache, cert, key, ca, xai_key, minisign,
+    def __init__(self, config, state, log, cache, cert, key, ca, xai_key,
                  paired, station_url, shim, pf_anchor, pf_conf, launchd_dir, systemd_dirs):
         self.config = config
         self.state = state
@@ -96,7 +100,6 @@ class Paths:
         self.key = key
         self.ca = ca
         self.xai_key = xai_key
-        self.minisign = minisign
         self.paired = paired
         self.station_url = station_url
         self.shim = shim
@@ -122,7 +125,6 @@ def paths_for(platform):
             key=base + "/client.key",
             ca=base + "/ca.crt",
             xai_key=base + "/xai_api_key",
-            minisign=base + "/minisign",
             paired=base + "/state/paired",
             station_url=base + "/station.url",
             shim=SHIM,
@@ -140,7 +142,6 @@ def paths_for(platform):
         key="/etc/grok-relay/client.key",
         ca="/etc/grok-relay/ca.crt",
         xai_key="/etc/grok-relay/xai_api_key",
-        minisign="/etc/grok-relay/minisign",
         paired="/var/lib/grok-relay/paired",
         station_url="/etc/grok-relay/station.url",
         shim=SHIM,
@@ -1160,6 +1161,22 @@ class RelayCLI:
         return 0
 
 
+def _release_fetcher(url, context):
+    """Verified HTTPS GET. Redirects stay on the release hosts. Tests inject their own."""
+    return release_fetch.https_get(url, context)
+
+
+def _update_audit(system, paths, event, detail):
+    now = system.now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    else:
+        now = now.astimezone(datetime.timezone.utc)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = release.format_audit(ts, ACTOR, "local", event, detail)
+    system.append_audit(os.path.join(paths.log, "audit-" + ts[:7] + ".log"), line + "\n")
+
+
 def build_parser():
     # No --yes. An unknown flag, including --yes, is an argparse error.
     parser = argparse.ArgumentParser(prog="grok-relay")
@@ -1167,10 +1184,13 @@ def build_parser():
     sub.add_parser("status", help="print version, pairing, and certificate expiry")
     sub.add_parser("rotate-xai-key", help="store a new xAI key (prompted, not echoed)")
     sub.add_parser("uninstall", help="remove this relay after you type uninstall")
+    sub.add_parser("check-update", help="look for a release only when autocheck is on")
+    sub.add_parser("update-run", help="apply one queued relay update (host timer)")
     return parser
 
 
-def main(argv=None, system=None, station=None, input_fn=None, getpass_fn=None):
+def main(argv=None, system=None, station=None, input_fn=None, getpass_fn=None,
+         fetcher=None, health_get=None, now=None, sleep=None, mono=None):
     if argv is None:
         argv = sys.argv[1:]
     args = build_parser().parse_args(list(argv))
@@ -1183,6 +1203,14 @@ def main(argv=None, system=None, station=None, input_fn=None, getpass_fn=None):
         return tool.rotate(getpass_fn or getpass.getpass)
     if args.command == "uninstall":
         return tool.uninstall(input_fn or input)
+    if args.command in ("check-update", "update-run"):
+        def audit(event, detail):
+            _update_audit(system, tool.paths, event, detail)
+        fetch = fetcher or _release_fetcher
+        if args.command == "check-update":
+            return host_update.run_check(system, tool.paths, fetch, audit, now=now)
+        return host_update.run_update(
+            system, tool.paths, fetch, audit, health_get=health_get, now=now, sleep=sleep, mono=mono)
     return 2
 
 

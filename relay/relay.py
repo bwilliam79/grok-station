@@ -26,6 +26,9 @@ from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
 import handoff
 import tools as station_tools
 import t1
+import control
+import release
+import release_fetch
 
 E = os.environ.get
 
@@ -895,6 +898,29 @@ async def health(req):
                               "caps": {"turn_s": MAX_SESSION, "session_s": MAX_TOTAL, "no_speech_s": NO_SPEECH}})
 
 
+def _mark_busy(n):
+    """Session flag plus a file the host updater can see. No await, no secrets."""
+    stats["busy"] = n
+    path = os.environ.get("VOICE_BUSY", "/state/voice-busy")
+    try:
+        if n:
+            directory = os.path.dirname(path) or "."
+            if not os.path.isdir(directory):
+                return
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                os.write(fd, b"1\n")
+            finally:
+                os.close(fd)
+        else:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                return
+    except OSError:
+        return
+
+
 async def session(req):
     src = lock_key(req)
     if "Origin" in req.headers:
@@ -908,13 +934,13 @@ async def session(req):
         return web.json_response({"error": "no xai key configured"}, status=503)
     if stats["busy"]:
         return web.json_response({"error": "busy"}, status=409)  # one device, one session at a time
-    stats["busy"] = 1  # check-and-set with no await in between: the event loop can't interleave another request
+    _mark_busy(1)  # check-and-set with no await in between: the event loop can't interleave another request
     t0, n_up, n_down, why = time.monotonic(), 0, 0, "?"
     pi = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
     try:
         await pi.prepare(req)
     except Exception:
-        stats["busy"] = 0
+        _mark_busy(0)
         raise
     try:
         async with ClientSession() as http, http.ws_connect(URL, headers={"Authorization": f"Bearer {KEY}"},
@@ -1376,7 +1402,7 @@ async def session(req):
         if not pi.closed:
             await pi.send_json({"type": "error", "message": "relay could not reach xAI"})
     finally:
-        stats["busy"] = 0
+        _mark_busy(0)
         dt = time.monotonic() - t0
         stats["sessions"] += 1
         stats["seconds"] += dt
@@ -2293,6 +2319,219 @@ async def admin_avatar_request(req):
     return web.json_response({"test_id": tid}, status=202)
 
 
+# Station control channel. Caddy (:8445) requires a client cert from the pinned station CA and
+# forwards that leaf as X-Client-Cert plus its fingerprint. The checks live in control.py.
+# Station-side issuance is not in this repo: the station pairing CA is assumed to issue the
+# station client cert (SAN DNS station-<16 lowercase hex>, EKU clientAuth only, CA bit clear).
+# A relay-<16 hex> pairing cert is the other direction and is rejected. Revocation is a JSON
+# file the station publishes; this process does not dial out to fetch it. The container writes
+# an update request file and does not run docker.
+_seen = {}
+_xai_cache = {"mono": None, "value": None}
+XAI_PROBE = None  # tests inject a session open/close probe; production uses default_xai_probe
+MANIFEST_FETCHER = None  # tests inject; production fetches MANIFEST_URL over verified HTTPS
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _control_now():
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def load_station_revocation():
+    """Missing file: nothing revoked. Unreadable shape: fail closed (None)."""
+    raw = _read_bytes(os.environ.get("STATION_REVOCATION_FILE", "/station-ca/revocation.json"))
+    if raw is None:
+        return set()
+    return control.load_revocation(raw)
+
+
+def verify_control_client(req, now=None):
+    """Leaf chained to the pinned station CA, or None. See control.verify_station_client."""
+    leaf = control.load_header_cert(req.headers.get("X-Client-Cert", ""))
+    ca = _read_bytes(os.environ.get("STATION_CA_FILE", "/station-ca/ca.crt"))
+    if not control.verify_station_client(leaf, ca, load_station_revocation(), now or _control_now()):
+        return None
+    if not control.fingerprint_matches(leaf, req.headers.get("X-Client-Cert-Fp", "")):
+        return None
+    return control.load_cert_bytes(leaf)
+
+
+def _installed_text():
+    raw = _read_bytes(os.environ.get("RELAY_INSTALLED", "/state/installed.json"))
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def _banned_secrets():
+    found = []
+    if isinstance(KEY, str) and len(KEY) >= 8:
+        found.append(KEY)
+    blobs = [ADMIN_TOKEN]
+    blobs.extend(TOKENS if isinstance(TOKENS, list) else [])
+    for blob in blobs:
+        if isinstance(blob, bytes) and len(blob) >= 8:
+            try:
+                found.append(blob.decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+    return tuple(found)
+
+
+def audit_control(event, detail):
+    """`<ts> station relay <event> <detail>`. Detail is a token: no secrets, addresses, or questions."""
+    if not isinstance(event, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,32}", event) is None:
+        return
+    if not isinstance(detail, str) or re.fullmatch(r"[!-~]{1,64}", detail) is None:
+        return
+    if "@" in detail or "://" in detail or "BEGIN" in detail or "?" in detail:
+        return
+    for secret in _banned_secrets():
+        if secret and secret in detail:
+            return
+    _write_audit_line(f"{_audit_stamp()} station relay {event} {detail}\n")
+
+
+def _rate_usage():
+    """Voice time since this process started, against the per-connection cap. Not a secret."""
+    try:
+        used = round(float(stats.get("seconds") or 0), 1)
+    except (TypeError, ValueError):
+        used = 0.0
+    try:
+        busy = int(stats.get("busy") or 0)
+    except (TypeError, ValueError):
+        busy = 0
+    return {"used_s": used, "cap_s": MAX_TOTAL, "busy": busy}
+
+
+async def default_xai_probe():
+    """Open one realtime session and close it. Returns ok or an error code. No transcript."""
+    if not KEY:
+        return "no-key"
+    try:
+        timeout = ClientTimeout(total=8)
+        async with ClientSession(timeout=timeout) as http:
+            async with http.ws_connect(
+                URL, headers={"Authorization": "Bearer " + KEY}, heartbeat=20, timeout=timeout,
+            ) as ws:
+                await ws.send_json({"type": "session.update", "session": {}})
+                await ws.close()
+        return "ok"
+    except Exception as err:
+        code = re.sub(r"[^A-Za-z0-9._:-]", "", type(err).__name__)[:32]
+        return code or "error"
+
+
+async def cached_xai(now_mono=None):
+    """Probe result, reused for 60 seconds. Tests pass XAI_PROBE and may pass now_mono."""
+    now_mono = time.monotonic() if now_mono is None else now_mono
+    cached, at = _xai_cache.get("value"), _xai_cache.get("mono")
+    if cached is not None and isinstance(at, (int, float)) and now_mono - at < 60:
+        return cached
+    probe = XAI_PROBE or default_xai_probe
+    try:
+        value = probe()
+        if asyncio.iscoroutine(value):
+            value = await value
+    except Exception:
+        value = "error"
+    value = control.sanitize_xai(value)
+    _xai_cache["mono"] = now_mono
+    _xai_cache["value"] = value
+    return value
+
+
+def _voice_busy():
+    if stats.get("busy"):
+        return True
+    raw = _read_bytes(os.environ.get("VOICE_BUSY", "/state/voice-busy"))
+    return bool(raw and raw.strip() not in (b"", b"0"))
+
+
+def _fetch_manifest():
+    """Manifest bytes or a dict. The default fetcher is release_fetch.https_get (verified TLS, allow-listed hops)."""
+    if MANIFEST_FETCHER is not None:
+        body = MANIFEST_FETCHER()
+    else:
+        body = release.fetch_manifest(release_fetch.https_get)
+    return release.parse_manifest(body)
+
+
+async def healthz(_req):
+    """Loopback health gate for the host updater. No secrets."""
+    return web.json_response({"ok": True})
+
+
+async def admin_status(req):
+    """GET /admin/status. Station mTLS only. No question text, replies, or secrets."""
+    if "Origin" in req.headers:
+        return web.json_response({"error": "origin not allowed"}, status=403)
+    leaf = verify_control_client(req)
+    if leaf is None:
+        return web.json_response({"error": "client certificate required"}, status=403)
+    control.note_seen(_seen, _control_now())
+    version, _tag, compat = control.read_release_file(_installed_text())
+    usage = _rate_usage()
+    doc = control.status_document(
+        version, compat, control.last_seen_text(_seen), await cached_xai(),
+        control.key_last4(KEY if isinstance(KEY, str) else ""),
+        control.cert_expiry(leaf), pii_mode(), usage,
+        control.recent_audit_lines(bots_dir(), _banned_secrets(), 20),
+    )
+    doc["rate"] = usage["used_s"]
+    return web.json_response(doc)
+
+
+async def admin_update(req):
+    """POST /admin/update. Bad args do not fetch. Busy is 409 and does not fetch. No docker here."""
+    if "Origin" in req.headers:
+        audit_control("update-rejected", "bad-args")
+        return web.json_response({"error": "bad request"}, status=400)
+    if verify_control_client(req) is None:
+        audit_control("update-rejected", "cert")
+        return web.json_response({"error": "client certificate required"}, status=403)
+    try:
+        raw = await req.read()
+    except Exception:
+        raw = b""
+    version, _tag, _compat = control.read_release_file(_installed_text())
+    if control.body_bad_args(raw, version):
+        audit_control("update-rejected", "bad-args")
+        return web.json_response({"error": "bad request"}, status=400)
+    path = os.environ.get("UPDATE_REQUEST", "/state/update-request.json")
+    if _voice_busy() or os.path.exists(path):
+        audit_control("update-deferred", "busy")
+        return web.json_response({"error": "deferred", "reason": "busy"}, status=409)
+    try:
+        manifest = _fetch_manifest()
+    except release.ManifestError as err:
+        reason = err.reason if err.reason in ("expired", "future", "bad-format", "fetch-failed") else "fetch-failed"
+        audit_control("update-rejected", reason)
+        return web.json_response({"error": reason}, status=400)
+    decision = release.validate_update_request(raw, version, manifest)
+    if not decision.ok:
+        audit_control("update-rejected", decision.reason or "bad-args")
+        return web.json_response({"error": decision.reason or "bad-args"}, status=400)
+    try:
+        atomic_write(path, control.enqueue_body(decision.version), 0o600)
+    except OSError:
+        audit_control("update-rejected", "fetch-failed")
+        return web.json_response({"error": "unavailable"}, status=400)
+    audit_control("update-queued", decision.version)
+    return web.json_response({"ok": True, "status": "queued", "version": decision.version})
+
+
 ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
     web.patch("/admin/bots/{slug}", admin_bots_patch), web.delete("/admin/bots/{slug}", admin_bots_delete),
@@ -2303,6 +2542,7 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
+    web.get("/admin/status", admin_status), web.post("/admin/update", admin_update),
 ]
 
 
@@ -2312,7 +2552,7 @@ if __name__ == "__main__":
     except OSError as e:
         log("policy init failed", type(e).__name__)
     app = web.Application(client_max_size=8 << 20)  # avatar bodies are checked again at 2 MB
-    app.add_routes([web.get("/health", health), web.get("/ws", session), web.get("/personas", personas_route),
+    app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),
                     web.post("/enroll/{phrase}/{session}/{item}", enroll_route),
                     web.get("/enroll/{phrase}/{session}/status", enroll_status_route),
