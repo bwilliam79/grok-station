@@ -4,8 +4,9 @@
 No default password: until an admin password is set, the station shows a one-time 6-character setup code (3+3, no
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
-through grok-station-helper (root, fixed subcommands, validated input) via sudo. Speaker names stay on this Pi.
-Stdlib only.
+through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a
+10-minute step-up window on that session for saving a webhook and adding or renaming a bot; removing a bot or webhook
+always asks again. Speaker names stay on this Pi. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -31,6 +32,7 @@ CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # no 0/O, 1/I
 MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
+STEPUP_TTL = 600  # from the password entry; later requests do not move it
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
 JARVIS_LOCKED = "Jarvis is the station's default wake word and can't be turned off"
 UNITS = ("grok-station", "grok-station-wake", "grok-station-admin")
@@ -197,17 +199,51 @@ class Auth:
         self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0}
         return t
 
+    def _key(self, token):
+        return hashlib.sha256(token.encode()).hexdigest() if token else None
+
+    def _fresh(self, rec, t):
+        return isinstance(rec, dict) and rec.get("exp", 0) >= t and t - rec.get("seen", 0) <= IDLE_TTL
+
     def valid(self, token):
         if not token or self.setup_required():
             return False
-        k = hashlib.sha256(token.encode()).hexdigest()
+        k = self._key(token)
         rec = self.sessions.get(k)
         t = now()
-        if not isinstance(rec, dict) or rec.get("exp", 0) < t or t - rec.get("seen", 0) > IDLE_TTL:
+        if not self._fresh(rec, t):
             self.sessions.pop(k, None)
             return False
-        rec["seen"] = t  # idle window slides on each authenticated request
+        rec["seen"] = t  # idle window slides on each authenticated request; step-up does not
         return True
+
+    def stepup_until(self, token):
+        """Epoch when this session's step-up window closes, or None. Does not slide or refresh it."""
+        if not token or self.setup_required():
+            return None
+        rec = self.sessions.get(self._key(token))
+        t = now()
+        if not self._fresh(rec, t):
+            return None
+        until = rec.get("stepup_until")
+        if isinstance(until, bool) or not isinstance(until, (int, float)) or until <= t:
+            return None
+        return until
+
+    def stepup_open(self, token):
+        return self.stepup_until(token) is not None
+
+    def open_stepup(self, token):
+        """Start a fresh STEPUP_TTL window on this session. Caller already checked the password."""
+        if not token or self.setup_required():
+            return None
+        rec = self.sessions.get(self._key(token))
+        t = now()
+        if not self._fresh(rec, t):
+            return None
+        rec["stepup_until"] = t + STEPUP_TTL
+        audit_stepup()
+        return rec["stepup_until"]
 
     def reauth(self, pw):
         """Admin password again for a bot change. Wrong guesses share the login lockout.
@@ -493,6 +529,11 @@ def audit(persona, action, last4=None):
     print(f"audit persona={persona} action={action} last4={tail} time={int(now())}", flush=True)
 
 
+def audit_stepup():
+    """One journal line when a step-up window opens. The password is not written."""
+    print(f"audit persona=- action=stepup open last4=- time={int(now())}", flush=True)
+
+
 def _private_file(p):
     """True when the file exists and is not group- or world-readable."""
     try:
@@ -688,6 +729,150 @@ def local_bots():
     return out
 
 
+# Geocode hits stay here (id -> coords). The browser only ever sees id + label.
+GEOCODE_TTL = 15 * 60
+GEOCODE, GEOCODE_LOCK = {}, threading.Lock()
+_TZ_RE = re.compile(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}")
+
+
+def coord_key(k):
+    """True when a key or message would show a latitude or longitude to the browser."""
+    return "lat" in re.sub(r"[^a-z]", "", str(k).lower()) or "lon" in re.sub(r"[^a-z]", "", str(k).lower())
+
+
+def coord_str(n, limit):
+    """Helper's env format, or None. Never logged by the caller."""
+    try:
+        x = round(float(n), 4)
+    except (TypeError, ValueError):
+        return None
+    if x != x or abs(x) > limit:  # NaN, or outside the range
+        return None
+    s = f"{x:.4f}".rstrip("0").rstrip(".")
+    if s == "-0":
+        s = "0"
+    if not re.fullmatch(r"-?\d{1,3}(\.\d{1,4})?", s):
+        return None
+    return s
+
+
+def _place_part(v):
+    if not isinstance(v, str):
+        return ""
+    s = " ".join(v.split())
+    if not s or len(s) > 60 or any(ord(c) < 32 for c in s):
+        return ""
+    return s
+
+
+def place_label(row):
+    """'City, Region', or the town name when the geocoder has no region."""
+    name, region = _place_part(row.get("name")), _place_part(row.get("admin1"))
+    if not name:
+        return None
+    return f"{name}, {region}" if region else name
+
+
+def remember_places(rows):
+    """Store coords privately and return [{id, label}] for the browser."""
+    t = now()
+    out = []
+    with GEOCODE_LOCK:
+        for k, v in list(GEOCODE.items()):
+            if v.get("exp", 0) <= t:
+                GEOCODE.pop(k, None)
+        while len(GEOCODE) > 40:
+            GEOCODE.pop(next(iter(GEOCODE)))
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            label = place_label(row)
+            lat, lon = coord_str(row.get("latitude"), 90), coord_str(row.get("longitude"), 180)
+            if not label or lat is None or lon is None:
+                continue
+            gid = secrets.token_urlsafe(16)
+            while gid in GEOCODE:
+                gid = secrets.token_urlsafe(16)
+            tz = row.get("timezone") if isinstance(row.get("timezone"), str) else ""
+            if not _TZ_RE.fullmatch(tz or ""):
+                tz = ""
+            GEOCODE[gid] = {"lat": lat, "lon": lon, "label": label, "timezone": tz, "exp": t + GEOCODE_TTL}
+            out.append({"id": gid, "label": label})
+            if len(out) >= 5:
+                break
+    return out
+
+
+def lookup_place(gid):
+    if not isinstance(gid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", gid):
+        return None
+    t = now()
+    with GEOCODE_LOCK:
+        hit = GEOCODE.get(gid)
+        if not hit or hit.get("exp", 0) <= t:
+            GEOCODE.pop(gid, None)
+            return None
+        return dict(hit)
+
+
+def location_label():
+    d = read_json(path("location.json"), {})
+    if not isinstance(d, dict) or not isinstance(d.get("label"), str):
+        return None
+    lab = " ".join(d["label"].split())
+    if not lab or len(lab) > 80 or any(ord(c) < 32 for c in lab):
+        return None
+    return lab
+
+
+def save_location_label(label):
+    write_json(path("location.json"), {"label": label}, 0o640)
+
+
+def public_time(out):
+    """Settings the browser may see: the place label, never coordinates."""
+    src = out.get("values") if isinstance(out, dict) else None
+    vals, had = {}, False
+    if isinstance(src, dict):
+        for k, v in src.items():
+            if coord_key(k):
+                if v not in (None, ""):
+                    had = True
+                continue
+            vals[k] = v
+    label = location_label()
+    if label:
+        vals["location"] = label
+    elif had:
+        vals["location"] = "Saved location"
+    return {"ok": True, "values": vals}
+
+
+def time_body(j):
+    """Browser JSON -> helper stdin. Coordinates come only from a remembered geocode id."""
+    if not isinstance(j, dict):
+        return None, "bad request", None, None
+    body = {}
+    if isinstance(j.get("timezone"), str):
+        body["timezone"] = j["timezone"]
+    if "GROK_STATION_UNITS" in j:
+        body["GROK_STATION_UNITS"] = j["GROK_STATION_UNITS"]
+    label = tz = None
+    if "place" in j:
+        hit = lookup_place(j.get("place"))
+        if not hit:
+            return None, "That place expired. Look it up again.", None, None
+        body["GROK_STATION_LAT"] = hit["lat"]
+        body["GROK_STATION_LON"] = hit["lon"]
+        label = hit["label"]
+        if hit.get("timezone"):
+            body["timezone"] = hit["timezone"]
+        tz = body.get("timezone")
+    else:
+        tz = body.get("timezone")
+    return body, None, label, tz
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "grok-station-admin"
     protocol_version = "HTTP/1.1"
@@ -811,9 +996,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- open routes
     def api_get_state(self, p, q, j):
         AUTH.publish()
-        return self.send(200, {"setup_required": AUTH.setup_required(), "mode": AUTH.mode(), "signed_in": self.authed(),
+        signed = self.authed()
+        return self.send(200, {"setup_required": AUTH.setup_required(), "mode": AUTH.mode(), "signed_in": signed,
                                "locked_s": AUTH.locked(), "host": hostname() + ".local", "version": version(),
-                               "wizard": read_json(path("wizard.json"), {"step": 2, "done": False}) if self.authed() else None})
+                               "stepup_until": AUTH.stepup_until(self.cookie("gs_session")) if signed else None,
+                               "wizard": read_json(path("wizard.json"), {"step": 2, "done": False}) if signed else None})
 
     def api_post_setup(self, p, q, j):
         if AUTH.locked():
@@ -893,21 +1080,46 @@ class Handler(BaseHTTPRequestHandler):
         if sec not in ("display", "time", "audio"):
             return self.send(404, {"error": "not found"})
         ok, out = helper("settings-get", sec)
-        return self.send(200 if ok else 503, out if ok else {"error": "Can't read settings."})
+        if not ok:
+            return self.send(503, {"error": "Can't read settings."})
+        if sec == "time":
+            out = public_time(out)
+        return self.send(200, out)
 
     def api_put_settings(self, p, q, j):
         sec = p.split("/")[3] if p.count("/") >= 3 else ""
         if sec not in ("display", "time", "audio"):
             return self.send(404, {"error": "not found"})
+        label = tz = None
+        if sec == "time":
+            j, err, label, tz = time_body(j)
+            if err:
+                return self.send(400, {"error": err})
         ok, out = helper("settings-set", sec, stdin=j)
         if not ok:
-            return self.send(400, {"error": out.get("error", "Couldn't save.")})
+            msg = out.get("error", "Couldn't save.") if isinstance(out, dict) else "Couldn't save."
+            if not isinstance(msg, str) or coord_key(msg):
+                msg = "Couldn't save."
+            return self.send(400, {"error": msg})
+        if label:
+            save_location_label(label)
         if sec == "audio" or out.get("restart_wake"):
             if not busy():
                 helper("restart", "wake")
             else:
                 out["pending"] = "Applies after the current conversation or enrollment."
-        return self.send(200, {"ok": True, **out})
+        if sec != "time":
+            return self.send(200, {"ok": True, **out})
+        body = {"ok": True}
+        if out.get("restart_wake"):
+            body["restart_wake"] = True
+        if out.get("pending"):
+            body["pending"] = out["pending"]
+        if label:
+            body["location"] = label
+        if tz:
+            body["timezone"] = tz
+        return self.send(200, body)
 
     def api_get_geocode(self, p, q, j):
         name = str(q.get("q", ""))[:60]
@@ -919,9 +1131,9 @@ class Handler(BaseHTTPRequestHandler):
                 res = json.loads(r.read(200000)).get("results") or []
         except Exception:
             return self.send(503, {"error": "Can't look that up right now."})
-        return self.send(200, {"results": [{"name": x.get("name"), "admin1": x.get("admin1"), "country": x.get("country_code"),
-                                            "lat": round(x["latitude"], 3), "lon": round(x["longitude"], 3),
-                                            "timezone": x.get("timezone")} for x in res if "latitude" in x]})
+        if not isinstance(res, list):
+            res = []
+        return self.send(200, {"results": remember_places(res)})
 
     def api_get_timezones(self, p, q, j):
         try:
@@ -1151,14 +1363,24 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     # -- bots (proxied to the relay; webhook keys are not stored here)
-    def need_password(self, j):
-        why = AUTH.reauth(j.get("password") if isinstance(j, dict) else None)
+    def need_password(self, j, always=False):
+        """Password check for a bot change. always=True never skips (remove bot, remove webhook, unpair).
+
+        Otherwise an open step-up window is enough. A correct password opens or reopens the window.
+        """
+        token = self.cookie("gs_session")
+        pw = j.get("password") if isinstance(j, dict) and "password" in j else None
+        supplied = isinstance(pw, str) and pw != ""
+        if not always and not supplied and AUTH.stepup_open(token):
+            return True
+        why = AUTH.reauth(pw if supplied else None)
         if why == "locked":
             self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
             return False
         if why:
             self.send(403, {"error": "Password is wrong."})
             return False
+        AUTH.open_stepup(token)
         return True
 
     def relay_fail(self, status, data, secrets=()):
@@ -1196,6 +1418,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     def api_post_bots(self, p, q, j):
+        if p == "/api/bots/refresh-avatars":
+            return self.bots_refresh_avatars()
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -1239,15 +1463,29 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_test_delete(slug, tid)
         return self.send(404, {"error": "not found"})
 
+    def _stepup(self):
+        return AUTH.stepup_until(self.cookie("gs_session"))
+
     def bots_list(self):
         got = relay_call("GET", "/admin/bots")
         if got is None:
-            return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED})
+            return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED,
+                                   "stepup_until": self._stepup()})
         status, data = got
         if status != 200:
             return self.relay_fail(status, data)
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
-        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices"))})
+        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")), "stepup_until": self._stepup()})
+
+    def bots_refresh_avatars(self):
+        """Ask the wake listener to re-sync personas and portraits. No password."""
+        code, data = wake("POST", "/personas/sync", {})
+        if code == 202 and isinstance(data, dict):
+            if data.get("running") is True:
+                return self.send(202, {"running": True})
+            if data.get("started") is True:
+                return self.send(202, {"started": True})
+        return self.send(503, {"error": "Can't reach the voice listener right now."})
 
     def bots_add(self, j):
         slug, name, voice = j.get("slug"), clean_name(j.get("name")), j.get("voice")
@@ -1287,7 +1525,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True})
 
     def bots_remove(self, slug, j):
-        if not self.need_password(j):
+        if not self.need_password(j, always=True):
             return
         got = relay_call("DELETE", "/admin/bots/" + slug, {"actor": RELAY_ACTOR})
         if got is None:
@@ -1317,7 +1555,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True, "last4": last4})
 
     def bots_webhook_delete(self, slug, j):
-        if not self.need_password(j):
+        if not self.need_password(j, always=True):
             return
         got = relay_call("DELETE", "/admin/bots/" + slug + "/webhook", {"actor": RELAY_ACTOR})
         if got is None:

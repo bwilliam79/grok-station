@@ -427,9 +427,36 @@ def enroll_phrases():
     return out
 
 
+_PERSONA_SYNC = {"on": False}
+_PERSONA_SYNC_LOCK = threading.Lock()
+CONTROL_HTTPD = None
+
+
+def begin_persona_sync():
+    """Run sync_personas in a thread. False when one is already running."""
+    with _PERSONA_SYNC_LOCK:
+        if _PERSONA_SYNC["on"]:
+            return False
+        _PERSONA_SYNC["on"] = True
+
+    def run():
+        try:
+            sync_personas()
+        except Exception as e:
+            print(f"sync_personas failed: {type(e).__name__}", flush=True)
+        finally:
+            with _PERSONA_SYNC_LOCK:
+                _PERSONA_SYNC["on"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
 def control_server():
     """127.0.0.1:CONTROL_PORT POST /enroll {"phrase","count"}: queue one enrollment (the display's LAN /enroll and
-    `grok_wake.py --enroll` both land here). Never reachable from the LAN."""
+    `grok_wake.py --enroll` both land here). POST /personas/sync re-runs persona and portrait sync in a thread.
+    Never reachable from the LAN."""
+    global CONTROL_HTTPD
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     class H(BaseHTTPRequestHandler):
@@ -447,6 +474,16 @@ def control_server():
                                  "setup": setup_mode()})
 
         def do_POST(self):
+            if self.path == "/personas/sync":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                except ValueError:
+                    n = 0
+                if n:
+                    self.rfile.read(n)
+                if begin_persona_sync():
+                    return self._r(202, {"started": True})
+                return self._r(202, {"running": True})
             if self.path == "/reload":
                 RELOAD.set()
                 return self._r(202, {"ok": True})
@@ -484,7 +521,8 @@ def control_server():
         def log_message(self, *a):
             pass
 
-    ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), H).serve_forever()
+    CONTROL_HTTPD = ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), H)
+    CONTROL_HTTPD.serve_forever()
 
 
 def trim_clip(pcm):

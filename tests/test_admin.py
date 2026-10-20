@@ -1,7 +1,8 @@
 """Admin page API (admin/grok_admin.py): setup code, password rules, lockout, sessions, CSRF, LAN-only, write-only
 secrets, wake-word overrides, Pi-only speakers, reset (CLI + boot file), static files. In-process server on a free port;
 the root helper and wake listener are fakes, so nothing touches the system. No browser."""
-import http.client, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading, time, unittest
+import http.client, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading, time, unittest
+from contextlib import redirect_stdout
 
 TMP = tempfile.mkdtemp(prefix="gs-admin-")
 ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -555,8 +556,9 @@ class Bots(unittest.TestCase):
         st, j = self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve", "password": GOOD})
         self.assertIn(st, (200, 201)); self.assertTrue(j["voice_token"].startswith("vt_"))
         self.assertNotIn(j["voice_token"].encode(), self.disk_blob())
-        self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane"})[0], 403)
-        self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane", "password": GOOD})[0], 200)
+        # the add's password opened step-up: rename passes without re-entry, remove still prompts
+        self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane"})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {})[0], 403)
         self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {"password": GOOD})[0], 200)
 
     def test_test_needs_no_password_and_unconfigured_message(self):
@@ -569,9 +571,311 @@ class Bots(unittest.TestCase):
     def test_page_has_bots_and_no_personas_or_t1_ui(self):
         js = open(os.path.join(os.path.dirname(__file__), "..", "admin", "web", "app.js")).read()
         self.assertIn('["bots", "Bots"]', js); self.assertNotIn('["personas"', js)
+        self.assertIn("Refresh avatars", js); self.assertIn("/api/bots/refresh-avatars", js)
+        self.assertIn("Unlocked for ", js); self.assertIn("?v=", js)
+        self.assertNotIn("GROK_STATION_LAT", js); self.assertNotIn("GROK_STATION_LON", js)
         self.assertIn('autocomplete="off"', js); self.assertIn("Waiting for", js)
         for s in ("Voice note", "yes, save it", "call button"):
             self.assertNotIn(s, js)
+
+    def test_refresh_avatars_proxies_wake_without_password(self):
+        calls = []
+        def fake(method, p, body=None, timeout=3):
+            calls.append((method, p, body))
+            return (202, {"running": True}) if len(calls) > 1 else (202, {"started": True})
+        old = ga.wake
+        ga.wake = fake
+        try:
+            st, j = self.c.req("POST", "/api/bots/refresh-avatars", {})
+            self.assertEqual((st, j), (202, {"started": True}))
+            st, j = self.c.req("POST", "/api/bots/refresh-avatars", {})
+            self.assertEqual((st, j), (202, {"running": True}))
+        finally:
+            ga.wake = old
+        self.assertEqual(calls, [("POST", "/personas/sync", {}), ("POST", "/personas/sync", {})])
+        self.assertEqual(C().req("POST", "/api/bots/refresh-avatars", {})[0], 401)
+
+
+class StepUp(unittest.TestCase):
+    """Sudo-style window on the session: 10 minutes from the password, no slide."""
+    URL, KEY = Bots.URL, Bots.KEY
+
+    def setUp(self):
+        self._clock = CLOCK[0]
+        CLOCK[0] = 9 * 3600 + 50 * 60  # 09:50; a window opened now closes at 10:00
+        self.c = signed_in()
+        self._rc = ga.relay_call
+        def fake(method, path, payload=None, timeout=10):
+            if path == "/admin/bots" and method == "GET":
+                return 200, {"bots": [{"slug": "kai", "name": "Kai", "voice": "eve", "source": "registry",
+                                       "webhook": {"configured": True, "last4": "WXYZ", "saved_at": 1},
+                                       "status": {"state": "connected", "last_answered_at": 1}}],
+                             "voices": ["eve"]}
+            if path == "/admin/bots" and method == "POST":
+                return 201, {"ok": True, "slug": payload["slug"], "voice_token": "vt_" + "A" * 43}
+            return 200, {"ok": True, "last4": "WXYZ"}
+        ga.relay_call = fake
+
+    def tearDown(self):
+        ga.relay_call = self._rc
+        CLOCK[0] = self._clock
+
+    def _save(self, password=GOOD):
+        body = {"url": self.URL, "key": self.KEY}
+        if password is not None:
+            body["password"] = password
+        return self.c.req("PUT", "/api/bots/kai/webhook", body)
+
+    def _until(self):
+        return self.c.req("GET", "/api/state")[1]["stepup_until"]
+
+    def test_opens_does_not_slide_and_expires_at_10(self):
+        self.assertIsNone(self._until())
+        self.assertEqual(self._save()[0], 200)
+        self.assertEqual(self._until(), 10 * 3600)
+        self.assertEqual(self.c.req("GET", "/api/bots")[1]["stepup_until"], 10 * 3600)
+        CLOCK[0] = 10 * 3600 - 5 * 60  # 09:55, still inside the window
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve"})[0], 201)
+        self.assertEqual(self._until(), 10 * 3600)  # those requests did not move it
+        CLOCK[0] = 10 * 3600 - 1
+        self.assertEqual(self.c.req("PUT", "/api/bots/kai/webhook", {"url": self.URL, "key": self.KEY})[0], 200)
+        self.assertEqual(self._until(), 10 * 3600)
+        CLOCK[0] = 10 * 3600  # 10:00 exactly
+        self.assertIsNone(self._until())
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kai"})[0], 403)
+        self.assertEqual(self._save()[0], 200)  # a new password opens a new window
+        self.assertEqual(self._until(), 10 * 3600 + ga.STEPUP_TTL)
+
+    def test_reopen_while_open_resets_from_that_entry(self):
+        self._save()
+        CLOCK[0] = 10 * 3600 - 2 * 60
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(self._save()[0], 200)
+        self.assertEqual(self._until(), CLOCK[0] + ga.STEPUP_TTL)
+        self.assertEqual(buf.getvalue().count("stepup open"), 1)
+        self.assertNotIn(GOOD, buf.getvalue())
+
+    def test_logout_and_password_change_clear(self):
+        self._save()
+        self.c.req("POST", "/api/logout", {})
+        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
+        self.assertEqual(self.c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 200)
+        self.assertIsNone(self._until())
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 403)
+        self._save()
+        self.assertEqual(self.c.req("POST", "/api/password", {"old": GOOD, "new": "a brand new pass 7"})[0], 200)
+        self.assertIsNone(self._until())
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve"})[0], 403)
+
+    def test_idle_and_session_expiry_clear(self):
+        self._save()
+        rec = next(iter(ga.AUTH.sessions.values()))
+        rec["stepup_until"] = CLOCK[0] + ga.IDLE_TTL + 500  # would still be open when idle hits
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
+        CLOCK[0] = rec["seen"] + ga.IDLE_TTL + 1
+        st, j = self.c.req("GET", "/api/state")
+        self.assertFalse(j["signed_in"])
+        self.assertIsNone(j["stepup_until"])
+        self.assertEqual(ga.AUTH.sessions, {})
+        self.assertEqual(self.c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 200)
+        self.assertIsNone(self._until())
+        self._save()
+        rec = next(iter(ga.AUTH.sessions.values()))
+        rec["seen"] = CLOCK[0]
+        rec["exp"] = CLOCK[0] + 10
+        rec["stepup_until"] = CLOCK[0] + 500
+        CLOCK[0] += 11  # absolute session cap, idle not yet due
+        st, j = self.c.req("GET", "/api/state")
+        self.assertFalse(j["signed_in"])
+        self.assertIsNone(j["stepup_until"])
+
+    def test_remove_still_prompts_inside_the_window(self):
+        self._save()
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai", {})[0], 403)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/webhook", {})[0], 403)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)  # rename still skipped
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/webhook", {"password": GOOD})[0], 200)
+
+    def test_audit_line_once_per_open(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(self._save()[0], 200)
+            self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
+            self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve"})[0], 201)
+            self.assertEqual(self.c.req("PUT", "/api/bots/kai/webhook", {"url": self.URL, "key": self.KEY})[0], 200)
+        text = buf.getvalue()
+        self.assertEqual(text.count("stepup open"), 1)
+        self.assertNotIn(GOOD, text)
+        self.assertNotIn(self.KEY, text)
+
+    def test_wrong_password_does_not_open(self):
+        body = {"url": self.URL, "key": self.KEY, "password": "wrong-wrong-1"}
+        for _ in range(5):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                st, _ = self.c.req("PUT", "/api/bots/kai/webhook", body)
+            self.assertNotEqual(st, 200)
+            self.assertNotIn("stepup open", buf.getvalue())
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, _ = self.c.req("PUT", "/api/bots/kai/webhook", dict(body, password=GOOD))
+        self.assertEqual(st, 429)  # same 15-minute lockout as sign-in
+        self.assertNotIn("stepup open", buf.getvalue())
+        self.assertIsNone(self._until())
+
+
+class LocationLabel(unittest.TestCase):
+    """The browser sees the place name. Coordinates stay in the helper's env write."""
+    LAT, LON = "12.3456", "-7.5"
+
+    def setUp(self):
+        self._clock = CLOCK[0]
+        self.c = signed_in()
+        self.saved = {}
+        self.calls = []
+        self._helper = ga.helper
+        self._urlopen = ga.urllib.request.urlopen
+        def fake(*args, stdin=None, timeout=30):
+            self.calls.append(args)
+            if args[:2] == ("settings-set", "time"):
+                self.saved.clear()
+                self.saved.update(stdin or {})
+                return True, {"ok": True}
+            if args[:2] == ("settings-get", "time"):
+                return True, {"values": {
+                    "GROK_STATION_LAT": self.saved.get("GROK_STATION_LAT"),
+                    "GROK_STATION_LON": self.saved.get("GROK_STATION_LON"),
+                    "GROK_STATION_UNITS": self.saved.get("GROK_STATION_UNITS"),
+                    "timezone": self.saved.get("timezone") or "UTC"}}
+            return True, {"ok": True}
+        ga.helper = fake
+
+    def tearDown(self):
+        ga.helper = self._helper
+        ga.urllib.request.urlopen = self._urlopen
+        CLOCK[0] = self._clock
+
+    def _no_coords(self, blob):
+        low = blob.lower()
+        for n in (self.LAT, self.LON, "12.3456", "-7.5000"):
+            self.assertNotIn(n, blob)
+        self.assertNotIn("latitude", low)
+        self.assertNotIn("longitude", low)
+        self.assertNotRegex(low, r'"(lat|lon|latitude|longitude|grok_station_lat|grok_station_lon)"')
+
+    def test_label_only_in_get_responses(self):
+        st, j = self.c.req("PUT", "/api/settings/time", {"GROK_STATION_LAT": self.LAT, "GROK_STATION_LON": self.LON,
+                                                         "timezone": "UTC"})
+        self.assertEqual(st, 200)
+        self.assertNotIn("GROK_STATION_LAT", self.saved)
+        self.assertNotIn("GROK_STATION_LON", self.saved)
+        payload = {"results": [{"name": "Exampleton", "admin1": "Sample", "country_code": "US",
+                                "latitude": 12.3456, "longitude": -7.5, "timezone": "America/Chicago"}]}
+        class Resp:
+            def read(self, n): return json.dumps(payload).encode()
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        old = ga.urllib.request.urlopen
+        ga.urllib.request.urlopen = lambda *a, **k: Resp()
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                st, j = self.c.req("GET", "/api/geocode?q=Exampleton")
+                self.assertEqual(st, 200)
+                self._no_coords(json.dumps(j))
+                self.assertEqual(set(j["results"][0]), {"id", "label"})
+                self.assertEqual(j["results"][0]["label"], "Exampleton, Sample")
+                pid = j["results"][0]["id"]
+                st, j = self.c.req("PUT", "/api/settings/time", {"place": pid, "timezone": "UTC",
+                                                                 "GROK_STATION_UNITS": "celsius",
+                                                                 "GROK_STATION_LAT": self.LAT, "GROK_STATION_LON": self.LON})
+                self.assertEqual(st, 200)
+                self._no_coords(json.dumps(j))
+                self.assertEqual(j["location"], "Exampleton, Sample")
+                self.assertEqual(j["timezone"], "America/Chicago")
+        finally:
+            ga.urllib.request.urlopen = old
+        self.assertNotIn(self.LAT, buf.getvalue())
+        self.assertNotIn(self.LON, buf.getvalue())
+        self.assertEqual(self.saved["GROK_STATION_LAT"], self.LAT)
+        self.assertEqual(self.saved["GROK_STATION_LON"], self.LON)
+        self.assertEqual(self.saved["timezone"], "America/Chicago")
+        self.assertEqual(self.saved["GROK_STATION_UNITS"], "celsius")
+        raw = open(os.path.join(os.environ["ADMIN_STATE_DIR"], "location.json")).read()
+        self.assertIn("Exampleton, Sample", raw)
+        self.assertNotIn(self.LAT, raw)
+        self.assertNotIn(self.LON, raw)
+        for path in ("/api/state", "/api/settings/time", "/api/settings/display", "/api/home", "/api/bots",
+                     "/api/geocode?q=Exampleton"):
+            if path.startswith("/api/geocode"):
+                ga.urllib.request.urlopen = lambda *a, **k: Resp()
+            st, body = self.c.req("GET", path, raw=True)
+            if path.startswith("/api/geocode"):
+                ga.urllib.request.urlopen = old
+            self.assertEqual(st, 200, path)
+            self._no_coords(body.decode())
+        got = json.loads(self.c.req("GET", "/api/settings/time", raw=True)[1])
+        self.assertEqual(got["values"]["location"], "Exampleton, Sample")
+        CLOCK[0] += ga.GEOCODE_TTL + 1
+        before = len(self.calls)
+        self.assertEqual(self.c.req("PUT", "/api/settings/time", {"place": pid})[0], 400)
+        self.assertEqual(len(self.calls), before)
+
+
+class WakePersonaSync(unittest.TestCase):
+    def test_control_endpoint_runs_sync_in_a_thread(self):
+        sys.path.insert(0, os.path.join(ROOT, "wake"))
+        import grok_wake as gw
+        port = free_port()
+        old_port, old_sync = gw.CONTROL_PORT, gw.sync_personas
+        box = {"n": 0, "release": threading.Event()}
+        def fake():
+            box["n"] += 1
+            box["release"].wait(3)
+        gw.sync_personas = fake
+        gw.CONTROL_PORT = port
+        th = threading.Thread(target=gw.control_server, daemon=True)
+        th.start()
+        try:
+            st = j = None
+            for _ in range(50):
+                try:
+                    st, j = self._post(port)
+                    break
+                except OSError:
+                    time.sleep(0.02)
+            self.assertEqual((st, j), (202, {"started": True}))
+            st, j = self._post(port)
+            self.assertEqual((st, j), (202, {"running": True}))
+            self.assertEqual(box["n"], 1)  # the second call did not start another sync
+            box["release"].set()
+            deadline = time.time() + 2
+            while time.time() < deadline:
+                st, j = self._post(port)
+                if j.get("started") is True:
+                    break
+                time.sleep(0.02)
+            self.assertEqual(j.get("started"), True)
+            self.assertEqual(box["n"], 2)
+        finally:
+            box["release"].set()
+            gw.sync_personas = old_sync
+            if gw.CONTROL_HTTPD is not None:
+                gw.CONTROL_HTTPD.shutdown()
+                th.join(2)
+                gw.CONTROL_HTTPD.server_close()
+                gw.CONTROL_HTTPD = None
+            gw.CONTROL_PORT = old_port
+
+    def _post(self, port):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        c.request("POST", "/personas/sync", b"{}", {"Content-Type": "application/json"})
+        r = c.getresponse()
+        body = json.loads(r.read() or b"{}")
+        c.close()
+        return r.status, body
 
 
 if __name__ == "__main__":

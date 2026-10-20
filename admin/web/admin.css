@@ -20,6 +20,7 @@ html,body{background:var(--gs-bg);color:var(--gs-text);font:15px/1.45 var(--body
 .top{height:68px;flex:none;display:flex;align-items:center;gap:16px;padding:0 36px;border-bottom:1px solid var(--gs-rule)}
 .top h1{font:600 28px var(--disp);letter-spacing:-.01em}
 .top .r{margin-left:auto;display:flex;align-items:center;gap:14px}
+.stepup{color:var(--gs-teal);font:500 13px var(--body);white-space:nowrap}
 .saved{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--gs-muted)}
 .ex{font:600 11.5px var(--mono);letter-spacing:.12em;color:var(--gs-muted);border:1.5px dashed var(--gs-faint);border-radius:99px;padding:3px 12px;white-space:nowrap}
 .body{flex:1;padding:24px 32px;max-width:1144px;overflow:hidden;display:flex;flex-direction:column;gap:18px}

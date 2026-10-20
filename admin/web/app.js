@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const root = () => $("#root");
-let S = {state: null, page: "home", timers: []};
+let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0};
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
 const WORD = n => "Hey " + PERSONA(String(n).replace(/^hey_/, "").replace(/_/g, " "));
 
@@ -48,6 +48,7 @@ async function boot() {
   const r = await api("GET", "/api/state");
   if (!r.ok) { root().innerHTML = `<div class="center"><div class="card auth"><h2>Can't reach the station</h2><p class="sub">${esc(r.data.error || "Try again.")}</p></div></div>`; return; }
   S.state = r.data;
+  noteStepup(r.data);
   if (!r.data.signed_in) return r.data.setup_required ? codeScreen() : loginScreen();
   if (r.data.wizard && !r.data.wizard.done) return wizard(r.data.wizard.step || 2);
   shell();
@@ -252,7 +253,7 @@ async function timePanel(el, opts = {}) {
   el.innerHTML = `<div class="card"><h2>Time and location</h2><p class="sub">Used for the clock, the weather on the station, and Grok's time and weather answers.</p>
     <div class="field"><label for="tz">Time zone</label><select class="sel" id="tz">${(z.data.zones || []).map(x => `<option${x === v.timezone ? " selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
     <div class="field"><label for="town">Town or ZIP</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" id="town" placeholder="Town or ZIP code"><button class="btn sm" id="find">Find</button></div>
-      <div id="found" class="note">${v.GROK_STATION_LAT ? `Current location: ${esc(v.GROK_STATION_LAT)}, ${esc(v.GROK_STATION_LON)}` : "No location yet."}</div></div>
+      <div id="found" class="note">${v.location ? `Current location: ${esc(v.location)}` : "No location yet."}</div></div>
     <div class="field"><label for="un">Temperature</label><select class="sel" id="un"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
     <div id="te"></div><div class="field inline"><button class="btn p" id="tsave">Save</button></div></div>`;
   let pick = null;
@@ -261,16 +262,18 @@ async function timePanel(el, opts = {}) {
     if (!r.ok) return errBox($("#te", el), r.data.error);
     const res = r.data.results || [];
     if (!res.length) return ($("#found", el).textContent = "Nothing found. Try a nearby town.");
-    $("#found", el).innerHTML = res.map((x, i) => `<label class="row" style="cursor:pointer"><input type="radio" name="pl" value="${i}"${i ? "" : " checked"}> ${esc(x.name)}${x.admin1 ? ", " + esc(x.admin1) : ""} ${esc(x.country || "")}</label>`).join("");
+    $("#found", el).innerHTML = res.map((x, i) => `<label class="row" style="cursor:pointer"><input type="radio" name="pl" value="${esc(x.id)}"${i ? "" : " checked"}> ${esc(x.label)}</label>`).join("");
     pick = res[0];
-    el.querySelectorAll("[name=pl]").forEach(rb => rb.onchange = () => { pick = res[+rb.value]; if (pick.timezone) $("#tz", el).value = pick.timezone; });
-    if (pick.timezone) $("#tz", el).value = pick.timezone;
+    el.querySelectorAll("[name=pl]").forEach(rb => rb.onchange = () => { pick = res.find(x => x.id === rb.value) || null; });
   };
   $("#tsave", el).onclick = async () => {
     const body = {timezone: $("#tz", el).value, GROK_STATION_UNITS: $("#un", el).value};
-    if (pick) { body.GROK_STATION_LAT = String(pick.lat); body.GROK_STATION_LON = String(pick.lon); }
+    if (pick && pick.id) body.place = pick.id;
     const r = await api("PUT", "/api/settings/time", body);
     if (!r.ok) return errBox($("#te", el), r.data.error);
+    if (r.data.location) $("#found", el).textContent = "Current location: " + r.data.location;
+    if (r.data.timezone && [...$("#tz", el).options].some(o => o.value === r.data.timezone)) $("#tz", el).value = r.data.timezone;
+    pick = null;
     errBox($("#te", el), ""); toast("Saved."); opts.onOk && opts.onOk();
   };
 }
@@ -470,7 +473,7 @@ function shell() {
   root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><img class="mk" src="/assets/mark.svg" alt=""><div><b>Grok Station</b><span>● ${esc(S.state.host)}</span></div></div>
     ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span></a>`).join("")).join("")}
     <div class="foot">Signed in as admin · <a href="#" id="out">Sign out</a><br>Version <span class="mono">${esc(S.state.version)}</span></div></aside>
-    <main class="main"><header class="top"><h1>${PAGES[page][0]}</h1></header><div class="body" id="pg"></div></main></div>
+    <main class="main"><header class="top"><h1>${PAGES[page][0]}</h1><div class="r" id="topr"></div></header><div class="body" id="pg"></div></main></div>
     <nav class="phonebar">${TABS.map(([k, t, i]) => `<button data-tab="${k}" class="${k === page ? "on" : ""}">${svg(i)}${t}</button>`).join("")}</nav>`;
   $("#out").onclick = async ev => { ev.preventDefault(); await api("POST", "/api/logout", {}); boot(); };
   document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => (location.hash = b.dataset.tab));
@@ -543,9 +546,24 @@ function botPill(b) {
   }
   return `<span class="pill off"><i></i>Paste its webhook to connect</span>`;
 }
+function stepupText() {
+  const left = Number(S.stepupUntil) - Date.now() / 1000;
+  if (!(left > 0)) return "";
+  return "Unlocked for " + Math.ceil(left / 60) + " min";
+}
+function noteStepup(data) {
+  if (data && Object.prototype.hasOwnProperty.call(data, "stepup_until")) S.stepupUntil = data.stepup_until;
+  const n = $("#sulock");
+  if (!n) return;
+  const t = stepupText();
+  n.textContent = t;
+  n.hidden = !t;
+}
+function stepupOpen() { return !!stepupText(); }
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
-  return `<span class="avwrap${lg ? " lg" : ""}"><img class="av" alt="" src="/api/portrait/${esc(slug)}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
+  const v = S.avatarV ? "?v=" + S.avatarV : "";
+  return `<span class="avwrap${lg ? " lg" : ""}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
 }
 function askPassword(title, text, label, send) {
   const d = document.createElement("div");
@@ -585,10 +603,19 @@ function paintBots(el, bots) {
 async function refreshBots(el) {
   const r = await api("GET", "/api/bots");
   if (!r.ok || !$("#blist", el)) return null;
+  noteStepup(r.data);
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, r.data.bots || []);
   return r.data;
+}
+function bustPortraits(el) {
+  S.avatarV = Date.now();
+  document.querySelectorAll("img.av").forEach(img => {
+    const base = (img.getAttribute("src") || "").split("?")[0];
+    if (base) img.src = base + "?v=" + S.avatarV;
+  });
+  return refreshBots(el);
 }
 function openBot(bot, el) {
   if (!bot) return;
@@ -708,10 +735,12 @@ function openBot(bot, el) {
     const url = $("#burl", d).value.trim();
     const key = $("#bkey", d).value;
     if (!(url && key)) return;
-    askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", async pw => {
+    const send = async pw => {
       $("#bkey", d).value = "";
       sync();
-      const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, {url, key, password: pw});
+      const body = {url, key};
+      if (pw) body.password = pw;
+      const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
       if (r.ok) {
         bot.webhook = {configured: true, last4: r.data.last4, saved_at: Math.floor(Date.now() / 1000)};
         $("#burl", d).value = "";
@@ -730,7 +759,9 @@ function openBot(bot, el) {
         refreshBots(el);
       }
       return r;
-    });
+    };
+    if (stepupOpen()) send("").then(r => { if (r && r.status === 403) askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", send); });
+    else askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", send);
   };
   const removeHook = () => askPassword(`Remove ${bot.name}'s bot?`, `This deletes the webhook address and key. ${bot.name} stays on the station.`, "Remove", async pw => {
     const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, {password: pw});
@@ -746,10 +777,11 @@ function openBot(bot, el) {
   $("#ren", d).onclick = () => {
     const box = document.createElement("div");
     box.className = "sheet";
+    const open = stepupOpen();
     box.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(400px,100%)">
       <h2>Rename</h2><p class="sub">${esc(bot.name)}</p>
       <div class="field"><label for="rname">Name</label><input class="inp" id="rname" maxlength="40" required value="${esc(bot.name)}"></div>
-      <div class="field"><label for="rpw">Admin password</label><input class="inp" type="password" id="rpw" autocomplete="current-password" required></div>
+      ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="rpw">Admin password</label><input class="inp" type="password" id="rpw" autocomplete="current-password" required></div>`}
       <div id="rpe"></div>
       <div class="field inline"><button class="btn p" id="rgo">Rename</button><button class="btn g" type="button" id="rno">Cancel</button></div></form>`;
     document.body.appendChild(box);
@@ -757,10 +789,21 @@ function openBot(bot, el) {
     box.querySelector("form").onsubmit = async ev => {
       ev.preventDefault();
       const name = $("#rname", box).value.trim();
-      const pw = $("#rpw", box).value;
-      $("#rpw", box).value = "";
-      const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, {name, password: pw});
-      if (!r.ok) return errBox($("#rpe", box), r.data.error);
+      const pwEl = $("#rpw", box);
+      const pw = pwEl ? pwEl.value : "";
+      if (pwEl) pwEl.value = "";
+      const body = {name};
+      if (pw) body.password = pw;
+      const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
+      if (!r.ok) {
+        if (r.status === 403 && !$("#rpw", box)) {
+          const holder = document.createElement("div");
+          holder.className = "field";
+          holder.innerHTML = `<label for="rpw">Admin password</label><input class="inp" type="password" id="rpw" autocomplete="current-password" required>`;
+          $("#rpe", box).before(holder);
+        }
+        return errBox($("#rpe", box), r.data.error);
+      }
       box.remove();
       toast("Renamed.");
       d.remove();
@@ -783,7 +826,7 @@ function addBot(voices, el) {
     <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
     <div class="field"><label for="aslug">Slug</label><input class="inp mono" id="aslug" maxlength="24" pattern="[a-z][a-z0-9-]{1,23}" required autocomplete="off" spellcheck="false"></div>
     <div class="field"><label for="avoice">Voice</label><select class="sel" id="avoice" required>${opts || `<option value="">No voices yet</option>`}</select></div>
-    <div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>
+    ${stepupOpen() ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
     <div id="ape"></div>
     <div class="field inline"><button class="btn p" id="ago">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
   document.body.appendChild(d);
@@ -796,11 +839,23 @@ function addBot(voices, el) {
     const name = $("#aname", d).value.trim();
     const slug = $("#aslug", d).value.trim();
     const voice = $("#avoice", d).value;
-    const pw = $("#apw", d).value;
-    $("#apw", d).value = "";
+    const pwEl = $("#apw", d);
+    const pw = pwEl ? pwEl.value : "";
+    if (pwEl) pwEl.value = "";
     busyBtn($("#ago", d), true);
-    const r = await api("POST", "/api/bots", {name, slug, voice, password: pw});
-    if (!r.ok) { busyBtn($("#ago", d), false, "Add bot"); return errBox($("#ape", d), r.data.error); }
+    const body = {name, slug, voice};
+    if (pw) body.password = pw;
+    const r = await api("POST", "/api/bots", body);
+    if (!r.ok) {
+      busyBtn($("#ago", d), false, "Add bot");
+      if (r.status === 403 && !$("#apw", d)) {
+        const holder = document.createElement("div");
+        holder.className = "field";
+        holder.innerHTML = `<label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required>`;
+        $("#ape", d).before(holder);
+      }
+      return errBox($("#ape", d), r.data.error);
+    }
     refreshBots(el);
     const token = r.data.voice_token || "";
     d.querySelector(".card").innerHTML = `<h2>Voice token</h2>
@@ -821,13 +876,28 @@ async function pageBots(el) {
   const guest = !!(g.data || {}).guest;
   const bots = data.bots || [];
   const n = s => bots.filter(b => (b.status || {}).state === s).length;
+  const slot = $("#topr");
+  if (slot) slot.innerHTML = `<button class="btn sm" id="avatars" type="button">Refresh avatars</button>`;
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
+      <span class="stepup" id="sulock" hidden></span>
       <button class="btn p sm right" id="add">Add bot</button></div>
       <div id="blist"></div></div>
     <div class="card"><div class="row"><button class="tog${guest ? " on" : ""}" role="switch" aria-checked="${guest}" id="guest" aria-label="Guest mode"></button>
       <div><div class="lbl">Guest mode</div><div class="help">On while guests are over.</div></div></div></div>`;
   paintBots(el, bots);
+  if (r.ok) noteStepup(data);
+  every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
+  const av = $("#avatars");
+  if (av) av.onclick = async () => {
+    busyBtn(av, true, "Refreshing…");
+    const x = await api("POST", "/api/bots/refresh-avatars", {});
+    busyBtn(av, false, "Refresh avatars");
+    if (!(x.ok || x.status === 202)) return toast((x.data && x.data.error) || "Couldn't refresh avatars.", "bad");
+    await bustPortraits(el);
+    toast(x.data && x.data.running ? "Avatar refresh already running." : "Refreshing avatars.");
+    setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 2000);
+  };
   $("#add", el).onclick = () => addBot(data.voices || [], el);
   $("#guest", el).onclick = async () => {
     const on = !$("#guest", el).classList.contains("on");
