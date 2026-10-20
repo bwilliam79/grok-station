@@ -358,6 +358,28 @@ class EnrollScreens(unittest.TestCase):
             gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font = old
             gs.lock_ring = old_ring
 
+    def test_setup_screens_centered_as_one_group(self):
+        """Setup, password reset and Almost done: everything drawn is centered both ways (within 4 px)."""
+        now = time.strptime("2026-10-19 19:42", "%Y-%m-%d %H:%M")
+        for size in ((1024, 600), (1280, 800)):
+            for d in ({"mode": "setup", "code": "K7P4QX"}, {"mode": "reset", "code": "K7P4QX"}, {"mode": "key"}):
+                d = dict(d, url="https://station.local", ip="192.0.2.5")
+                surf = pygame.Surface(size)
+                gs.draw_setup(surf, gs.Layout(*size), now, d)
+                m = pygame.mask.from_threshold(surf, gs.BG, (1, 1, 1, 255)); m.invert()
+                rects = m.get_bounding_rects()
+                u = rects[0].unionall(rects[1:])
+                self.assertLessEqual(abs(u.left - (size[0] - u.right)), 4, (size, d["mode"]))
+                self.assertLessEqual(abs(u.top - (size[1] - u.bottom)), 4, (size, d["mode"]))
+
+    def test_mic_needs_an_open_capture_device(self):
+        cards = " 2 [Plus           ]: USB-Audio - EMEET OfficeCore M0 Plus"
+        now = 1000.0
+        self.assertEqual(gs.check_mic(now, lambda: {"level_at": now, "capture": None}, cards)["ok"], False)
+        self.assertEqual(gs.check_mic(now, lambda: {"level_at": now, "capture": "plughw:CARD=Plus,DEV=0"}, cards)["ok"], True)
+        self.assertEqual(gs.check_mic(now, lambda: {"level_at": now - 60, "capture": "plughw:CARD=Plus,DEV=0"}, cards)["ok"], False)
+        self.assertEqual(gs.check_mic(now, lambda: {"level_at": now, "capture": "x"}, "")["ok"], False)
+
     def test_anim_specs(self):
         self.assertEqual(gs.anim_of(enroll_msg("ready", 1, ""))[1:], (0.9, False))
         self.assertEqual(gs.anim_of(enroll_msg("saved", 1, ""))[1:], (0.3, False))

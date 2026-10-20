@@ -516,6 +516,8 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet"):
         payload = None
     if not isinstance(payload, dict):
         return {"ok": False, "detail": "wake listener down"}
+    if "capture" in payload and not payload.get("capture"):  # listener up but no input device open
+        return {"ok": False, "detail": "no capture device"}
     try:
         level_at = float(payload.get("level_at"))
     except (TypeError, ValueError):
@@ -2096,8 +2098,8 @@ def draw_setup(surf, L, now, d):
     ring_d, ring_w, gap = round(0.2345 * se), max(3, round(0.0111 * se)), round(0.0703 * se)
     code_h = 0 if key else round(0.0328 * se * 1.25 + 0.0938 * se * 1.2 + 0.0082 * se + 2 * 0.0164 * se)
     text_w = max(r.get_width() for r, _ in rend)
-    text_h = sum(r.get_height() + g for r, g in rend) + round(0.0141 * se) + code_h
-    top, bottom = round(0.1524 * se), h - round(0.1172 * se)
+    text_h = sum(r.get_height() + g for r, g in rend) + (0 if key else round(0.0141 * se)) + code_h
+    top, bottom = 0, h  # the whole group (ring + text + code) is centered on the screen both ways
     side = ring_d + gap + text_w <= w - 2 * m
     if side:
         x0 = (w - (ring_d + gap + text_w)) // 2
@@ -2109,7 +2111,7 @@ def draw_setup(surf, L, now, d):
         ring_d = round(ring_d * 0.7)
         total = ring_d + round(0.03 * se) + text_h
         y0 = max(top, (top + bottom - total) // 2)
-        lock_ring(surf, w // 2, y0 + ring_d // 2, ring_d, ring_w)
+        lock_ring(surf, w // 2, y0 + ring_d // 2, ring_d, ring_w)  # stacked: centered column
         x, y, align = w // 2, y0 + ring_d + round(0.03 * se), "center"
     for r, g in rend:
         y += g

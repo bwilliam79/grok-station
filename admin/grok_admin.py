@@ -44,7 +44,8 @@ MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
 STEPUP_TTL = 600  # from the password entry; later requests do not move it
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
-JARVIS_LOCKED = "Jarvis is the station's default wake word and can't be turned off"
+BUILTIN_WORD = "hey_grok"
+BUILTIN_LOCKED = "Hey Grok is the station's built-in wake word and can't be turned off"
 UNITS = ("grok-station", "grok-station-wake", "grok-station-admin")
 LOG_SINCE = {"15m": "-15min", "1h": "-1h", "6h": "-6h", "24h": "-24h", "7d": "-7d"}
 LOCK = threading.RLock()
@@ -406,8 +407,8 @@ def ensure_wake_entries(cfg, ov, bots):
     """Add missing wake entries. Never change enabled on one that already exists.
 
     hey_grok is created on (fresh install) when it is not in the config or the overrides.
-    Every other new entry, including a bot added later, starts off. hey_jarvis is the fallback
-    and is not written here. Returns (overrides, changed).
+    Every other new entry, including a bot added later, starts off. hey_grok is the built-in word
+    and is always on. Returns (overrides, changed).
     """
     ov = dict(ov) if isinstance(ov, dict) else {}
     changed = False
@@ -499,9 +500,9 @@ def wakewords():
         if slug in names:
             row["label"] = "Hey " + names[slug]
         out.append(row)
-    if fb and fb.get("name"):
-        out.append({"name": fb["name"], "persona": fb.get("persona", "grok"), "enabled": True, "backup": True, "has_model": True,
-                    "sensitivity": round(1 - float(fb.get("threshold", 0.5)), 2)})
+    for row in out:  # the built-in word is always on (sensitivity can still be changed)
+        if row["name"] == BUILTIN_WORD:
+            row.update(builtin=True, enabled=row["has_model"])
     return out
 
 
@@ -2444,8 +2445,24 @@ class Handler(BaseHTTPRequestHandler):
             except (OSError, subprocess.TimeoutExpired):
                 return []
             return sorted({m.group(1) for m in re.finditer(r"^card \d+: \S+ \[([^\]]+)\]", out, re.M)})
+
+        def busy(tool):
+            """Card names whose device is open (arecord -l lists them with "Subdevices: 0/1")."""
+            try:
+                out = subprocess.run([tool, "-l"], capture_output=True, timeout=5).stdout.decode()
+            except (OSError, subprocess.TimeoutExpired):
+                return []
+            names, cur = set(), None
+            for line in out.splitlines():
+                m = re.match(r"card \d+: \S+ \[([^\]]+)\]", line)
+                if m:
+                    cur = m.group(1)
+                elif cur and re.match(r"\s*Subdevices: 0/\d+", line):
+                    names.add(cur)
+            return sorted(names)
         code, st = wake("GET", "/status")
         return self.send(200, {"inputs": cards("arecord"), "outputs": cards("aplay"),
+                               "in_use": busy("arecord"), "capture": st.get("capture") if code == 200 else None,
                                "level_dbfs": st.get("level_dbfs") if code == 200 else None,
                                "level_at": st.get("level_at") if code == 200 else None})
 
@@ -2502,10 +2519,8 @@ class Handler(BaseHTTPRequestHandler):
         known = {w["name"]: w for w in wakewords()}
         if name not in known:
             return self.send(404, {"error": "No such wake word."})
-        if known[name].get("backup"):
-            if j.get("enabled") is False:
-                return self.send(409, {"error": JARVIS_LOCKED})
-            return self.send(400, {"error": "The default wake word has no settings to change."})
+        if known[name].get("builtin") and j.get("enabled") is False:
+            return self.send(409, {"error": BUILTIN_LOCKED})
         ov = read_json(path("wake-overrides.json"), {})
         o = ov.get(name, {})
         if "enabled" in j:
@@ -2610,7 +2625,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_get_personas(self, p, q, j):
         doc = read_json(PERSONAS, {})
         items = doc.get("personas", doc) if isinstance(doc, dict) else doc
-        words = {w["persona"]: w["name"] for w in wakewords() if not w.get("backup")}
+        words = {w["persona"]: w["name"] for w in wakewords() if not w.get("builtin")}
         out = []
         for x in (items if isinstance(items, list) else []):
             if isinstance(x, dict) and x.get("slug"):

@@ -8,20 +8,5 @@
    "patience": 1
   }
  ],
- "enroll": [
-  {
-   "name": "hey_finn",
-   "persona": "finn"
-  },
-  {
-   "name": "hey_hank",
-   "persona": "hank"
-  }
- ],
- "fallback": {
-  "name": "hey_jarvis",
-  "persona": "grok",
-  "threshold": 0.5,
-  "patience": 1
- }
+ "enroll": []
 }

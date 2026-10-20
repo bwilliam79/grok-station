@@ -16,6 +16,37 @@ E = os.environ.get
 TZ = E("TZ_NAME", "America/Chicago")
 LAT, LON, PLACE = E("WEATHER_LAT", ""), E("WEATHER_LON", ""), E("WEATHER_PLACE", "")
 UNITS = E("WEATHER_UNITS", "fahrenheit")
+# Single device: the admin page saves the location in the station env file (GROK_STATION_LAT/LON/UNITS).
+# Read it on every weather call (cached by mtime), so a save takes effect without a relay restart.
+STATION_ENV = E("STATION_ENV_FILE", "/etc/grok-station/env")
+_station_env = {"mtime": None, "vals": {}}
+
+
+def _env_vals(path):
+    vals = {}
+    with open(path) as f:
+        for line in f:
+            m = re.match(r"^\s*(GROK_STATION_(?:LAT|LON|UNITS))\s*=\s*(.*?)\s*$", line)
+            if m:
+                vals[m.group(1)] = m.group(2).strip("\"'")
+    return vals
+
+
+def location():
+    """(lat, lon, units). WEATHER_* env wins when set; else the station env file the admin page writes."""
+    try:
+        mt = os.stat(STATION_ENV).st_mtime_ns
+        if mt != _station_env["mtime"]:
+            _station_env.update(mtime=mt, vals=_env_vals(STATION_ENV))
+    except OSError:
+        _station_env.update(mtime=None, vals={})
+    v = _station_env["vals"]
+    lat = LAT or v.get("GROK_STATION_LAT", "")
+    lon = LON or v.get("GROK_STATION_LON", "")
+    units = E("WEATHER_UNITS") or v.get("GROK_STATION_UNITS") or "fahrenheit"
+    if not (re.fullmatch(r"-?\d{1,2}(\.\d+)?", lat or "") and re.fullmatch(r"-?\d{1,3}(\.\d+)?", lon or "")):
+        lat = lon = ""
+    return lat, lon, units if units in ("fahrenheit", "celsius") else "fahrenheit"
 MAX_TIMERS, MAX_TIMER_S = 10, 24 * 3600
 
 WMO = {0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy", 45: "foggy", 48: "foggy", 51: "light drizzle",
@@ -106,10 +137,12 @@ def get_time(args, now=None):
 
 # ---------------------------------------------------------------- weather
 def weather_url():
-    if not (LAT and LON):
+    global UNITS
+    lat, lon, UNITS = location()
+    if not (lat and lon):
         return None
     return "https://api.open-meteo.com/v1/forecast?" + urllib.parse.urlencode({
-        "latitude": LAT, "longitude": LON, "timezone": TZ, "forecast_days": 2, "temperature_unit": UNITS,
+        "latitude": lat, "longitude": lon, "timezone": TZ, "forecast_days": 2, "temperature_unit": UNITS,
         "wind_speed_unit": "mph" if UNITS == "fahrenheit" else "kmh",
         "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
         "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max"})

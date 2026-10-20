@@ -37,6 +37,19 @@ class AdminUI(unittest.TestCase):
         self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"]', js)
         self.assertIn("xAI key", js.split("const STEPS = ", 1)[1].split("];", 1)[0])
 
+    def test_every_input_and_select_uses_the_dark_theme(self):
+        """Text, password and number inputs carry .inp and selects carry .sel (dark box, teal focus ring)."""
+        import re
+        html = self.js + _read(os.path.join("admin", "web", "index.html"))
+        for tag in re.findall(r"<input[^>]*>", html):
+            if re.search(r'type="(range|checkbox|radio|file|hidden)"', tag):
+                continue
+            self.assertRegex(tag, r'class="[^"]*\binp\b', tag)
+        for tag in re.findall(r"<select[^>]*>", html):
+            self.assertRegex(tag, r'class="[^"]*\bsel\b', tag)
+        self.assertIn('id="xkv"', self.js)
+        self.assertIn("--gs-teal", self.css.split(".inp:focus", 1)[1].split("}", 1)[0])
+
     def test_old_relay_and_update_endpoints_are_gone(self):
         self.assertNotIn("relay_token", self.js)
         self.assertNotIn("/api/system/update", self.js)

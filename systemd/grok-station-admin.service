@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 User=grok-admin
 Group=grok
-SupplementaryGroups=adm
+SupplementaryGroups=adm audio
 UMask=0027
 StateDirectory=grok-station/admin
 StateDirectoryMode=0750

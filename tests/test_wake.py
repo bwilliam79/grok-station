@@ -102,7 +102,7 @@ class TestEnroll(unittest.TestCase):
             ph = gw.enroll_phrases()
         finally:
             gw.WAKE_CONFIG, gw.OVERRIDES = old
-        self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank")
+        self.assertNotIn("hey_finn", ph); self.assertNotIn("hey_hank", ph)  # no bot words shipped by default
 
     def test_override_persona_and_parse_enroll(self):
         d = tempfile.mkdtemp()
@@ -451,7 +451,41 @@ class HandoffWaitScreen(unittest.TestCase):
 
 
 class SingleWakeWordDefault(unittest.TestCase):
-    def test_default_config_enables_only_hey_grok_plus_fallback(self):
+    def test_default_config_is_hey_grok_only(self):
         cfg = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wake", "wakewords.json")))
         self.assertEqual([w["name"] for w in cfg["words"]], ["hey_grok"])
-        self.assertEqual(cfg["fallback"]["name"], "hey_jarvis")
+        self.assertNotIn("fallback", cfg)
+        self.assertEqual(cfg.get("enroll"), [])
+        self.assertNotIn("jarvis", open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wake", "grok_wake.py")).read().lower())
+
+    def test_builtin_word_cannot_be_turned_off(self):
+        entries = {"hey_grok": {"name": "hey_grok"}, "hey_finn": {"name": "hey_finn"}}
+        gw.apply_wake_overrides(entries, {"hey_grok": {"enabled": False}, "hey_finn": {"enabled": False}})
+        self.assertEqual(list(entries), ["hey_grok"])
+
+    def test_listener_starts_with_hey_grok_only(self):
+        """Empty or unusable config: the built-in model alone is loaded."""
+        import types
+        d = tempfile.mkdtemp()
+        open(os.path.join(d, "hey_grok.onnx"), "w").close()
+        cfg = os.path.join(d, "wakewords.json")
+        json.dump({"models_dir": d, "words": []}, open(cfg, "w"))
+        seen = {}
+
+        class M:
+            def __init__(self, wakeword_models, inference_framework):
+                seen["paths"] = wakeword_models
+                self.models = {os.path.basename(p).rsplit(".", 1)[0]: None for p in wakeword_models}
+        old = (gw.WAKE_CONFIG, gw.OVERRIDES, sys.modules.get("openwakeword.model"))
+        sys.modules["openwakeword.model"] = types.SimpleNamespace(Model=M)
+        gw.WAKE_CONFIG, gw.OVERRIDES = cfg, os.path.join(d, "none.json")
+        try:
+            gw.load_model()
+        finally:
+            gw.WAKE_CONFIG, gw.OVERRIDES = old[0], old[1]
+            if old[2] is None:
+                sys.modules.pop("openwakeword.model", None)
+            else:
+                sys.modules["openwakeword.model"] = old[2]
+        self.assertEqual(seen["paths"], [os.path.join(d, "hey_grok.onnx")])
+        self.assertEqual(list(gw.WORDS), ["hey_grok"])

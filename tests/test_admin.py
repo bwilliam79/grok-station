@@ -24,8 +24,10 @@ else: print(json.dumps({"ok": True}))
 WAKE_CFG = os.path.join(TMP, "wakewords.json")
 os.makedirs(os.path.join(TMP, "models"))
 open(os.path.join(TMP, "models", "hey_finn.onnx"), "w").close()
-json.dump({"models_dir": os.path.join(TMP, "models"), "words": [{"name": "hey_finn", "persona": "finn", "threshold": 0.5}],
-           "enroll": [{"name": "hey_hank", "persona": "hank"}], "fallback": {"name": "hey_jarvis", "threshold": 0.5}}, open(WAKE_CFG, "w"))
+open(os.path.join(TMP, "models", "hey_grok.onnx"), "w").close()
+json.dump({"models_dir": os.path.join(TMP, "models"), "words": [{"name": "hey_grok", "persona": "grok", "threshold": 0.5},
+           {"name": "hey_finn", "persona": "finn", "threshold": 0.5}],
+           "enroll": [{"name": "hey_hank", "persona": "hank"}]}, open(WAKE_CFG, "w"))
 os.environ.update(ADMIN_STATE_DIR=os.path.join(TMP, "state"), ADMIN_RUN_DIR=os.path.join(TMP, "run"), ADMIN_HELPER=f"{sys.executable} {HELPER}",
                   ADMIN_WAKE_CTL="http://127.0.0.1:9", WAKE_CONFIG=WAKE_CFG, WAKE_ENROLLED_DIR=os.path.join(TMP, "enrolled"),
                   ADMIN_PERSONAS=os.path.join(TMP, "personas.json"), FAKE_LOG=os.path.join(TMP, "helper.log"),
@@ -295,15 +297,15 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         c = signed_in()
         words = {w["name"]: w for w in c.req("GET", "/api/wakewords")[1]["words"]}
         self.assertTrue(words["hey_finn"]["enabled"]); self.assertFalse(words["hey_hank"]["has_model"])
-        self.assertTrue(words["hey_jarvis"]["backup"])
+        self.assertTrue(words["hey_grok"]["builtin"]); self.assertNotIn("hey_jarvis", words)
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_finn", {"enabled": False, "sensitivity": 0.7})[0], 200)
         ov = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")))
         self.assertEqual(ov["hey_finn"], {"enabled": False, "threshold": 0.3})
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")).st_mode), 0o640)
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_hank", {"enabled": True})[0], 409)  # no model yet
-        code, out = c.req("PUT", "/api/wakewords/hey_jarvis", {"enabled": False})   # default word can't be turned off
-        self.assertEqual((code, out["error"]), (409, "Jarvis is the station's default wake word and can't be turned off"))
-        self.assertTrue(next(w for w in c.req("GET", "/api/wakewords")[1]["words"] if w["name"] == "hey_jarvis")["enabled"])
+        code, out = c.req("PUT", "/api/wakewords/hey_grok", {"enabled": False})   # built-in word can't be turned off
+        self.assertEqual((code, out["error"]), (409, "Hey Grok is the station's built-in wake word and can't be turned off"))
+        self.assertTrue(next(w for w in c.req("GET", "/api/wakewords")[1]["words"] if w["name"] == "hey_grok")["enabled"])
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_finn", {"sensitivity": 2})[0], 400)
 
     def test_speaker_names_stay_on_pi(self):
@@ -683,9 +685,8 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(ga.phrase_problem("alpha beta gamma delta epsilon"), ga.TOO_LONG)
         self.assertEqual(ga.phrase_problem("extraordinarily supercalifragilistic"), ga.TOO_LONG_ID)
         self.assertEqual(ga.phrase_problem("Hey Finn!"), "“Hey Finn” is already a wake word.")
-        self.assertEqual(ga.phrase_problem("hey_jarvis"), "“Hey Jarvis” is already a wake word.")
+        self.assertEqual(ga.phrase_problem("hey_grok"), "“Hey Grok” is already a wake word.")
         self.assertEqual(ga.phrase_problem("hey fin"), "Too close to “Hey Finn”. Pick something that sounds different.")
-        self.assertEqual(ga.phrase_problem("play jarvis"), "Too close to “Hey Jarvis”. Pick something that sounds different.")
         # turned off on the admin page, still a known word
         ga.write_json(ga.path("wake-overrides.json"), {"hey_finn": {"enabled": False, "threshold": 0.3}}, 0o640)
         self.assertEqual(ga.phrase_problem("hey fin"), "Too close to “Hey Finn”. Pick something that sounds different.")
@@ -1232,7 +1233,8 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertIn(">Bot ID <", js)
         self.assertNotIn(">Slug<", js)
         self.assertIn("Short lowercase ID for this bot, like nix. Used for wake-word routing, portraits and replies. Can't be changed later.", js)
-        self.assertIn("Hey Jarvis is the backup word: it always works, even if a new word isn't trained yet.", js)
+        self.assertIn("Hey Grok is the built-in wake word. It is always on.", js)
+        self.assertNotIn("Jarvis", js)
         self.assertIn("Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.", js)
         self.assertIn('min="20" max="30" step="1" value="25"', js)
         self.assertIn("Block personal info in replies", js)
@@ -1290,7 +1292,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         ov_path = ga.path("wake-overrides.json")
         try:
             json.dump({"models_dir": models, "words": [{"name": "hey_finn", "persona": "finn", "threshold": 0.5}],
-                       "fallback": {"name": "hey_jarvis", "threshold": 0.5}}, open(cfg, "w"))
+                       }, open(cfg, "w"))
             ga.WAKE_CONFIG = cfg
             ga.write_json(ov_path, {"hey_finn": {"enabled": False, "threshold": 0.3}}, 0o640)
             ga.wakewords()
@@ -1301,13 +1303,12 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
             ov = json.load(open(ov_path))
             self.assertNotIn("hey_finn", ov)  # a config word is not copied into the overrides
             self.assertTrue(ov["hey_grok"]["enabled"])
-            json.dump({"models_dir": models, "words": [], "fallback": {"name": "hey_jarvis", "threshold": 0.5}},
-                      open(cfg, "w"))
+            json.dump({"models_dir": models, "words": []}, open(cfg, "w"))
             os.remove(ov_path)
             words = {w["name"]: w for w in ga.wakewords()}
             enabled = sorted(n for n, w in words.items() if w.get("enabled"))
-            self.assertEqual(enabled, ["hey_grok", "hey_jarvis"])
-            self.assertTrue(words["hey_jarvis"]["backup"])
+            self.assertEqual(enabled, ["hey_grok"])
+            self.assertNotIn("hey_jarvis", words)
             ga.write_json(ov_path, {"hey_nix": {"enabled": True, "persona": "nix"}}, 0o640)
             ga.remember_bot_wakeword("nix")
             self.assertTrue(json.load(open(ov_path))["hey_nix"]["enabled"])  # already there: left alone

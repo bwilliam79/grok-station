@@ -59,11 +59,11 @@ run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements
 run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
 
 echo "== wake listener (Hey Grok)"
-run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled
+run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
 sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
 run $O/wake/venv/bin/pip install --quiet --no-deps openwakeword
 run $O/wake/venv/bin/pip install --quiet onnxruntime numpy tqdm scipy scikit-learn requests "websockets>=17"
-run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["hey_jarvis"])'
+run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
 run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
 run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
 
@@ -78,7 +78,7 @@ run systemctl mask getty@tty1.service
 
 echo "== admin page (HTTPS) and services"
 run sh tools/install-files.sh "$PWD" "$VER"
-run usermod -aG grok-admin grok-admin   # admin page reads admin_token (group grok-admin)
+run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
 run systemctl daemon-reload
 run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
 run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station

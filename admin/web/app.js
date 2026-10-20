@@ -857,8 +857,10 @@ async function audioPanel(el) {
   const [a, s] = await Promise.all([api("GET", "/api/audio"), api("GET", "/api/settings/audio")]);
   const v = (s.data || {}).values || {}, d = a.data || {};
   const devs = [...new Set([...(d.inputs || []), ...(d.outputs || []), v.WAKE_DEVICE_NAME].filter(Boolean))];
+  // no saved choice yet: the listener's default matches "EMEET" in the card name
+  const cur = v.WAKE_DEVICE_NAME || devs.find(x => /emeet/i.test(x)) || "";
   el.innerHTML = `<div class="card"><h2>Audio</h2>
-    <div class="field"><label for="dev">Microphone and speaker</label><select class="sel" id="dev">${devs.map(x => `<option${x === v.WAKE_DEVICE_NAME ? " selected" : ""}>${esc(x)}</option>`).join("")}</select>
+    <div class="field"><label for="dev">Microphone and speaker</label><select class="sel" id="dev">${devs.map(x => `<option value="${esc(x)}"${x === cur ? " selected" : ""}>${esc(x)}${(d.in_use || []).includes(x) ? " (in use by the station)" : ""}</option>`).join("")}</select>
       <p class="note">The station uses one sound device for both (the speakerphone).</p></div>
     <div class="field"><label>Microphone level (live)</label><div id="lvl">${meter(d.level_dbfs)}</div></div>
     <div class="field"><label for="rate">Recording rate</label><select class="sel" id="rate"><option value="16000">16 kHz</option><option value="48000"${v.WAKE_CAPTURE_RATE === "48000" ? " selected" : ""}>48 kHz (device only does 48k)</option></select></div>
@@ -879,7 +881,7 @@ async function audioPanel(el) {
   };
 }
 
-const JARVIS_TIP = "Hey Jarvis is the backup word: it always works, even if a new word isn't trained yet.";
+const BUILTIN_TIP = "Hey Grok is the built-in wake word. It is always on.";
 const SENS_TIP = "Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.";
 function wordLabel(w) { return w.label || WORD(w.name); }
 function enrollStatusText(row) {
@@ -897,17 +899,17 @@ async function wakePanel(el, opts = {}) {
     <p class="sub">Each word opens one teammate. Built-in words work right away; new ones need about a minute of your voice.</p>
     ${words.map(w => {
       const label = wordLabel(w);
-      const tog = w.backup
-        ? `<span class="tipwrap" tabindex="0" role="note" aria-label="${esc(JARVIS_TIP)}"><button class="tog on" role="switch" aria-checked="true" aria-label="${esc(label)} on" disabled aria-disabled="true"></button><span class="tip">${esc(JARVIS_TIP)}</span></span>`
+      const tog = w.builtin
+        ? `<span class="tipwrap" tabindex="0" role="note" aria-label="${esc(BUILTIN_TIP)}"><button class="tog on" role="switch" aria-checked="true" aria-label="${esc(label)} on" disabled aria-disabled="true"></button><span class="tip">${esc(BUILTIN_TIP)}</span></span>`
         : `<button class="tog${w.enabled ? " on" : ""}" role="switch" aria-checked="${w.enabled}" aria-label="${esc(label)} on" data-tog="${esc(w.name)}"${!w.has_model ? " disabled" : ""}></button>`;
       const job = enrollStatusText(train[w.name]);
       return `<div class="row" style="flex-wrap:wrap">
       ${tog}
-      <div style="min-width:160px"><div class="lbl">${esc(label)}</div><div class="help">Opens ${esc(PERSONA(w.persona))}${w.backup ? " · backup word, always on" : ""}</div></div>
-      <span class="pill ${w.backup ? "off" : w.enrolled ? "ok" : w.has_model ? (w.provisional ? "busy" : "ok") : "warn"}"><i></i>${w.backup ? "Backup" : w.enrolled ? "Your voice" : w.has_model ? (w.provisional ? "Starter model" : "Ready") : "Needs your voice"}</span>
+      <div style="min-width:160px"><div class="lbl">${esc(label)}</div><div class="help">Opens ${esc(PERSONA(w.persona))}${w.builtin ? " · built in, always on" : ""}</div></div>
+      <span class="pill ${w.builtin ? "ok" : w.enrolled ? "ok" : w.has_model ? (w.provisional ? "busy" : "ok") : "warn"}"><i></i>${w.builtin ? "Built in" : w.enrolled ? "Your voice" : w.has_model ? (w.provisional ? "Starter model" : "Ready") : "Needs your voice"}</span>
       ${job ? `<span class="help">${esc(job)}</span>` : ""}
       ${w.metrics ? `<span class="help mono">recall ${esc(w.metrics.recall)} · ${esc(w.metrics.fa_per_hour)}/h false</span>` : ""}
-      ${w.backup ? "" : `<label class="inline right help tipwrap" tabindex="0" style="min-width:220px">Sensitivity<span class="tip">${esc(SENS_TIP)}</span> <input type="range" min="5" max="95" value="${Math.round(w.sensitivity * 100)}" data-sens="${esc(w.name)}"${w.has_model ? "" : " disabled"}></label>
+      ${`<label class="inline right help tipwrap" tabindex="0" style="min-width:220px">Sensitivity<span class="tip">${esc(SENS_TIP)}</span> <input type="range" min="5" max="95" value="${Math.round(w.sensitivity * 100)}" data-sens="${esc(w.name)}"${w.has_model ? "" : " disabled"}></label>
       <button class="btn sm" data-enroll="${esc(w.name)}">Record voice</button>`}</div>`;
     }).join("")}
     <div id="we"></div></div>`;
@@ -920,7 +922,7 @@ async function wakePanel(el, opts = {}) {
     const res = await api("PUT", "/api/wakewords/" + s.dataset.sens, {sensitivity: +s.value / 100});
     res.ok ? toast("Saved.") : errBox($("#we", el), res.data.error);
   });
-  const names = words.filter(w => !w.backup).map(w => w.name);
+  const names = words.filter(w => !w.builtin).map(w => w.name);
   el.querySelectorAll("[data-enroll]").forEach(b => b.onclick = () => enrollDrawer(b.dataset.enroll, names, () => wakePanel(el, opts)));
   $("#rec", el).onclick = () => enrollDrawer(null, names, () => wakePanel(el, opts));
 }
@@ -1111,7 +1113,7 @@ const WIZ_BACK = {3: 2, 4: 2, 5: 3, 6: 5, 7: 6};
 async function xaiKeyPanel(el, onSaved) {
   const st = (await api("GET", "/api/xai-key")).data || {};
   el.innerHTML = `<form id="xk" autocomplete="off"><div class="field"><label for="xkv">xAI API key <span class="help">${st.set ? "A key is set. Paste a new one to replace it." : "Not set yet."}</span></label>
-    <input type="password" id="xkv" autocomplete="off" spellcheck="false" placeholder="xai-..."></div>
+    <input class="inp" type="password" id="xkv" autocomplete="off" spellcheck="false" placeholder="xai-..."></div>
     <div id="xke"></div><button class="btn p" id="xks">Save key</button></form>
     <p class="note">The key is saved on this station for the voice relay only. It is never shown again. Voice starts once it is saved.</p>`;
   $("#xk", el).onsubmit = async ev => {

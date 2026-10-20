@@ -20,7 +20,7 @@ keep /show from posting as any persona.
 Wake words: WAKE_CONFIG (default /opt/grok-station/wake/wakewords.json, repo copy wake/wakewords.json) lists custom
 openWakeWord models (models_dir/<name>.onnx), each with a persona slug, threshold and patience (consecutive 80 ms
 frames at or above the threshold). A wake opens the session as that persona (relay /ws?persona=<slug>). The optional
-"fallback" entry loads a built-in openWakeWord model (hey_jarvis). Without the file: single WAKE_MODEL as before.
+Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. Without the file: hey_grok alone.
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
@@ -28,7 +28,8 @@ import base64, shlex, json, os, queue, re, subprocess, sys, threading, time, url
 import numpy as np
 
 E = os.environ.get
-MODEL = E("WAKE_MODEL", "hey_jarvis")          # pre-trained placeholder until a custom "Hey Grok" model exists
+MODEL = E("WAKE_MODEL", "/opt/grok-station/wake/models/hey_grok.onnx")  # the built-in word; used if the config is unreadable
+BUILTIN = "hey_grok"                             # always on: the admin page can't turn it off
 THRESH = float(E("WAKE_THRESHOLD", "0.5"))
 COOLDOWN = float(E("WAKE_COOLDOWN", "2"))
 def default_gain(device):
@@ -143,7 +144,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None}
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
+LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None, "capture": None}  # capture: open input device
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
@@ -562,6 +563,7 @@ def control_server():
             if self.path != "/status":
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "session": LIVE["session"],
+                                 "capture": LIVE["capture"],
                                  "enrolling": ENROLL_STATE["busy"], "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
                                  "setup": setup_mode()})
@@ -838,7 +840,7 @@ def apply_wake_overrides(entries, ov):
     for name, o in ov.items():
         if not isinstance(o, dict) or name not in entries:
             continue
-        if o.get("enabled") is False:
+        if o.get("enabled") is False and name != BUILTIN:
             entries.pop(name, None)
             print(f"wake word {name}: turned off on the admin page", flush=True)
             continue
@@ -862,7 +864,8 @@ def load_model():
         print(f"wake config unreadable ({type(e).__name__}); using {MODEL}", flush=True)
         cfg = None
     if cfg is None:
-        WORDS[MODEL] = _word({"name": MODEL, "threshold": THRESH})
+        name = os.path.basename(MODEL).rsplit(".", 1)[0]
+        WORDS[name] = _word({"name": name, "persona": "grok", "threshold": THRESH})
         return Model(wakeword_models=[MODEL], inference_framework="onnx")
     paths = []
     entries = {w["name"]: dict(w) for w in cfg.get("words", []) if "name" in w}
@@ -886,10 +889,9 @@ def load_model():
             print(f"wake word {w['name']}: model missing, skipped", flush=True)
             continue
         paths.append(path); WORDS[w["name"]] = w
-    fb = cfg.get("fallback")
-    if fb or not paths:
-        fb = _word(fb or {"name": "hey_jarvis"})
-        paths.append(fb["name"]); WORDS[fb["name"]] = fb
+    if not paths:  # nothing usable in the config: the built-in word alone
+        w = _word({"name": BUILTIN, "persona": "grok", "threshold": THRESH})
+        paths.append(os.path.join(cfg.get("models_dir", "") or os.path.dirname(MODEL), BUILTIN + ".onnx")); WORDS[BUILTIN] = w
     model = Model(wakeword_models=paths, inference_framework="onnx")
     for k in list(WORDS):
         if k not in model.models:
@@ -1315,13 +1317,17 @@ def main():
     while True:
         cap = find_card("arecord")
         if not cap:
+            LIVE["capture"] = None
             print(f"no capture device matching {DEVICE!r}; retrying", flush=True)
             time.sleep(5)
             continue
         play = find_card("aplay") or cap
-        LIVE["play"] = play
+        LIVE["play"], LIVE["capture"] = play, cap
         print(f"capture {cap} playback {play}", flush=True)
-        p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw"],
+        # 500 ms ALSA buffer / 100 ms periods: a slow Pi (3B) can stall for a few hundred ms without an overrun
+        p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw",
+                              "--buffer-time=" + E("WAKE_ALSA_BUFFER_US", "500000"),
+                              "--period-time=" + E("WAKE_ALSA_PERIOD_US", "100000")],
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
         last_hit, last_log, peak, rms_sum, n, peaks = 0.0, time.time(), 0.0, 0.0, 0, {}
         tail = np.zeros(len(_K) - 1, np.float32)
@@ -1408,6 +1414,7 @@ def main():
                 print(f"level rms={avg:.0f} ({dbfs:.1f} dBFS) peak_score={peak:.3f} frames={n}{' peaks ' + top if top else ''}", flush=True)
                 last_log, peak, rms_sum, n, peaks = now, 0.0, 0.0, 0, {}
         p.kill()
+        LIVE["capture"] = None
         print("capture ended; restarting", flush=True)
         time.sleep(2)
 

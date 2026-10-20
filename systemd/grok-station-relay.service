@@ -5,6 +5,8 @@ After=network.target
 [Service]
 User=grok-relay
 Group=grok-admin
+# reads the station env file (location the admin page saves) - group grok, mode 0640
+SupplementaryGroups=grok
 UMask=0007
 Environment=GROK_SECRETS_DIR=/etc/grok-station/secrets
 Environment=GROK_STATE_DIR=/var/lib/grok-station

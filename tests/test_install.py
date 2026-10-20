@@ -39,6 +39,20 @@ class Install(unittest.TestCase):
         self.assertIn("https://127.0.0.1/", sh)
         self.assertIn("journalctl -u grok-station-admin", sh)
 
+    def test_pi3_audio_and_permissions(self):
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        self.assertRegex(sh, r"usermod -aG grok-admin,audio grok-admin")  # admin page lists sound cards
+        self.assertIn("$O/portraits", sh)  # wake listener writes the persona cache (sync_personas PermissionError)
+        admin = open(os.path.join(ROOT, "systemd", "grok-station-admin.service")).read()
+        self.assertIn("SupplementaryGroups=adm audio", admin)
+        wake = open(os.path.join(ROOT, "systemd", "grok-station-wake.service")).read()
+        self.assertNotIn("CPUQuota", wake)  # the quota starved arecord on a Pi 3B (overruns)
+        src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
+        self.assertIn("--buffer-time=", src); self.assertIn("--period-time=", src)
+        self.assertIn('download_models(["feature-models-only"])', sh)
+        self.assertIn("wake/models/hey_grok.onnx", sh)
+        self.assertNotIn("jarvis", sh.lower())
+
     def test_relay_unit_is_loopback(self):
         unit = open(os.path.join(ROOT, "systemd", "grok-station-relay.service")).read()
         self.assertIn("RELAY_BIND=127.0.0.1", unit)

@@ -267,3 +267,34 @@ class PiTimers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StationLocation(unittest.TestCase):
+    """Single device: the relay reads the location the admin page saved, without a restart."""
+
+    def test_weather_url_follows_the_station_env_file(self):
+        import tempfile, time as _t
+        d = tempfile.mkdtemp(); f = os.path.join(d, "env")
+        old = (T.STATION_ENV, T.LAT, T.LON)
+        T.STATION_ENV, T.LAT, T.LON = f, "", ""
+        try:
+            self.assertIsNone(T.weather_url())  # no file: no location
+            open(f, "w").write("GROK_STATION_TOKEN=x\n")
+            self.assertIsNone(T.weather_url())
+            _t.sleep(0.01)
+            open(f, "w").write("GROK_STATION_TOKEN=x\nGROK_STATION_LAT=41.5\nGROK_STATION_LON=-88.1\nGROK_STATION_UNITS=celsius\n")
+            os.utime(f, ns=(time_ns() + 10**9, time_ns() + 10**9))
+            u = T.weather_url()
+            self.assertIn("latitude=41.5", u); self.assertIn("longitude=-88.1", u); self.assertIn("celsius", u)
+        finally:
+            T.STATION_ENV, T.LAT, T.LON = old
+
+    def test_relay_unit_can_read_the_env_file(self):
+        unit = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "systemd",
+                                 "grok-station-relay.service")).read()
+        self.assertIn("SupplementaryGroups=grok", unit)
+
+
+def time_ns():
+    import time as _t
+    return _t.time_ns()
