@@ -963,6 +963,7 @@ def make_chime(path):
         w.writeframes((tone * 0.35 * 32767).astype("<i2").tobytes())
 
 
+THINKING_BLANK = " "  # thinking screen: spinning ring only, no dots (truthy so the display keeps no fallback text)
 HANDOFF_KEEPALIVE_S = 8  # well under the display's 20 s thinking hold
 
 
@@ -970,7 +971,7 @@ def handoff_wait_text(ev):
     """Wait-screen label. Direct wake ("Hey Ash") shows only the spinning ring; a bot-to-bot handoff names the bot.
     A relay that doesn't send `direct` gets the old label."""
     if ev.get("direct") is True:
-        return "…"
+        return THINKING_BLANK
     name = str(ev.get("name", ""))[:24] or "a teammate"
     return f"Checking with {name}…"
 
@@ -1162,7 +1163,7 @@ class Session:
                             if self.t_first_audio:
                                 self.state("speaking", heard=self.heard, text="…")
                             elif self.responding:
-                                self.state("thinking", heard=self.heard, text="…")
+                                self.state("thinking", heard=self.heard, text=THINKING_BLANK)
                             else:
                                 self.state("listening")
                     elif t == "speech_stopped":
@@ -1184,7 +1185,7 @@ class Session:
                         self.heard = " ".join(ev.get("text", "").split())
                         print(f"heard: {self.heard!r}" if self.echo_text else f"heard: {len(self.heard)} chars", flush=True)
                         if self.heard or self.responding:
-                            self.state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or "…")
+                            self.state("speaking" if self.t_first_audio else "thinking", heard=self.heard, text=self.reply or ("…" if self.t_first_audio else THINKING_BLANK))
                     elif t == "reply":
                         self.reply = ev.get("text", "").strip()
                         print(f"reply: {self.reply!r}" if self.echo_text else f"reply: {len(self.reply)} chars", flush=True)
@@ -1238,7 +1239,7 @@ class Session:
                             if self.reply:
                                 kw["text"] = self.reply
                             elif phase != "listening":
-                                kw["text"] = "…"
+                                kw["text"] = THINKING_BLANK if phase == "thinking" else "…"
                             self.state(phase, **kw)
                     elif t == "handoff_done":
                         self.handoff_text = None

@@ -484,7 +484,8 @@ class ToolCardForward(unittest.TestCase):
 
 class HandoffWaitScreen(unittest.TestCase):
     def test_direct_wake_has_no_checking_label(self):
-        self.assertEqual(gw.handoff_wait_text({"name": "Ash", "direct": True}), "…")
+        self.assertEqual(gw.handoff_wait_text({"name": "Ash", "direct": True}), " ")
+        self.assertNotIn("…", gw.handoff_wait_text({"name": "Ash", "direct": True}))
 
     def test_bot_to_bot_names_the_bot(self):
         self.assertEqual(gw.handoff_wait_text({"name": "Ash", "direct": False}), "Checking with Ash…")
