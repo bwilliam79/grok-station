@@ -25,18 +25,28 @@ Write the card, boot the Pi, and SSH in: `ssh <user>@<hostname>.local`.
 
 ## 2. Install
 
+On the Pi, run:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/bwilliam79/grok-station/main/bootstrap.sh | sudo sh
+```
+
+`bootstrap.sh` checks that the system is 64-bit, installs `git` if it's missing, clones the repo into `/usr/local/src/grok-station` (or updates an existing clone at `~/grok-station`), and then runs `install.sh`. It never prompts.
+
+**Alternative (manual clone):**
+
 ```bash
 sudo apt-get install -y git   # if git isn't installed yet
 git clone https://github.com/bwilliam79/grok-station && cd grok-station && sudo ./install.sh
 ```
 
-`sudo ./install.sh --dry-run` prints every step without changing anything.
+The installer prints one line per stage with a check or a cross. Everything else goes to `/var/log/grok-station-install.log`. Options: `--verbose` (`-v`) streams every command's output, and `--dry-run` shows what would run without changing anything (with the one-liner: `... | sudo sh -s -- --verbose`).
 
 ### What the installer does
 
 - Installs the system packages it needs with `apt-get`.
 - Creates the service users and generates local secrets in `/etc/grok-station/secrets`. Secrets are never printed.
-- Installs the display app, the voice relay and the Hey Grok wake listener (each in its own Python venv) under `/opt/grok-station`.
+- Installs the display app, the voice relay and the Hey Grok wake listener (the relay and the wake listener each in their own Python venv) under `/opt/grok-station`.
 - Sets quiet boot options in `cmdline.txt`, including `vt.global_cursor_default=0`, which hides the blinking console cursor. It adds `disable_splash=1` to `config.txt`, sets up the boot splash, and turns off the login prompt on the screen (tty1).
 - Installs the `grok-station` command and creates a self-signed certificate for the admin page.
 - Enables and starts four systemd services: `grok-station`, `grok-station-wake`, `grok-station-relay` and `grok-station-admin`.
@@ -67,15 +77,19 @@ sudo grok-station set-key
 
 ## Updating
 
-From the cloned repo on the Pi:
+Run the same one-liner again:
 
 ```bash
-cd grok-station && git pull && sudo ./install.sh
+wget -qO- https://raw.githubusercontent.com/bwilliam79/grok-station/main/bootstrap.sh | sudo sh
 ```
 
-The installer is safe to re-run. It keeps the existing secrets, admin password and key.
+Or, from the cloned repo: `git pull && sudo ./install.sh`. Both are safe to re-run and keep the existing secrets, admin password and key.
+
+Or use **Updates** on the admin page: **Check now** looks up the latest commit on `main`, and **Update** runs the same update on the Pi (`grok-station-update.service`). The daily check only checks; it never installs.
 
 ## Troubleshooting
+
+If a stage fails, the installer shows the failed stage, the last 20 log lines and the log path. The full log is `/var/log/grok-station-install.log`; re-run with `--verbose` to watch every command.
 
 | Service | What it runs |
 |---|---|
@@ -83,6 +97,7 @@ The installer is safe to re-run. It keeps the existing secrets, admin password a
 | `grok-station-wake` | The Hey Grok wake listener |
 | `grok-station-relay` | The voice relay (127.0.0.1 only) |
 | `grok-station-admin` | The admin page (HTTPS on 443) |
+| `grok-station-update` | One-off update started from the admin page (`journalctl -u grok-station-update`) |
 
 ```bash
 systemctl status grok-station grok-station-wake grok-station-relay grok-station-admin

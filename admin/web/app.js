@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const root = () => $("#root");
-let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0, pairCode: ""};
+let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0, };
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
 const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 const ENROLL_ACTIVE = ["recording", "uploading", "training"];
@@ -221,244 +221,7 @@ function joinForm(el, ssid, secure, opts) {
   };
 }
 
-/* ---------------------------------------------------------------- voice relay + updates */
-const INSTALL_CMD = {
-  unix: "curl -fsSL https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.sh -o relay-install.sh && sh relay-install.sh",
-  win: "Invoke-WebRequest -Uri https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.ps1 -OutFile relay-install.ps1; powershell -File .\\relay-install.ps1"
-};
-const CANT_CHECK = "Can't check. Update info is out of date. Updates may be hidden.";
-const UPDATE_BOTH_COPY = "Relay first, then station after a 10-minute healthy soak. Updates come from the GitHub release and are checked by image digest.";
-const RELAY_DOWN_BANNER = "Can't reach the relay. Voice is off.";
-const FP_NOTE = "Compare with the installer and the station screen. Nothing pairs until both ends confirm.";
-const STATION_ONLY_WHY = "Station-only is off until the relay is already on this release.";
-const ROTATE_CMD = "grok-relay rotate-xai-key";
-function remainFrom(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 0;
-  if (n > 86400) return Math.max(0, Math.floor(n - Date.now() / 1000));
-  return Math.max(0, Math.floor(n));
-}
-function formatCode(c) {
-  const raw = String(c || "").replace(/\s+/g, "");
-  if (!raw) return "";
-  if (raw.indexOf("-") >= 0) return raw;
-  if (raw.length === 8) return raw.slice(0, 4) + "-" + raw.slice(4);
-  return raw;
-}
-function calendarDate(v) {
-  if (v == null || v === "") return "";
-  let d = null;
-  if (typeof v === "number" || (typeof v === "string" && /^\d+(\.\d+)?$/.test(v))) {
-    let n = Number(v);
-    if (n > 1e12) n = n / 1000;
-    d = new Date(n * 1000);
-  } else if (typeof v === "string") {
-    const ms = Date.parse(v);
-    if (!Number.isNaN(ms)) d = new Date(ms);
-  }
-  if (!d || isNaN(d.getTime())) return "";
-  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return months[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear();
-}
-function renewDate(v) {
-  return calendarDate(v) || (typeof v === "string" && v ? v : "—");
-}
-function seenText(v) {
-  if (v == null || v === "") return "never";
-  if (typeof v === "number") return ago(v > 1e12 ? v / 1000 : v);
-  if (typeof v === "string" && /^\d+(\.\d+)?$/.test(v)) return ago(Number(v));
-  if (typeof v === "string") {
-    const ms = Date.parse(v);
-    if (!Number.isNaN(ms)) return ago(ms / 1000);
-    return v;
-  }
-  return String(v);
-}
-function seenLine(relay) {
-  const left = seenText(relay && relay.last_seen);
-  if (!relay || relay.latency_ms == null || relay.latency_ms === "") return left;
-  const ms = Number(relay.latency_ms);
-  return left + " · " + (Number.isFinite(ms) ? Math.round(ms) + " ms" : String(relay.latency_ms));
-}
-function plainVersion(v) {
-  if (v == null || v === false) return "";
-  if (typeof v === "string") return v.trim();
-  if (typeof v === "number") return String(v);
-  if (typeof v === "object") {
-    if (typeof v.version === "string") return v.version.trim();
-    if (typeof v.installed === "string") return v.installed.trim();
-    if (typeof v.tag === "string") return v.tag.trim();
-  }
-  return "";
-}
-function installedOf(obj) {
-  if (obj == null || obj === false) return "";
-  if (typeof obj !== "object") return plainVersion(obj);
-  if (obj.installed != null && typeof obj.installed !== "object") return plainVersion(obj.installed);
-  return plainVersion(obj.version || obj.installed);
-}
-function componentInstalled(d, name) {
-  if (!d || typeof d !== "object") return "";
-  const box = d.installed;
-  if (box && typeof box === "object" && Object.prototype.hasOwnProperty.call(box, name)) {
-    const v = box[name];
-    if (v && typeof v === "object") return installedOf(v);
-    return plainVersion(v);
-  }
-  if (d[name] && typeof d[name] === "object") return installedOf(d[name]);
-  return plainVersion(d[name]);
-}
-function updateCount(d) {
-  const avail = plainVersion(d && d.available);
-  if (!avail) return 0;
-  let n = 0;
-  if (componentInstalled(d, "station") !== avail) n++;
-  if (componentInstalled(d, "relay") !== avail) n++;
-  return n;
-}
-function pairCodeFrom(data) {
-  if (!data || typeof data !== "object") return "";
-  const pairing = data.pairing;
-  if (pairing && typeof pairing.code === "string" && pairing.code) return pairing.code;
-  return typeof data.code === "string" ? data.code : "";
-}
-function fpHex(value) {
-  const compact = String(value || "").replace(/[^0-9a-fA-F]/g, "");
-  return /^[0-9a-fA-F]{64}$/.test(compact) ? compact.toUpperCase() : "";
-}
-function installHTML() {
-  return `<div class="os" role="tablist" aria-label="Installer">
-    <button type="button" class="btn sm" data-os="unix" role="tab">macOS / Linux</button>
-    <button type="button" class="btn sm" data-os="win" role="tab">Windows</button></div>
-    <pre class="cmd" id="oscmd"></pre>
-    <div class="field"><button type="button" class="btn sm" id="copycmd">Copy</button></div>`;
-}
-function wireInstall(root) {
-  if (!root) return;
-  const pick = which => {
-    root._os = which === "win" ? "win" : "unix";
-    const pre = $("#oscmd", root);
-    if (pre) pre.textContent = INSTALL_CMD[root._os];
-    root.querySelectorAll("[data-os]").forEach(b => {
-      const on = b.dataset.os === root._os;
-      b.classList.toggle("on", on);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-    });
-  };
-  root.querySelectorAll("[data-os]").forEach(b => { b.onclick = () => pick(b.dataset.os); });
-  const copy = $("#copycmd", root);
-  if (copy) copy.onclick = () => { const pre = $("#oscmd", root); copyText(pre ? pre.textContent : ""); };
-  pick(root._os || "unix");
-}
-function fpHTML(hex) {
-  const up = fpHex(hex);
-  if (!up) return `<p class="note">The fingerprint isn't ready to compare yet.</p>`;
-  let out = `<div class="fp">`;
-  for (let line = 0; line < 4; line++) {
-    out += `<div class="ln">`;
-    for (let g = 0; g < 4; g++) {
-      const idx = line * 4 + g;
-      const chunk = up.slice(idx * 4, idx * 4 + 4);
-      const end = idx === 0 || idx === 15;
-      out += end ? `<b class="g end">${chunk}</b>` : `<span class="g">${chunk}</span>`;
-    }
-    out += `</div>`;
-  }
-  return out + `</div>`;
-}
-function blurMatch(el) {
-  ["#badmatch", "#okmatch"].forEach(sel => {
-    const b = $(sel, el);
-    if (b) b.blur();
-  });
-}
-function showFingerprint(el, hex) {
-  const want = fpHex(hex).toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(want)) return;
-  if (el._fp === want && $("#fpbox", el)) return;
-  el._fp = want;
-  const html = `<div id="fpbox"><p class="note">${esc(FP_NOTE)}</p>${fpHTML(want)}
-    <div class="field inline"><button type="button" class="btn g" id="badmatch">They don't match · cancel</button>
-    <button type="button" class="btn p" id="okmatch">They match</button></div></div>`;
-  const box = $("#fpbox", el);
-  if (box) box.outerHTML = html;
-  else {
-    const anchor = $("#waitrow", el) || $("#pairing", el);
-    if (anchor) anchor.insertAdjacentHTML("beforeend", html);
-  }
-  const bad = $("#badmatch", el), ok = $("#okmatch", el);
-  if (bad) bad.onclick = () => cancelPair(el);
-  if (ok) ok.onclick = () => confirmPair(el);
-  blurMatch(el);
-  requestAnimationFrame(() => blurMatch(el));
-}
-function hideFingerprint(el) {
-  if (el) el._fp = "";
-  const box = el && $("#fpbox", el);
-  if (box) box.remove();
-}
-function auditRow(row) {
-  if (typeof row === "string") {
-    const text = row.trim();
-    const parts = text.split(/\s+/);
-    const event = parts.length >= 4 ? parts[3] : "";
-    const detail = parts.length >= 5 ? parts.slice(4).join(" ") : "";
-    const extra = detail && detail !== "-" ? detail : "";
-    const line = event ? [parts[0], event, extra].filter(Boolean).join(" ") : text;
-    return {ts: parts[0] || "", side: parts.length >= 3 ? parts[2] : "", line};
-  }
-  if (row && typeof row === "object") {
-    return {
-      ts: row.ts == null ? "" : row.ts,
-      side: typeof row.side === "string" ? row.side : "",
-      line: typeof row.line === "string" ? row.line : ""
-    };
-  }
-  return {ts: "", side: "", line: ""};
-}
-function auditHTML(rows) {
-  const list = (Array.isArray(rows) ? rows : []).slice(-20);
-  if (!list.length) return `<p class="help">No activity yet.</p>`;
-  return list.map(raw => {
-    const a = auditRow(raw);
-    const relay = a.side === "relay";
-    const tag = relay ? "Relay" : "Station";
-    return `<div class="row"><span class="pill ${relay ? "busy" : "ok"}"><i></i>${tag}</span><span>${esc(a.line)}</span></div>`;
-  }).join("");
-}
-function checksHTML(checks) {
-  const list = Array.isArray(checks) ? checks : [];
-  if (!list.length) return `<p class="help">No checks reported.</p>`;
-  return `<div class="lbl" style="margin-top:16px">Checks</div><div id="checks">${list.map(c => `<div class="row"><span class="pill ${c && c.ok ? "ok" : "bad"}"><i></i>${c && c.ok ? "Passed" : "Failed"}</span><span>${esc(c && c.name || "Check")}</span></div>`).join("")}</div>`;
-}
-function bindUnpair(el) {
-  const b = $("#unpair", el);
-  if (!b) return;
-  b.onclick = () => askPassword("Unpair relay?", "This station will forget the relay. Voice stays off until you pair again.", "Unpair", async pw => {
-    const r = await api("POST", "/api/relay/unpair", {password: pw});
-    if (r.ok) { S.pairCode = ""; toast("Relay unpaired."); paintRelay(el); }
-    return r;
-  });
-}
-function relayFactsHTML(relay) {
-  relay = relay || {};
-  return `<div class="row"><span>Version</span><span class="right mono">${esc(relay.version || "—")}</span></div>
-    <div class="row"><span>Last seen</span><span class="right">${esc(seenLine(relay))}</span></div>
-    <div class="row"><span>Certificate</span><span class="right">mTLS · certificate renews ${esc(renewDate(relay.cert_expiry))}</span></div>`;
-}
-function xaiKeyHTML(relay) {
-  const last4 = (relay && relay.key_last4) || "";
-  return `<div class="card"><h2>xAI key</h2>
-    <p class="sub">Stored on the relay computer, not on this station. Only the last 4 are shown.</p>
-    <div class="secret"><span class="dots">•••• ${esc(last4)}</span></div>
-    <p class="note">On the relay computer, run:</p>
-    <div class="tokenbox" id="rotcmd">${esc(ROTATE_CMD)}</div>
-    <div class="field"><button type="button" class="btn sm" id="copyrot">Copy</button></div></div>`;
-}
-function bindRotate(el) {
-  const b = $("#copyrot", el);
-  if (b) b.onclick = () => copyText(ROTATE_CMD);
-}
+/* ---------------------------------------------------------------- voice + updates */
 async function refreshStepup() {
   const r = await api("GET", "/api/state");
   if (r.ok) noteStepup(r.data);
@@ -472,334 +235,82 @@ function withPassword(title, text, label, send) {
   if (stepupOpen()) go("").then(r => { if (r && r.status === 403) askPassword(title, text, label, go); });
   else askPassword(title, text, label, go);
 }
-function cancelPair(el) {
-  const send = async pw => {
-    const body = {};
-    if (pw) body.password = pw;
-    const r = await api("POST", "/api/relay/pair/cancel", body);
-    if (r.ok) { S.pairCode = ""; paintRelay(el); }
-    else if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't cancel pairing.", "bad");
-    return r;
-  };
-  withPassword("Cancel pairing?", "Enter the admin password to close the pairing window.", "Cancel pairing", send);
-}
-function confirmPair(el) {
-  const send = async pw => {
-    const btn = $("#okmatch", el);
-    if (btn) busyBtn(btn, true, "They match");
-    const body = {};
-    if (pw) body.password = pw;
-    const r = await api("POST", "/api/relay/pair/confirm", body);
-    if (!r.ok) {
-      if (btn && btn.isConnected) busyBtn(btn, false, "They match");
-      if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't confirm.", "bad");
-      blurMatch(el);
-      return r;
-    }
-    S.pairCode = "";
-    paintRelay(el);
-    return r;
-  };
-  withPassword("Confirm the fingerprint?", "Enter the admin password to pair this relay.", "Confirm", send);
-}
-function newPairCode(el) {
-  const send = async pw => {
-    const btn = $("#newcode", el);
-    if (btn) busyBtn(btn, true, "New code");
-    const body = {};
-    if (pw) body.password = pw;
-    const r = await api("POST", "/api/relay/pair/new-code", body);
-    if (btn && btn.isConnected) busyBtn(btn, false, "New code");
-    if (!r.ok) {
-      if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't make a new code.", "bad");
-      return r;
-    }
-    S.pairCode = pairCodeFrom(r.data);
-    const node = $("#paircode", el);
-    if (node) node.textContent = formatCode(S.pairCode);
-    const miss = $("#codemissing", el);
-    if (miss) miss.hidden = !!S.pairCode;
-    const p = (r.data && r.data.pairing) || {};
-    if (p.expires_in != null) el._remain = remainFrom(p.expires_in);
-    const tries = $("#tries", el);
-    if (tries && p.tries_left != null) tries.textContent = "Tries left " + p.tries_left + " of 5";
-    paintPairClock(el);
-    if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
-    else hideFingerprint(el);
-    const g = await api("GET", "/api/relay");
-    if (!(g.ok && g.data && $("#pairing", el))) return r;
-    if (g.data.state && g.data.state !== "pairing") { paintRelay(el); return r; }
-    const live = g.data.pairing || {};
-    if (live.expires_in != null) el._remain = remainFrom(live.expires_in);
-    const tries2 = $("#tries", el);
-    if (tries2) tries2.textContent = "Tries left " + (live.tries_left == null ? "—" : live.tries_left) + " of 5";
-    paintPairClock(el);
-    if (live.relay_fingerprint) showFingerprint(el, live.relay_fingerprint);
-    else hideFingerprint(el);
-    return r;
-  };
-  withPassword("New pairing code?", "Enter the admin password to replace the code. The previous one stops working.", "New code", send);
-}
-function paintPairClock(el) {
-  const exp = $("#expire", el), wait = $("#waiting", el);
-  if (exp) exp.textContent = "Expires in " + mss(el._remain);
-  if (wait) wait.textContent = "Waiting for relay… " + mss(el._remain);
-}
-function watchPairing(el, d) {
-  if (el._watch) return;
-  el._watch = true;
-  const seq = el._seq;
-  const p0 = (d && d.pairing) || {};
-  el._remain = remainFrom(p0.expires_in);
-  paintPairClock(el);
-  let ticks = 0;
-  every(1000, () => {
-    if (el._seq !== seq || !$("#pairing", el)) return;
-    if (ticks++ === 0) return;
-    el._remain = Math.max(0, (Number(el._remain) || 0) - 1);
-    paintPairClock(el);
-  });
-  every(2000, async () => {
-    if (el._seq !== seq || !$("#pairing", el)) return;
-    const r = await api("GET", "/api/relay");
-    if (el._seq !== seq || !$("#pairing", el) || !r.ok) return;
-    const data = r.data || {};
-    if (data.state !== "pairing") { paintRelay(el); return; }
-    const p = data.pairing || {};
-    if (p.expires_in != null) el._remain = remainFrom(p.expires_in);
-    const tries = $("#tries", el);
-    if (tries) tries.textContent = "Tries left " + (p.tries_left == null ? "—" : p.tries_left) + " of 5";
-    paintPairClock(el);
-    if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
-    else hideFingerprint(el);
-  });
-}
-function renderNotSetup(el) {
-  el.innerHTML = `<div class="card"><h2>Voice relay</h2>
-    <p class="sub">The voice relay is the computer that reaches the voice service for this station. Pairing keeps the key on that computer. This station only keeps a certificate.</p>
-    <p>Voice stays off until a relay is paired. You can do this now or come back to it later.</p>
-    <div class="field"><button type="button" class="btn p" id="setup">Set up relay</button></div></div>`;
-  $("#setup", el).onclick = () => askPassword("Set up the relay?", "Enter the admin password to start pairing.", "Continue", async pw => {
-    const r = await api("POST", "/api/relay/pair/start", {password: pw});
-    if (r.ok) { S.pairCode = pairCodeFrom(r.data); await refreshStepup(); paintRelay(el); }
-    return r;
-  });
-}
-function renderPairing(el, d) {
-  const p = (d && d.pairing) || {};
-  const tries = p.tries_left == null ? "—" : p.tries_left;
-  el._fp = "";
-  el.innerHTML = `<div class="card" id="pairing"><h2>Pair the relay</h2>
-    <p class="sub">On the relay computer, download the installer and run it. Enter this code when it asks. The code is not a key.</p>
-    ${installHTML()}
-    <div class="codebig" id="paircode" translate="no"></div>
-    <p class="note" id="codemissing"${S.pairCode ? " hidden" : ""}>Press New code to show a pairing code. The previous one stops working.</p>
-    <p class="lbl" id="expire">Expires in ${esc(mss(remainFrom(p.expires_in)))}</p>
-    <p class="help" id="tries">Tries left ${esc(tries)} of 5</p>
-    <div class="field inline"><button type="button" class="btn" id="newcode">New code</button><button type="button" class="btn g" id="cancelpair">Cancel</button></div>
-    <p class="note" id="waiting">Waiting for relay… ${esc(mss(remainFrom(p.expires_in)))}</p>
-    <div id="waitrow"></div></div>`;
-  const code = $("#paircode", el);
-  if (code) code.textContent = formatCode(S.pairCode);
-  wireInstall(el);
-  $("#newcode", el).onclick = () => newPairCode(el);
-  $("#cancelpair", el).onclick = () => cancelPair(el);
-  if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
-  watchPairing(el, d);
-}
-function renderConnected(el, d, outdated) {
-  const relay = (d && d.relay) || {};
-  el.innerHTML = `${outdated ? `<div class="banner warn" style="flex-wrap:wrap">This relay is outdated.</div>
-    <div class="field"><button type="button" class="btn p" id="goup">Update relay</button></div>` : ""}
-    <div class="cols"><div class="card"><h2>Voice relay</h2><p class="sub">Paired. Voice can use this relay.</p>${relayFactsHTML(relay)}</div>
-    ${xaiKeyHTML(relay)}</div>
-    <div class="card"><h2>Recent activity</h2><p class="sub">Last 20 lines. Station and Relay.</p>${auditHTML(d && d.audit)}</div>
-    <div class="field"><button type="button" class="btn dg" id="unpair">Unpair relay…</button></div>`;
-  bindRotate(el);
-  bindUnpair(el);
-  const go = $("#goup", el);
-  if (go) go.onclick = () => {
-    if (document.querySelector(".wiz")) { toast("Finish setup first. Updates is in the sidebar after that."); return; }
-    location.hash = "updates";
-  };
-}
-function renderError(el, d) {
-  const checks = d && d.error && d.error.checks;
-  el.innerHTML = `<div class="banner bad" style="flex-wrap:wrap">${esc(RELAY_DOWN_BANNER)}</div>
-    <div class="card"><h2>Voice relay</h2>
-      <div class="field inline"><button type="button" class="btn" id="retry">Retry now</button>
-        <button type="button" class="btn g" id="showcmd">Show setup command</button></div>
-      <div id="setupcmd" hidden>${installHTML()}</div>
-      ${checksHTML(checks)}
-      <div class="field"><button type="button" class="btn dg" id="unpair">Unpair relay…</button></div></div>`;
-  $("#retry", el).onclick = () => paintRelay(el);
-  $("#showcmd", el).onclick = () => {
-    const box = $("#setupcmd", el);
-    if (!box) return;
-    box.hidden = !box.hidden;
-    if (!box.hidden) wireInstall(box);
-  };
-  bindUnpair(el);
-}
-function renderRelay(el, d) {
-  const state = (d && d.state) || "error";
-  if (state !== "pairing") el._watch = false;
-  if (state === "not-set-up") return renderNotSetup(el);
-  if (state === "pairing") return renderPairing(el, d);
-  if (state === "connected") return renderConnected(el, d, false);
-  if (state === "outdated") return renderConnected(el, d, true);
-  return renderError(el, d);
-}
 async function paintRelay(el) {
   if (!el) return;
-  el._seq = (el._seq || 0) + 1;
-  const seq = el._seq;
-  el._watch = false;
-  clearTimers();
   const r = await api("GET", "/api/relay");
-  if (!document.body.contains(el) || el._seq !== seq) return;
-  let d;
-  if (r.ok && r.data && r.data.state) d = r.data;
-  else {
-    const checks = r.data && r.data.error && r.data.error.checks;
-    d = {state: "error", error: {checks: Array.isArray(checks) ? checks : []}, relay: r.data && r.data.relay, audit: r.data && r.data.audit};
-  }
-  if (d.state !== "pairing") S.pairCode = "";
-  renderRelay(el, d);
+  if (!document.body.contains(el)) return;
+  const ready = r.ok && r.data && r.data.state === "ready";
+  el.innerHTML = `<div class="card"><h2>Voice</h2>
+    <p class="sub">${ready ? "Voice: ready (local). The voice relay runs on this station." : "xAI key not set. Voice starts once it is saved."}</p>
+    <div id="xkroot" style="margin-top:12px"></div></div>`;
+  await xaiKeyPanel($("#xkroot", el), () => paintRelay(el));
 }
-function mentionsSig(text) {
-  return String(text || "").toLowerCase().indexOf("sign" + "ature") >= 0;
+function localTime(ts) {
+  const ms = typeof ts === "number" ? (ts > 1e12 ? ts : ts * 1000) : Date.parse(String(ts || ""));
+  return Number.isNaN(ms) ? String(ts || "") : new Date(ms).toLocaleString();
 }
-function stepLabel(step) {
-  if (typeof step === "string") {
-    if (step === "relay") return "Update the relay";
-    if (step === "station") return "Update the station";
-    if (step === "pause-voice") return "Pause voice";
-    if (step === "resume-voice") return "Resume voice";
-    const soak = /^soak:(\d+)$/.exec(step);
-    if (soak) return "Wait " + Math.max(1, Math.round(Number(soak[1]) / 60)) + " minutes while the relay stays healthy";
-    return step;
-  }
-  if (!step || typeof step !== "object") return "";
-  for (const k of ["label", "name", "text", "title"]) if (typeof step[k] === "string") return step[k];
-  return "";
-}
-function planList(plan) {
-  if (!Array.isArray(plan)) return "";
-  const items = [];
-  for (const step of plan) {
-    const text = stepLabel(step);
-    if (!text || mentionsSig(text)) continue;
-    items.push(`<li>${esc(text)}</li>`);
-  }
-  return items.length ? `<ol class="ol">${items.join("")}</ol>` : "";
-}
-function whenText(ts) {
-  if (typeof ts === "number" && Number.isFinite(ts)) return ago(ts > 1e12 ? ts / 1000 : ts);
-  if (typeof ts === "string" && /^\d+(\.\d+)?$/.test(ts)) return ago(Number(ts));
-  if (typeof ts === "string" && ts) {
-    const ms = Date.parse(ts);
-    if (!Number.isNaN(ms)) return ago(ms / 1000);
-    return ts;
-  }
-  return "";
-}
+const UPDATE_EVENTS = {"update-check": "Checked", "update-check-failed": "Check failed", "update-start": "Update started",
+  "update-failed": "Update failed", "update-autocheck": "Daily check"};
 function historyHTML(rows) {
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return `<p class="help">No update history yet.</p>`;
-  return list.map(raw => {
-    const h = auditRow(raw);
-    const side = h.side === "relay" ? "Relay" : h.side === "station" ? "Station" : esc(h.side || "");
-    return `<div class="row"><span class="pill off"><i></i>${side}</span><span class="help">${esc(whenText(h.ts))}</span><span>${esc(h.line)}</span></div>`;
+  return list.slice().reverse().map(raw => {
+    const parts = String(raw || "").trim().split(/\s+/);
+    const ev = parts[3] || "", detail = parts.slice(4).join(" ");
+    const what = (UPDATE_EVENTS[ev] || ev) + (detail && detail !== "-" ? " · " + detail : "");
+    return `<div class="row"><span class="help">${esc(localTime(parts[0]))}</span><span>${esc(what)}</span></div>`;
   }).join("");
 }
 async function refreshUpdateBadge() {
-  const r = await api("GET", "/api/updates");
   const nodes = document.querySelectorAll("[data-upbadge]");
   if (!nodes.length) return;
-  const n = r.ok ? updateCount(r.data || {}) : 0;
-  nodes.forEach(b => {
-    if (n > 0) { b.hidden = false; b.textContent = String(n); }
-    else { b.hidden = true; b.textContent = ""; }
-  });
+  const r = await api("GET", "/api/updates");
+  const n = r.ok && r.data && r.data.update_available ? 1 : 0;
+  nodes.forEach(b => { b.hidden = !n; b.textContent = n ? "1" : ""; });
 }
+const JOB_TEXT = {running: "Updating… The admin page restarts during the update and comes back by itself.",
+  succeeded: "The last update finished.", failed: "The last update failed. The log is below."};
 async function paintUpdates(el) {
   const r = await api("GET", "/api/updates");
+  if (!document.body.contains(el)) return;
   const d = r.ok && r.data ? r.data : {};
-  const avail = plainVersion(d.available);
-  const station = componentInstalled(d, "station") || "—";
-  const relay = componentInstalled(d, "relay") || "—";
-  const allowed = !!d.station_only_allowed;
+  const job = d.job || {}, running = job.state === "running";
   const auto = !!d.autocheck;
-  const warn = typeof d.warning === "string" ? d.warning : "";
-  const showWarn = warn && warn !== CANT_CHECK && !mentionsSig(warn);
-  el.innerHTML = `${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">${esc(CANT_CHECK)}</div>` : ""}
-    ${showWarn ? `<div class="banner warn" style="flex-wrap:wrap">${esc(warn)}</div>` : ""}
+  el.innerHTML = `${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">Couldn't reach GitHub to check for updates. Check the station's internet connection.</div>` : ""}
     ${!r.ok ? `<div class="banner bad" style="flex-wrap:wrap">${esc((r.data && r.data.error) || "Can't load updates.")}</div>` : ""}
-    <div class="cols">
-      <div class="card"><h2>Station</h2>
-        <div class="row"><span>Installed</span><span class="right mono">${esc(station)}</span></div>
-        <div class="row"><span>Available</span><span class="right mono">${esc(avail || "—")}</span></div></div>
-      <div class="card"><h2>Relay</h2>
-        <div class="row"><span>Installed</span><span class="right mono">${esc(relay)}</span></div>
-        <div class="row"><span>Available</span><span class="right mono">${esc(avail || "—")}</span></div></div></div>
-    <div class="card"><h2>Install</h2>
-      <p class="note">${esc(UPDATE_BOTH_COPY)}</p>
-      ${planList(d.plan)}
-      <div class="field inline"><button type="button" class="btn p" id="both"${avail ? "" : " disabled"}>Update both</button>
-        <button type="button" class="btn" id="stationonly"${allowed && avail ? "" : " disabled"}>Update station only</button>
-        <button type="button" class="btn" id="checknow">Check now</button></div>
-      <p class="note" id="stationwhy"${allowed ? " hidden" : ""}>${esc(STATION_ONLY_WHY)}</p>
+    <div class="card"><h2>Station</h2>
+      <div class="row"><span>Installed</span><span class="right mono">${esc(d.installed || "—")}</span></div>
+      <div class="row"><span>Available</span><span class="right mono">${esc(d.available || "—")}${d.available && !d.update_available ? " (up to date)" : ""}</span></div>
+      ${d.checked_at ? `<p class="note">Checked ${esc(localTime(d.checked_at))}. Updates come from the main branch on GitHub.</p>` : ""}
+      ${JOB_TEXT[job.state] ? `<p class="note">${esc(JOB_TEXT[job.state])}</p>` : ""}
+      <div class="field inline"><button type="button" class="btn p" id="upd"${d.update_available && !running ? "" : " disabled"}>Update</button>
+        <button type="button" class="btn" id="checknow"${running ? " disabled" : ""}>Check now</button></div>
       <div id="ue"></div>
+      ${(running || job.state === "failed") && (job.log || []).length ? `<pre class="mono help" style="white-space:pre-wrap;margin-top:12px">${esc(job.log.join("\n"))}</pre>` : ""}
       <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
-        <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a release. It does not install anything.</div></div></div></div>
+        <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div></div>
     <div class="card"><h2>History</h2>${historyHTML(d.history)}</div>`;
-  const apply = async (target, btn, label) => {
-    if (!avail) return;
-    if (target === "station" && !allowed) return;
+  if (running) setTimeout(() => { if (document.body.contains(el)) paintUpdates(el); }, 4000);
+  const post = (btn, label, busy, path, title, text, okMsg) => {
     const send = async pw => {
-      if (btn && btn.isConnected) busyBtn(btn, true, "Starting…");
-      const body = {version: avail};
-      if (pw) body.password = pw;
-      const res = await api("POST", "/api/updates/apply", body);
-      if (res.status === 403) {
-        if (btn && btn.isConnected) busyBtn(btn, false, label);
-        return res;
-      }
-      if (!res.ok) {
-        if (btn && btn.isConnected) busyBtn(btn, false, label);
-        errBox($("#ue", el), (res.data && res.data.error) || "Couldn't start the update.");
-        return res;
-      }
-      errBox($("#ue", el), "");
-      toast("Update started.");
-      await paintUpdates(el);
-      refreshUpdateBadge();
-      return res;
-    };
-    withPassword("Install this update?", "Enter the admin password to install " + avail + ". Relay goes first when it is behind.", "Install", send);
-  };
-  const both = $("#both", el), only = $("#stationonly", el);
-  if (both) both.onclick = () => apply("both", both, "Update both");
-  if (only) only.onclick = () => { if (!allowed) return; apply("station", only, "Update station only"); };
-  $("#checknow", el).onclick = () => {
-    const btn = $("#checknow", el);
-    const send = async pw => {
-      if (btn && btn.isConnected) busyBtn(btn, true, "Checking…");
+      if (btn && btn.isConnected) busyBtn(btn, true, busy);
       const body = {};
       if (pw) body.password = pw;
-      const res = await api("POST", "/api/updates/check", body);
-      if (res.status === 403) {
-        if (btn && btn.isConnected) busyBtn(btn, false, "Check now");
-        return res;
-      }
-      if (!res.ok) toast((res.data && res.data.error) || "Couldn't check.", "bad");
+      const res = await api("POST", path, body);
+      if (res.status === 403) { if (btn && btn.isConnected) busyBtn(btn, false, label); return res; }
+      if (!res.ok) errBox($("#ue", el), (res.data && res.data.error) || "That didn't work.");
+      else if (okMsg) toast(okMsg);
       await paintUpdates(el);
       refreshUpdateBadge();
       return res;
     };
-    withPassword("Check for updates?", "Enter the admin password to look for a release. Nothing is installed.", "Check", send);
+    withPassword(title, text, label, send);
   };
+  const up = $("#upd", el);
+  if (up) up.onclick = () => post(up, "Update", "Starting…", "/api/updates/apply", "Install the update?",
+    "Enter the admin password. The station pulls the latest version and re-runs the installer; voice pauses for a few minutes.", "Update started.");
+  $("#checknow", el).onclick = () => post($("#checknow", el), "Check now", "Checking…", "/api/updates/check", "Check for updates?",
+    "Enter the admin password to look for a newer version. Nothing is installed.", "");
   $("#auto", el).onclick = () => {
     const on = !$("#auto", el).classList.contains("on");
     const send = async pw => {
@@ -1104,7 +615,7 @@ async function displayPanel(el) {
   };
 }
 
-/* ---------------------------------------------------------------- wizard. Voice relay can be paired later. Backend steps still run 2..8. */
+/* ---------------------------------------------------------------- wizard. Backend steps still run 2..8. */
 const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"];
 const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 6: 5, 7: 6};
 const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 6, 6: 7, 7: 8};
@@ -1137,7 +648,7 @@ async function wizard(step) {
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
     root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
-      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="voice">Voice relay</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
+      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="voice">Voice</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
       <div class="field"><button class="btn p" id="fin">Go to Home</button></div></div></div>`;
     const fin = async p => { await api("POST", "/api/wizard", {step: 8, done: true}); S.page = p; boot(); };
     $("#fin").onclick = () => fin("home");
@@ -1188,11 +699,11 @@ const ICON = {
   updates: '<path d="M21 12a9 9 0 1 1-2.6-6.3L21 8"/><path d="M21 3v5h-5"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
-const PAGES = {home: ["Home", pageHome], voice: ["Voice relay", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
+const PAGES = {home: ["Home", pageHome], voice: ["Voice", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
   privacy: ["Privacy", pagePrivacy],
   audio: ["Audio", el => audioPanel(el)], display: ["Display", el => displayPanel(el)], time: ["Time and location", el => timePanel(el)],
   network: ["Network", el => wifiPanel(el)], updates: ["Updates", pageUpdates], system: ["System", pageSystem], more: ["More", pageMore]};
-const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "Voice relay"]]],
+const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "Voice"]]],
   ["Station", [["wake", "Wake words"], ["bots", "Bots"], ["privacy", "Privacy"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
   ["System", [["updates", "Updates"], ["system", "System"]]]];
 const TABS = [["home", "Home", "home"], ["wake", "Voice", "wake"], ["audio", "Station", "audio"], ["system", "System", "system"], ["more", "More", "more"]];
@@ -1237,7 +748,7 @@ async function pageHome(el) {
     $("#rf", el).onclick = load;
     const n = h.network || {};
     $("#tiles", el).innerHTML = [
-      ["Voice relay", h.relay ? "Connected" : "Not set up", "voice"],
+      ["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "voice"],
       ["Network", n.wifi ? `Wi-Fi ${esc(n.wifi.ssid)} · ${n.wifi.signal}%` : n.wired ? "Wired" : "Offline", "network"],
       ["Services", up ? "All running" : Object.entries(svc).filter(([, v]) => v !== "active").map(([k]) => esc(k.replace("grok-station-", ""))).join(", ") + " stopped", "system"],
       ["Wake words", `${(h.words || []).length} on`, "wake"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
@@ -2225,7 +1736,7 @@ async function pageSystem(el) {
   };
 }
 function pageMore(el) {
-  const items = [["voice", "Voice relay"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
+  const items = [["voice", "Voice"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
   el.innerHTML = `<div class="card">${items.map(([k, t]) => `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${esc(t)}<span class="right inline">${k === "updates" ? `<b class="count" data-upbadge hidden></b>` : ""}<span class="help">›</span></span></a>`).join("")}
     <div class="row"><button class="btn g" id="again">Run setup again</button></div><div class="row"><button class="btn g" id="out2">Sign out</button></div></div>`;
   $("#again", el).onclick = async () => { await api("POST", "/api/wizard", {step: 2, done: false}); boot(); };

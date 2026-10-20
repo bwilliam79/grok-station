@@ -104,7 +104,6 @@ def reset_state():
             else:
                 os.unlink(p)
     ga.AUTH.__init__()
-    ga.reset_pair_runtime()
 
 
 GOOD = "kitchen table lamp 42"
@@ -1397,7 +1396,7 @@ class FirstRunKey(unittest.TestCase):
         d = setup_doc()
         self.assertEqual(d["mode"], "key")
         self.assertNotIn("code", d)
-        self.assertIn("fingerprint", d)
+        self.assertNotIn("fingerprint", d)  # no certificate fingerprint on the station screen
         st, j = c.req("GET", "/api/state")
         self.assertFalse(j["xai_key_set"])
         self.assertEqual(j["wizard"]["step"], 3)  # the key step comes right after the password
@@ -1417,3 +1416,66 @@ class FirstRunKey(unittest.TestCase):
         reset_state()
         self.assertEqual(C().req("POST", "/api/xai-key", {"key": self.KEY})[0], 401)
         self.assertEqual(C().req("GET", "/api/xai-key")[0], 401)
+
+
+class Updates(unittest.TestCase):
+    """Single-device updates: origin/main via git ls-remote (injected here), one Update button, check-only daily."""
+    SHA = "4915427d34633848f41448c563eb0543c3bce44a"
+
+    def setUp(self):
+        reset_state()
+        self._helper, self._ls = ga.helper, ga.LS_REMOTE
+        self.calls = []
+
+        def fake(*a, **k):
+            self.calls.append(a)
+            if a[0] == "update-status":
+                return True, {"state": "idle", "log": []}
+            if a[0] == "update-start":
+                return True, {"ok": True}
+            return self._helper(*a, **k)
+        ga.helper = fake
+
+    def tearDown(self):
+        ga.helper, ga.LS_REMOTE = self._helper, self._ls
+
+    def test_is_current(self):
+        self.assertTrue(ga.is_current("4915427", self.SHA))
+        self.assertFalse(ga.is_current("6b841f6", self.SHA))
+        self.assertFalse(ga.is_current("dev", self.SHA))
+        self.assertFalse(ga.is_current("4915427", None))
+
+    def test_check_caches_main_and_flags_update(self):
+        ga.LS_REMOTE = lambda: self.SHA + "\trefs/heads/main\n"
+        ga.run_update_check()
+        v = ga.updates_view()
+        self.assertEqual(v["available"], self.SHA[:7])
+        self.assertFalse(v["cant_check"])
+        self.assertEqual(v["update_available"], not ga.is_current(ga.version(), self.SHA))
+        self.assertTrue(any(" update-check 4915427" in h for h in v["history"]))
+        self.assertNotIn("relay", v["installed"] if isinstance(v["installed"], dict) else {})
+
+    def test_check_failure_is_reported_not_raised(self):
+        def boom():
+            raise OSError("no network")
+        ga.LS_REMOTE = boom
+        ga.run_update_check()
+        v = ga.updates_view()
+        self.assertTrue(v["cant_check"])
+        self.assertIsNone(v["available"])
+        self.assertTrue(any("update-check-failed network" in h for h in v["history"]))
+
+    def test_apply_starts_only_the_fixed_unit(self):
+        c = signed_in()
+        st, j = c.req("POST", "/api/updates/apply", {"password": GOOD})
+        self.assertEqual(st, 202, j)
+        self.assertIn(("update-start",), self.calls)
+        self.assertFalse(any(a[0] == "update-start" and len(a) > 1 for a in self.calls))
+
+    def test_voice_status_is_local(self):
+        c = signed_in()
+        st, j = c.req("GET", "/api/relay")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["state"], "ready" if ga.xai_key_set() else "no-key")
+        self.assertNotIn("pairing", j)
+        self.assertEqual(c.req("POST", "/api/relay/pair/start", {"password": GOOD})[0], 404)

@@ -7,12 +7,38 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class Install(unittest.TestCase):
     def test_dry_run(self):
-        r = subprocess.run(["sh", os.path.join(ROOT, "install.sh"), "--dry-run"], capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["sh", os.path.join(ROOT, "install.sh"), "--dry-run", "--verbose"], capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("grok-station-relay.service", r.stdout)
         self.assertIn("set-key", r.stdout)
         self.assertNotRegex(r.stdout, r"\b[0-9a-f]{48,}\b")  # tokens are generated at run time, never printed
         self.assertNotIn("docker", r.stdout.lower())
+
+    def test_quiet_stages_and_failure(self):
+        r = subprocess.run(["sh", os.path.join(ROOT, "install.sh"), "--dry-run"], capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, NO_COLOR="1"))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("✓ Checking health", r.stdout)
+        self.assertNotIn("+ ", r.stdout)  # command lines go to the log unless --verbose
+        self.assertNotIn("\033", r.stdout)
+        # a failing stage stops the install with the stage name, the log tail and the log path
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            src = open(os.path.join(ROOT, "install.sh")).read().replace("st_display() {", "st_display() {\n  echo boom-marker; false", 1)
+            f = os.path.join(d, "install.sh"); open(f, "w").write(src)
+            r = subprocess.run(["sh", f, "--dry-run"], capture_output=True, text=True, timeout=30, env=dict(os.environ, NO_COLOR="1"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("✗ Installing the display", r.stdout)
+        self.assertIn("boom-marker", r.stdout)
+        self.assertNotIn("Installing voice relay", r.stdout)
+
+    def test_bootstrap(self):
+        b = open(os.path.join(ROOT, "bootstrap.sh")).read()
+        self.assertIn("https://github.com/bwilliam79/grok-station", b)
+        self.assertIn('exec sh "$DIR/install.sh"', b)
+        self.assertTrue(b.rstrip().endswith('main "$@"'))  # whole script parsed before anything runs (piped to sh)
+        self.assertNotRegex(b, r"\bread\b")  # no prompts: stdin is the script itself
+        self.assertEqual(subprocess.run(["sh", "-n", os.path.join(ROOT, "bootstrap.sh")]).returncode, 0)
 
     def test_relay_imports_are_installed(self):
         src = open(os.path.join(ROOT, "relay", "relay.py")).read()
@@ -22,15 +48,31 @@ class Install(unittest.TestCase):
             self.assertIn(m + ".py", line)
 
     def test_admin_imports_are_installed(self):
-        """The admin page crash-looped on a fresh Pi: pairing, pair_listener and release were never installed."""
+        """Every repo module the admin page imports is installed (a missing one crash-looped the page on a fresh Pi).
+        Relay pairing and the release-manifest updater are gone, and nothing may import them."""
         src = open(os.path.join(ROOT, "admin", "grok_admin.py")).read()
         files = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
-        mods = set(re.findall(r"^import (\w+)  # noqa: E402", src, re.M))
-        self.assertTrue({"pairing", "pair_listener", "release"} <= mods)
+        mods = set(re.findall(r"^(?:import|from) (\w+)", src, re.M))
+        self.assertFalse({"pairing", "pair_listener", "release"} & mods)
+        for name in ("admin/pairing.py", "admin/pair_listener.py", "relay/release.py"):
+            self.assertFalse(os.path.exists(os.path.join(ROOT, name)), name)
         for m in mods:
             local = [d for d in ("admin", "relay") if os.path.isfile(os.path.join(ROOT, d, m + ".py"))]
-            self.assertTrue(local, m)
-            self.assertIn(f"{local[0]}/{m}.py", files, m)
+            if local:
+                self.assertIn(f"{local[0]}/{m}.py", files, m)
+
+    def test_update_unit_is_fixed(self):
+        unit = open(os.path.join(ROOT, "systemd", "grok-station-update.service")).read()
+        self.assertIn("Type=oneshot", unit)
+        self.assertIn("ExecStart=/usr/local/lib/grok-station/grok-station-update\n", unit)
+        helper = open(os.path.join(ROOT, "admin", "grok-station-helper")).read()
+        self.assertIn('"systemctl", "start", "--no-block", UPDATE_UNIT', helper)
+        self.assertIn('UPDATE_UNIT = "grok-station-update.service"', helper)
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        self.assertIn("/etc/grok-station/source-dir", sh)
+        self.assertIn("systemd/grok-station-update.service", sh)
+        upd = open(os.path.join(ROOT, "tools", "grok-station-update")).read()
+        self.assertIn('exec sh "$SRC/bootstrap.sh"', upd)
 
     def test_post_install_check(self):
         sh = open(os.path.join(ROOT, "install.sh")).read()

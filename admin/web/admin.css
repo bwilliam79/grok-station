@@ -170,15 +170,6 @@ button.tog.on:disabled{background:var(--gs-surface-3);border-color:var(--gs-rule
   .drawer,.drawer.bots{width:100%;border:0}.sheet{align-items:flex-end;padding:0}.sheet .card{border-radius:16px 16px 0 0;width:100%}
 }
 .phonestep{display:none;color:var(--gs-muted);font-size:13px;margin-bottom:8px}
-/* relay fingerprint: 4 groups a line, wrap only between groups */
-.fp{font-family:var(--mono);font-size:max(28px,1.75rem);line-height:1.35;letter-spacing:.04em;overflow:visible;text-overflow:clip;max-width:none}
-.fp .ln{display:flex;flex-wrap:wrap;gap:.2em .55em;overflow:visible;text-overflow:clip}
-.fp .g{flex:none;white-space:nowrap;word-break:keep-all;overflow-wrap:normal;overflow:visible;text-overflow:clip}
-.fp .g.end{font-weight:700}
-.codebig{font:600 40px/1.2 var(--mono);letter-spacing:.14em;text-align:center;margin:16px 0 8px;color:var(--gs-text)}
-.os{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
-.os .btn.on{border-color:var(--gs-teal);box-shadow:inset 0 -2px 0 var(--gs-teal)}
-pre.cmd{margin-top:10px;font:13px/1.45 var(--mono);background:var(--gs-bg);border:1px solid var(--gs-rule);border-radius:12px;padding:12px 14px;white-space:pre-wrap;word-break:break-word;color:var(--gs-text)}
 .stepper{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px;color:var(--gs-faint);margin:0 0 14px}
 .stepper .on{color:var(--gs-text);font-weight:600;box-shadow:inset 0 -2px 0 var(--gs-teal)}
 .stepper .done{color:var(--gs-teal)}
@@ -190,3 +181,6 @@ a.skipnow{display:inline-block;margin-top:8px;font:600 16px var(--body);text-dec
 .tokenbox{user-select:all;cursor:text}
 b.count,.nav .b.count{font-size:11.5px;padding:1px 8px;border-radius:99px;background:var(--gs-amber-bg);color:var(--gs-amber);font-weight:600}
 .botrow{flex-wrap:wrap}
+/* A button placed directly in a form (not inside a .field) gets the same 14px gap as a .field; notes under a form sit 12px below it. */
+form>.btn{margin-top:14px}
+form+.note{margin-top:12px}

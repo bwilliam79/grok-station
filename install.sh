@@ -1,111 +1,206 @@
 #!/bin/sh
-# grok-station single-device installer. Run on the Pi as root from the cloned repo:
-#   sudo ./install.sh            install or update (safe to re-run)
-#   sudo ./install.sh --dry-run  print what would run, change nothing
+# grok-station single-device installer. Run on the Pi as root from the cloned repo (bootstrap.sh does this for you):
+#   sudo ./install.sh              install or update (safe to re-run)
+#   sudo ./install.sh --verbose    stream every command's output (-v)
+#   sudo ./install.sh --dry-run    print what would run, change nothing (add -v to see the commands)
 # Everything runs on this Pi: display, wake listener, admin page (HTTPS) and the voice relay (loopback only).
 # Secrets are generated here and never printed. The xAI key is entered on the admin page during first-run setup.
+# Command output goes to $LOG (default /var/log/grok-station-install.log); the screen shows one line per stage.
 set -eu
 cd "$(dirname "$0")"
-DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0; VERBOSE=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    -v|--verbose) VERBOSE=1 ;;
+    *) echo "usage: sudo ./install.sh [--verbose] [--dry-run]" >&2; exit 2 ;;
+  esac
+done
 run() { if [ "$DRY" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 sh_() { if [ "$DRY" = 1 ]; then echo "+ sh -c '$1'"; else sh -c "$1"; fi; }
-[ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
-[ "$(uname -m)" = aarch64 ] || [ "$DRY" = 1 ] || { echo "Needs 64-bit Raspberry Pi OS (aarch64)." >&2; exit 1; }
 O=/opt/grok-station; S=/etc/grok-station/secrets; V=/var/lib/grok-station
-VER="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+VER="$(git -c safe.directory="$PWD" rev-parse --short HEAD 2>/dev/null || echo dev)"
+FLAGS="${TMPDIR:-/tmp}/grok-station-install.$$"; mkdir -p "$FLAGS"; trap 'rm -rf "$FLAGS"' EXIT
 
-echo "== packages"
-run apt-get update
-run apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame python3-qrcode python3-venv \
-  python3-pip python3-cryptography alsa-utils openssl curl libegl1 libegl-mesa0 libgles2 libgbm1 libgl1-mesa-dri
+# ---- output: colors only on a TTY without NO_COLOR
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_B="$(printf '\033[1m')"; C_G="$(printf '\033[32m')"; C_R="$(printf '\033[31m')"; C_Y="$(printf '\033[33m')"
+  C_C="$(printf '\033[36m')"; C_0="$(printf '\033[0m')"; TTY=1
+else
+  C_B=; C_G=; C_R=; C_Y=; C_C=; C_0=; TTY=0
+fi
+if [ "$DRY" = 1 ]; then LOG="${LOG:-${TMPDIR:-/tmp}/grok-station-install-dry-run.log}"; else LOG="${LOG:-/var/log/grok-station-install.log}"; fi
 
-echo "== users"
-sh_ 'id grok >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin grok'
-sh_ 'getent group grok-admin >/dev/null || groupadd -r grok-admin'
-sh_ 'id grok-relay >/dev/null 2>&1 || useradd -r -g grok-admin -M -d /nonexistent -s /usr/sbin/nologin grok-relay'
-run usermod -aG audio grok
+[ "$DRY" = 1 ] || [ "$(id -u)" = 0 ] || { echo "${C_R}✗${C_0} Run with sudo." >&2; exit 1; }
+[ "$(uname -m)" = aarch64 ] || [ "$DRY" = 1 ] || { echo "${C_R}✗${C_0} Needs 64-bit Raspberry Pi OS (aarch64)." >&2; exit 1; }
+if [ "${GROK_STATION_LOG_APPEND:-0}" = 1 ]; then : >> "$LOG"; else : > "$LOG"; fi 2>/dev/null \
+  || { echo "${C_R}✗${C_0} Can't write the log at $LOG" >&2; exit 1; }
+[ "$DRY" = 1 ] || chmod 0600 "$LOG"
+echo "grok-station install $VER, $(date)" >> "$LOG"
 
-echo "== display files"
-run install -d $O $O/assets/fonts $O/assets/portraits $O/assets/brand $O/assets/avatars $O/assets/status
-run install -m755 app/grok_station.py $O/
-run install -m644 app/avatars.py $O/
-sh_ "install -m644 assets/fonts/* $O/assets/fonts/"
-sh_ "install -m644 assets/brand/*.png assets/brand/*.svg $O/assets/brand/"
-sh_ "install -m644 assets/avatars/default-*.svg $O/assets/avatars/"
-sh_ "install -m644 assets/status/*.svg $O/assets/status/"
-run install -m644 systemd/grok-station.service /etc/systemd/system/
+fail() {  # fail <stage>
+  echo
+  echo "${C_R}${C_B}Install failed:${C_0} $1"
+  if [ "$VERBOSE" = 0 ]; then echo "Last lines of $LOG:"; tail -n 20 "$LOG" | sed 's/^/  /'; fi
+  echo "Full log: $LOG   (re-run with --verbose to see everything)"
+  exit 1
+}
 
-echo "== secrets and state (generated, never printed)"
-run install -d -o root -g root -m 0711 /etc/grok-station $S
+# stage <label> <function>: runs the function in a subshell with set -e, stdin from /dev/null, output to the log
+# (or to the screen and the log with --verbose). Prints a check or a cross; on failure shows the log tail and exits.
+stage() {
+  label=$1; shift
+  echo "== $label" >> "$LOG"
+  rm -f "$FLAGS/rc"
+  set +e
+  if [ "$VERBOSE" = 1 ]; then
+    echo "${C_C}▸${C_0} ${C_B}$label${C_0}"
+    # tee hides the status in POSIX sh, so the subshell writes it on exit
+    ( trap 'echo $? > "$FLAGS/rc"' EXIT; set -e; "$@" ) < /dev/null 2>&1 | tee -a "$LOG"
+    rc=$(cat "$FLAGS/rc" 2>/dev/null || echo 1)
+  else
+    ( set -e; "$@" ) < /dev/null >> "$LOG" 2>&1 &
+    pid=$!
+    if [ "$TTY" = 1 ]; then
+      i=0
+        # shellcheck disable=SC1003
+      while kill -0 "$pid" 2>/dev/null; do
+        case $((i % 4)) in 0) f='|' ;; 1) f='/' ;; 2) f='-' ;; *) f='\' ;; esac
+        printf '\r%s%s%s %s ' "$C_C" "$f" "$C_0" "$label"; i=$((i + 1)); sleep 0.2
+      done
+      printf '\r\033[K'
+    else
+      echo "  ... $label"
+    fi
+    wait "$pid"; rc=$?
+  fi
+  set -e
+  if [ "$rc" = 0 ]; then echo "${C_G}✓${C_0} $label"; else echo "${C_R}✗${C_0} $label"; fail "$label"; fi
+}
+
+# ---- stages
+st_packages() {
+  run apt-get update
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame \
+    python3-qrcode python3-venv python3-pip python3-cryptography alsa-utils openssl curl libegl1 libegl-mesa0 libgles2 \
+    libgbm1 libgl1-mesa-dri
+}
+
+st_users() {
+  sh_ 'id grok >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin grok'
+  sh_ 'getent group grok-admin >/dev/null || groupadd -r grok-admin'
+  sh_ 'id grok-relay >/dev/null 2>&1 || useradd -r -g grok-admin -M -d /nonexistent -s /usr/sbin/nologin grok-relay'
+  run usermod -aG audio grok
+  # Secrets and state (generated, never printed)
+  run install -d -o root -g root -m 0711 /etc/grok-station $S
+  gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
+  gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
+  sh_ "[ -s /etc/grok-station/env ] || { umask 077; printf 'GROK_STATION_TOKEN=%s\nGROK_RELAY_URL=ws://127.0.0.1:8790/ws\n' \$(openssl rand -hex 24) > /etc/grok-station/env; chown root:grok /etc/grok-station/env; chmod 0640 /etc/grok-station/env; }"
+  sh_ "[ -e /etc/grok-station/wake.env ] || { install -m 0640 -o root -g grok /dev/null /etc/grok-station/wake.env; }"
+  for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/audit $V/personas \
+           $V/portraits $V/alerts $V/wakewords; do
+    run install -d -o grok-relay -g grok-admin -m 0770 "$d"
+  done
+  run chmod 0755 $V
+  run install -d -o grok -g grok -m 0750 $V/enroll $V/enroll/inbox
+}
 gen() {  # gen <file> <owner:group> <mode>: create once with a random token
   sh_ "[ -s $1 ] || { umask 077; t=\$(mktemp $S/.t.XXXXXX); openssl rand -hex 32 > \$t; chown $2 \$t; chmod $3 \$t; mv -f \$t $1; }"
 }
-gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
-gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
-sh_ "[ -s /etc/grok-station/env ] || { umask 077; printf 'GROK_STATION_TOKEN=%s\nGROK_RELAY_URL=ws://127.0.0.1:8790/ws\n' \$(openssl rand -hex 24) > /etc/grok-station/env; chown root:grok /etc/grok-station/env; chmod 0640 /etc/grok-station/env; }"
-sh_ "[ -e /etc/grok-station/wake.env ] || { install -m 0640 -o root -g grok /dev/null /etc/grok-station/wake.env; }"
-for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/audit $V/personas \
-         $V/portraits $V/alerts $V/wakewords; do
-  run install -d -o grok-relay -g grok-admin -m 0770 $d
-done
-run chmod 0755 $V
-run install -d -o grok -g grok -m 0750 $V/enroll $V/enroll/inbox
 
-echo "== voice relay (native venv, loopback only)"
-run install -d -o root -g root -m 0755 $O/relay
-for f in relay.py handoff.py tools.py t1.py release.py; do run install -m644 relay/$f $O/relay/; done
-sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
-run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt
-run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
+st_display() {
+  run install -d $O $O/assets/fonts $O/assets/portraits $O/assets/brand $O/assets/avatars $O/assets/status
+  run install -m755 app/grok_station.py $O/
+  run install -m644 app/avatars.py $O/
+  sh_ "install -m644 assets/fonts/* $O/assets/fonts/"
+  sh_ "install -m644 assets/brand/*.png assets/brand/*.svg $O/assets/brand/"
+  sh_ "install -m644 assets/avatars/default-*.svg $O/assets/avatars/"
+  sh_ "install -m644 assets/status/*.svg $O/assets/status/"
+  run install -m644 systemd/grok-station.service /etc/systemd/system/
+}
 
-echo "== wake listener (Hey Grok)"
-run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
-sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
-run $O/wake/venv/bin/pip install --quiet --no-deps openwakeword
-# Lower bounds keep pip off ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name) while backtracking.
-run $O/wake/venv/bin/pip install --quiet "onnxruntime>=1.20" "numpy>=2.1" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
-  requests "websockets>=17"
-run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
-run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
-run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
+st_relay() {  # native venv, loopback only
+  run install -d -o root -g root -m 0755 $O/relay
+for f in relay.py handoff.py tools.py t1.py; do run install -m644 relay/$f $O/relay/; done
+  sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
+  run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt
+  run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
+  run rm -f $O/relay/release.py  # old updater module, no longer used
+}
 
-echo "== boot splash and kiosk"
-BOOT_CHANGED=no
-if [ "$DRY" = 1 ]; then echo "+ python3 tools/boot-config.py"; else
-  [ "$(python3 tools/boot-config.py)" = reboot ] && BOOT_CHANGED=yes
-fi
-sh_ "grep -q '^disable_splash=1' /boot/firmware/config.txt || echo disable_splash=1 >> /boot/firmware/config.txt"
-sh_ "if sh tools/install-splash.sh '$PWD' --prepare; then plymouth-set-default-theme -R echo; else plymouth-set-default-theme -R text || true; fi"
-run systemctl mask getty@tty1.service
+st_wake() {
+  run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
+  sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
+  run $O/wake/venv/bin/pip install --quiet --no-deps openwakeword
+  # Lower bounds keep pip off ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name) while backtracking.
+  run $O/wake/venv/bin/pip install --quiet "onnxruntime>=1.20" "numpy>=2.1" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
+    requests "websockets>=17"
+  run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
+  run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
+  run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
+}
 
-echo "== admin page (HTTPS) and services"
-run sh tools/install-files.sh "$PWD" "$VER"
-run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
-run systemctl daemon-reload
-run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
-run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
-# Post-install check: every service must be active and the admin page must answer on HTTPS.
-if [ "$DRY" = 0 ]; then
-  sleep 3
+st_boot() {  # boot splash and kiosk; hides the blinking console cursor
+  if [ "$DRY" = 1 ]; then echo "+ python3 tools/boot-config.py"; else
+    [ "$(python3 tools/boot-config.py)" = reboot ] && touch "$FLAGS/reboot"
+  fi
+  sh_ "grep -q '^disable_splash=1' /boot/firmware/config.txt || echo disable_splash=1 >> /boot/firmware/config.txt"
+  sh_ "if sh tools/install-splash.sh '$PWD' --prepare; then plymouth-set-default-theme -R echo; else plymouth-set-default-theme -R text || true; fi"
+  run systemctl mask getty@tty1.service
+}
+
+st_web() {  # admin page (HTTPS) and services
+  run sh tools/install-files.sh "$PWD" "$VER"
+  # Update button on the admin page: a fixed oneshot unit that re-runs bootstrap.sh from this clone.
+  sh_ "printf '%s\\n' '$PWD' > /etc/grok-station/source-dir && chmod 0644 /etc/grok-station/source-dir"
+  run install -o root -g root -m755 tools/grok-station-update /usr/local/lib/grok-station/grok-station-update
+  run install -m644 systemd/grok-station-update.service /etc/systemd/system/
+  run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
+  run systemctl daemon-reload
+  run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
+  run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
+}
+
+st_health() {
+  # Post-install check: every service must be active and the admin page must answer on HTTPS.
+  if [ "$DRY" = 1 ]; then echo "+ check grok-station-relay grok-station-admin grok-station grok-station-wake, https://127.0.0.1/"; return 0; fi
+  sleep 3; bad=0
   for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do
     i=0; until systemctl is-active -q $u || [ $i -ge 20 ]; do sleep 1; i=$((i+1)); done
     if systemctl is-active -q $u; then echo "ok   $u"; else
-      echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; FAILED=1; fi
+      echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; bad=1; fi
   done
   i=0; until curl -ks -o /dev/null --max-time 5 https://127.0.0.1/ || [ $i -ge 10 ]; do sleep 2; i=$((i+1)); done
   if curl -ks -o /dev/null --max-time 5 https://127.0.0.1/; then echo "ok   admin page answers on https://127.0.0.1"; else
-    echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; FAILED=1; fi
-  [ -e /dev/fb0 ] || echo "!!   No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
-fi
+    echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; bad=1; fi
+  [ -e /dev/fb0 ] || touch "$FLAGS/nofb"
+  [ "$bad" = 0 ]
+}
+
+echo "${C_B}grok-station${C_0} installer ($VER)"
+[ "$DRY" = 1 ] && echo "${C_Y}Dry run: nothing is changed.${C_0}"
+stage "Updating software"               st_packages
+stage "Setting up users and secrets"    st_users
+stage "Installing the display"          st_display
+stage "Installing voice relay"          st_relay
+stage "Installing wake listener (Hey Grok)" st_wake
+stage "Setting up boot screen"          st_boot
+stage "Starting web service"            st_web
+stage "Checking health"                 st_health
+
+HOST="$(hostname 2>/dev/null || echo grok-station)"
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
-echo "Done ($VER). The display and the admin page are running."
-echo "Open https://$(hostname).local${IP:+ or https://$IP} on a phone or laptop and follow the station screen:"
-echo "setup code, admin password, then your xAI API key. Voice starts once the key is saved."
-if [ "$BOOT_CHANGED" = yes ]; then
+if [ "$DRY" = 1 ]; then echo "${C_G}${C_B}Dry run done ($VER).${C_0} Commands are in $LOG."; else
+  echo "${C_G}${C_B}Done ($VER).${C_0} The display and the admin page are running."; fi
+echo "Open on a phone or laptop:"
+echo "  ${C_C}https://$HOST.local${C_0}"
+[ -n "$IP" ] && echo "  ${C_C}https://$IP${C_0}"
+echo "Then enter the setup code shown on the station screen, set an admin password and paste your xAI API key."
+[ -e "$FLAGS/nofb" ] && echo "${C_Y}!${C_0} No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
+if [ -e "$FLAGS/reboot" ]; then
   echo
-  echo "*** Boot options changed (cmdline.txt). REBOOT NOW: sudo reboot"
-  echo "*** The setup screen comes back after the reboot."
+  echo "${C_Y}${C_B}Boot options changed (cmdline.txt). REBOOT NOW: sudo reboot${C_0}"
+  echo "The setup screen comes back after the reboot."
 fi
-echo "(Fallback without a browser: sudo grok-station set-key)"
-[ "${FAILED:-0}" = 0 ] || { echo "Install finished with errors (see above)."; exit 1; }
+echo "(Fallback without a browser: sudo grok-station set-key)   Log: $LOG"

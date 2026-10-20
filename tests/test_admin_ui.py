@@ -1,4 +1,4 @@
-"""Admin page structure for voice relay, updates, and the add-bot wizard.
+"""Admin page structure for voice, updates, and the add-bot wizard.
 
 Reads admin/web/app.js and admin/web/admin.css. No browser and no network.
 """
@@ -31,7 +31,7 @@ class AdminUI(unittest.TestCase):
 
     def test_nav_labels(self):
         js = self.js
-        self.assertIn('["Voice service", [["voice", "Voice relay"]]]', js)
+        self.assertIn('["Voice service", [["voice", "Voice"]]]', js)
         self.assertIn('["System", [["updates", "Updates"], ["system", "System"]]]', js)
         self.assertNotIn("xAI key and relay", js)
         self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"]', js)
@@ -56,91 +56,34 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("relayPanel", self.js)
         self.assertNotIn("xaiPanel", self.js)
 
-    def test_fingerprint_css_is_at_least_28px_and_does_not_ellipsis(self):
-        css = self.css
-        block = re.search(r"\.fp\{([^}]*)\}", css)
-        self.assertIsNotNone(block, "missing .fp rule")
-        body = block.group(1)
-        size = re.search(r"font-size:\s*max\(\s*(\d+(?:\.\d+)?)px", body)
-        self.assertIsNotNone(size, body)
-        self.assertGreaterEqual(float(size.group(1)), 28)
-        self.assertNotIn("ellipsis", body)
-        self.assertIn("text-overflow:clip", body)
-        groups = re.search(r"\.fp \.g\{([^}]*)\}", css)
-        self.assertIsNotNone(groups, "missing .fp .g rule")
-        self.assertIn("white-space:nowrap", groups.group(1))
-        self.assertNotIn("ellipsis", groups.group(1))
-        fp = _fn(self.js, "fpHTML")
-        self.assertIn("line < 4", fp)
-        self.assertIn("g < 4", fp)
-        self.assertIn("idx === 0 || idx === 15", fp)
-        self.assertIn('class="g end"', fp)
-        self.assertIn('class="fp"', fp)
+    def test_no_pairing_or_relay_cards(self):
+        js, css = self.js, self.css
+        for gone in ("/api/relay/pair", "/api/relay/unpair", "Set up relay", "Pair the relay", "Voice stays off until a relay",
+                     "This station only keeps a certificate", "fpHTML", "showFingerprint", "relay-install.sh", "Unpair relay",
+                     "image digest", "10-minute healthy soak", "Update both", "Update station only", "Can't check. Update info"):
+            self.assertNotIn(gone, js, gone)
+        self.assertNotRegex(css, r"\.fp\{")
+        relay = _fn(js, "paintRelay")
+        self.assertIn("Voice: ready (local)", relay)
+        self.assertIn("xAI key not set", relay)
+        self.assertIn('h.xai_key ? "Ready (local)" : "xAI key not set"', js)
 
-    def test_match_buttons_are_not_autofocused(self):
-        self.assertNotIn("autofocus", self.js)
-        fn = _fn(self.js, "showFingerprint")
-        self.assertIn("They don't match · cancel", fn)
-        self.assertIn(">They match<", fn)
-        self.assertIn("blurMatch", fn)
-        self.assertNotIn("autofocus", fn)
-        self.assertIn('type="button"', fn)
-
-    def test_relay_and_updates_copy(self):
+    def test_updates_page_single_station_card(self):
         js = self.js
-        for needle in (
-            "/api/relay",
-            "/api/relay/pair/start",
-            "/api/relay/pair/new-code",
-            "/api/relay/pair/cancel",
-            "/api/relay/pair/confirm",
-            "/api/relay/unpair",
-            "/api/updates",
-            "/api/updates/check",
-            "/api/updates/autocheck",
-            "/api/updates/apply",
-            "https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.sh",
-            "https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.ps1",
-            "Expires in ",
-            "Tries left ",
-            "Waiting for relay…",
-            "Can't reach the relay. Voice is off.",
-            "Retry now",
-            "Show setup command",
-            "Unpair relay…",
-            "grok-relay rotate-xai-key",
-            "Compare with the installer and the station screen. Nothing pairs until both ends confirm.",
-            "Can't check. Update info is out of date. Updates may be hidden.",
-            "Relay first, then station after a 10-minute healthy soak. Updates come from the GitHub release and are checked by image digest.",
-            "Update both",
-            "Update station only",
-            "Daily check",
-            'apply("both"',
-            'apply("station"',
-            "pairing.code",
-            "d.installed",
-        ):
-            self.assertIn(needle, js, needle)
-        apply = _fn(js, "paintUpdates")
-        self.assertNotIn("target:", apply)
-        self.assertIn("{version: avail}", apply)
-        setup = _fn(js, "renderNotSetup")
-        self.assertIn("askPassword", setup)
-        self.assertNotIn("stepupOpen", setup)
-        self.assertIn('"/api/relay/pair/start"', setup)
-        unpair = _fn(js, "bindUnpair")
-        self.assertIn("askPassword", unpair)
-        self.assertNotIn("stepupOpen", unpair)
-        watch = _fn(js, "watchPairing")
-        self.assertIn("2000", watch)
-        self.assertIn('"/api/relay"', watch)
-        key = _fn(js, "xaiKeyHTML")
-        self.assertNotIn("<input", key)
-        self.assertNotIn("Replace", key)
-        self.assertNotIn(">Test<", key)
-        self.assertIn("key_last4", key)
-        updates = _fn(js, "paintUpdates")
-        self.assertNotIn("signature", updates.lower())
+        up = _fn(js, "paintUpdates")
+        self.assertIn("<h2>Station</h2>", up)
+        self.assertNotIn("<h2>Relay</h2>", up)
+        self.assertIn('"/api/updates/apply"', up)
+        self.assertIn('"/api/updates/check"', up)
+        self.assertIn('"/api/updates/autocheck"', up)
+        self.assertIn("Daily check", up)
+        self.assertIn(">Update</button>", up)
+        self.assertIn("localTime(", _fn(js, "historyHTML"))  # history in local time, not raw ISO Z
+
+    def test_buttons_after_inputs_are_spaced(self):
+        self.assertIn("form>.btn{margin-top:14px}", self.css)
+        self.assertIn("form+.note{margin-top:12px}", self.css)
+        self.assertIn('<div id="xke"></div><button class="btn p" id="xks">Save key</button></form>', self.js)
 
     def test_add_bot_wizard_and_connect_webhook(self):
         js = self.js

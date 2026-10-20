@@ -156,83 +156,41 @@ def relay_test():
     out({"ok": True, "checks": checks})
 
 
-# Fixed pairing firewall. No address, port, or other value is taken from the request.
-PAIR_FW_PORT = 8443
-PAIR_FW_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
-PAIR_FW_V6 = ("fc00::/7", "fe80::/10")
-_STATION_VERSION = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
-def pair_fw_ruleset():
-    """nftables text: accept tcp/8443 only from local ranges, drop every other source."""
-    v4 = ", ".join(PAIR_FW_V4)
-    v6 = ", ".join(PAIR_FW_V6)
-    return (
-        "table inet grok_pair {\n"
-        "\tchain input {\n"
-        "\t\ttype filter hook input priority 0; policy accept;\n"
-        f"\t\ttcp dport {PAIR_FW_PORT} ip saddr {{ {v4} }} accept\n"
-        f"\t\ttcp dport {PAIR_FW_PORT} ip6 saddr {{ {v6} }} accept\n"
-        f"\t\ttcp dport {PAIR_FW_PORT} drop\n"
-        "\t}\n"
-        "}\n"
-    )
+UPDATE_UNIT = "grok-station-update.service"  # fixed: the only unit these two commands touch
+INSTALL_LOG = "/var/log/grok-station-install.log"
 
 
-def pair_fw_open():
-    """Install the fixed table. Stdin is ignored."""
-    rules = pair_fw_ruleset()
-    run("nft", "delete", "table", "inet", "grok_pair")
-    p = subprocess.run(["nft", "-f", "-"], input=rules.encode(), capture_output=True, timeout=15)
-    if p.returncode:
-        fail("firewall")
+def update_start():
+    """Start the fixed update unit (git pull + install.sh, see tools/grok-station-update). Stdin is ignored."""
+    rc, _ = run("systemctl", "start", "--no-block", UPDATE_UNIT)
+    if rc:
+        fail("start")
     out({"ok": True})
 
 
-def pair_fw_close():
-    """Remove the pairing table. Stdin is ignored. Missing table is fine."""
-    run("nft", "delete", "table", "inet", "grok_pair")
-    out({"ok": True})
-
-
-def station_update(version):
-    """Stage a station update. The only argument is a vX.Y.Z version."""
-    if not isinstance(version, str) or not _STATION_VERSION.fullmatch(version):
-        fail("bad version")
-    out({"ok": True, "version": version})
-
-
-def display_pairing():
-    """POST /pairing on the local station display. The token is not echoed."""
-    j = stdin_json()
-    if j.get("clear") is True:
-        body = {"clear": True}
+def update_status():
+    """{state: idle|running|succeeded|failed, log: last 20 lines of the install log}. The log holds no secrets."""
+    _, text = run("systemctl", "show", UPDATE_UNIT, "-p", "ActiveState", "-p", "Result", "-p", "ExecMainStartTimestampMonotonic")
+    props = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    act, res = props.get("ActiveState", ""), props.get("Result", "")
+    started = props.get("ExecMainStartTimestampMonotonic", "0") not in ("", "0")
+    if act in ("activating", "active", "reloading"):
+        state = "running"
+    elif act == "failed" or (started and res not in ("", "success")):
+        state = "failed"
+    elif started:
+        state = "succeeded"
     else:
-        fp = j.get("fingerprint")
-        if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fp):
-            fail("bad fingerprint")
-        body = {"fingerprint": fp.lower()}
-    env = env_read("display")
-    token = env.get("GROK_STATION_TOKEN", "")
-    if not token or len(token) > 200 or any(c in token for c in "\r\n"):
-        fail("no display token")
-    port = env.get("GROK_STATION_PORT", "8787")
-    if not re.fullmatch(r"[0-9]{2,5}", str(port)) or not 1 <= int(port) <= 65535:
-        port = "8787"
-    data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        "http://127.0.0.1:%s/pairing" % port,
-        data=data,
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
-        method="POST",
-    )
+        state = "idle"
+    log = []
     try:
-        with urllib.request.urlopen(req, timeout=3) as r:
-            if r.status != 200:
-                fail("display")
-    except Exception:
-        fail("display")
-    out({"ok": True})
+        with open(INSTALL_LOG, encoding="utf-8", errors="replace") as f:
+            log = [ln.rstrip("\n")[:300] for ln in f.readlines()[-20:]]
+    except OSError:
+        pass
+    out({"state": state, "log": log})
 
 
 def nm(*a, timeout=30):
@@ -450,14 +408,10 @@ def main():
         secret_status()
     if cmd == "relay-test":
         relay_test()
-    if cmd == "pair-fw-open" and len(a) == 1:
-        pair_fw_open()
-    if cmd == "pair-fw-close" and len(a) == 1:
-        pair_fw_close()
-    if cmd == "station-update" and len(a) == 2:
-        station_update(a[1])
-    if cmd == "display-pairing" and len(a) == 1:
-        display_pairing()
+    if cmd == "update-start" and len(a) == 1:
+        update_start()
+    if cmd == "update-status" and len(a) == 1:
+        update_status()
     if cmd == "net-status":
         net_status()
     if cmd == "wifi-scan":

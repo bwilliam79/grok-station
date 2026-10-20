@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs as grok-station-update.service (root, oneshot), started from the admin page's Update button through the
+# root helper (update-start). Same path as the bootstrap one-liner: pull main in the clone install.sh last ran
+# from, then run install.sh. No arguments are taken from anywhere.
+set -eu
+SRC=$(cat /etc/grok-station/source-dir 2>/dev/null || true)
+[ -n "$SRC" ] && [ -f "$SRC/bootstrap.sh" ] && [ -d "$SRC/.git" ] || { echo "No grok-station clone recorded in /etc/grok-station/source-dir" >&2; exit 1; }
+export GROK_STATION_DIR="$SRC" NO_COLOR=1
+exec sh "$SRC/bootstrap.sh"

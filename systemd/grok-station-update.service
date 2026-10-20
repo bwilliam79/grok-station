@@ -1,0 +1,10 @@
+[Unit]
+Description=grok-station update (git pull main + install.sh), started from the admin page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/grok-station/grok-station-update
+# Its own unit and cgroup: install.sh restarts the admin page, which must not stop this job.
+TimeoutStartSec=45min

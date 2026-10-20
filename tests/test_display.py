@@ -328,7 +328,7 @@ class EnrollScreens(unittest.TestCase):
         Removed: clock/label bar, voice-off note, certificate fingerprint."""
         now = time.strptime("2026-10-19 19:42", "%Y-%m-%d %H:%M")
         drawn, codes = [], []
-        old = (gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font)
+        old = (gs.topbar, gs.code_box, gs.font)
         real_font = gs.font
 
         class F:
@@ -336,7 +336,6 @@ class EnrollScreens(unittest.TestCase):
             def render(self, t, *a):
                 drawn.append(t); return self.f.render(t, *a)
         gs.topbar = lambda *a, **k: drawn.append("TOPBAR")
-        gs.draw_fingerprint = lambda *a, **k: drawn.append("FINGERPRINT")
         gs.code_box = lambda surf, se, code, *a, **k: codes.append(code)
         rings = []
         old_ring = gs.lock_ring
@@ -352,10 +351,11 @@ class EnrollScreens(unittest.TestCase):
                 self.assertTrue(any("finish setup" in t for t in drawn))
                 self.assertIn("https://station.local", drawn); self.assertIn("https://192.0.2.5", drawn)
                 self.assertEqual(codes, code); self.assertEqual(rings, [1])
-                self.assertNotIn("TOPBAR", drawn); self.assertNotIn("FINGERPRINT", drawn)
+                self.assertNotIn("TOPBAR", drawn)
+                self.assertFalse(any(":" in t and len(t) > 40 for t in drawn))  # no cert fingerprint
                 self.assertFalse(any("Voice stays off" in t for t in drawn))
         finally:
-            gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font = old
+            gs.topbar, gs.code_box, gs.font = old
             gs.lock_ring = old_ring
 
     def test_setup_screens_centered_as_one_group(self):
@@ -680,6 +680,28 @@ class ChatLayoutTest(unittest.TestCase):
                 r = gs.LAST_PORTRAIT_RECT
                 self.assertLess(abs(r.centery - size[1] // 2), size[1] // 6, (size, state))
                 self.assertGreaterEqual(r.left, 0, (size, state))
+
+
+class IdleAfterSetup(unittest.TestCase):
+    """Once setup is done the station idles on the clock, date and weather; no certificate or pairing screen."""
+    def test_idle_after_setup_is_clock_and_weather(self):
+        self.assertEqual(gs.screen_for(None, False, None, False), "idle")
+        self.assertIs(gs.SCREENS["idle"], gs.draw_idle)
+        self.assertEqual(gs.screen_for(None, False, None, True), "night")
+        self.assertEqual(gs.screen_for({"mode": "key"}, False, None, False), "setup")
+        self.assertEqual(gs.screen_for({"mode": "hotspot"}, False, None, False), "hotspot")
+        self.assertEqual(gs.screen_for(None, False, {"text": "hi"}, False), "session")
+        for gone in ("draw_cert", "read_cert", "draw_pairing", "PAIRING", "apply_pairing"):
+            self.assertFalse(hasattr(gs, gone), gone)
+
+    def test_idle_draws_weather_for_the_location(self):
+        surf = pygame.Surface((800, 480)); L = gs.Layout(800, 480)
+        now = time.strptime("2026-10-20 14:05", "%Y-%m-%d %H:%M")
+        wx = gs.Weather()
+        wx.data, wx.ok_at = {"temp": 61, "code": 1, "day": True, "hi": 66, "lo": 48}, time.time()
+        gs.LAST_WEATHER_RECT = None
+        gs.draw_idle(surf, L, now, wx)
+        self.assertIsNotNone(gs.LAST_WEATHER_RECT)
 
 
 if __name__ == "__main__":

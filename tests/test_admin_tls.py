@@ -108,26 +108,19 @@ class Servers(unittest.TestCase):
             self.assertTrue(loc.startswith(f"https://{ga.hostname()}.local:{self.https}/"), loc)  # bad Host: our own name
             self.assertNotRegex(loc, r"^https://[^/]+//")  # never a protocol-relative path
 
-    def test_published_for_station_and_system_page(self):
-        ga.publish_tls()
-        d = json.load(open(os.path.join(os.environ["ADMIN_RUN_DIR"], "tls.json")))
-        self.assertEqual(d["fingerprint"], self.fp)
-        self.assertEqual(d["url"], f"https://{ga.hostname()}.local")
+    def test_system_page_fingerprint(self):
         self.assertEqual(ga.tls_info()["fingerprint"], self.fp)
 
 
-class Screen(unittest.TestCase):
-    def test_cert_screen_window(self):
+class NoCertScreen(unittest.TestCase):
+    def test_no_cert_screen_or_tls_json(self):
         import grok_station as gs
-        f = os.path.join(tempfile.mkdtemp(), "tls.json")
-        gs.TLS_FILE = f
-        fp = ":".join(["AB"] * 32)
-        json.dump({"fingerprint": fp, "url": "https://x.local", "made_at": time.time() - 60}, open(f, "w"))
-        self.assertEqual(gs.read_cert()["fingerprint"], fp)
-        json.dump({"fingerprint": fp, "url": "https://x.local", "made_at": time.time() - 601}, open(f, "w"))
-        self.assertIsNone(gs.read_cert())
-        json.dump({"fingerprint": "nope", "made_at": time.time()}, open(f, "w"))
-        self.assertIsNone(gs.read_cert())
+        for name in ("draw_cert", "read_cert", "draw_fingerprint", "TLS_FILE"):
+            self.assertFalse(hasattr(gs, name), name)
+        self.assertFalse(hasattr(ga, "publish_tls"))
+        src = open(gs.__file__).read()
+        self.assertNotIn("New security certificate", src)
+        self.assertNotIn('"Admin page"', src)
 
 
 if __name__ == "__main__":
