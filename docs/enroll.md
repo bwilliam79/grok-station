@@ -31,5 +31,15 @@ On the station screen, a wake word with no persona shows the Echo mark on a surf
 
 Privacy: clips stay on the LAN (Pi local copy + training host inbox). No speaker names: sessions are timestamps.
 Tokens stay in the existing secret files (`/etc/grok-station/env`, `/etc/grok-station/wake.env`, relay secrets).
-Phrases accepted: `^hey_[a-z]{2,16}$` and listed in `wakewords.json` (`words` or `enroll`). Limits: 40 clips per
-session, 5 s per clip, 16 kHz mono PCM16 WAV.
+Phrases accepted: `^hey_[a-z]{2,16}$` and listed in `wakewords.json` (`words` or `enroll`). The station recorder
+also accepts `hey_<bot id>` (a letter first, then letters, digits, or hyphens). The relay upload may still only
+accept the letter-only form. The recorder asks for **20–30 clips, default 25**, on the admin page, the admin API,
+and the wake listener (`count must be 20-30`). 16 kHz mono PCM16 WAV.
+
+`enroll/status.json` (and each session's `.outcome.json`) uses `recording`, `processing`, `published`,
+`failed_quality`, or `failed`. `done` is not a success. "JOB DONE published" is `published`. "JOB DONE below the
+gate, not published" is `failed_quality` and keeps the gate scores (recall and false accepts versus recall 0.80 and
+1.0 false accepts per hour). A check run ("JOB DONE check (…), not published") is `failed` and is never published.
+When the wake listener sees `published` or `failed_quality`, the station display shows a `notice` for about 10
+seconds: "Hey Finn is ready", or "Hey Finn needs more clips. Record 20-30 somewhere quiet." A hard failure stays on
+the enrollment error screen. A tool card still holds 4 seconds after a session; that is separate from the notice.

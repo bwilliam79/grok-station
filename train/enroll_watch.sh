@@ -23,6 +23,53 @@ if [ ! -f $LOCK ]; then
 fi
 python3 - <<'P' 2>/dev/null
 import glob, json, os
-s=[{"session": d.split("inbox/")[1], "state": "done" if os.path.exists(d+"/DONE") else "failed" if os.path.exists(d+"/FAILED") else "ready" if os.path.exists(d+"/READY") else "recording"} for d in sorted(glob.glob("enroll/inbox/hey_*/*"))]
-json.dump({"sessions": s[-20:], "published": sorted(os.listdir("enroll/published"))}, open("enroll/status.json", "w"), indent=1)
+STATES = ("recording", "processing", "published", "failed_quality", "failed")
+def one(d):
+    ses = d.split("inbox/", 1)[-1]
+    op = os.path.join(d, ".outcome.json")
+    if os.path.isfile(op):
+        try:
+            j = json.load(open(op))
+        except Exception:
+            j = {}
+        st = j.get("state") if isinstance(j, dict) else None
+        if st in STATES:
+            row = {"session": ses, "state": st}
+            if st == "failed_quality" and isinstance(j.get("scores"), dict):
+                row["scores"] = j["scores"]
+            return row
+    if os.path.exists(d + "/FAILED"):
+        return {"session": ses, "state": "failed"}
+    if os.path.exists(d + "/DONE"):
+        phrase, stamp = ses.split("/", 1) if "/" in ses else ("", os.path.basename(d))
+        if not phrase:
+            phrase = os.path.basename(os.path.dirname(d))
+        blob = ""
+        try:
+            blob = open("enroll/enroll.log", errors="replace").read()
+        except OSError:
+            blob = ""
+        lines = [ln for ln in blob.splitlines() if f"[{phrase} {stamp}]" in ln or f"[{os.path.basename(os.path.dirname(d))} {os.path.basename(d)}]" in ln]
+        text = "\n".join(lines)
+        if "below the gate" in text:
+            st = "failed_quality"
+        elif any("JOB DONE published" in ln and "not published" not in ln for ln in lines):
+            st = "published"
+        else:
+            st = "failed"  # never "done", including a check run ("not published")
+        return {"session": ses, "state": st}
+    lock = ""
+    try:
+        lock = open("enroll/.job").read()
+    except OSError:
+        lock = ""
+    if d in lock or os.path.exists(d + "/READY"):
+        return {"session": ses, "state": "processing"}
+    return {"session": ses, "state": "recording"}
+rows = [one(d) for d in sorted(glob.glob("enroll/inbox/hey_*/*")) if os.path.isdir(d)]
+try:
+    published = sorted(os.listdir("enroll/published"))
+except OSError:
+    published = []
+json.dump({"sessions": rows[-20:], "published": published}, open("enroll/status.json", "w"), indent=1)
 P

@@ -5,8 +5,8 @@ No default password: until an admin password is set, the station shows a one-tim
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a
-10-minute step-up window on that session for saving a webhook and adding or renaming a bot; removing a bot or webhook
-always asks again. Speaker names stay on this Pi. Stdlib only.
+10-minute step-up window on that session for saving a webhook, adding or renaming a bot, uploading a portrait, and
+changing the privacy toggle; removing a bot or webhook always asks again. Speaker names stay on this Pi. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -372,11 +372,89 @@ def note_secret(name, value=None, test=None):
 
 
 # ------------------------------------------------------------------ wake words / speakers
+def configured_phrase_names(cfg):
+    """Phrase ids already in wakewords.json (words, enroll, fallback). Not overrides."""
+    names = set()
+    if not isinstance(cfg, dict):
+        return names
+    for w in (cfg.get("words") or []) + (cfg.get("enroll") or []):
+        if isinstance(w, dict) and w.get("name"):
+            names.add(w["name"])
+    fb = cfg.get("fallback")
+    if isinstance(fb, dict) and fb.get("name"):
+        names.add(fb["name"])
+    return names
+
+
+def ensure_wake_entries(cfg, ov, bots):
+    """Add missing wake entries. Never change enabled on one that already exists.
+
+    hey_grok is created on (fresh install) when it is not in the config or the overrides.
+    Every other new entry, including a bot added later, starts off. hey_jarvis is the fallback
+    and is not written here. Returns (overrides, changed).
+    """
+    ov = dict(ov) if isinstance(ov, dict) else {}
+    changed = False
+    have = configured_phrase_names(cfg)
+
+    def present(name):
+        return name in have or isinstance(ov.get(name), dict)
+
+    if not present("hey_grok"):
+        ov["hey_grok"] = {"enabled": True, "persona": "grok"}
+        changed = True
+    for b in bots or []:
+        if not isinstance(b, dict) or not slug_ok(b.get("slug")):
+            continue
+        name = "hey_" + b["slug"]
+        if present(name):
+            continue
+        ov[name] = {"enabled": False, "persona": b["slug"]}
+        changed = True
+    return ov, changed
+
+
+def remember_bot_wakeword(slug):
+    """A bot just added on this station gets hey_<slug>, off, unless that entry already exists."""
+    if not slug_ok(slug):
+        return
+    name = "hey_" + slug
+    if name in configured_phrase_names(read_json(WAKE_CONFIG, {})):
+        return
+    ov = read_json(path("wake-overrides.json"), {})
+    if not isinstance(ov, dict):
+        ov = {}
+    if isinstance(ov.get(name), dict):
+        return
+    ov[name] = {"enabled": False, "persona": slug}
+    write_json(path("wake-overrides.json"), ov, 0o640)
+
+
+def known_bots():
+    """Bots the wake-word list should mirror: the relay list, or the station's cached personas."""
+    got = relay_call("GET", "/admin/bots")
+    if got and got[0] == 200 and isinstance(got[1], dict):
+        out = []
+        for b in got[1].get("bots") or []:
+            safe = safe_bot(b)
+            if safe:
+                out.append({"slug": safe["slug"], "name": safe["name"]})
+        return out
+    return [{"slug": b["slug"], "name": b["name"]} for b in local_bots()]
+
+
 def wakewords():
+    drop_stale_guest()
     cfg = read_json(WAKE_CONFIG, {})
     ov = read_json(path("wake-overrides.json"), {})
     if not isinstance(ov, dict):
         ov = {}
+    bots = known_bots()
+    new_ov, changed = ensure_wake_entries(cfg, ov, bots)
+    if changed:
+        write_json(path("wake-overrides.json"), new_ov, 0o640)
+        ov = new_ov
+    names = {b["slug"]: b["name"] for b in bots}
     enrolled = {w.get("name"): w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict)}
     models = read_json(path("models.json"), {})  # Pi-only: phrase -> {speakers: [ids], trained_at, clips}
     rows = [w for w in cfg.get("words", []) + cfg.get("enroll", []) if isinstance(w, dict)]
@@ -386,7 +464,7 @@ def wakewords():
         # a phrase recorded on this station (phrase id -> persona), not one of the built-in words
         if name in have or not isinstance(o, dict) or (fb and name == fb.get("name")):
             continue
-        if phrase_ok(name) and persona_ok(str(o.get("persona") or "")):
+        if wake_name_ok(name) and persona_ok(str(o.get("persona") or "")):
             rows.append({"name": name, "persona": o["persona"]})
     out = []
     for w in rows:
@@ -397,10 +475,14 @@ def wakewords():
         e = enrolled.get(n, {})
         has_model = n in enrolled or os.path.isfile(os.path.join(cfg.get("models_dir", ""), n + ".onnx"))
         persona = str(o.get("persona")) if persona_ok(str(o.get("persona") or "")) else w.get("persona", "grok")
-        out.append({"name": n, "persona": persona, "enabled": o.get("enabled", True) and has_model,
-                    "has_model": has_model, "sensitivity": round(1 - float(o.get("threshold", e.get("threshold", w.get("threshold", 0.5)))), 2),
-                    "provisional": bool(w.get("provisional")), "enrolled": n in enrolled, "metrics": e.get("metrics"),
-                    "trained_on": models.get(n)})
+        row = {"name": n, "persona": persona, "enabled": o.get("enabled", True) and has_model,
+               "has_model": has_model, "sensitivity": round(1 - float(o.get("threshold", e.get("threshold", w.get("threshold", 0.5)))), 2),
+               "provisional": bool(w.get("provisional")), "enrolled": n in enrolled, "metrics": e.get("metrics"),
+               "trained_on": models.get(n)}
+        slug = n[4:] if isinstance(n, str) and n.startswith("hey_") else ""
+        if slug in names:
+            row["label"] = "Hey " + names[slug]
+        out.append(row)
     if fb and fb.get("name"):
         out.append({"name": fb["name"], "persona": fb.get("persona", "grok"), "enabled": True, "backup": True, "has_model": True,
                     "sensitivity": round(1 - float(fb.get("threshold", 0.5)), 2)})
@@ -448,8 +530,40 @@ def slug_ok(slug):
     return isinstance(slug, str) and SLUG_RE.fullmatch(slug) is not None and slug != "grok"
 
 
+# The voice service's bot id is stricter than a 2–32 free slug: a letter first, then up to 23 more, "grok" reserved.
+BOT_ID_ERROR = ("Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. "
+                "The voice service doesn't allow a longer id.")
+BOT_ID_RESERVED = '"grok" is reserved.'
+
+
+def bot_id_from_name(name):
+    """Lowercase, hyphens for spaces, strip anything else. Does not invent a prefix or rewrite "grok"."""
+    s = str(name or "").lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    s = re.sub(r"-{2,}", "-", s)
+    if len(s) > 24:
+        s = s[:24].rstrip("-")
+    return s
+
+
+def bot_id_problem(slug):
+    """None when this can be a new bot id. Same rule the add-bot request enforces."""
+    if slug == "grok":
+        return BOT_ID_RESERVED
+    if not isinstance(slug, str) or SLUG_RE.fullmatch(slug) is None:
+        return BOT_ID_ERROR
+    return None
+
+
 def phrase_ok(name):
     return isinstance(name, str) and len(name) <= PHRASE_MAX and PHRASE_RE.fullmatch(name) is not None
+
+
+def wake_name_ok(name):
+    """A built-in phrase id, or hey_<bot id> (digits and hyphens allowed). phrase_ok itself stays strict."""
+    if phrase_ok(name):
+        return True
+    return isinstance(name, str) and name.startswith("hey_") and slug_ok(name[4:])
 
 
 def persona_ok(slug):
@@ -649,6 +763,48 @@ def _status_row(phrase, state, message, now_ts, prev, persona=None, session=None
     return row
 
 
+def quality_message(scores=None):
+    """The sentence the Wake words page and the per-bot button show for a gate miss."""
+    scores = scores if isinstance(scores, dict) else {}
+    recall = scores.get("recall_real", scores.get("recall"))
+    fa = scores.get("fa_h", scores.get("false_accepts", scores.get("fa_per_hour")))
+    if isinstance(recall, bool) or not isinstance(recall, (int, float)):
+        recall = None
+    if isinstance(fa, bool) or not isinstance(fa, (int, float)):
+        fa = None
+    if recall is not None and fa is not None:
+        fa_s = f"{float(fa):.3f}".rstrip("0").rstrip(".")
+        return (f"Not good enough yet (recall {float(recall):.2f} vs 0.80, false accepts {fa_s}/h vs 1.0/h). "
+                "Record more clips, 20-30, somewhere quiet.")
+    return "Not good enough yet (below the gate). Record more clips, 20-30, somewhere quiet."
+
+
+def map_train_state(state, log="", scores=None):
+    """Host training status → the state the admin page stores.
+
+    "done" is never a success. "JOB DONE below the gate, not published" is failed_quality.
+    recording/uploading/training/ready/failed/idle pass through (admin "ready" means the model is ready).
+    """
+    log = log or ""
+    low = log.lower()
+    st = "" if state is None else str(state)
+    if st == "failed_quality" or "below the gate" in low:
+        return "failed_quality"
+    if st == "published":
+        return "published"
+    if st == "processing":
+        return "processing"
+    if st == "done":
+        if "not published" in low or "below the gate" in low:
+            return "failed_quality"
+        if "published" in low:
+            return "published"
+        return "failed_quality"
+    if st in ("recording", "uploading", "training", "ready", "failed", "idle"):
+        return st
+    return st
+
+
 def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
     """Fold the listener's enroll stage and any published model into the persisted per-phrase status.
 
@@ -658,9 +814,20 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
     """
     prev = prev if isinstance(prev, dict) else {}
     out = {}
+    kept = ("idle", *ACTIVE_ENROLL, "ready", "failed", "processing", "published", "failed_quality")
     for k, v in prev.items():
-        if isinstance(k, str) and isinstance(v, dict) and v.get("state") in ("idle", *ACTIVE_ENROLL, "ready", "failed"):
-            out[k] = dict(v)
+        if not (isinstance(k, str) and isinstance(v, dict)):
+            continue
+        row = dict(v)
+        scores = row.get("scores") if isinstance(row.get("scores"), dict) else None
+        st = map_train_state(row.get("state"), str(row.get("message") or ""), scores)
+        if st not in kept:
+            continue
+        if st != row.get("state"):
+            row["state"] = st
+        if st == "failed_quality" and not str(row.get("message") or "").startswith("Not good enough"):
+            row["message"] = quality_message(scores)
+        out[k] = row
     enrolled = {n for n in (enrolled_names or []) if n}
     last, busy = {}, False
     if isinstance(wake_status, dict):
@@ -668,10 +835,10 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
         last = wake_status.get("last_enroll") if isinstance(wake_status.get("last_enroll"), dict) else {}
     phrase = str(last.get("phrase") or "")
     stage = str(last.get("stage") or "")
-    msg = str(last.get("message") or "")[:160]
+    msg = str(last.get("message") or "")[:240]
     persona = str(last.get("persona")) if persona_ok(str(last.get("persona") or "")) else None
     session = last.get("session") if isinstance(last.get("session"), str) else None
-    if phrase_ok(phrase):
+    if wake_name_ok(phrase):
         entry = out.get(phrase) or {}
         state, new_msg = None, msg
         if busy:
@@ -680,9 +847,19 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
                               "training": "Training."}[state]
         elif stage == "failed":
             state, new_msg = "failed", msg or "Training didn't pass."
+        elif stage == "failed_quality":
+            state = "failed_quality"
+            new_msg = msg if msg.startswith("Not good enough") else quality_message(None)
+        elif stage == "published":
+            state, new_msg = "published", msg or "Ready."
+        elif stage == "processing":
+            state, new_msg = "processing", msg or "Processing…"
+        elif stage == "done":
+            state = map_train_state("done", msg)
+            new_msg = quality_message(None) if state == "failed_quality" else (msg or "Ready.")
         elif stage == "ready":
             state, new_msg = "ready", msg or "Ready."
-        elif stage in ACTIVE_ENROLL or entry.get("state") in ACTIVE_ENROLL:
+        elif stage in ACTIVE_ENROLL or entry.get("state") in (*ACTIVE_ENROLL, "processing"):
             state, new_msg = "training", msg or "Training."
         if state:
             had = entry.get("had_model")
@@ -710,15 +887,16 @@ def refresh_enroll_status():
 def record_button(rows):
     """What the Bots page shows for one bot, from that bot's phrase statuses.
 
-    "Processing…" while any phrase is recording, uploading or training. Otherwise "Record voice".
-    A failed attempt keeps "Record voice" and carries the short reason for the status panel.
+    "Processing…" while any phrase is recording, uploading, training, or processing.
+    "Ready" once a model is ready or published. A gate miss uses the quality sentence.
+    A hard failure keeps "Record voice" and carries the short reason.
     """
     rows = [r for r in rows if isinstance(r, dict)]
 
     def ts(r):
         return r.get("updated_at") or 0
 
-    active = [r for r in rows if r.get("state") in ACTIVE_ENROLL]
+    active = [r for r in rows if r.get("state") in (*ACTIVE_ENROLL, "processing")]
     if active:
         top = max(active, key=ts)
         return {"label": "Processing…", "processing": True, "message": top.get("message") or "Processing…",
@@ -729,6 +907,15 @@ def record_button(rows):
     if top.get("state") == "failed":
         return {"label": "Record voice", "processing": False, "message": top.get("message") or "Something went wrong.",
                 "phrase": top.get("phrase") or "", "state": "failed"}
+    if top.get("state") == "failed_quality":
+        msg = top.get("message") or ""
+        if not str(msg).startswith("Not good enough"):
+            msg = quality_message(top.get("scores") if isinstance(top.get("scores"), dict) else None)
+        return {"label": msg, "processing": False, "message": msg, "phrase": top.get("phrase") or "",
+                "state": "failed_quality"}
+    if top.get("state") in ("ready", "published"):
+        return {"label": "Ready", "processing": False, "message": "", "phrase": top.get("phrase") or "",
+                "state": top.get("state")}
     return {"label": "Record voice", "processing": False, "message": "", "phrase": top.get("phrase") or "",
             "state": top.get("state") or "idle"}
 
@@ -849,6 +1036,59 @@ def audit_stepup():
     print(f"audit persona=- action=stepup open last4=- time={int(now())}", flush=True)
 
 
+def drop_stale_guest():
+    """Remove a leftover guest-mode flag from t1.json. Missing file or key is a no-op.
+
+    Speaker records keep their own guest flag. Only the station-wide switch is dropped.
+    """
+    p = path("t1.json")
+    try:
+        with open(p) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(doc, dict) or "guest" not in doc:
+        return
+    doc.pop("guest", None)
+    try:
+        write_json(p, doc, 0o640)
+    except OSError:
+        pass
+
+
+def schedule_persona_sync(delay=30):
+    """Ask the wake listener to re-sync portraits after the relay has had time to draw one."""
+    def run():
+        time.sleep(delay)
+        try:
+            wake("POST", "/personas/sync", {})
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+PII_TEXT = ("Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. "
+            "When this is on, replies also block personal info: household names, emails, phones, "
+            "addresses, IPs, MACs, and host names.")
+AVATAR_MAX = 2_000_000
+AVATAR_ERROR = "Use a png, jpeg, or webp up to 2 MB."
+AVATAR_POST = re.compile(r"^/api/bots/([a-z][a-z0-9-]{1,23})/avatar$")
+
+
+def sniff_image(ctype, data):
+    """Content type to send the relay, or None when the bytes don't match the declared type."""
+    ctype = str(ctype or "").split(";")[0].strip().lower()
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return None
+    if ctype == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if ctype in ("image/jpeg", "image/jpg") and data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if ctype == "image/webp" and len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _private_file(p):
     """True when the file exists and is not group- or world-readable."""
     try:
@@ -940,10 +1180,11 @@ def _pinned_connection(pin):
     return Conn
 
 
-def relay_call(method, path, payload=None, timeout=10):
+def relay_call(method, path, payload=None, timeout=10, raw=None, content_type=None):
     """Call the relay admin API. None means the station has no relay admin config.
 
     A failed call is (503, {error}). The exception text is not logged (it can contain the URL).
+    raw is a request body sent as content_type (a portrait). It is not logged.
     """
     cfg = relay_settings()
     if not cfg:
@@ -954,10 +1195,15 @@ def relay_call(method, path, payload=None, timeout=10):
         _RelayHTTPS(ctx, _pinned_connection(cfg["pin"])),
         _NoRedirect(),
     )
-    data = None if payload is None else json.dumps(payload).encode()
     headers = {"Authorization": "Bearer " + cfg["token"], "Accept": "application/json"}
-    if data is not None:
+    if raw is not None:
+        data = raw if isinstance(raw, bytes) else bytes(raw)
+        headers["Content-Type"] = content_type or "application/octet-stream"
+    elif payload is not None:
+        data = json.dumps(payload).encode()
         headers["Content-Type"] = "application/json"
+    else:
+        data = None
     req = urllib.request.Request(cfg["origin"] + path, data=data, headers=headers, method=method)
     try:
         with opener.open(req, timeout=timeout) as resp:
@@ -1240,12 +1486,27 @@ class Handler(BaseHTTPRequestHandler):
         if a and isinstance(a[0], str):
             print(f"{self.command} {self.path.split('?')[0]} {a[1] if len(a) > 1 else ''}", flush=True)
 
+    def avatar_slug(self):
+        if self.command != "POST":
+            return None
+        m = AVATAR_POST.fullmatch(urllib.parse.urlsplit(self.path).path)
+        return m.group(1) if m else None
+
     def guard(self, write):
         if not lan_ok(self.client_address[0]):
             self.send(403, {"error": "LAN only"})
             return False
         if write:  # CSRF: JSON only, same-origin header (forms can't set it), SameSite=Strict cookies
-            if self.headers.get("X-GS-Admin") != "1" or not self.headers.get("Content-Type", "").startswith("application/json"):
+            if self.headers.get("X-GS-Admin") != "1":
+                self.send(403, {"error": "bad request origin"})
+                return False
+            if self.avatar_slug():
+                ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+                if ctype not in ("image/png", "image/jpeg", "image/jpg", "image/webp"):
+                    self.send(400, {"error": AVATAR_ERROR})
+                    return False
+                return True
+            if not self.headers.get("Content-Type", "").startswith("application/json"):
                 self.send(403, {"error": "bad request origin"})
                 return False
         return True
@@ -1276,6 +1537,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static(p)
             if not p.startswith("/api/"):
                 return self.send(404, {"error": "not found"})
+            avatar = self.avatar_slug()
+            if avatar:
+                if not self.authed():
+                    return self.send(401, {"error": "sign in", "setup_required": AUTH.setup_required()})
+                return self.post_avatar(avatar)
             j = self.body() if method in ("POST", "PUT", "PATCH", "DELETE") else {}
         except ValueError:
             return self.send(400, {"error": "bad request"})
@@ -1588,13 +1854,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": err})
             mid, _words = normalize_phrase(j.get("phrase", ""))
             return self.send(200, {"ok": True, "id": mid, "label": phrase_label(mid)})
-        raw, count = j.get("phrase", ""), j.get("count", 10)
+        raw, count = j.get("phrase", ""), j.get("count", 25)
         spk = str(j.get("speaker") or "")
-        mid, _words = normalize_phrase(raw)
-        if isinstance(count, bool) or not isinstance(count, int) or not 10 <= count <= 40:
-            return self.send(400, {"error": "Pick a wake word and 10 to 40 clips."})
-        if not phrase_ok(mid):
-            return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word and 10 to 40 clips."})
+        direct = str(raw or "").strip().lower()
+        # hey_<bot id> can contain a hyphen or a digit; normalize_phrase would strip those.
+        mid = direct if wake_name_ok(direct) else normalize_phrase(raw)[0]
+        if isinstance(count, bool) or not isinstance(count, int) or not 20 <= count <= 30:
+            return self.send(400, {"error": "Pick a wake word and 20 to 30 clips."})
+        if not wake_name_ok(mid):
+            return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word and 20 to 30 clips."})
         if spk and spk not in speakers():
             return self.send(400, {"error": "Pick a speaker."})
         personas = phrase_personas()
@@ -1674,35 +1942,39 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"personas": out, "editable": False,
                                "where": "The persona registry lives on the voice service computer; this page shows it read-only."})
 
-    # Guest mode. The wake listener reads t1.json (same file either way); the page calls /api/guest.
-    def _guest_doc(self):
-        d = read_json(path("t1.json"), {})
-        return {"guest": d.get("guest") is True, "changed_at": d.get("changed_at")}
+    def api_get_privacy(self, p, q, j):
+        """pii_mode defaults on. A missing relay config still answers 200 so the switch shows on."""
+        drop_stale_guest()
+        got = relay_call("GET", "/admin/policy")
+        if not got or got[0] != 200 or not isinstance(got[1], dict) or not isinstance(got[1].get("pii_mode"), bool):
+            body = {"pii_mode": True, "text": PII_TEXT}
+            if got is None:
+                body["message"] = RELAY_UNCONFIGURED
+            elif not got or got[0] != 200:
+                body["message"] = RELAY_DOWN
+            return self.send(200, body)
+        return self.send(200, {"pii_mode": got[1]["pii_mode"], "text": PII_TEXT})
 
-    def _guest_put(self, j):
-        if not isinstance(j.get("guest"), bool):
+    def api_put_privacy(self, p, q, j):
+        if not isinstance(j.get("pii_mode"), bool):
             return self.send(400, {"error": "bad value"})
-        write_json(path("t1.json"), {"guest": j["guest"], "changed_at": int(now())}, 0o640)
-        return self.send(200, {"ok": True, "guest": j["guest"]})
-
-    def api_get_guest(self, p, q, j):
-        return self.send(200, self._guest_doc())
-
-    def api_put_guest(self, p, q, j):
-        return self._guest_put(j)
-
-    def api_get_t1(self, p, q, j):
-        return self.api_get_guest(p, q, j)
-
-    def api_put_t1(self, p, q, j):
-        return self.api_put_guest(p, q, j)
+        if not self.need_password(j):  # before the relay, so a wrong password never leaves the station
+            return
+        got = relay_call("PUT", "/admin/policy", {"pii_mode": j["pii_mode"], "actor": RELAY_ACTOR})
+        if got is None:
+            return self.send(503, {"error": RELAY_UNCONFIGURED})
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit("-", "pii_mode " + ("on" if j["pii_mode"] else "off"))
+        return self.send(200, {"ok": True, "pii_mode": j["pii_mode"]})
 
     def api_get_portrait(self, p, q, j):
         parts = p.split("/")
         if len(parts) != 4 or not slug_ok(parts[3]):
             return self.send(404, {"error": "not found"})
         base = os.path.realpath(os.path.dirname(PERSONAS))
-        for ext, ctype in (("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg")):
+        for ext, ctype in (("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("webp", "image/webp")):
             f = os.path.realpath(os.path.join(base, parts[3] + "." + ext))
             if not (f.startswith(base + os.sep) and os.path.isfile(f)):
                 continue
@@ -1773,6 +2045,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_post_bots(self, p, q, j):
         if p == "/api/bots/refresh-avatars":
             return self.bots_refresh_avatars()
+        am = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/avatar-request", p)
+        if am and slug_ok(am.group(1)):
+            return self.bots_avatar_request(am.group(1))
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -1820,6 +2095,7 @@ class Handler(BaseHTTPRequestHandler):
         return AUTH.stepup_until(self.cookie("gs_session"))
 
     def bots_list(self):
+        drop_stale_guest()
         got = relay_call("GET", "/admin/bots")
         if got is None:
             return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED,
@@ -1840,10 +2116,50 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(202, {"started": True})
         return self.send(503, {"error": "Can't reach the voice listener right now."})
 
+    def post_avatar(self, slug):
+        """Portrait upload: raw image, step-up via X-GS-Password (or the open window). Proxied, not stored here."""
+        if not slug_ok(slug):
+            return self.send(404, {"error": "not found"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self.send(400, {"error": AVATAR_ERROR})
+        if n <= 0 or n > AVATAR_MAX:
+            return self.send(400, {"error": AVATAR_ERROR})
+        data = self.rfile.read(n)
+        if len(data) != n:
+            return self.send(400, {"error": AVATAR_ERROR})
+        send_as = sniff_image(self.headers.get("Content-Type", ""), data)
+        if not send_as:
+            return self.send(400, {"error": AVATAR_ERROR})
+        pw = self.headers.get("X-GS-Password")
+        if not self.need_password({"password": pw} if isinstance(pw, str) and pw != "" else {}):
+            return
+        got = relay_call("POST", "/admin/bots/" + slug + "/avatar", raw=data, content_type=send_as)
+        if got is None:
+            return self.bots_unconfigured()
+        status, body = got
+        if status not in (200, 201) or (isinstance(body, dict) and body.get("ok") is False):
+            return self.relay_fail(status, body, (pw if isinstance(pw, str) else "",))
+        audit(slug, "avatar")
+        return self.send(200, {"ok": True})
+
+    def bots_avatar_request(self, slug):
+        """Ask the relay to redraw this bot's portrait. No password. Sync the station copy ~30 s later."""
+        got = relay_call("POST", "/admin/bots/" + slug + "/avatar-request", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status not in (200, 202) or (isinstance(data, dict) and data.get("ok") is False):
+            return self.relay_fail(status, data)
+        schedule_persona_sync(30)
+        return self.send(202, {"ok": True})
+
     def bots_add(self, j):
         slug, name, voice = j.get("slug"), clean_name(j.get("name")), j.get("voice")
-        if not slug_ok(slug):
-            return self.send(400, {"error": "Use a short lowercase name. \"grok\" is reserved."})
+        problem = bot_id_problem(slug)
+        if problem:
+            return self.send(400, {"error": problem})
         if not name:
             return self.send(400, {"error": "Type a name."})
         if not voice_ok(voice):
@@ -1860,6 +2176,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(502, {"error": "The voice service didn't return a voice token."})
             return self.relay_fail(status, data, (j.get("password"),))
         audit(slug, "add")
+        remember_bot_wakeword(slug)
         return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
 
     def bots_rename(self, slug, j):
@@ -2173,6 +2490,7 @@ def publish_tls():
 
 def main():
     os.makedirs(STATE_DIR, mode=0o750, exist_ok=True)
+    drop_stale_guest()
     publish_tls()
     AUTH.publish()
     print(f"admin on :{PORT} setup_required={AUTH.setup_required()} mode={AUTH.mode()}", flush=True)

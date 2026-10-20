@@ -54,18 +54,20 @@ class C:
     """Tiny client with a cookie jar."""
     def __init__(self): self.jar = {}
 
-    def req(self, method, p, body=None, csrf=True, ctype="application/json", raw=False):
+    def req(self, method, p, body=None, csrf=True, ctype="application/json", raw=False, data=None, headers=None):
         c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=10)
         h = {}
         if self.jar:
             h["Cookie"] = "; ".join(f"{k}={v}" for k, v in self.jar.items())
-        data = None
+        payload = None
         if method != "GET":
-            data = json.dumps(body or {}).encode()
+            payload = data if data is not None else json.dumps(body or {}).encode()
             h["Content-Type"] = ctype
             if csrf:
                 h["X-GS-Admin"] = "1"
-        c.request(method, p, data, h)
+        if headers:
+            h.update(headers)
+        c.request(method, p, payload, h)
         r = c.getresponse()
         out = r.read()
         for k, v in r.getheaders():
@@ -315,7 +317,7 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         ga_wake = ga.wake
         ga.wake = lambda m, p, body=None, timeout=3: (sent.append(body), (202, {"ok": True}))[1]
         try:
-            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 10, "speaker": j["id"]})
+            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 25, "speaker": j["id"]})
         finally:
             ga.wake = ga_wake
         self.assertEqual(st, 202)
@@ -328,7 +330,7 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         self.assertNotIn("Alex", json.dumps(models))
         self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": j["id"]})[0], 400)
         # "Hey Hank!" is the known word hey_hank, so this re-records it (the listener is down here).
-        st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 10})
+        st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 25})
         self.assertEqual((st, out.get("id")), (503, "hey_hank"))
 
 
@@ -671,19 +673,19 @@ class WakePhraseAndStatus(unittest.TestCase):
         st, j = c.req("POST", "/api/enroll/check", {"phrase": "hey fin"})
         self.assertEqual((st, j["error"]), (400, "Too close to “Hey Finn”. Pick something that sounds different."))
         st, j = c.req("POST", "/api/enroll", {"phrase": "cat", "count": 5, "persona": "grok"})
-        self.assertEqual((st, j["error"]), (400, "Pick a wake word and 10 to 40 clips."))
+        self.assertEqual((st, j["error"]), (400, "Pick a wake word and 20 to 30 clips."))
 
     def test_mapping_saved_and_rerecord_keeps_persona(self):
         c = signed_in()
         st, sp = c.req("POST", "/api/speakers", {"name": "  Alex   Example "})
         self.enroll_up([(202, {"ok": True}), (503, {"error": "wake listener unreachable"})])
         CLOCK[0] = 1_700_000_000
-        st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Kitchen!", "count": 12, "persona": "kitchen-bot",
+        st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Kitchen!", "count": 25, "persona": "kitchen-bot",
                                               "speaker": sp["id"]})
         self.assertEqual(st, 202)
         self.assertEqual(j["id"], "hey_kitchen")
         self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
-        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 12, "topup": False, "persona": "kitchen-bot"})
+        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 25, "topup": False, "persona": "kitchen-bot"})
         self.assertNotIn("Alex", json.dumps(self.sent))
         self.assertNotIn(sp["id"], json.dumps(self.sent))
         ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
@@ -700,10 +702,10 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(models["hey_kitchen"]["speakers"], [sp["id"]])
         self.assertNotIn("Alex", json.dumps(models))
         # a second phrase for the same bot, and a different bot on an existing word, are different checks
-        st, j = c.req("POST", "/api/enroll", {"phrase": "hey finn", "count": 10, "persona": "grok"})
+        st, j = c.req("POST", "/api/enroll", {"phrase": "hey finn", "count": 25, "persona": "grok"})
         self.assertEqual((st, j["error"]), (400, "“Hey Finn” is already a wake word."))
         self.sent.clear()
-        st, j = c.req("POST", "/api/enroll", {"phrase": "okay finn", "count": 10, "persona": "grok"})
+        st, j = c.req("POST", "/api/enroll", {"phrase": "okay finn", "count": 25, "persona": "grok"})
         self.assertNotEqual(st, 202)
         ov = json.load(open(ov_path))
         self.assertNotIn("okay_finn", ov)  # listener refused: the new mapping is dropped
@@ -782,7 +784,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         json.dump({"words": [{"name": "hey_kitchen", "persona": "grok"}]}, open(ga.ENROLLED, "w"))
         st, j = c.req("GET", "/api/enroll/status")
         self.assertEqual(j["words"]["hey_kitchen"]["state"], "ready")
-        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Record voice")
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Ready")
         self.assertFalse(j["buttons"]["kitchen-bot"]["processing"])
         self.assertEqual(j["buttons"]["kitchen-bot"]["message"], "")
         path = os.path.join(os.environ["ADMIN_STATE_DIR"], "enroll-status.json")
@@ -793,7 +795,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         st, j = c3.req("GET", "/api/enroll/status")
         self.assertEqual(st, 200)
         self.assertEqual(j["words"]["hey_kitchen"]["state"], "ready")
-        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Record voice")
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Ready")
         self.assertEqual(json.load(open(path)), saved)  # listener down: the file is what the next page load reads
 
     def test_record_button(self):
@@ -812,7 +814,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(failed, {"label": "Record voice", "processing": False, "message": "Needs more clips.",
                                   "phrase": "okay_finn", "state": "failed"})
         ready = ga.record_button([{"state": "ready", "message": "Ready.", "updated_at": 4, "phrase": "hey_kitchen"}])
-        self.assertEqual(ready["label"], "Record voice")
+        self.assertEqual(ready["label"], "Ready")
         self.assertFalse(ready["processing"])
         self.assertEqual(ready["message"], "")
         self.assertEqual(ready["state"], "ready")
@@ -1113,6 +1115,241 @@ class WakePersonaSync(unittest.TestCase):
         body = json.loads(r.read() or b"{}")
         c.close()
         return r.status, body
+
+
+class PrivacyGuestBotIdAndWake(unittest.TestCase):
+    """Privacy toggle, guest-mode removal, Bot ID, portraits, wake-entry migration, training states."""
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def test_privacy_needs_stepup_audits_and_proxies(self):
+        c = signed_in()
+        calls = []
+
+        def unconfigured(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            calls.append((method, path, payload))
+            return None
+
+        old = ga.relay_call
+        ga.relay_call = unconfigured
+        try:
+            st, j = c.req("GET", "/api/privacy")
+            self.assertEqual(st, 200)
+            self.assertIs(j["pii_mode"], True)
+            self.assertEqual(j["message"], ga.RELAY_UNCONFIGURED)
+            self.assertIn("household names", j["text"])
+            calls.clear()
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                st, j = c.req("PUT", "/api/privacy", {"pii_mode": False, "password": "wrong-secret-zz"})
+            self.assertEqual(st, 403)
+            self.assertEqual(calls, [])  # a wrong password never reaches the relay
+            self.assertNotIn("wrong-secret-zz", buf.getvalue())
+            st, j = c.req("PUT", "/api/privacy", {"pii_mode": False, "password": GOOD})
+            self.assertEqual(st, 503)
+            self.assertEqual(calls[-1], ("PUT", "/admin/policy", {"pii_mode": False, "actor": "admin"}))
+
+            def configured(method, path, payload=None, timeout=10, raw=None, content_type=None):
+                calls.append((method, path, payload, content_type))
+                if method == "GET":
+                    return 200, {"pii_mode": True}
+                return 200, {"ok": True, "pii_mode": payload["pii_mode"]}
+
+            ga.relay_call = configured
+            calls.clear()
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                st, j = c.req("PUT", "/api/privacy", {"pii_mode": False, "password": GOOD})
+            self.assertEqual((st, j.get("pii_mode")), (200, False))
+            self.assertEqual(calls[-1][:3], ("PUT", "/admin/policy", {"pii_mode": False, "actor": "admin"}))
+            text = buf.getvalue()
+            self.assertIn("audit persona=- action=pii_mode off", text)
+            self.assertNotIn(GOOD, text)
+            calls.clear()
+            st, j = c.req("PUT", "/api/privacy", {"pii_mode": True})  # step-up window still open
+            self.assertEqual((st, j.get("pii_mode")), (200, True))
+            self.assertEqual(calls[-1][2], {"pii_mode": True, "actor": "admin"})
+            ga.relay_call = lambda *a, **k: (200, {"ok": True})  # field missing: the switch stays on
+            st, j = c.req("GET", "/api/privacy")
+            self.assertEqual((st, j["pii_mode"]), (200, True))
+            self.assertNotIn("message", j)
+        finally:
+            ga.relay_call = old
+
+    def test_guest_mode_is_gone_and_a_stale_key_is_dropped(self):
+        c = signed_in()
+        st, sp = c.req("POST", "/api/speakers", {"name": "Alex Example", "guest": True})
+        self.assertEqual(st, 200)
+        ga.write_json(ga.path("t1.json"), {"guest": True, "kept": 1}, 0o640)
+        ga.drop_stale_guest()
+        doc = json.load(open(ga.path("t1.json")))
+        self.assertNotIn("guest", doc)
+        self.assertEqual(doc["kept"], 1)
+        ga.drop_stale_guest()
+        self.assertEqual(json.load(open(ga.path("t1.json"))), {"kept": 1})
+        speakers = json.load(open(ga.path("speakers.json")))
+        self.assertTrue(speakers[sp["id"]]["guest"])  # a speaker's own flag is not the station switch
+        self.assertEqual(c.req("GET", "/api/guest")[0], 404)
+        self.assertEqual(c.req("PUT", "/api/t1", {"guest": True})[0], 404)
+        js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
+        self.assertNotIn("Guest mode", js)
+        self.assertNotIn("/api/guest", js)
+        self.assertIn('id="spg"> Guest', js)
+
+    def test_bot_id_helper_and_labels(self):
+        self.assertEqual(ga.bot_id_from_name("Nix"), "nix")
+        self.assertEqual(ga.bot_id_from_name("Hey Nix"), "hey-nix")
+        self.assertEqual(ga.bot_id_from_name("Nix 2!"), "nix-2")
+        self.assertEqual(ga.bot_id_problem("grok"), ga.BOT_ID_RESERVED)
+        for bad in ("a", "1nix"):
+            self.assertIn("voice service", ga.bot_id_problem(bad))
+        self.assertIsNone(ga.bot_id_problem("nix"))
+        self.assertIsNone(ga.bot_id_problem("kitchen-bot"))
+        js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
+        self.assertIn(">Bot ID <", js)
+        self.assertNotIn(">Slug<", js)
+        self.assertIn("Short lowercase ID for this bot, like nix. Used for wake-word routing, portraits and replies. Can't be changed later.", js)
+        self.assertIn("Hey Jarvis is the backup word: it always works, even if a new word isn't trained yet.", js)
+        self.assertIn("Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.", js)
+        self.assertIn('min="20" max="30" step="1" value="25"', js)
+        self.assertIn("Block personal info in replies", js)
+        self.assertIn('["privacy", "Privacy"]', js)
+
+    def test_avatar_upload_needs_stepup_and_refresh_schedules_sync(self):
+        c = signed_in()
+        calls = []
+        delays = []
+
+        def fake(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            calls.append((method, path, payload, content_type, raw))
+            if method == "POST" and path.endswith("/avatar-request"):
+                return 202, {"ok": True}
+            if method == "POST" and path.endswith("/avatar"):
+                return 200, {"ok": True}
+            return 200, {"ok": True, "bots": [], "voices": ["eve"]}
+
+        old_rc, old_sync = ga.relay_call, ga.schedule_persona_sync
+        ga.relay_call = fake
+        ga.schedule_persona_sync = lambda delay=30: delays.append(delay)
+        try:
+            st, j = c.req("POST", "/api/bots/kai/avatar", data=self.PNG, ctype="image/png")
+            self.assertEqual(st, 403)
+            self.assertEqual(calls, [])
+            st, j = c.req("POST", "/api/bots/kai/avatar", data=self.PNG, ctype="image/png",
+                          headers={"X-GS-Password": GOOD})
+            self.assertEqual(st, 200, j)
+            method, path, payload, ctype, raw = calls[-1]
+            self.assertEqual((method, path, ctype), ("POST", "/admin/bots/kai/avatar", "image/png"))
+            self.assertIsNone(payload)
+            self.assertTrue(raw.startswith(b"\x89PNG\r\n\x1a\n"))
+            n = len(calls)
+            st, j = c.req("POST", "/api/bots/kai/avatar", data=b"\xff\xd8\xffnot-a-png", ctype="image/png",
+                          headers={"X-GS-Password": GOOD})
+            self.assertEqual(st, 400)
+            self.assertEqual(j["error"], ga.AVATAR_ERROR)
+            self.assertEqual(len(calls), n)  # magic mismatch never reaches the relay
+            calls.clear()
+            st, j = c.req("POST", "/api/bots/kai/avatar-request", {})
+            self.assertEqual(st, 202)
+            self.assertEqual(delays, [30])
+            self.assertEqual(calls[-1][:3], ("POST", "/admin/bots/kai/avatar-request", {"actor": "admin"}))
+        finally:
+            ga.relay_call, ga.schedule_persona_sync = old_rc, old_sync
+
+    def test_wake_entries_keep_existing_enabled_state(self):
+        signed_in()
+        old_cfg = ga.WAKE_CONFIG
+        d = tempfile.mkdtemp()
+        models = os.path.join(d, "models")
+        os.makedirs(models)
+        open(os.path.join(models, "hey_grok.onnx"), "w").close()
+        cfg = os.path.join(d, "wakewords.json")
+        ov_path = ga.path("wake-overrides.json")
+        try:
+            json.dump({"models_dir": models, "words": [{"name": "hey_finn", "persona": "finn", "threshold": 0.5}],
+                       "fallback": {"name": "hey_jarvis", "threshold": 0.5}}, open(cfg, "w"))
+            ga.WAKE_CONFIG = cfg
+            ga.write_json(ov_path, {"hey_finn": {"enabled": False, "threshold": 0.3}}, 0o640)
+            ga.wakewords()
+            ov = json.load(open(ov_path))
+            self.assertEqual(ov["hey_finn"], {"enabled": False, "threshold": 0.3})
+            os.remove(ov_path)
+            ga.wakewords()
+            ov = json.load(open(ov_path))
+            self.assertNotIn("hey_finn", ov)  # a config word is not copied into the overrides
+            self.assertTrue(ov["hey_grok"]["enabled"])
+            json.dump({"models_dir": models, "words": [], "fallback": {"name": "hey_jarvis", "threshold": 0.5}},
+                      open(cfg, "w"))
+            os.remove(ov_path)
+            words = {w["name"]: w for w in ga.wakewords()}
+            enabled = sorted(n for n, w in words.items() if w.get("enabled"))
+            self.assertEqual(enabled, ["hey_grok", "hey_jarvis"])
+            self.assertTrue(words["hey_jarvis"]["backup"])
+            ga.write_json(ov_path, {"hey_nix": {"enabled": True, "persona": "nix"}}, 0o640)
+            ga.remember_bot_wakeword("nix")
+            self.assertTrue(json.load(open(ov_path))["hey_nix"]["enabled"])  # already there: left alone
+            ga.remember_bot_wakeword("zed")
+            ov = json.load(open(ov_path))
+            self.assertEqual(ov["hey_zed"], {"enabled": False, "persona": "zed"})
+            self.assertTrue(ov["hey_nix"]["enabled"])
+        finally:
+            ga.WAKE_CONFIG = old_cfg
+
+    def test_new_bot_wake_entry_starts_disabled(self):
+        c = signed_in()
+
+        def fake(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            if method == "POST" and path == "/admin/bots":
+                return 201, {"ok": True, "slug": payload["slug"], "voice_token": "vt_" + "A" * 43}
+            if method == "GET" and path == "/admin/bots":
+                return 200, {"bots": [{"slug": "nix", "name": "Nix", "voice": "eve", "source": "added"}],
+                             "voices": ["eve"]}
+            return 200, {"ok": True}
+
+        old = ga.relay_call
+        ga.relay_call = fake
+        try:
+            st, j = c.req("POST", "/api/bots", {"slug": "nix", "name": "Nix", "voice": "eve", "password": GOOD})
+            self.assertIn(st, (200, 201), j)
+            ov = json.load(open(ga.path("wake-overrides.json")))
+            self.assertEqual(ov["hey_nix"], {"enabled": False, "persona": "nix"})
+            words = {w["name"]: w for w in c.req("GET", "/api/wakewords")[1]["words"]}
+            self.assertFalse(words["hey_nix"]["enabled"])
+            self.assertEqual(words["hey_nix"]["label"], "Hey Nix")
+            ov = json.load(open(ga.path("wake-overrides.json")))
+            self.assertEqual(ov["hey_nix"], {"enabled": False, "persona": "nix"})
+        finally:
+            ga.relay_call = old
+
+    def test_below_the_gate_is_failed_quality_not_done(self):
+        log = "JOB DONE below the gate, not published"
+        self.assertEqual(ga.map_train_state("done", log), "failed_quality")
+        self.assertNotEqual(ga.map_train_state("done", log), "done")
+        self.assertEqual(ga.map_train_state("published", "JOB DONE published"), "published")
+        self.assertEqual(ga.map_train_state("processing", ""), "processing")
+        self.assertEqual(ga.map_train_state("done", "JOB DONE check (fail), not published"), "failed_quality")
+        msg = ga.quality_message({"recall_real": 0.65, "fa_h": 1.5})
+        self.assertIn("0.65", msg)
+        self.assertIn("0.80", msg)
+        self.assertIn("20-30", msg)
+        c = signed_in()
+        ga.write_enroll_status({
+            "hey_finn": {"state": "done", "message": log, "updated_at": 1, "persona": "finn",
+                         "scores": {"recall_real": 0.65, "fa_h": 1.5}},
+            "hey_hank": {"state": "published", "message": "Ready.", "updated_at": 2, "persona": "hank"},
+            "hey_kai": {"state": "processing", "message": "Processing…", "updated_at": 3, "persona": "kai"},
+        })
+        st, j = c.req("GET", "/api/enroll/status")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["words"]["hey_finn"]["state"], "failed_quality")
+        self.assertNotEqual(j["words"]["hey_finn"]["state"], "done")
+        self.assertIn("0.65", j["words"]["hey_finn"]["message"])
+        self.assertIn("20-30", j["words"]["hey_finn"]["message"])
+        self.assertEqual(j["words"]["hey_hank"]["state"], "published")
+        self.assertEqual(j["words"]["hey_kai"]["state"], "processing")
+        self.assertEqual(j["buttons"]["finn"]["state"], "failed_quality")
+        self.assertIn("0.65", j["buttons"]["finn"]["label"])
+        self.assertEqual(j["buttons"]["hank"]["label"], "Ready")
+        self.assertEqual(j["buttons"]["kai"]["label"], "Processing…")
 
 
 if __name__ == "__main__":

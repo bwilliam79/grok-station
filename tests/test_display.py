@@ -272,6 +272,8 @@ class EnrollScreens(unittest.TestCase):
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "10")[0], "Needs 10 more clips")
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "passed", "")[0], "“Hey Finn” is ready")
         self.assertEqual(gs.enroll_parse({"heard": "3/25|Recording… speak now"})[2], "custom")  # old wake build
+        self.assertEqual(gs.VOICE_HOLDS["notice"], 10)  # a training notice holds about 10 s
+        self.assertEqual(gs.CARD_HOLD, 4)              # a tool card still holds 4 s after the session
 
     def test_no_persona_uses_echo_mark(self):
         L = gs.Layout(1920, 1080)

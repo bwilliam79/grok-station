@@ -12,6 +12,38 @@ eval "$(python3 -c "import json,sys,shlex;j=json.load(open(sys.argv[1]));print('
 PUB=enroll/published
 J=enroll/jobs/$m-$ses; mkdir -p "$J"; [ -n "$CHECK_N" ] && PUB=$J/nopub && mkdir -p "$PUB"
 say(){ echo "$(date '+%F %T %Z') [$m $ses] $*" | tee -a enroll/enroll.log; }
+# status.json state for this session. Check runs are "failed" (never published). A gate miss is failed_quality.
+write_outcome(){
+  python3 - "$S" "$1" <<'PY'
+import json, os, sys
+s, state = sys.argv[1], sys.argv[2]
+scores = {}
+rp = os.path.join(s, "result.json")
+if os.path.isfile(rp):
+    try:
+        j = json.load(open(rp))
+    except Exception:
+        j = {}
+    if isinstance(j, dict):
+        for k in ("recall_real", "fa_h"):
+            if k in j and not isinstance(j[k], bool):
+                scores[k] = j[k]
+        scores["gate_recall"] = 0.8
+        scores["gate_fa_h"] = 1.0
+tmp = os.path.join(s, ".outcome.json.%s.tmp" % os.getpid())
+with open(tmp, "w") as f:
+    json.dump({"state": state, "scores": scores}, f)
+os.replace(tmp, os.path.join(s, ".outcome.json"))
+PY
+}
+on_err(){
+  trap - ERR
+  write_outcome failed || true
+  touch "$S/FAILED" || true
+  say "JOB FAILED" || true
+  exit 1
+}
+trap on_err ERR
 say "JOB start (persona $persona, $(ls "$S"/[0-9][0-9].wav | wc -l | tr -d ' ') clips)"
 grep -q "\"$m\"" phrases.py || { say "phrase $m missing from phrases.py"; exit 2; }
 if [ ! -f runs/$m/.gen_done ]; then
@@ -36,5 +68,18 @@ set +e; python enroll_eval.py $m runs_sw/${m}__$tag.onnx eval_sw/${m}__$tag/repo
 rm -rf runs/${m}_$tag  # merged features are big; the model + report stay
 say "RESULT $(tail -2 "$J/eval.log" | head -1)"
 [ -f "$J/result.json" ] && cp "$J/result.json" "$S/.result.tmp" && mv "$S/.result.tmp" "$S/result.json"  # for GET .../status
-[ -n "$CHECK_N" ] && { touch "$S/DONE"; say "JOB DONE check ($([ $rc = 0 ] && echo pass || echo fail)), not published"; exit 0; }
-[ $rc = 0 ] && { touch "$S/DONE"; say "JOB DONE published"; } || { touch "$S/DONE"; say "JOB DONE below the gate, not published"; }
+if [ -n "$CHECK_N" ]; then
+  write_outcome failed
+  touch "$S/DONE"
+  say "JOB DONE check ($([ $rc = 0 ] && echo pass || echo fail)), not published"
+  exit 0
+fi
+if [ $rc = 0 ]; then
+  write_outcome published
+  touch "$S/DONE"
+  say "JOB DONE published"
+else
+  write_outcome failed_quality
+  touch "$S/DONE"
+  say "JOB DONE below the gate, not published"
+fi

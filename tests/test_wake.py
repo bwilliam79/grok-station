@@ -119,16 +119,25 @@ class TestEnroll(unittest.TestCase):
             self.assertEqual(ph["hey_kitchen"], "kitchen-bot")
             self.assertEqual(ph["hey_finn"], "grok")  # override persona wins over the config
             self.assertEqual(ph["hey_hank"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10}),
-                             {"phrase": "hey_hank", "persona": "hank", "count": 10, "topup": False})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 25}),
+                             {"phrase": "hey_hank", "persona": "hank", "count": 25, "topup": False})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "persona": "grok"})["persona"], "hank")
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 25)  # omitted count is the default
             self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen"})["persona"], "kitchen-bot")
-            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 12, "topup": True}),
-                             {"phrase": "okay_finn", "persona": "finn", "count": 12, "topup": True})
+            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 22, "topup": True}),
+                             {"phrase": "okay_finn", "persona": "finn", "count": 22, "topup": True})
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn"}))
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn", "persona": "Not A Slug"}))
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5}), {"error": "count"})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 19}), {"error": "count"})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 31}), {"error": "count"})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 20})["count"], 20)
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 30})["count"], 30)
             self.assertIsNone(gw.parse_enroll({"phrase": "hey_hank", "count": "ten"}))
+            self.assertTrue(gw.wake_name_ok("hey_kitchen-bot"))
+            self.assertFalse(gw.phrase_ok("hey_kitchen-bot"))  # phrase_ok stays letters-only
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen-bot", "persona": "kitchen-bot", "count": 25})["persona"],
+                             "kitchen-bot")
         finally:
             gw.WAKE_CONFIG, gw.OVERRIDES = old
         self.assertTrue(gw.phrase_ok("hey_kitchen")); self.assertTrue(gw.phrase_ok("okay_finn")); self.assertTrue(gw.phrase_ok("hey_finn"))
@@ -202,7 +211,7 @@ class EnrollFlow(unittest.TestCase):
         return posted, uploads
 
     def test_stages_and_default_count(self):
-        self.assertEqual(gw.ENROLL_COUNT, 10); self.assertEqual(gw.TOPUP_COUNT, 10)
+        self.assertEqual(gw.ENROLL_COUNT, 25); self.assertEqual(gw.TOPUP_COUNT, 25)
         self.assertEqual((gw.LEAD_S, gw.CLIP_S, gw.RETRY_S), (0.9, 2.4, 1.5))
         posted, uploads = self.run_enroll(loud_at=(2,))
         self.assertEqual(posted[0], "prompt")
@@ -226,6 +235,130 @@ class EnrollFlow(unittest.TestCase):
         self.assertEqual(gw.ENROLL_STATE["last"]["persona"], "kitchen-bot")
         self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "training")
         self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training.")
+
+
+class TrainingNotice(unittest.TestCase):
+    """A finished job posts a short notice. "done" without passed is a gate miss, not a success."""
+
+    def test_published_and_failed_quality_notices(self):
+        posted = []
+        old = (gw.relay_get, gw.post_state, gw.time.sleep, gw.ENROLL_STATE.get("last"))
+        gw.post_state = lambda state, **kw: posted.append((state, kw))
+        gw.time.sleep = lambda s: None
+        gw.SESSION_OPEN.clear()
+        gw.ENROLL_STATE["last"] = {"phrase": "hey_finn", "session": "s1", "stage": "training",
+                                   "message": "Training.", "persona": "finn"}
+
+        def run(doc):
+            posted.clear()
+            gw.SYNC_NOW.clear()
+            gw.relay_get = lambda path: json.dumps(doc)
+            gw.follow_training("hey_finn", "s1", "“Hey Finn”", "finn", every=0, limit=30)
+
+        try:
+            run({"state": "published"})
+            self.assertEqual(posted, [("notice", {"text": "Hey Finn is ready", "who": "finn"})])
+            self.assertTrue(gw.SYNC_NOW.is_set())
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "published")
+            run({"state": "failed_quality"})
+            self.assertEqual(posted[0][0], "notice")
+            self.assertEqual(posted[0][1]["text"], "Hey Finn needs more clips. Record 20-30 somewhere quiet.")
+            self.assertFalse(gw.SYNC_NOW.is_set())
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed_quality")
+            run({"state": "failed"})
+            self.assertEqual(posted, [("enroll", {"text": "“Hey Finn”", "who": "finn", "heard": "0/0|error|"})])
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed")
+            self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training didn't pass.")
+            self.assertFalse(gw.SYNC_NOW.is_set())
+            run({"state": "done", "passed": False})  # legacy log: not a success
+            self.assertEqual(posted[0][1]["text"], "Hey Finn needs more clips. Record 20-30 somewhere quiet.")
+            self.assertFalse(gw.SYNC_NOW.is_set())
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed_quality")
+            run({"state": "done", "passed": True})
+            self.assertEqual(posted[0][1]["text"], "Hey Finn is ready")
+            self.assertTrue(gw.SYNC_NOW.is_set())
+            self.assertEqual(gw.training_notice("hey_kitchen-bot", True), "Hey Kitchen Bot is ready")
+            self.assertEqual(gw._train_outcome({"state": "done"}), "failed_quality")
+        finally:
+            gw.relay_get, gw.post_state, gw.time.sleep, gw.ENROLL_STATE["last"] = old
+            gw.SYNC_NOW.clear()
+            gw.SESSION_OPEN.clear()
+
+    def test_stale_guest_key_is_honored_once_then_dropped(self):
+        import urllib.parse
+        f = os.path.join(tempfile.mkdtemp(), "t1.json")
+        old = gw.T1_FILE
+        gw.T1_FILE = f
+        try:
+            json.dump({"guest": True, "other": 1}, open(f, "w"))
+            body = json.loads(urllib.parse.unquote(gw.t1_query()))
+            self.assertTrue(body["guest"])
+            self.assertIn("last_tap", body)
+            left = json.load(open(f))
+            self.assertNotIn("guest", left)
+            self.assertEqual(left["other"], 1)
+            self.assertFalse(json.loads(urllib.parse.unquote(gw.t1_query()))["guest"])
+            json.dump({"guest": False, "other": 2}, open(f, "w"))
+            self.assertFalse(json.loads(urllib.parse.unquote(gw.t1_query()))["guest"])
+            self.assertEqual(json.load(open(f))["other"], 2)
+            self.assertNotIn("guest", json.load(open(f)))
+            os.remove(f)
+            self.assertFalse(json.loads(urllib.parse.unquote(gw.t1_query()))["guest"])
+        finally:
+            gw.T1_FILE = old
+
+    def test_control_rejects_counts_outside_20_30(self):
+        import http.client
+        import socket
+        import threading
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        d = tempfile.mkdtemp()
+        cfg = os.path.join(d, "wakewords.json")
+        json.dump({"words": [{"name": "hey_finn", "persona": "finn"}]}, open(cfg, "w"))
+        old = (gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES)
+        gw.CONTROL_PORT = port
+        gw.RELAY_URL = ""
+        gw.WAKE_CONFIG = cfg
+        gw.OVERRIDES = os.path.join(d, "missing.json")
+        th = threading.Thread(target=gw.control_server, daemon=True)
+        th.start()
+
+        def post(body):
+            last = None
+            for _ in range(50):
+                try:
+                    c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+                    c.request("POST", "/enroll", json.dumps(body).encode(), {"Content-Type": "application/json"})
+                    r = c.getresponse()
+                    out = json.loads(r.read() or b"{}")
+                    c.close()
+                    return r.status, out
+                except OSError as e:
+                    last = e
+                    gw.time.sleep(0.02)
+            raise last
+
+        try:
+            st, j = post({"phrase": "hey_finn", "count": 10})
+            self.assertEqual((st, j.get("error")), (400, "count must be 20-30"))
+            st, j = post({"phrase": "hey_finn", "count": 31})
+            self.assertEqual((st, j.get("error")), (400, "count must be 20-30"))
+            st, j = post({"phrase": "hey_finn", "count": 25})
+            self.assertEqual(st, 503)  # count accepted; this test has no relay
+            st, j = post({"phrase": "hey_finn", "count": 20})
+            self.assertEqual(st, 503)
+            st, j = post({"phrase": "hey_finn", "count": 30})
+            self.assertEqual(st, 503)
+        finally:
+            if gw.CONTROL_HTTPD is not None:
+                gw.CONTROL_HTTPD.shutdown()
+                th.join(2)
+                gw.CONTROL_HTTPD.server_close()
+                gw.CONTROL_HTTPD = None
+            gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES = old
 
 
 class _FakeDisplay:

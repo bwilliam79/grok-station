@@ -100,9 +100,10 @@ def sync_personas():
         if not re.fullmatch(r"[a-z]{2,16}", slug) or slug == "grok":
             continue
         img = relay_get(f"/portrait/{slug}")
-        if img and img[:3] == b"\xff\xd8\xff" or img and img[:8] == b"\x89PNG\r\n\x1a\n":
-            ext = "png" if img[:4] == b"\x89PNG" else "jpg"
-            for old in ("png", "jpg"):
+        if img and (img[:3] == b"\xff\xd8\xff" or img[:8] == b"\x89PNG\r\n\x1a\n"
+                    or (len(img) >= 12 and img[:4] == b"RIFF" and img[8:12] == b"WEBP")):
+            ext = "png" if img[:4] == b"\x89PNG" else "webp" if img[:4] == b"RIFF" else "jpg"
+            for old in ("png", "jpg", "webp"):
                 if old != ext and os.path.exists(os.path.join(PORTRAITS, f"{slug}.{old}")):
                     os.remove(os.path.join(PORTRAITS, f"{slug}.{old}"))
             tmp = os.path.join(PORTRAITS, f".{slug}.tmp")
@@ -146,8 +147,9 @@ LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None}
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
 RING_HOLD = 60.0  # ringing chip stays up this long after the chimes and the spoken notice
-# T1 voice notes (relay t1.py): guest mode from the admin page, and physical taps on the station (touchscreen or the
-# speakerphone's call button) for "recent tap" and tap-to-confirm. Taps are read here from evdev (grok is in input).
+# T1 voice notes (relay t1.py): physical taps on the station (touchscreen or the speakerphone's call button) for
+# "recent tap" and tap-to-confirm. A stale guest-mode flag in t1.json is honored for this one read, then removed.
+# Taps are read here from evdev (grok is in input).
 T1_FILE = E("WAKE_T1_FILE", "/var/lib/grok-station/admin/t1.json")
 TAP_KEYS = {int(k) for k in E("WAKE_TAP_KEYS", "330,169,164,445").split(",") if k.strip().isdigit()}  # BTN_TOUCH, KEY_PHONE, KEY_PLAYPAUSE, KEY_PICKUP_PHONE
 LAST_TAP = {"at": 0.0}
@@ -155,10 +157,29 @@ CURRENT = {"session": None}
 
 
 def t1_query():
+    """Station status for the relay. An explicit guest flag is returned, then deleted from the file.
+
+    Missing file, or a file that no longer has the key, is guest off. A rewrite failure still returns the value read.
+    """
+    guest = False
     try:
-        guest = json.load(open(T1_FILE)).get("guest") is not False
+        with open(T1_FILE) as f:
+            doc = json.load(f)
+        if isinstance(doc, dict) and "guest" in doc:
+            guest = doc.get("guest") is True
+            doc.pop("guest", None)
+            tmp = f"{T1_FILE}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "w") as f:
+                    json.dump(doc, f)
+                os.replace(tmp, T1_FILE)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     except (OSError, ValueError, AttributeError):
-        guest = False  # no admin file yet: guest mode off (T1 still needs T1_ENABLED and a recent tap)
+        guest = False
     return urllib.parse.quote(json.dumps({"guest": guest, "last_tap": int(LAST_TAP["at"])}, separators=(",", ":")))
 
 
@@ -406,6 +427,14 @@ def phrase_ok(name):
     return isinstance(name, str) and len(name) <= PHRASE_MAX and PHRASE_RE.fullmatch(name) is not None
 
 
+def wake_name_ok(name):
+    """phrase_ok, or hey_<bot id> so a slug with a digit or a hyphen can still be a wake entry."""
+    if phrase_ok(name):
+        return True
+    return (isinstance(name, str) and name.startswith("hey_")
+            and re.fullmatch(r"[a-z][a-z0-9-]{1,23}", name[4:]) is not None and name[4:] != "grok")
+
+
 def persona_ok(slug):
     """Grok, a teammate slug, or a bot slug (letters, digits, dashes)."""
     return isinstance(slug, str) and (slug == "grok" or re.fullmatch(r"[a-z][a-z0-9-]{1,23}", slug) is not None)
@@ -429,7 +458,7 @@ def enroll_stage(stage, message, phrase=None, session=None):
     last["message"] = message
 CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
                                          # ring fills over it), too loud / didn't hear it hold before the retry
-ENROLL_COUNT, TOPUP_COUNT = 10, 10       # default clips per session; top-up offered when recall falls short
+ENROLL_COUNT, TOPUP_COUNT = 25, 25       # default clips per session (allowed 20–30); top-up uses the same default
 SESSION_OPEN = threading.Event()         # a voice session is on screen: enrollment result notices wait for it
 
 
@@ -453,7 +482,7 @@ def enroll_phrases():
     out = {}
     for w in cfg.get("words", []) + cfg.get("enroll", []):
         n, ps = str(w.get("name", "")), str(w.get("persona", "grok"))
-        if phrase_ok(n) and persona_ok(ps):
+        if wake_name_ok(n) and persona_ok(ps):
             out[n] = ps
     try:
         with open(OVERRIDES) as f:
@@ -462,7 +491,7 @@ def enroll_phrases():
         ov = {}
     if isinstance(ov, dict):
         for name, o in ov.items():
-            if isinstance(o, dict) and phrase_ok(str(name)) and persona_ok(str(o.get("persona") or "")):
+            if isinstance(o, dict) and wake_name_ok(str(name)) and persona_ok(str(o.get("persona") or "")):
                 out[str(name)] = str(o["persona"])
     return out
 
@@ -505,11 +534,11 @@ def parse_enroll(j):
         return None
     allowed = enroll_phrases()
     persona = allowed.get(phrase)
-    if persona is None and phrase_ok(phrase) and persona_ok(str(j.get("persona") or "")):
+    if persona is None and wake_name_ok(phrase) and persona_ok(str(j.get("persona") or "")):
         persona = str(j["persona"])
-    if persona is None or not phrase_ok(phrase):
+    if persona is None or not wake_name_ok(phrase):
         return None
-    if not 10 <= count <= 40:
+    if not 20 <= count <= 30:
         return {"error": "count"}
     return {"phrase": phrase, "persona": persona, "count": count, "topup": bool(j.get("topup"))}
 
@@ -564,7 +593,7 @@ def control_server():
             if req is None:
                 return self._r(400, {"error": "unknown phrase", "phrases": sorted(enroll_phrases())})
             if req.get("error") == "count":
-                return self._r(400, {"error": "count must be 10-40"})
+                return self._r(400, {"error": "count must be 20-30"})
             if not RELAY_URL:
                 return self._r(503, {"error": "no relay configured"})
             if setup_mode():
@@ -690,9 +719,35 @@ def enroll(req, read16, play):
         ENROLL_STATE["busy"] = False
 
 
+def training_notice(phrase, published):
+    """Display notice when a training job finishes. hey_finn → "Hey Finn is ready"."""
+    words = str(phrase or "").replace("-", " ").replace("_", " ").split()
+    label = " ".join((w[:1].upper() + w[1:]) for w in words if w) or "Hey"
+    if published:
+        return f"{label} is ready"
+    return f"{label} needs more clips. Record 20-30 somewhere quiet."
+
+
+def _train_outcome(j):
+    """published, failed_quality, failed, or None while the job is still running.
+
+    Legacy "done" plus passed is published. "done" without passed is a gate miss, never a success.
+    """
+    if not isinstance(j, dict):
+        return None
+    st = j.get("state")
+    if st in ("published", "failed_quality", "failed"):
+        return st
+    if st == "done":
+        return "published" if j.get("passed") else "failed_quality"
+    return None
+
+
 def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
-    """Poll the relay for this session's training status: show "Training queued" once, then "is ready" or
-    "Needs 10 more clips" when the result lands (waiting while a voice session is on screen)."""
+    """Poll the relay until training finishes, then post a short notice (waiting out an open voice session).
+
+    published → "Hey Finn is ready". failed_quality → more clips. A hard failure keeps the enroll error screen.
+    """
     t0, shown_queue = time.time(), False
     while time.time() - t0 < limit:
         raw = relay_get(f"/enroll/{phrase}/{ses}/status")
@@ -701,19 +756,28 @@ def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
         except ValueError:
             j = {}
         st = j.get("state")
+        outcome = _train_outcome(j)
         if st == "queued" and not shown_queue and not SESSION_OPEN.is_set():
             enroll_stage("training", "Training.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/0|queued|{int(j.get('position', 1))}")
             shown_queue = True
-        elif st in ("done", "failed"):
+        elif outcome in ("published", "failed_quality"):
             while SESSION_OPEN.is_set():
                 time.sleep(2)
-            passed = st == "done" and bool(j.get("passed"))
-            print(f"enroll result {phrase} {ses}: {'passed' if passed else 'not passed'}", flush=True)
-            enroll_stage("ready" if passed else "failed", "Ready." if passed else "Needs more clips.", phrase, ses)
-            post_state("enroll", text=say, who=persona, heard=f"0/0|{'passed' if passed else 'failed'}|{TOPUP_COUNT}")
-            if passed:
+            ok = outcome == "published"
+            print(f"enroll result {phrase} {ses}: {'passed' if ok else 'not passed'}", flush=True)
+            enroll_stage("published" if ok else "failed_quality",
+                         "Ready." if ok else training_notice(phrase, False), phrase, ses)
+            post_state("notice", text=training_notice(phrase, ok), who=persona)
+            if ok:
                 SYNC_NOW.set()
+            return
+        elif outcome == "failed":
+            while SESSION_OPEN.is_set():
+                time.sleep(2)
+            print(f"enroll result {phrase} {ses}: failed", flush=True)
+            enroll_stage("failed", "Training didn't pass.", phrase, ses)
+            post_state("enroll", text=say, who=persona, heard="0/0|error|")
             return
         time.sleep(every)
 

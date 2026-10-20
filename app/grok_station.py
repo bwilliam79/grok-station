@@ -36,7 +36,8 @@ MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
-VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 4, "enroll": 30, "confirm": 30}  # safety timeouts per state
+CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
+VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 10, "enroll": 30, "confirm": 30}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
@@ -1782,7 +1783,7 @@ def main():
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
     msg, until, last_key, anim_started = None, 0.0, None, None
-    card_hold = False   # the 4 s notice hold after a session that showed a card has started
+    card_hold = False   # the card hold after a session that showed a card has started
     strip_at = 0.0      # last time the timer strip was painted; ticks are at least 0.9 s apart
 
     def thinking():  # any animated ring (thinking spin, listening pulse, enrollment fill/pulse until it finishes)
@@ -1932,7 +1933,7 @@ def main():
                 kept = merge_card(msg.get("card") if msg else None, getattr(ev, "has_card", False), getattr(ev, "card", None), bool(ev.done))
                 if kept:
                     new["card"] = kept
-                card_hold = False  # a new voice state restarts the hold; the extra 4 s starts when it ends
+                card_hold = False  # a new voice state restarts the hold; the card hold starts when it ends
                 if anim_of(new):
                     if (not anim_started or not msg or msg.get("state") != ev.state
                             or (ev.state == "enroll" and msg.get("heard") != ev.heard)):
@@ -1943,10 +1944,10 @@ def main():
                 until = time.time() + hold
                 paint()
             elif ev.state == "idle":
-                # session end: one 4 s notice hold while a card is up, then the idle clock
+                # session end: one card hold while a card is up, then the idle clock
                 if msg and msg.get("card") and not card_hold:
                     card_hold = True
-                    until = time.time() + VOICE_HOLDS["notice"]
+                    until = time.time() + CARD_HOLD
                     paint()
                 elif msg and msg.get("voice"):
                     until, anim_started = 0, None
@@ -1975,7 +1976,7 @@ def main():
             if msg and time.time() >= until:
                 if msg.get("card") and not card_hold:
                     card_hold = True
-                    until = time.time() + VOICE_HOLDS["notice"]
+                    until = time.time() + CARD_HOLD
                 else:
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)

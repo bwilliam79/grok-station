@@ -95,7 +95,7 @@ It runs as `grok` (groups video/render/input).
 - `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
   Used by the wake listener on the same Pi. States: `listening` (solid pulsing teal ring, `GROK_STATION_LISTEN_HOLD` s,
   default 12), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
-  `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `notice` ("Didn't catch that.", 4 s), `error` (relay
+  `"done": true` it holds `GROK_STATION_REPLY_HOLD` s, default 15), `notice` ("Didn't catch that.", or a training result such as "Hey Finn is ready", 10 s), `error` (relay
   unreachable, 5 s), `idle`.
   Each state has a safety timeout back to idle. 403 from any other address.
 
@@ -127,7 +127,15 @@ to `/opt/grok-station/wake/models`. `wake/wakewords.json` (installed as `/opt/gr
 override with `WAKE_CONFIG`) lists each word's `name` (model file stem), `persona` (registry slug, or `grok`),
 `threshold`, `patience` (consecutive 80 ms frames at or above the threshold) and optional `provisional`. The
 optional `fallback` entry (`hey_jarvis` → Grok) keeps the built-in openWakeWord model loaded as a safety net;
-drop it to retire Hey Jarvis. If several words fire on the same frame the highest score wins; one cooldown is
+drop it to retire Hey Jarvis. On a fresh install only Hey Grok and Hey Jarvis are on. Every bot has a matching
+entry, "Hey <Name>" (`hey_<slug>`), with its own on/off toggle. A newly created entry, including a bot added
+later, starts off. Loading the list never changes the enabled state of an entry already in `wakewords.json` or
+`wake-overrides.json`; it only adds the ones that are missing, and those start off. Hey Grok is the exception:
+if that entry does not exist yet it is created on. Hey Jarvis stays the backup word and cannot be turned off.
+The line "Hey Jarvis is the backup word: it always works, even if a new word isn't trained yet." is a tooltip on
+that locked toggle. Sensitivity is stored as `threshold = 1 - slider` (5–95%). The slider has no inline
+description; its tooltip says a higher setting wakes more easily but may wake by mistake, and a lower one means
+fewer false wakes but may miss you. If several words fire on the same frame the highest score wins; one cooldown is
 shared. A wake opens the session as that persona: the Pi connects to `/ws?persona=<slug>`, and the relay starts
 the session with that persona's voice and instructions (unknown slugs fall back to Grok) and sends the `persona`
 event so the display shows them from the first "listening" frame. The persona event keeps the current phase
@@ -145,11 +153,14 @@ than two words or six letters ("Too short. Use two or three words."), longer tha
 as "hey" or "okay", an exact duplicate of a word already on the station, or too close to one — including Hey Jarvis and
 words that are turned off. Record voice on a word that is already listed still records more clips of that same word.
 The mapping (phrase id → persona) is saved in `wake-overrides.json` (the listener's `WAKE_OVERRIDES`,
-`/var/lib/grok-station/admin/wake-overrides.json` on the Pi). A hit opens that persona. Training status for each phrase
-is kept on the station in `enroll-status.json` (`idle`, `recording`, `uploading`, `training`, `ready`, `failed`, plus a
-short message). The Bots page shows "Processing…" on that bot's "Record voice" button while one of its phrases is
-recording, uploading, or training. The button says "Record voice" again once the model is ready or the attempt failed
-(the panel shows the short reason). Closing the panel or reloading the page reads the same file. The relay's enroll upload
+`/var/lib/grok-station/admin/wake-overrides.json` on the Pi). A hit opens that persona. The recorder asks for 20–30
+clips (default 25). Training status for each phrase is kept on the station in `enroll-status.json`. States include
+`recording`, `uploading`, `training`, `processing`, `ready`, `published`, `failed`, and `failed_quality`. `done` is
+never a success: "JOB DONE below the gate, not published" is `failed_quality`, and a check run that was not published
+is `failed`. The Wake words page and the per-bot button show "Processing…" while a phrase is recording, uploading,
+training, or processing; "Ready" when the model is ready or published; and, for a gate miss, "Not good enough yet
+(scores …). Record more clips, 20-30, somewhere quiet." A hard failure leaves "Record voice" and a short reason.
+Closing the panel or reloading the page reads the same file. The relay's enroll upload
 still only accepts `hey_<word>` (`^hey_[a-z]{2,16}$`), so `hey_kitchen` can train and `okay_finn` cannot until that
 check is widened. A bot slug with a dash is not a relay persona (`^[a-z]{2,16}$`): the listener submits the training
 job as `grok` and still opens the real slug from the overrides.
@@ -357,15 +368,16 @@ Stand where you'd normally talk to the station, about an arm's length away. Then
 ```sh
 curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn"}' http://grok-station.local:8787/enroll
 /opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn          # on the Pi
-# top-up after "Needs 10 more clips" (trains on this session plus the previous one):
+# top-up after "Hey Finn needs more clips" (trains on this session plus the previous one):
 curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","topup":true}' http://grok-station.local:8787/enroll
 /opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --enroll hey_finn --topup
 ```
 
 **Clips:**
-- The default is **10 clips** (about 1 min). If training misses the recall gate, the station shows "Needs 10 more
-  clips". A top-up records 10 more and trains on both sessions together.
-- **Advanced:** `"count"` (10–40) overrides the default; a top-up needs 5 or more clips.
+- The default is **25 clips**. The admin page, the admin API, and the wake listener allow **20–30**. A top-up uses
+  the same range and the same default, and trains on this session plus the previous one.
+- If training misses the gate, the display notice says the word needs more clips and to record 20–30 somewhere
+  quiet. It does not say the job succeeded.
 - Each clip goes like this: the screen says "Get ready…", a chime plays, then "Recording… speak now", and
   you say the phrase once, naturally.
 - Vary it a little: normal and quiet voice, a little faster or slower, facing slightly away.
@@ -386,11 +398,15 @@ The screens are, in order:
 6. Saved (one teal pulse)
 7. All clips saved / Uploaded ✓
 8. Training queued (lavender spin, place in line)
-9. "Hey Finn" is ready
-10. Needs 10 more clips
+9. "Hey Finn" is ready (a `notice`, held about 10 seconds)
+10. Needs more clips (a `notice`: "Hey Finn needs more clips. Record 20-30 somewhere quiet.")
 
-The station polls `GET /enroll/<phrase>/<session>/status` on the relay every minute until training finishes. Then it
-shows the pass or fail notice, waiting until any voice session has ended. The numbers stay on the training host.
+The station polls `GET /enroll/<phrase>/<session>/status` on the relay every minute until training finishes.
+`published`, and a legacy `done` that includes `passed`, become "Hey Finn is ready". A gate miss (`failed_quality`,
+or `done` without `passed`, including "JOB DONE below the gate, not published") becomes "Hey Finn needs more clips.
+Record 20-30 somewhere quiet." Both are a display `notice` held about 10 seconds, after any voice session has ended.
+A hard `failed` stays on the enrollment error screen and is not announced as ready. A tool card still holds 4 seconds
+after a session; that hold is separate from the notice. The numbers stay on the training host.
 
 All text auto-fits inside the safe area, up to 2 lines. Clips are trimmed to the speech and uploaded
 as you go. When you're done, the session is marked ready and the training host picks it up within a minute.
@@ -413,7 +429,10 @@ the same phrase, so no repo change is needed to start using it.
 ### 6. Read the results
 
 Each job logs to `enroll/enroll.log` on the training host and writes `enroll/jobs/<phrase>-<session>/result.json`.
-`enroll/status.json` lists the sessions as recording, ready, done or failed. A typical log:
+`enroll/status.json` lists the sessions as `recording`, `processing`, `published`, `failed_quality`, or `failed`.
+`done` is not a status. "JOB DONE below the gate, not published" is `failed_quality` (with the gate scores).
+"JOB DONE published" is `published`. A check run ("JOB DONE check (…), not published") is `failed` and is never
+published. A typical log:
 
 ```
 [hey_finn 20261019-150740] JOB start (persona finn, 25 clips)
@@ -425,9 +444,9 @@ Each job logs to `enroll/enroll.log` on the training host and writes `enroll/job
 - **The gate:** recall is measured on a held-out 20 % of your real clips. Each clip is tested clean and mixed
   with background at 15, 10 and 5 dB. A model passes with `recall_real ≥ 0.80` at a threshold/patience setting
   that also has `fa_h ≤ 1.0` false wakes per hour on the validation set.
-- **Pass:** "JOB DONE published". The station syncs the new model every 5 min for 3 h after an enrollment (and
-  otherwise hourly, sha256 checked), then reloads between sessions.
-- **Fail:** "below the gate, not published". Nothing changes on the station.
+- **Pass:** "JOB DONE published" (`published`). The station syncs the new model every 5 min for 3 h after an enrollment (and
+  otherwise hourly, sha256 checked), then reloads between sessions. The display notice says the word is ready.
+- **Fail:** "below the gate, not published" (`failed_quality`). The model is not published. The display notice asks for 20–30 more clips somewhere quiet.
 
 **Reduced-clip check:** `./enroll_check.sh enroll/inbox/<phrase>/<session> 10` re-trains a finished session on its
 first 10 clips only, and evaluates it on the same held-out clips as the full run. The result is logged as
@@ -441,7 +460,7 @@ first 10 clips only, and evaluates it on the same held-out clips as the full run
 - **Gain:** `WAKE_GAIN` in the wake env sets the software gain. It defaults to 2 when `WAKE_DEVICE_NAME` contains
   EMEET, and 4 otherwise (the Razer headset mic runs quiet). Gain affects detection and the uploaded clips, but not
   the clipping check. Restart `grok-station-wake` after a change, but only between enrollments.
-- **Recall below 0.80:** run a top-up (`--topup`, 10 more clips, same speaker, normal distance). It trains on
+- **Recall below 0.80:** run a top-up (`--topup`, another 20–30 clips, default 25, same speaker, normal distance). It trains on
   the new clips plus the previous session's.
 - **False wakes too high:** usually the phrase sounds like common speech. Pick a more distinctive phrase.
 - **A job died or stalled:** look for `[watch] STALL` lines. A job that dies, or that has no file activity for
@@ -477,9 +496,11 @@ A small web page on the station (HTTPS on port 443, home network only) so nobody
 
 **Location.** The town or ZIP search, and Time and location, save the label you picked (a town, a ZIP, or "City, Region" such as "Springfield, IL"). The page and every response the browser gets show that label only ("Current location: Springfield, IL"). Search results are an opaque id plus the label; the station maps the id back to coordinates and writes those into the station env file, the same place as before. Latitude and longitude never appear on the page, in an API response, or in the log.
 
-**Pages:** Home (status, live screen preview, mic level, tiles) · xAI key and relay · Wake words (on/off, sensitivity, record a voice; speaker names stay on the station, training only sees ids like `spk-3f9a`) · Bots (teammates and their webhooks; guest mode) · Audio · Display · Time and location · Network (IPs, rename the station, scan, join, forget; the current connection stays up while joining) · System (update from GitHub, health, logs, restart voice, reboot, change password). Laptop sidebar, tablet icon rail, phone tab bar.
+**Pages:** Home (status, live screen preview, mic level, tiles) · xAI key and relay · Wake words (on/off, sensitivity, record a voice; speaker names stay on the station, training only sees ids like `spk-3f9a`) · Bots (teammates and their webhooks) · Privacy · Audio · Display · Time and location · Network (IPs, rename the station, scan, join, forget; the current connection stays up while joining) · System (update from GitHub, health, logs, restart voice, reboot, change password). Laptop sidebar, tablet icon rail, phone tab bar.
 
-**Bots.** The Bots page, under Station, lists every teammate the voice service knows, including ones added here. A portrait comes from the station's cached photo, or a monogram when there isn't one. Each row is Connected, Not configured, or Error. Configure pastes that bot's webhook address and key from its routine panel in Grok Bot. The key is write-only: after a save the page shows `••••` and the last 4, and the station does not keep the key (not on disk, not in the log, not in the browser). Saving a webhook, adding a bot, or renaming one asks for the admin password. The correct password opens a 10-minute step-up window on that sign-in. It starts when the password is entered and does not move later just because you keep using the page. While it is open those three skip the password prompt, and the Bots page shows how long is left ("Unlocked for 9 min"). Removing a bot or a webhook always asks for the password, even during that window. The window ends on sign-out, when the session goes idle or hits its 12-hour cap, when the password is changed, and 10 minutes after it was opened. Opening it writes one audit line, `stepup open`, with the time and no password. A wrong password counts toward the same 15-minute lockout and does not open the window. **Refresh avatars**, on the Bots page header, does not ask for a password. It tells the wake listener (`POST /personas/sync` on its localhost control port) to pull personas and portraits from the relay again, using the same sync it already runs at startup. That sync runs in a thread. The listener answers `202 {"started": true}`, or `{"running": true}` if a sync is already going. The page then reloads the list and cache-busts the portrait URLs. Test sends one question and waits up to 2 minutes. Add bot shows a voice token once, in the page only; it is not saved on the station. Guest mode is the switch on this page. It is stored in `t1.json`, which the wake listener already reads. The page's server calls the relay admin API; the browser never does. The connection is `/etc/grok-station/admin-relay.env` (mode 600, owned by `grok-admin`, never shown): an `https` URL, a CA file used instead of the system store, a client certificate, and the admin token file. Until that file is set, the page says the station can't reach the relay yet and lists each teammate as not configured.
+**Bots.** The Bots page, under Station, lists every teammate the voice service knows, including ones added here. A portrait comes from the station's cached photo, or a monogram when there isn't one. Each row is Connected, Not configured, or Error. Configure pastes that bot's webhook address and key from its routine panel in Grok Bot. The key is write-only: after a save the page shows `••••` and the last 4, and the station does not keep the key (not on disk, not in the log, not in the browser). Saving a webhook, adding a bot, or renaming one asks for the admin password. The correct password opens a 10-minute step-up window on that sign-in. It starts when the password is entered and does not move later just because you keep using the page. While it is open those three skip the password prompt, and the Bots page shows how long is left ("Unlocked for 9 min"). Removing a bot or a webhook always asks for the password, even during that window. The window ends on sign-out, when the session goes idle or hits its 12-hour cap, when the password is changed, and 10 minutes after it was opened. Opening it writes one audit line, `stepup open`, with the time and no password. A wrong password counts toward the same 15-minute lockout and does not open the window. **Refresh avatars**, on the Bots page header, does not ask for a password. It tells the wake listener (`POST /personas/sync` on its localhost control port) to pull personas and portraits from the relay again, using the same sync it already runs at startup. That sync runs in a thread. The listener answers `202 {"started": true}`, or `{"running": true}` if a sync is already going. The page then reloads the list and cache-busts the portrait URLs. Test sends one question and waits up to 2 minutes. Add bot shows a voice token once, in the page only; it is not saved on the station. Add bot asks for a name and a Bot ID: a short lowercase id, a letter first, then letters, digits, or hyphens, 2–24 characters, because the voice service is stricter than a 32-character free slug ("grok" is reserved). The id is filled in from the name and cannot be changed later. It is used for wake-word routing, portraits, and replies. Configure can upload a png, jpeg, or webp up to 2 MB (the admin password, or the open step-up window); the page sends those bytes to the relay as that bot's portrait. **Refresh avatar** on that bot does not ask for a password: it asks the relay to redraw the portrait, then about 30 seconds later tells the wake listener to sync, and the page reloads the image. Guest mode is gone. **pii_mode** replaces it. A leftover `guest` key in `t1.json` is dropped on load and is not a setting anymore. A speaker record can still be marked guest (those clips are deleted after training); that flag is not the old switch. The page's server calls the relay admin API; the browser never does. The connection is `/etc/grok-station/admin-relay.env` (mode 600, owned by `grok-admin`, never shown): an `https` URL, a CA file used instead of the system store, a client certificate, and the admin token file. Until that file is set, the page says the station can't reach the relay yet and lists each teammate as not configured.
+
+**Privacy.** Privacy, under Station, has one switch, labeled "Block personal info in replies" (`pii_mode`). It is on by default, including when the relay cannot be reached or the field is missing. Changing it needs the admin password or the open step-up window, and writes an audit line (`pii_mode on` or `pii_mode off`) with no password. Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. When the switch is on, replies also block personal info: household names, emails, phones, addresses, IPs, MACs, and host names. The page saves it with `PUT /admin/policy` on the relay (`{"pii_mode": true or false, "actor": "admin"}`). **pii_mode** replaces the old guest-mode switch.
 
 **Secrets are write-only.** The page never gets a stored secret back: it shows `••••` + last 4, Replace and Test. A new token only replaces the old one after it tests OK. Nothing secret in logs, URLs or browser storage. Webhook keys follow the same rule and are not kept on the station at all.
 
@@ -513,12 +534,11 @@ it starts and "Still asking <Name>." at 20 s.
 
 A wake word or a spoken name that lands on a persona with a webhook does not get a general-model answer. The relay
 asks that bot itself and speaks only the fixed filler and the bot's linted reply (or a fixed error). Grok, and a
-persona with no webhook, are unchanged. In guest mode the reply lint is the full shared-room set. With guest mode
-off, a normal factual reply is spoken unless it contains a secret or personal data. See [docs/handoff.md](docs/handoff.md).
+persona with no webhook, are unchanged. The admin guest-mode switch is gone; **pii_mode** replaces it (Privacy → "Block personal info in replies", on by default). See [docs/handoff.md](docs/handoff.md).
 
 ### Voice notes (T1, off)
 
-When it's turned on, a teammate can ask to save a short note. The station shows it and reads it back. You say "yes, save it" within 15 seconds, or press the speaker's call button. Notes are off from 10 PM to 7 AM, in guest mode (admin page → Personas), and unless a station button was pressed in the last 30 minutes. See [docs/handoff.md](docs/handoff.md#t1-as-built-2026-10-19-ships-off).
+When it's turned on, a teammate can ask to save a short note. The station shows it and reads it back. You say "yes, save it" within 15 seconds, or press the speaker's call button. Notes are off from 10 PM to 7 AM, and unless a station button was pressed in the last 30 minutes. See [docs/handoff.md](docs/handoff.md#t1-as-built-2026-10-19-ships-off).
 
 ## Brand
 

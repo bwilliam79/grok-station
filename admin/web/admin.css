@@ -153,6 +153,10 @@ button.tog.on:disabled{background:var(--gs-surface-3);border-color:var(--gs-rule
 .tbl{width:100%;border-collapse:collapse}.tbl td,.tbl th{padding:10px 6px;border-top:1px solid var(--gs-rule);text-align:left;font-size:14px}
 .tbl th{color:var(--gs-faint);font:500 11px var(--body);letter-spacing:.08em;text-transform:uppercase}
 .mono{word-break:break-all}
+.tipwrap{position:relative;display:inline-flex;align-items:center;outline:none}
+.tipwrap .tip{display:none;position:absolute;z-index:40;left:0;top:calc(100% + 6px);width:max-content;max-width:280px;padding:8px 10px;border-radius:10px;background:var(--gs-surface-3);color:var(--gs-text);border:1px solid var(--gs-rule-2);font:400 13px/1.4 var(--body);white-space:normal;text-align:left;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.tipwrap:hover>.tip,.tipwrap:focus>.tip,.tipwrap:focus-within>.tip{display:block}
+.info{width:18px;height:18px;margin-left:6px;border-radius:50%;border:1px solid var(--gs-rule-2);color:var(--gs-muted);font:600 12px/16px var(--body);justify-content:center;cursor:help}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 @media (max-width:1023px){.side{width:72px;padding:22px 8px}.side .brand div,.side .grp,.side .nav span,.side .foot{display:none}.nav{justify-content:center}}
 @media (max-width:767px){
