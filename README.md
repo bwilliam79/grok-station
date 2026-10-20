@@ -321,6 +321,24 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
 - End-to-end check without talking: `grok_wake.py --ask question.wav [reply.wav]` (24 kHz mono) streams the
   file through the same path, plays the reply, and prints the end-of-speech → first-audio latency.
 
+## Relay uninstall
+
+On the relay computer:
+
+```sh
+grok-relay status
+sudo grok-relay rotate-xai-key
+sudo grok-relay uninstall
+```
+
+`status` prints the version, whether this relay is paired (`yes` or `no`), and when the client certificate expires. It does not print keys or the certificate.
+
+`rotate-xai-key` prompts for a new xAI key with no echo, stores it mode 600 owned by the `grok-relay` user, and prints only the last 4 characters. The key is not placed on the command line or in the environment.
+
+`uninstall` runs as root. It prints what it will remove and continues only if you type `uninstall`. There is no `--yes`. It records an audit line, asks the station to forget this relay, then removes the Docker project `grok-relay` (containers, images, and volumes), the `grok-relay` user and group, certificates and the stored key, config and log directories, firewall rules, and service entries. `/usr/local/bin/grok-relay` is removed last. A checklist prints `PASS` or `FAIL` for each check. Any `FAIL` exits 1 and lists what to remove by hand. If the station cannot be reached, it prints `Station not notified: remove relay from admin page` and still removes the local install.
+
+Windows uses `relay/grok-relay.ps1` for the same uninstall. Run it from an elevated PowerShell. It does not change the execution policy.
+
 ## Enroll mode (real-voice wake words)
 
 Enrollment teaches the station a wake phrase from real recordings of the person who will say it. The station
