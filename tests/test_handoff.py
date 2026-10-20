@@ -73,22 +73,26 @@ class Units(unittest.TestCase):
         self.assertEqual(list(hooks), ["jules"])
         self.assertEqual(handoff.load_webhooks(json.dumps({"kai": {"url": "http://192.0.2.5/x", "token": "t"}})), {})
 
-    def test_router_kept_and_route_falls_back(self):
+    def test_router_dropped_and_route_is_the_bot(self):
+        """Router mode is retired: _router is never kept, and route() is that bot's own entry."""
         hooks = handoff.load_webhooks(json.dumps({
             "jules": {"url": "https://j.example.invalid/h", "token": "jt"},
             "_router": {"url": "https://r.example.invalid/h", "token": "rt"},
             "Nope": {"url": "https://n.example.invalid/h", "token": "t"},
             "x": {"url": "https://n.example.invalid/h", "token": "t"},
             "has space": {"url": "https://n.example.invalid/h", "token": "t"},
+            "a" * 25: {"url": "https://n.example.invalid/h", "token": "t"},
             "a" * 17: {"url": "https://n.example.invalid/h", "token": "t"},
-            "kai-2": {"url": "https://n.example.invalid/h", "token": "t"}}))
-        self.assertEqual(set(hooks), {"_router", "jules"})
-        self.assertEqual(hooks["_router"], {"url": "https://r.example.invalid/h", "token": "rt"})
-        self.assertIs(handoff.route(hooks, "jules"), hooks["_router"])   # own entry loses to the router
-        self.assertIs(handoff.route(hooks, "finn"), hooks["_router"])
-        self.assertIs(handoff.route(hooks, "hank"), hooks["_router"])
+            "kai-2": {"url": "https://n.example.invalid/h", "token": "kt"},
+            "grok": {"url": "https://n.example.invalid/h", "token": "gt"}}))
+        self.assertNotIn("_router", hooks)
+        self.assertNotIn("grok", hooks)
+        self.assertEqual(set(hooks), {"jules", "kai-2", "a" * 17})       # slug pattern allows a hyphen and up to 24 chars
+        self.assertIs(handoff.route(hooks, "jules"), hooks["jules"])      # own entry; the router does not take it
+        self.assertIsNone(handoff.route(hooks, "finn"))
+        self.assertIsNone(handoff.route(hooks, "hank"))
         on = handoff.load_webhooks(json.dumps({"_router": {"url": "http://127.0.0.1:9/h", "token": "t", "enabled": True}}))
-        self.assertEqual(list(on), ["_router"])                          # enabled defaults true; loopback URL allowed
+        self.assertEqual(on, {})                                          # a router entry alone is nothing
         bots = handoff.load_webhooks(json.dumps({"jules": {"url": "https://j.example.invalid/h", "token": "jt"}}))
         self.assertEqual(handoff.route(bots, "jules"), bots["jules"])
         self.assertIsNone(handoff.route(bots, "hank"))
@@ -221,7 +225,8 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             json.dump(d, f)
         self.assertIn("kai", relay.webhooks())
         self.assertFalse(any("example.invalid" in l or '"t"' in l for l in self.lines))   # never logs URLs or keys
-        self.assertTrue(any(l.startswith("handoff: router off,") for l in self.lines))
+        self.assertTrue(any(l.startswith("handoff: ") and "bot webhook" in l for l in self.lines))
+        self.assertFalse(any("router" in l for l in self.lines))
 
     def test_tool_only_for_bots_with_a_webhook(self):
         roster = {"jules": {"slug": "jules", "name": "Jules"}, "hank": {"slug": "hank", "name": "Hank"}}
@@ -230,7 +235,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         relay.HANDOFF = False
         self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "jules")])
 
-    def test_router_gives_every_roster_persona_check_notes(self):
+    def test_router_does_not_cover_the_roster(self):
         roster = {s: {"slug": s, "name": s.title()} for s in ("rhea", "kai", "hank", "finn", "jules")}
         url, token = "https://router.example.invalid/h", "router-token-secret"
         with open(relay.WEBHOOKS_FILE, "w") as f:
@@ -238,24 +243,21 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         relay._hooks["mtime"] = None
         self.lines.clear()
         for slug in roster:
-            names = [t["name"] for t in relay.tools_for(roster, slug)]
-            self.assertIn("check_notes", names)
-            self.assertIn("talk_to", names)
-        self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "grok")])  # not a roster persona
-        self.assertTrue(relay.has_route("finn") and relay.has_route("grok"))
-        reload = [l for l in self.lines if l.startswith("handoff:")]
-        self.assertRegex(reload[0], r"^handoff: router on, 0 bot webhook\(s\):?$")
-        self.assertFalse(any(url in l or token in l for l in self.lines))
+            self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, slug)])
+        self.assertFalse(relay.has_route("finn") or relay.has_route("grok"))
+        self.assertNotIn("_router", relay.webhooks())
+        self.assertFalse(any(url in l or token in l or "router" in l for l in self.lines))
         with open(relay.WEBHOOKS_FILE, "w") as f:
-            json.dump({}, f)
+            json.dump({"jules": {"url": "https://j.example.invalid/h", "token": "jt"}}, f)
         relay._hooks["mtime"] = None
         self.lines.clear()
-        for slug in roster:
-            self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, slug)])
-        self.assertFalse(relay.has_route("jules"))
-        self.assertTrue(any(l.startswith("handoff: router off, 0 bot webhook(s)") for l in self.lines))
+        self.assertIn("check_notes", [t["name"] for t in relay.tools_for(roster, "jules")])
+        self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "hank")])
+        self.assertTrue(relay.has_route("jules"))
+        self.assertFalse(relay.has_route("hank"))
+        self.assertTrue(any(l.startswith("handoff: 1 bot webhook(s): jules") for l in self.lines))
 
-    async def test_router_post_uses_router_bearer_and_persona_caps(self):
+    async def test_per_bot_webhook_ignores_a_router_entry(self):
         router_url = str(self.srv.make_url("/hook"))
         bot_url = str(self.srv.make_url("/bot"))
         router_token, jules_token = "router-bearer-token", "jules-bearer-token"
@@ -271,11 +273,11 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await relay.ask_teammate(http, "jules", q))[1], "limit")   # 30 s gap, still per persona
             self.assertEqual(len(self.calls), 1)                                          # the limited call never POSTed
             text, verdict = await relay.ask_teammate(http, "hank", "what is on the menu?")
-        self.assertEqual((text, verdict), ("Tacos on Tuesday.", "ok"))                   # hank has no entry; router covers him
-        self.assertEqual(self.paths, ["/hook", "/hook"])                                 # not jules's /bot
-        self.assertEqual(self.auths, ["Bearer " + router_token, "Bearer " + router_token])
-        self.assertNotIn(jules_token, " ".join(self.auths))
-        self.assertEqual([c["persona"] for c in self.calls], ["jules", "hank"])
+        self.assertEqual((text, verdict), (None, "no-webhook"))                          # hank has no entry; the router is ignored
+        self.assertEqual(self.paths, ["/bot"])                                           # jules's own webhook, not the router
+        self.assertEqual(self.auths, ["Bearer " + jules_token])
+        self.assertNotIn(router_token, " ".join(self.auths))
+        self.assertEqual([c["persona"] for c in self.calls], ["jules"])
         body = self.calls[0]
         self.assertEqual(set(body), {"source", "v", "request_id", "persona", "tier_max", "reply_by", "question"})
         self.assertEqual((body["source"], body["v"], body["tier_max"], body["persona"]), ("grok-station", 1, 0, "jules"))
@@ -290,10 +292,11 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(secret, logged)
         state = json.load(open(os.environ["HANDOFF_STATE"]))
         self.assertEqual(state["bots"]["jules"]["n"], 1)                                 # the rejected retry did not count twice
-        self.assertEqual(state["bots"]["hank"]["n"], 1)                                  # gap is per persona, not per router
+        self.assertEqual(state["bots"]["hank"]["n"], 1)                                  # no webhook still counts, same as before
         self.assertNotIn("_router", state["bots"])
         self.assertEqual(state["total"], 2)
-        self.assertTrue(any(l.startswith("handoff: router on, 1 bot webhook(s): jules") for l in self.lines))
+        self.assertTrue(any(l.startswith("handoff: 1 bot webhook(s): jules") for l in self.lines))
+        self.assertFalse(any("router" in l for l in self.lines))
 
 
 if __name__ == "__main__":

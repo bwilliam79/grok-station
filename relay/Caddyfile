@@ -1,6 +1,7 @@
 # LAN-only TLS front for the relay: wss with a required client certificate (mTLS) from a private CA.
 # Certs are mounted read-only at /pki from a dir outside the repo: server.crt, server.key, client-ca.crt.
-# No ACME, no admin API, no HTTP listener; only the relay's /ws, /health, /personas and /portrait/<slug> are proxied.
+# No ACME, no Caddy admin endpoint, no HTTP listener. Proxied: /ws, /health, /personas, /portrait/<slug>,
+# /enroll/*, /wakewords, /wakeword/* and /admin/* (the Bots admin API; the relay checks the bearer and this fingerprint).
 # The client certificate's fingerprint is passed as X-Client-Cert-Fp (set here, so a client can't supply its own); the
 # relay keys its bad-token lockout on it, so failed tries from one certificate can't lock out another.
 {
@@ -20,7 +21,9 @@ https://:8443 {
 			trust_pool file /pki/client-ca.crt
 		}
 	}
-	@relay path /ws /health /personas /portrait/* /enroll/* /wakewords /wakeword/*
+	# /admin/* is one segment in Caddy's path matcher (* does not cross '/'), so each extra segment is listed.
+	# /admin/bots, /admin/bots/<slug>, .../webhook, .../test and .../test/<id> all reach the relay.
+	@relay path /ws /health /personas /portrait/* /enroll/* /wakewords /wakeword/* /admin/* /admin/*/* /admin/*/*/* /admin/*/*/*/*
 	handle @relay {
 		reverse_proxy relay:8790 {
 			header_up X-Client-Cert-Fp {http.request.tls.client.fingerprint}

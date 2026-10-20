@@ -1,11 +1,14 @@
 # LAN-only voice relay. Secrets are files outside the repo (dir mode 700, files 600), mounted at /run/secrets:
 #   $GROK_STATION_SECRETS/xai_api_key   $GROK_STATION_SECRETS/relay_token (one token per line)   .../keyterms (optional)
+#   $GROK_STATION_SECRETS/admin_token (one line; Bots admin API; not the station relay token)
 # Handoff limit counters persist in $GROK_STATION_STATE. ntfy drop folder (dedicated to this relay): $GROK_STATION_ALERTS.
 # Personas: private registry $GROK_STATION_PRIVATE/personas.json (dir 700, file 600, see personas.example.json) and two
 # read-only portrait dirs $GROK_STATION_PORTRAITS_A / _B (photos are never in git). Without them only Grok is on voice.
 # Enroll mode (docs/enroll.md): clip inbox $GROK_STATION_ENROLL (rw, writable by uid 10001) and published models
 # $GROK_STATION_WAKEWORDS (ro), both on the training host.
-# Teammate handoff (off by default): $GROK_STATION_SECRETS/webhooks.json and $GROK_STATION_VOICE (stats-dashboard's voice/).
+# Teammate handoff (off by default) and the Bots admin files live in $GROK_STATION_BOTS (dir 700, mounted rw at /bots):
+#   webhooks.json, webhooks.json.bak, personas-overlay.json, bot-status.json, audit.log. The relay writes these (mode 600).
+# Voice-token hashes the admin API mints go in $GROK_STATION_VOICE/minted (rw). tile-ingest reads that file.
 # LAN clients connect through the `tls` service (Caddy, wss + client certificate) on $GROK_STATION_TLS_PORT (8791);
 # certs come from $GROK_STATION_PKI (server.crt, server.key, client-ca.crt). The relay's own port is published on the
 # host's loopback only (GROK_STATION_RELAY_BIND, default 127.0.0.1) for local health checks.
@@ -27,7 +30,7 @@ services:
       WEATHER_UNITS: ${WEATHER_UNITS:-fahrenheit}
       # T1 voice notes (docs/handoff.md): OFF until the owner + Nix flip it.
       T1_ENABLED: ${T1_ENABLED:-0}
-    secrets: [xai_api_key, relay_token, keyterms, webhooks]
+    secrets: [xai_api_key, relay_token, keyterms, admin_token]
     volumes:
       - ${GROK_STATION_STATE:?set GROK_STATION_STATE}:/state
       - ${GROK_STATION_ALERTS:-./no-alerts}:/alerts
@@ -36,9 +39,13 @@ services:
       - ${GROK_STATION_PORTRAITS_B:-./no-personas}:/portraits/b:ro
       - ${GROK_STATION_ENROLL:-./no-enroll}:/enroll
       - ${GROK_STATION_WAKEWORDS:-./no-wakewords}:/wakewords:ro
+      # Bots admin state (host dir 700). The relay writes webhooks.json and the overlay, status and audit files.
+      - ${GROK_STATION_BOTS:?set GROK_STATION_BOTS}:/bots
       # Handoff binding dirs, shared with tile-ingest (POST /voice/reply): pending rw here, replies rw (consumed on read)
       - ${GROK_STATION_VOICE:-./no-voice}/pending:/voice/pending
       - ${GROK_STATION_VOICE:-./no-voice}/replies:/voice/replies
+      # Voice-token hashes minted by POST /admin/bots. Plaintext is not stored. tile-ingest reads this file.
+      - ${GROK_STATION_VOICE:-./no-voice}/minted:/voice/minted
       # T1 confirm events (read by tile-ingest, which alone holds the receipt key)
       - ${GROK_STATION_VOICE:-./no-voice}/confirms:/voice/confirms
     ports:
@@ -83,5 +90,5 @@ secrets:
   xai_api_key: {file: "${GROK_STATION_SECRETS:?set GROK_STATION_SECRETS}/xai_api_key"}
   relay_token: {file: "${GROK_STATION_SECRETS}/relay_token"}
   keyterms: {file: "${GROK_STATION_SECRETS}/keyterms"}
-  # {"<bot>": {"url": "https://...", "token": "..."}}; home computer only, mode 600, never in git or on any other machine
-  webhooks: {file: "${GROK_STATION_SECRETS}/webhooks.json"}
+  # one line; Bots admin API bearer. Not the station relay token. Mode 600, never in git.
+  admin_token: {file: "${GROK_STATION_SECRETS}/admin_token"}

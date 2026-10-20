@@ -20,7 +20,7 @@ Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env
 per-session caps only); 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
 capped. Alerts (lockout, handoff) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
-import asyncio, base64, datetime, hmac, json, os, re, secrets, socket, time, unicodedata
+import asyncio, base64, datetime, hashlib, hmac, json, os, re, secrets, socket, tempfile, time, unicodedata
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
 import handoff
@@ -43,6 +43,7 @@ def secret(name, multi=False):
 
 KEY = secret("xai_api_key")
 TOKENS = [t.encode() for t in secret("relay_token", multi=True)]  # one per line: current (+ next, while rotating)
+ADMIN_TOKEN = secret("admin_token").encode()  # Bots admin API; separate from the station's relay token
 MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))  # MAX_SESSION is per turn
@@ -78,15 +79,59 @@ LINT = [("link or email", re.compile(r"https?:|www\.|@|\b[a-z0-9-]+\.(com|net|or
         ("internal host", re.compile(r"\.(lan|local|internal|home\.arpa|localdomain)\b|\blocalhost\b", re.I))]
 VOICES = set()               # filled from GET /v1/tts/voices at startup; empty = not validated
 _personas = {"mtime": None, "map": {}, "voices": None, "hosts": []}
-# Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1. A "_router" entry covers every roster
-# persona; otherwise only a bot with its own webhook is reachable. Secret is home computer-only, mode 600. Every bot answers at T0.
+# Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1. Each bot uses its own webhook.
+# Router mode is retired. Webhooks live in the writable bots dir (mode 600), not a compose secret. Every bot answers at T0.
 HANDOFF = E("HANDOFF_ENABLED", "0") == "1"
-WEBHOOKS_FILE = E("WEBHOOKS_FILE", "/run/secrets/webhooks")
+WEBHOOKS_FILE = E("WEBHOOKS_FILE", "/bots/webhooks.json")
+MINTED_FILE = E("VOICE_MINTED_FILE", "/voice/minted/voice-tokens.json")
 _hooks = {"mtime": None, "map": {}}
+_runs = {}          # admin test id -> in-memory record (pasted url/key live only until that test posts)
+_run_tasks = set()
+
+
+def bots_dir():
+    d = os.path.dirname(WEBHOOKS_FILE)
+    return d if d else "."
+
+
+def _stat_ns(path):
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def atomic_write(path, data):
+    """Write path by temp file in the same directory (mode 600), fsync, then rename. One file, no partial reads."""
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        dfd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
 
 
 def webhooks():
-    """Name -> {url, token} (bots, plus "_router" when set). Re-read when the file changes. Never logged."""
+    """Name -> {url, token}. Re-read when the file changes. Never logged. Empty unless handoff is on."""
     if not HANDOFF:
         return {}
     try:
@@ -100,10 +145,9 @@ def webhooks():
         except OSError:
             _hooks["map"] = {}
         _hooks["mtime"] = mt
-        bots = sorted(k for k in _hooks["map"] if k != "_router")
-        state = "on" if "_router" in _hooks["map"] else "off"
-        # Names and on/off only. The URL and token never go to the log.
-        log(f"handoff: router {state}, {len(bots)} bot webhook(s): {' '.join(bots)}".rstrip())
+        bots = sorted(_hooks["map"])
+        # Names only. The URL and token never go to the log.
+        log(f"handoff: {len(bots)} bot webhook(s): {' '.join(bots)}".rstrip())
     return _hooks["map"]
 PENDING_DIR, REPLIES_DIR = E("HANDOFF_PENDING", "/voice/pending"), E("HANDOFF_REPLIES", "/voice/replies")
 REPLY_WAIT = float(E("REPLY_WAIT", "120"))          # seconds the station waits for a teammate's answer
@@ -193,30 +237,77 @@ def note_failure(src):
         alert(f"lockout-{src}", "grok-station relay: bad-token lockout", f"{len(f)} bad tokens in 10 min from {src}; locked 15 min.")
 
 
-def persona_list():
-    """Validated on-voice personas from the private registry (re-read when the file changes). Bad entries are skipped."""
+def _name_shape(name):
+    return isinstance(name, str) and 0 < len(name) <= 20 and name.isalpha()
+
+
+def _name_ok(name, hosts=None):
+    if hosts is None:
+        hosts = _personas["hosts"]
+    return _name_shape(name) and lint(name, hosts) is None
+
+
+def overlay_path():
+    return os.path.join(bots_dir(), "personas-overlay.json")
+
+
+def load_overlay_doc():
+    """Raw overlay. Shape-checked so a bad file can't grow; voice membership is enforced later, at read."""
+    base = {"added": {}, "renamed": {}, "hidden": []}
     try:
-        mt = os.stat(PERSONAS_FILE).st_mtime
-    except OSError:
-        _personas.update(mtime=None, map={})
-        return {}
+        with open(overlay_path()) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return base
+    if not isinstance(doc, dict):
+        return base
+    added = {}
+    for slug, ent in (doc.get("added") if isinstance(doc.get("added"), dict) else {}).items():
+        if handoff.bot_slug_ok(slug) and isinstance(ent, dict) and _name_shape(ent.get("name")) and isinstance(ent.get("voice"), str) and ent["voice"]:
+            added[slug] = {"name": ent["name"], "voice": ent["voice"]}
+    renamed = {}
+    for slug, name in (doc.get("renamed") if isinstance(doc.get("renamed"), dict) else {}).items():
+        if handoff.bot_slug_ok(slug) and _name_shape(name):
+            renamed[slug] = name
+    hidden = []
+    for slug in (doc.get("hidden") if isinstance(doc.get("hidden"), list) else []):
+        if handoff.bot_slug_ok(slug) and slug not in hidden:
+            hidden.append(slug)
+    return {"added": added, "renamed": renamed, "hidden": hidden}
+
+
+def save_overlay(doc):
+    atomic_write(overlay_path(), (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode())
+    _personas["mtime"] = None
+
+
+def persona_list():
+    """On-voice personas: the read-only registry, with the overlay merged over it.
+
+    Renamed names replace the registry name. Hidden slugs are removed. Added personas get a generic prompt and no
+    facts. Re-read when the registry or the overlay changes. Bad entries are skipped. Without xAI's voice list,
+    nothing goes on voice.
+    """
     if not VOICES:  # fail closed: without xAI's voice list no persona can be checked, so none go on voice
         if _personas["voices"] is not False:
             log("personas: xAI voice list not loaded; Grok only until it is")
             _personas["voices"] = False
         return {}
-    if mt == _personas["mtime"]:
+    key = (_stat_ns(PERSONAS_FILE), _stat_ns(overlay_path()))
+    if key == _personas["mtime"] and _personas["voices"] is True:
         return _personas["map"]
-    out = {}
-    try:
-        with open(PERSONAS_FILE) as f:
-            doc = json.load(f)
-        items = doc.get("personas", []) if isinstance(doc, dict) else []
-        hosts = [h.casefold() for h in doc.get("private_hostnames", []) if isinstance(h, str) and re.fullmatch(r"[A-Za-z0-9.-]{2,63}", h)]
-    except (OSError, ValueError, AttributeError):
-        log("personas: unreadable file; Grok only")
-        items, hosts = [], []
+    items, hosts = [], []
+    if os.path.isfile(PERSONAS_FILE):
+        try:
+            with open(PERSONAS_FILE) as f:
+                doc = json.load(f)
+            items = doc.get("personas", []) if isinstance(doc, dict) else []
+            hosts = [h.casefold() for h in doc.get("private_hostnames", []) if isinstance(h, str) and re.fullmatch(r"[A-Za-z0-9.-]{2,63}", h)]
+        except (OSError, ValueError, AttributeError):
+            log("personas: unreadable file; Grok only")
+            items, hosts = [], []
     _personas["hosts"] = hosts
+    out = {}
     for p in items:
         why = None
         if not isinstance(p, dict) or set(p) - PERSONA_KEYS:
@@ -249,7 +340,23 @@ def persona_list():
             continue
         if p.get("on_voice", True) is not False and p["slug"] not in out:
             out[p["slug"]] = p
-    _personas.update(mtime=mt, map=out, voices=True)
+    ov = load_overlay_doc()
+    for slug in ov["hidden"]:
+        out.pop(slug, None)
+    for slug, name in ov["renamed"].items():
+        if slug in out and _name_ok(name, hosts):
+            out[slug] = dict(out[slug], name=name)
+    for slug, ent in ov["added"].items():
+        if slug in ov["hidden"] or slug in out:
+            continue
+        if ent["voice"].lower() not in VOICES:
+            continue
+        name = ov["renamed"].get(slug, ent["name"])
+        if not _name_ok(name, hosts):
+            continue
+        out[slug] = {"slug": slug, "name": name, "voice": ent["voice"].lower(), "aliases": [], "facts": [],
+                     "prompt": f"You are {name}, one of the household's assistant team."}
+    _personas.update(mtime=key, map=out, voices=True)
     log(f"personas: {len(out)} on voice: {' '.join(out)}")
     return out
 
@@ -282,35 +389,60 @@ NOTES_TOOL = {"type": "function", "name": "check_notes",
 
 
 def has_route(bot):
-    """True when a handoff for this persona has somewhere to POST (the router, or the bot's own webhook)."""
+    """True when this persona has its own webhook to POST. There is no router fallback."""
     return handoff.route(webhooks(), bot) is not None
 
 
 def tools_for(roster, slug):
-    """talk_to, plus check_notes when this persona has a handoff route. A router covers every roster persona."""
+    """talk_to, plus check_notes when this persona has its own webhook."""
     t = talk_tool(roster)
     return t + [NOTES_TOOL] if HANDOFF and has_route(slug) and slug in roster else t
 
 
-async def ask_teammate(http, bot, question, on_wait=None, on_still=None):
-    """One handoff round trip. Returns (text, verdict). Never retried; logs request_id, agent, length and verdict only."""
+def limit_error(why):
+    """Short status line for a handoff the caps refused. No question text."""
+    if why in ("bot daily cap", "global daily cap"):
+        return "Daily limit reached"
+    if why == "too soon":
+        return "Too soon"
+    if why == "outstanding":
+        return "A question is already in flight"
+    return "Daily limit reached"
+
+
+async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=None, cancel=None, detail=None):
+    """One handoff round trip. Returns (text, verdict). Never retried; logs request_id, agent, length and verdict only.
+
+    hook overrides the saved route (an admin test of pasted, unsaved credentials). cancel is an asyncio.Event.
+    detail, when given, receives rid, http status and the limit reason for the caller. It is not logged.
+    """
     q = handoff.clean(question, handoff.Q_MAX)
     if not q:
         return None, "empty"
+    if cancel is not None and cancel.is_set():
+        return None, "cancelled"
     rid = handoff.new_request_id()
+    if detail is not None:
+        detail["rid"] = rid
     why = _limits.take(bot, rid)
     if why:
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=limit ({why})")
+        if detail is not None:
+            detail["limit"] = why
+        _note_status(bot, error=limit_error(why))
         return None, "limit"
     nonce = secrets.token_urlsafe(24)
     deadline = time.time() + REPLY_WAIT
     try:
+        if cancel is not None and cancel.is_set():
+            return None, "cancelled"
         handoff.write_pending(PENDING_DIR, rid, bot, nonce, deadline * 1000)
         reply_by = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat(timespec="seconds")
-        hook = handoff.route(webhooks(), bot)
+        if hook is None:
+            hook = handoff.route(webhooks(), bot)
         if not hook:
+            _note_status(bot, error="Not configured")
             return None, "no-webhook"
-        via = "router" if "_router" in webhooks() else "bot"
         t_post, status = time.monotonic(), "error"
         try:
             async with http.post(hook["url"], json=handoff.payload(rid, bot, q, reply_by, 1 if t1.ENABLED else 0), allow_redirects=False,
@@ -319,15 +451,20 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None):
                 ok = 200 <= r.status < 300
         except Exception as e:
             ok, status = False, type(e).__name__  # B4: the body may have been sent; never retry
-        log(f"handoff {rid} agent={bot} via={via} http={status} post_ms={(time.monotonic() - t_post) * 1000:.0f}")
+        if detail is not None:
+            detail["status"] = status
+        log(f"handoff {rid} agent={bot} via=bot http={status} post_ms={(time.monotonic() - t_post) * 1000:.0f}")
         if not ok:
             log(f"handoff {rid} agent={bot} length={len(q)} verdict=post-failed")
             alert("handoff", "grok-station relay: handoff POST failed", f"request_id={rid} agent={bot} verdict=post-failed")
+            _note_status(bot, error="Key was refused (401)" if status == 401 else "Couldn't reach the bot")
             return None, "post-failed"
         if on_wait:
             await on_wait()
         t_wait, stilled = time.monotonic(), False
         while time.time() < deadline:
+            if cancel is not None and cancel.is_set():
+                return None, "cancelled"
             if on_still and not stilled and time.monotonic() - t_wait >= STILL_AFTER:
                 stilled = True
                 try:
@@ -338,16 +475,19 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None):
             if bad:
                 log(f"handoff {rid} agent={bot} length=? verdict=reject ({bad})")
                 alert("handoff", "grok-station relay: handoff reply rejected", f"request_id={rid} agent={bot} verdict=reject {bad}")
+                _note_status(bot, error="Reply rejected")
                 return None, "reject"
             if isinstance(text, dict):  # T1 note proposal: read back on the station, never spoken as an answer
                 log(f"handoff {rid} agent={bot} length={len(text['text'])} verdict=proposal")
                 return dict(text, request_id=rid), "note"
             if text:
                 log(f"handoff {rid} agent={bot} length={len(text)} verdict=spoken wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
+                _note_status(bot, answered=True)
                 return text, "ok"
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=timeout wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
         alert("handoff-timeout", "grok-station relay: handoff timed out", f"request_id={rid} agent={bot} verdict=timeout")
+        _note_status(bot, error="No answer after 2 min")
         return None, "timeout"
     finally:
         handoff.remove_pending(PENDING_DIR, rid)
@@ -646,9 +786,9 @@ async def session(req):
             now = datetime.datetime.now(ZoneInfo(TZ))
             roster = persona_list()
             want = req.query.get("persona", "")  # the wake word the Pi heard ("Hey Kai" -> kai); Grok when absent
-            start = roster.get(want) if SLUG.match(want) else None
+            start = roster.get(want) if isinstance(want, str) and want in roster else None
             if want and not start:
-                log("persona query ignored:", want if SLUG.match(want) else "bad slug")
+                log("persona query ignored:", want if SLUG.match(want) or handoff.bot_slug_ok(want) else "bad slug")
             instructions = persona_instructions(start, roster, now)
             audio_in = {"format": {"type": "audio/pcm", "rate": 24000}}
             terms = KEYTERMS + [p["name"] for p in roster.values() if p["name"] not in KEYTERMS]
@@ -911,12 +1051,534 @@ async def session(req):
     return pi
 
 
+def status_path():
+    return os.path.join(bots_dir(), "bot-status.json")
+
+
+def audit_path():
+    return os.path.join(bots_dir(), "audit.log")
+
+
+def read_json_file(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def current_webhooks():
+    """Validated webhook map, plus saved_at when the file has it. Tokens stay in the file, not in responses."""
+    raw = read_json_file(WEBHOOKS_FILE)
+    if not isinstance(raw, dict):
+        raw = {}
+    loaded = handoff.load_webhooks(json.dumps(raw))
+    out = {}
+    for slug, ent in loaded.items():
+        item = {"url": ent["url"], "token": ent["token"]}
+        saved = raw.get(slug)
+        if isinstance(saved, dict) and isinstance(saved.get("saved_at"), int):
+            item["saved_at"] = saved["saved_at"]
+        out[slug] = item
+    return out
+
+
+def write_webhooks(doc):
+    """Replace webhooks.json only if handoff.load_webhooks accepts the new document. One .bak, mode 600."""
+    if not isinstance(doc, dict):
+        return False
+    try:
+        raw = json.dumps(doc, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
+    loaded = handoff.load_webhooks(raw)
+    if set(loaded) != set(doc):
+        return False
+    for slug, ent in doc.items():
+        if not isinstance(ent, dict) or set(ent) - {"url", "token", "saved_at"}:
+            return False
+        if loaded.get(slug) != {"url": ent.get("url"), "token": ent.get("token")}:
+            return False
+        if "saved_at" in ent and not isinstance(ent["saved_at"], int):
+            return False
+    data = (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode()
+    if handoff.load_webhooks(data.decode()) != loaded:
+        return False
+    if os.path.isfile(WEBHOOKS_FILE):
+        with open(WEBHOOKS_FILE, "rb") as f:
+            atomic_write(os.path.join(bots_dir(), "webhooks.json.bak"), f.read())
+    atomic_write(WEBHOOKS_FILE, data)
+    _hooks["mtime"] = None  # reload only after the new file is in place
+    return True
+
+
+def _note_status(slug, answered=False, error=None):
+    """bot-status.json: timestamps and a short error. Never the question or the reply."""
+    try:
+        doc = read_json_file(status_path())
+        if not isinstance(doc, dict):
+            doc = {}
+        ent = dict(doc.get(slug)) if isinstance(doc.get(slug), dict) else {}
+        now = int(time.time())
+        if answered:
+            ent["last_answered_at"] = now
+        if error:
+            ent["last_error"] = str(error)[:200]
+            ent["last_error_at"] = now
+        doc[slug] = ent
+        out = {}
+        for s, e in doc.items():
+            if not handoff.bot_slug_ok(s) or not isinstance(e, dict):
+                continue
+            item = {}
+            if isinstance(e.get("last_answered_at"), int):
+                item["last_answered_at"] = e["last_answered_at"]
+            if isinstance(e.get("last_error"), str):
+                item["last_error"] = e["last_error"][:200]
+            if isinstance(e.get("last_error_at"), int):
+                item["last_error_at"] = e["last_error_at"]
+            if item:
+                out[s] = item
+        atomic_write(status_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
+    except OSError as e:
+        log("bot-status write failed", type(e).__name__)
+
+
+def status_view(slug, configured):
+    doc = read_json_file(status_path())
+    ent = doc.get(slug) if isinstance(doc, dict) and isinstance(doc.get(slug), dict) else {}
+    answered = ent.get("last_answered_at") if isinstance(ent.get("last_answered_at"), int) else None
+    err = ent.get("last_error") if isinstance(ent.get("last_error"), str) else None
+    err_at = ent.get("last_error_at") if isinstance(ent.get("last_error_at"), int) else None
+    if not configured:
+        state = "not_configured"
+    elif err and (answered is None or (err_at or 0) >= answered):
+        state = "error"
+    else:
+        state = "connected"
+    return {"state": state, "last_answered_at": answered, "last_error": err, "last_error_at": err_at}
+
+
+def webhook_view(ent):
+    if not ent:
+        return {"configured": False, "last4": None, "saved_at": None}
+    token = ent.get("token") if isinstance(ent.get("token"), str) else ""
+    saved = ent.get("saved_at") if isinstance(ent.get("saved_at"), int) else None
+    return {"configured": True, "last4": token[-4:] if len(token) >= 4 else None, "saved_at": saved}
+
+
+def _last4(token):
+    return token[-4:] if isinstance(token, str) and len(token) >= 4 else "-"
+
+
+_ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test"}
+
+
+def actor_ok(s):
+    return isinstance(s, str) and _ACTOR.fullmatch(s) is not None
+
+
+def audit(actor, slug, action, last4):
+    """One line: time, actor, persona, action, key last 4 or -. Never the key, the URL, or the question."""
+    if action not in _AUDIT_ACTIONS or not handoff.bot_slug_ok(slug):
+        return
+    who = actor if actor_ok(actor) else "-"
+    tail = last4 if isinstance(last4, str) and len(last4) == 4 and all(0x21 <= ord(c) <= 0x7e for c in last4) else "-"
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{stamp} {who} {slug} {action} {tail}\n"
+    prev = b""
+    try:
+        with open(audit_path(), "rb") as f:
+            prev = f.read()
+    except OSError:
+        pass
+    try:
+        atomic_write(audit_path(), prev + line.encode())
+    except OSError as e:
+        log("audit write failed", type(e).__name__)
+
+
+def load_minted():
+    doc = read_json_file(MINTED_FILE)
+    if not isinstance(doc, dict) or not isinstance(doc.get("agents"), dict):
+        return {"agents": {}}
+    return doc
+
+
+def save_minted(doc):
+    atomic_write(MINTED_FILE, (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode())
+
+
+def mint_voice_token(slug):
+    """vt_ + 32 random bytes, base64url. Only the sha256 is written. The caller returns the plaintext once."""
+    token = "vt_" + base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
+    doc = load_minted()
+    doc["agents"][slug] = {"hashes": [hashlib.sha256(token.encode()).hexdigest()], "maxTier": 0, "updatedAt": int(time.time())}
+    raw = json.dumps(doc, sort_keys=True)
+    if token in raw:
+        raise RuntimeError("voice token must not be stored")
+    save_minted(doc)
+    return token
+
+
+def drop_minted(slug):
+    doc = load_minted()
+    if slug not in doc["agents"]:
+        return
+    doc["agents"].pop(slug, None)
+    save_minted(doc)
+
+
+def registry_index():
+    """Slugs in the read-only registry file, whether or not they are hidden."""
+    try:
+        with open(PERSONAS_FILE) as f:
+            doc = json.load(f)
+        items = doc.get("personas", []) if isinstance(doc, dict) else []
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out = {}
+    for p in items if isinstance(items, list) else []:
+        if isinstance(p, dict) and isinstance(p.get("slug"), str) and SLUG.match(p["slug"]) and p["slug"] != "grok":
+            out[p["slug"]] = p
+    return out
+
+
+def admin_authorized(req):
+    """Constant-time compare against the admin token only. The station relay token does not pass."""
+    tok = ADMIN_TOKEN if isinstance(ADMIN_TOKEN, bytes) else str(ADMIN_TOKEN or "").encode()
+    if not tok:
+        return False
+    got = req.headers.get("Authorization", "").encode()
+    return hmac.compare_digest(hashlib.sha256(got).digest(), hashlib.sha256(b"Bearer " + tok).digest())
+
+
+async def admin_gate(req):
+    """Bearer admin token, a client-cert fingerprint from Caddy, and no Origin. Bad tokens share /ws lockout."""
+    if "Origin" in req.headers:
+        return web.json_response({"error": "origin not allowed"}, status=403)
+    src = lock_key(req)
+    if locked_out(src):
+        return web.json_response({"error": "locked out"}, status=429)
+    if not admin_authorized(req):
+        note_failure(src)
+        return web.json_response({"error": "unauthorized"}, status=401)
+    fp = req.headers.get("X-Client-Cert-Fp", "")
+    if not isinstance(fp, str) or not fp.strip():
+        return web.json_response({"error": "client certificate required"}, status=403)
+    return None
+
+
+async def admin_json(req):
+    if req.content_type != "application/json":
+        return None
+    try:
+        body = await req.json()
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _known(slug):
+    return bool(handoff.bot_slug_ok(slug) and slug in persona_list())
+
+
+async def admin_bots_get(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    roster = persona_list()
+    added = load_overlay_doc()["added"]
+    hooks = current_webhooks()
+    bots = []
+    for slug in sorted(roster):
+        p = roster[slug]
+        ent = hooks.get(slug)
+        bots.append({"slug": slug, "name": p["name"], "voice": p["voice"],
+                     "source": "added" if slug in added else "registry",
+                     "webhook": webhook_view(ent), "status": status_view(slug, bool(ent))})
+    return web.json_response({"bots": bots, "voices": sorted(VOICES)})
+
+
+async def admin_bots_post(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    slug, name, voice = body.get("slug"), body.get("name"), body.get("voice")
+    if not handoff.bot_slug_ok(slug):
+        return web.json_response({"error": "bad slug"}, status=400)
+    if not _name_ok(name):
+        return web.json_response({"error": "bad name"}, status=400)
+    if not isinstance(voice, str) or voice.lower() not in VOICES:
+        return web.json_response({"error": "bad voice"}, status=400)
+    ov = load_overlay_doc()
+    if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
+        return web.json_response({"error": "exists"}, status=409)
+    ov["added"][slug] = {"name": name, "voice": voice.lower()}
+    try:
+        token = mint_voice_token(slug)
+        save_overlay(ov)
+    except OSError:
+        try:
+            drop_minted(slug)
+        except OSError:
+            pass
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit(body["actor"], slug, "add", "-")
+    return web.json_response({"ok": True, "slug": slug, "voice_token": token}, status=201)
+
+
+async def admin_bots_patch(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    if not _name_ok(body.get("name")):
+        return web.json_response({"error": "bad name"}, status=400)
+    ov = load_overlay_doc()
+    ov["renamed"][slug] = body["name"]
+    if slug in ov["added"]:
+        ov["added"][slug]["name"] = body["name"]
+    try:
+        save_overlay(ov)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit(body["actor"], slug, "rename", _last4((current_webhooks().get(slug) or {}).get("token")))
+    return web.json_response({"ok": True})
+
+
+async def admin_bots_delete(req):
+    """Added persona: removed. Registry persona: hidden. Webhook and minted voice token go either way."""
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    ov = load_overlay_doc()
+    reg = registry_index()
+    if slug not in persona_list() and slug not in ov["added"] and slug not in reg:
+        return web.json_response({"error": "not found"}, status=404)
+    hooks = current_webhooks()
+    tail = _last4((hooks.get(slug) or {}).get("token"))
+    if slug in ov["added"]:
+        ov["added"].pop(slug, None)
+    if slug in reg and slug not in ov["hidden"]:
+        ov["hidden"].append(slug)
+    ov["renamed"].pop(slug, None)
+    try:
+        save_overlay(ov)
+        if slug in hooks:
+            hooks.pop(slug, None)
+            if not write_webhooks(hooks):
+                return web.json_response({"error": "bad webhook"}, status=400)
+        drop_minted(slug)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit(body["actor"], slug, "remove", tail)
+    return web.json_response({"ok": True})
+
+
+async def admin_webhook_put(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    url, key = body.get("url"), body.get("key")
+    if not handoff.webhook_target_ok(url, key):
+        return web.json_response({"error": "bad webhook"}, status=400)
+    doc = current_webhooks()
+    doc[slug] = {"url": url, "token": key, "saved_at": int(time.time())}
+    try:
+        ok = write_webhooks(doc)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    if not ok:
+        return web.json_response({"error": "bad webhook"}, status=400)
+    audit(body["actor"], slug, "webhook-save", key[-4:])
+    return web.json_response({"ok": True, "last4": key[-4:]})
+
+
+async def admin_webhook_delete(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    doc = current_webhooks()
+    tail = _last4((doc.get(slug) or {}).get("token"))
+    doc.pop(slug, None)
+    try:
+        if not write_webhooks(doc):
+            return web.json_response({"error": "bad webhook"}, status=400)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit(body["actor"], slug, "webhook-remove", tail)
+    return web.json_response({"ok": True})
+
+
+TEST_QUESTION = "Station test from the admin page. Reply with the single word: ok."
+
+
+def _test_error(verdict, detail):
+    if verdict == "limit":
+        return limit_error(detail.get("limit"))
+    if verdict == "timeout":
+        return "No answer after 2 min"
+    if verdict == "post-failed" and detail.get("status") == 401:
+        return "Key was refused (401)"
+    if verdict == "reject":
+        return "Reply rejected"
+    if verdict == "no-webhook":
+        return "Not configured"
+    return "Couldn't reach the bot"
+
+
+def test_view(rec):
+    elapsed = rec["elapsed_s"] if rec["state"] != "waiting" else time.monotonic() - rec["t0"]
+    return {"state": rec["state"], "elapsed_s": float(elapsed), "answered_in_s": rec.get("answered_in_s"), "error": rec.get("error")}
+
+
+async def _run_bot_test(tid):
+    rec = _runs.get(tid)
+    if not rec:
+        return
+    hook = rec.pop("hook", None)  # pasted url and key live only inside this task
+    detail = rec.setdefault("detail", {})
+    try:
+        async with ClientSession() as http:
+            text, verdict = await ask_teammate(http, rec["slug"], TEST_QUESTION, hook=hook, cancel=rec["cancel"], detail=detail)
+        if rec["cancel"].is_set() or rec.get("state") == "cancelled" or verdict == "cancelled":
+            rec["state"] = "cancelled"
+            rec["error"] = None
+            rec["answered_in_s"] = None
+        elif verdict == "ok" and isinstance(text, str):
+            rec["state"] = "ok"
+            rec["answered_in_s"] = float(time.monotonic() - rec["t0"])
+            rec["error"] = None
+        else:
+            rec["state"] = "failed"
+            rec["error"] = _test_error(verdict, detail)
+            rec["answered_in_s"] = None
+        rec["elapsed_s"] = float(time.monotonic() - rec["t0"])
+    except asyncio.CancelledError:
+        rec["state"] = "cancelled"
+        rec["error"] = None
+        raise
+    finally:
+        rec.pop("hook", None)
+
+
+def _run_for(slug, tid):
+    if not handoff.bot_slug_ok(slug) or not re.fullmatch(r"t_[A-Za-z0-9_-]{8,64}", tid or ""):
+        return None
+    rec = _runs.get(tid)
+    return rec if rec and rec.get("slug") == slug else None
+
+
+async def admin_test_post(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if body is None:
+        return web.json_response({"error": "bad request"}, status=400)
+    actor = body.get("actor", "admin")
+    if not actor_ok(actor):
+        return web.json_response({"error": "bad request"}, status=400)
+    url, key = body.get("url"), body.get("key")
+    if (url is None) != (key is None):
+        return web.json_response({"error": "bad request"}, status=400)
+    if url is None:
+        ent = current_webhooks().get(slug)
+        if not ent:
+            return web.json_response({"error": "not configured"}, status=400)
+        hook = {"url": ent["url"], "token": ent["token"]}
+    else:
+        if not handoff.webhook_target_ok(url, key):
+            return web.json_response({"error": "bad webhook"}, status=400)
+        hook = {"url": url, "token": key}
+    tid = "t_" + secrets.token_urlsafe(12)
+    _runs[tid] = {"slug": slug, "state": "waiting", "t0": time.monotonic(), "elapsed_s": 0.0,
+                  "answered_in_s": None, "error": None, "cancel": asyncio.Event(), "hook": hook, "detail": {}}
+    audit(actor, slug, "test", _last4(hook["token"]))
+    task = asyncio.create_task(_run_bot_test(tid))
+    _run_tasks.add(task)
+    task.add_done_callback(_run_tasks.discard)
+    return web.json_response({"test_id": tid}, status=202)
+
+
+async def admin_test_get(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    rec = _run_for(req.match_info.get("slug", ""), req.match_info.get("test_id", ""))
+    if not rec:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response(test_view(rec))
+
+
+async def admin_test_delete(req):
+    bad = await admin_gate(req)
+    if bad:
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    rec = _run_for(slug, req.match_info.get("test_id", ""))
+    if not rec:
+        return web.json_response({"error": "not found"}, status=404)
+    if rec["state"] == "waiting":
+        rec["cancel"].set()
+        rec["state"] = "cancelled"
+        rec["error"] = None
+        rec["answered_in_s"] = None
+        rec["elapsed_s"] = float(time.monotonic() - rec["t0"])
+        rid = (rec.get("detail") or {}).get("rid")
+        if rid:
+            handoff.remove_pending(PENDING_DIR, rid)
+    return web.json_response({"ok": True})
+
+
+ADMIN_ROUTES = [
+    web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
+    web.patch("/admin/bots/{slug}", admin_bots_patch), web.delete("/admin/bots/{slug}", admin_bots_delete),
+    web.put("/admin/bots/{slug}/webhook", admin_webhook_put), web.delete("/admin/bots/{slug}/webhook", admin_webhook_delete),
+    web.post("/admin/bots/{slug}/test", admin_test_post),
+    web.get("/admin/bots/{slug}/test/{test_id}", admin_test_get),
+    web.delete("/admin/bots/{slug}/test/{test_id}", admin_test_delete),
+]
+
+
 if __name__ == "__main__":
     app = web.Application()
     app.add_routes([web.get("/health", health), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/enroll/{phrase}/{session}/{item}", enroll_route),
                     web.get("/enroll/{phrase}/{session}/status", enroll_status_route),
-                    web.get("/wakewords", wakewords_route), web.get("/wakeword/{name}.onnx", wakeword_file)])
+                    web.get("/wakewords", wakewords_route), web.get("/wakeword/{name}.onnx", wakeword_file),
+                    *ADMIN_ROUTES])
     async def start_voices(_app):
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)

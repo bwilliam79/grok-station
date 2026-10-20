@@ -1,6 +1,6 @@
 """Teammate handoff (real-bot pilot, Nix GO 2026-10-19): the station asks a teammate's own Grok Bot routine and speaks its
-answer. Off unless HANDOFF_ENABLED=1 and the persona has a route (the "_router" webhook if set, else that bot's own
-webhook); every bot ships at T0 (answer only).
+answer. Off unless HANDOFF_ENABLED=1 and that bot has its own webhook. Router mode is retired: a "_router" entry is
+dropped and never used. Every bot ships at T0 (answer only).
 
 Blockers covered here: B4 (one POST, never retried after the body is sent; the routine's step 0 checks source/v/request_id/
 reply_by), B6 (question stripped of control/zero-width/bidi, capped at 300, sent as delimited untrusted data), B10 (per bot
@@ -8,7 +8,7 @@ reply_by), B6 (question stripped of control/zero-width/bidi, capped at 300, sent
 bound pending file, single use, expiry; the answer is spoken only while the session still waits). Logs carry request_id,
 agent, length and verdict only.
 """
-import json, os, re, secrets, time, unicodedata
+import json, os, re, secrets, time, unicodedata, urllib.parse
 
 REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
 Q_MAX, REPLY_MAX = 300, 400
@@ -66,16 +66,53 @@ def new_request_id():
     return "vs_" + secrets.token_urlsafe(17)[:22].ljust(22, "A")
 
 
+# Persona slugs the admin API and webhooks.json share. "grok" is the station voice, not a bot.
+BOT_SLUG = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
+WEBHOOK_HOST = "api2.cursor.sh"   # the only host the admin API may save or test
+
+
+def bot_slug_ok(name):
+    return isinstance(name, str) and name != "grok" and BOT_SLUG.fullmatch(name) is not None
+
+
 def _webhook_ok(ent):
-    """Same bar for a bot entry and for "_router": allowed URL, non-empty token, enabled (default true)."""
+    """Allowed URL, non-empty token, enabled (default true). http is only the loopback the tests use."""
     return (isinstance(ent, dict) and re.match(r"https://|http://127\.0\.0\.1:", str(ent.get("url", "")))
             and isinstance(ent.get("token"), str) and ent["token"] and ent.get("enabled", True) is True)
 
 
-def load_webhooks(raw):
-    """{"<bot>": {"url", "token"}, optional "_router": same shape} -> validated map. Never logged.
+def webhook_target_ok(url, key):
+    """Admin allowlist for a webhook URL and its key. Never logs either.
 
-    Bot names must match [a-z]{2,16}. "_router" is kept under that key when it passes the same checks.
+    https only, host exactly WEBHOOK_HOST, no userinfo, no port other than 443, a non-empty path, at most 512
+    characters. The raw authority has to be the host (or host:443), so a trailing dot, a percent-encoding, or a
+    look-alike that a redirect or a second parser would send elsewhere does not pass. The key is 8..400 visible
+    ASCII characters.
+    """
+    if not isinstance(url, str) or not isinstance(key, str):
+        return False
+    if not (1 <= len(url) <= 512) or not (8 <= len(key) <= 400):
+        return False
+    if any(ord(c) < 0x21 or ord(c) > 0x7e for c in url) or any(ord(c) < 0x21 or ord(c) > 0x7e for c in key):
+        return False
+    if "@" in url or "\\" in url:          # userinfo, or a slash a redirect-y parser would treat as a host
+        return False
+    p = urllib.parse.urlsplit(url)
+    if p.scheme != "https" or p.username is not None or p.password is not None or p.fragment:
+        return False
+    if p.hostname != WEBHOOK_HOST or p.port not in (None, 443):
+        return False
+    if p.netloc not in (WEBHOOK_HOST, WEBHOOK_HOST + ":443"):
+        return False
+    if not p.path or p.path == "/":
+        return False
+    return True
+
+
+def load_webhooks(raw):
+    """{"<bot>": {"url", "token"}} -> validated map. Never logged.
+
+    Slugs match the persona pattern. A "_router" entry is dropped; router mode is retired.
     """
     try:
         doc = json.loads(raw or "{}")
@@ -85,18 +122,18 @@ def load_webhooks(raw):
     if not isinstance(doc, dict):
         return {}
     for name, ent in doc.items():
-        if not _webhook_ok(ent):
+        if name == "_router" or not bot_slug_ok(str(name)) or not _webhook_ok(ent):
             continue
-        if name == "_router" or re.fullmatch(r"[a-z]{2,16}", str(name)):
-            out[name] = {"url": ent["url"], "token": ent["token"]}
+        out[name] = {"url": ent["url"], "token": ent["token"]}
     return out
 
 
 def route(hooks, bot):
-    """Entry to POST: the "_router" entry when present, else this bot's webhook, else None."""
+    """This bot's own webhook, or None. There is no router fallback."""
     if not isinstance(hooks, dict):
         return None
-    return hooks["_router"] if "_router" in hooks else hooks.get(bot)
+    ent = hooks.get(bot)
+    return ent if isinstance(ent, dict) else None
 
 
 def payload(rid, bot, question, reply_by_iso, tier_max=None):

@@ -5,12 +5,11 @@ A persona on the station can ask its own Grok Bot ("check my notes") and speak t
 after its own canary passes and the owner OKs it.
 
 ## Flow
-1. The persona calls `check_notes(question)`. The relay offers the tool only to a persona that has a route: the
-   `_router` entry if present (every roster persona), otherwise that persona's own webhook.
+1. The persona calls `check_notes(question)`. The relay offers the tool only to a persona that has its own webhook.
 2. The relay applies limits (per bot: 8/day, at least 30 s apart, one outstanding; plus a global daily total). A failed
    POST still counts. The relay then cleans the question (NFKC; control, zero-width and bidi characters dropped; 300-char
    cap) and writes `voice/pending/<request_id>.json` with a random nonce and an expiry.
-3. One POST goes to the routed webhook (the `_router` if configured, otherwise the bot's own routine), and it is never retried:
+3. One POST goes to that bot's own webhook, and it is never retried:
    `{source:"grok-station", v:1, request_id:"vs_…22", persona, tier_max:0, reply_by, question}`. The question sits
    between `<<<STATION_QUESTION untrusted>>>` and `<<<END_STATION_QUESTION>>>` as data.
 4. The routine answers through tile-ingest `POST /voice/reply` `{request_id, text, tier, action_class}` with its own
@@ -33,11 +32,51 @@ Logs and alerts carry request_id, agent, length and verdict only, never text. Ev
 1. tile-ingest: `node bin/gen-voice-token.js <bot>` stores the hash only. Hand the plaintext from the mode-600 handoff
    file to the bot, then delete that file.
 2. The bot creates its routine with the shared prompt (step 0 checks, delimiters, data allowlist, guest rule, T0, no
-   verbatim memory). The routine's webhook URL and key go into `webhooks.json` (mode 600, relay host only); they will be set from the
-   upcoming admin Bots page (the old `grok-voice-add-webhook` script is removed). The relay calls it with `Authorization: Bearer <key>` and reloads the file on change.
-   A bot with no route (no `_router`, and no webhook of its own) gets no `check_notes` tool, so its persona says its
-   full notes can't be reached.
+   verbatim memory). The routine's webhook URL and key are saved from the admin Bots page (`PUT /admin/bots/<slug>/webhook`)
+   into `/bots/webhooks.json` (mode 600, relay host only; the old `grok-voice-add-webhook` script is removed). The relay
+   calls it with `Authorization: Bearer <key>` and reloads the file when its mtime changes.
+   A bot with no webhook of its own gets no `check_notes` tool, so its persona says its full notes can't be reached.
+   Adding a persona (`POST /admin/bots`) mints a voice token (`vt_` + 32 random bytes, base64url). The response is the
+   only place the plaintext appears. The relay stores `sha256` of that token in `/voice/minted/voice-tokens.json`
+   (`{"agents":{"<slug>":{"hashes":["<hex>"],"maxTier":0,"updatedAt":<epoch>}}}`). tile-ingest reads that file.
 3. Set `HANDOFF_ENABLED=1` and `VOICE_ENABLED=1` only with the owner's OK.
+
+## Admin Bots API (relay)
+
+Reached only through the Caddy mTLS front (`/admin/*`). The relay requires `Authorization: Bearer <admin token>`
+(`admin_token`, one line, separate from `relay_token`; constant-time compare; the same bad-token lockout as `/ws`)
+and a non-empty `X-Client-Cert-Fp` header set by Caddy. A request with an `Origin` header is 403. JSON only. Errors
+never include a key or a URL.
+
+Persona slugs match `^[a-z][a-z0-9-]{1,23}$` and are not `grok`. A webhook URL must be `https`, host exactly
+`api2.cursor.sh`, no userinfo, no port other than 443, a non-empty path, at most 512 characters. The key is 8 to 400
+printable characters. `actor` is a short label from the Pi (`admin`), used only in the audit line.
+
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| GET | `/admin/bots` | | bots (slug, name, voice, source, webhook last4, status) and the voice ids |
+| POST | `/admin/bots` | slug, name, voice, actor | 201, `voice_token` once |
+| PATCH | `/admin/bots/<slug>` | name, actor | rename |
+| DELETE | `/admin/bots/<slug>` | actor | added persona removed; registry persona hidden; webhook and minted token removed |
+| PUT | `/admin/bots/<slug>/webhook` | url, key, actor | `{ok, last4}` |
+| DELETE | `/admin/bots/<slug>/webhook` | actor | |
+| POST | `/admin/bots/<slug>/test` | url?, key? | 202 `{test_id}`. Optional url/key are tried unsaved, same allowlist |
+| GET | `/admin/bots/<slug>/test/<id>` | | `waiting` \| `ok` \| `failed` \| `cancelled` |
+| DELETE | `/admin/bots/<slug>/test/<id>` | | cancel: pending removed |
+
+A test is a normal handoff (fresh `request_id`, `handoff.payload`, question "Station test from the admin page. Reply
+with the single word: ok.") and it counts against the bot's handoff caps. It waits up to `REPLY_WAIT` (120 s).
+
+`$GROK_STATION_BOTS` (directory mode 700) is mounted read-write at `/bots` and holds `webhooks.json`,
+`webhooks.json.bak` (the previous file, one only), `personas-overlay.json`
+(`{"added":{slug:{name,voice}},"renamed":{slug:name},"hidden":[slug]}`), `bot-status.json` and `audit.log`.
+Every write is a mode-600 temp file in that directory, fsync, then rename. `webhooks.json` is validated with
+`load_webhooks` before the rename; the relay reloads it only after. The overlay merges over the read-only registry:
+renames apply, hidden slugs drop off voice, and an added persona gets the prompt "You are <Name>, one of the
+household's assistant team." and no facts. `audit.log` is one line per change: ISO time, actor, persona, action
+(`add|rename|remove|webhook-save|webhook-remove|test`), key last 4 or `-`. Never the key, the URL, or the question.
+`bot-status.json` stores `last_answered_at`, `last_error` and `last_error_at` per slug (no text), for real handoffs
+and for tests.
 
 ## Token identity limit (Nix, 2026-10-19)
 All bots' routines run as the same box user, so any bot can read every voice token. The voice token therefore does not prove which bot is replying. The real control is the nonce-to-persona binding (403 persona-mismatch), which limits a rogue reply to a request already issued to that persona. That's acceptable for T0 answers. **Nothing above T0 may be authorized by the token alone:** T1+ must be gated by the owner's on-screen confirm or an approval card in his chat.
@@ -93,7 +132,7 @@ Approved with the reviewer's conditions. Everything below is in the code and tes
 
 ## Router mode (one webhook): RETIRED 2026-10-19
 
-**Retired.** A routine run can't SendToAgent, so a router routine can't forward a question to another bot. Webhooks are per bot again and will be set from the upcoming admin **Bots** page; the `grok-voice-add-router` and `grok-voice-add-webhook` scripts are removed. The relay still honours a `_router` entry if one is ever present (dormant code path, covered by tests); with none, each persona uses its own entry. The record below is kept for history.
+**Retired, and the code path is gone.** A routine run can't SendToAgent, so a router routine can't forward a question to another bot. `load_webhooks` drops a `_router` entry. `route()` is that bot's own webhook or nothing. Webhooks are set from the admin **Bots** page; the `grok-voice-add-router` and `grok-voice-add-webhook` scripts are removed. The record below is kept for history.
 
 
 `webhooks.json` may include `_router` (`url`, `token`, `enabled` true by default) along with the per-bot entries. It
@@ -104,9 +143,8 @@ token. The bot's own token is not used. The POST is still one shot and is never 
 30 seconds apart, one outstanding) plus the global daily total. The reply path is unchanged: tile-ingest
 `POST /voice/reply` and the nonce stay bound to that persona.
 
-Per-bot entries are the fallback. With no `_router`, a handoff goes to that bot's own webhook, and a persona with
-neither gets no `check_notes` tool. The relay log line says whether the router is on and lists the bot names. It does
-not include the URL or the token.
+Per-bot entries are the only route. A persona with no webhook gets no `check_notes` tool. The relay log line lists the
+bot names (`handoff: N bot webhook(s): …`). It does not mention a router, and it does not include the URL or the token.
 
 (History; script since removed.) On the relay host, `tools/grok-voice-add-router` took no arguments. It prompts `Router webhook URL: ` and a hidden
 `Router webhook key (hidden): `, requires an `https://` URL, and merges `_router` into `webhooks.json` in place (mode
@@ -131,5 +169,5 @@ T1 and above: the router never carries an approval. Actions need the owner's on-
   toward the per-turn or per-session caps, and the mic isn't forwarded or counted during it.
 - No answer gives an honest spoken result, e.g. "<Bot> didn't answer in time; try again or ask in the app." (timeout), with
   matching lines for limit, POST failure and a rejected reply. The model is told not to guess.
-- Each POST logs `via=bot|router http=<status> post_ms=<ms>`; spoken and timeout lines add `wait_ms`. Still no text, URL or key.
+- Each POST logs `via=bot http=<status> post_ms=<ms>`; spoken and timeout lines add `wait_ms`. Still no text, URL or key.
 - `verdict=timeout` raises an ntfy alert (kind `handoff-timeout`, once per day), like post-failed and reject.
