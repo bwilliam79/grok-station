@@ -158,10 +158,23 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
             relay.ENROLL_DIR = old
 
     def test_end_phrases(self):
-        for t in ("Thanks", "thank you so much", "That's all", "that’s it.", "no thanks", "bye", "okay thanks Grok"):
+        for t in ("Thanks", "thank you so much", "That's all", "that’s it.", "no thanks", "bye", "okay thanks Grok",
+                  "goodbye Hank", "bye Hank", "ok thanks Hank", "thanks, that's it", "Thanks Hank, bye.",
+                  "alright, that's all for now", "see you later"):
             self.assertTrue(relay.is_end_phrase(t), t)
-        for t in ("thanks, and what about tomorrow's weather in the morning", "what's the time", "", "nothing works here why"):
+        for t in ("thanks, and what about tomorrow's weather in the morning", "what's the time", "", "nothing works here why",
+                  "goodbye what is the weather tomorrow", "thanks for checking the garage door"):
             self.assertFalse(relay.is_end_phrase(t), t)
+
+    def test_latest_utterance_strips_earlier_turns(self):
+        q1 = "What is on my calendar today?"
+        self.assertEqual(relay.latest_utterance([q1], q1 + " Goodbye Hank."), "Goodbye Hank.")
+        self.assertTrue(relay.is_end_phrase(relay.latest_utterance([q1], q1 + " Goodbye Hank.")))
+        self.assertEqual(relay.latest_utterance([q1], "Goodbye Hank."), "Goodbye Hank.")
+        self.assertEqual(relay.latest_utterance([], q1), q1)
+        self.assertEqual(relay.latest_utterance([q1], q1), q1)  # a true repeat is kept
+        q2 = "And tomorrow?"
+        self.assertEqual(relay.latest_utterance([q1, q1 + " " + q2], q1 + " " + q2 + " thanks"), "thanks")
 
 
 if __name__ == "__main__":

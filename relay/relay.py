@@ -200,14 +200,28 @@ fails, locked = {}, {}       # source -> [failure times], source -> locked-until
 alerted = set()              # (day, kind) already alerted
 
 
-END_RE = re.compile(r"^(ok(ay)?[ ,]+)?(thanks?( you)?( so much| a lot)?|no,? thanks?( you)?|that'?s (all|it)|that is all|"
-                    r"nothing( else)?|(good)?bye|all done|i'?m (good|done))([ ,]+(grok|that'?s all|bye|[a-z]+))?[.!]*$", re.I)
+END_RE = re.compile(r"^((ok(ay)?|alright|all right|great|cool|perfect)[ ,]+)*"
+                    r"(thanks?( you)?( so much| a lot| very much)?|thank you( so much| very much)?|no,? thanks?( you)?|"
+                    r"that'?s (all|it)( for now)?|that is all|that will be all|nothing( else)?|(good)?bye( ?bye)?|"
+                    r"see (you|ya)( later)?|later|all done|i'?m (good|done|all set)|we'?re (good|done))"
+                    r"([ ,]+({k}))*([ ,]+[a-z]+)?([ ,]+({k}))*[.!]*$".replace(
+                        "{k}", r"grok|that'?s (all|it)|(good)?bye|for now|thanks?( you)?"), re.I)
 
 
 def is_end_phrase(text):
     """A short closing phrase ("thanks", "that's all") that ends a multi-turn session."""
     t = " ".join(str(text).replace("’", "'").split()).strip(" .!,")
     return bool(t) and len(t.split()) <= 6 and bool(END_RE.match(t))
+
+
+def latest_utterance(prior, heard):
+    """Only this turn's speech. Some transcription events return the session's text so far
+    ("<turn 1 question> <turn 2 goodbye>"); strip any earlier turns' text from the front."""
+    h = " ".join(str(heard or "").split())
+    for p in sorted((" ".join(str(x).split()) for x in prior or [] if x), key=len, reverse=True):
+        if len(h) > len(p) and h.lower().startswith(p.lower()):
+            return h[len(p):].lstrip(" ,.;:!?-")
+    return h
 
 
 def log(*a):
@@ -920,7 +934,7 @@ async def session(req):
                   "persona": slug0, "woke": slug0, "again": False, "audio": False, "switched": False, "hold": False,
                   "timers": station_tools.parse_timers(req.query.get("timers", "")[:1500], time.time()),
                   "station": station, "t1": None, "drop_model": persona_routed(slug0), "model_out": 0, "buf": [],
-                  "turn_heard": False, "utt": 0, "answered_utt": None, "heard": "", "saw_response": False,
+                  "turn_heard": False, "utt": 0, "answered_utt": None, "heard": "", "heard_hist": [], "saw_response": False,
                   "guard": any(persona_routed(s) for s in roster), "xai_active": False, "cancel_sent": False}
 
             async def cancel_response():
@@ -1059,6 +1073,7 @@ async def session(req):
                             await up.send_json({"type": "input_audio_buffer.clear"})
                             now = time.monotonic()
                             st.update(playing=False, speech=False, quiet_since=now, turn_t0=now, turn=st["turn"] + 1)
+                            st["heard"] = ""  # each turn's question starts empty
                             log(f"turn {st['turn']} open")
                             if st["t1"]:
                                 st["t1"].open()  # read-back finished playing: the 15 s spoken window starts now
@@ -1172,7 +1187,9 @@ async def session(req):
                             continue
                         await t1_finish(v, "spoken", "station-mic")
                     elif t == "conversation.item.input_audio_transcription.completed":
-                        heard = ev.get("transcript", "") or ""
+                        raw = " ".join((ev.get("transcript", "") or "").split())
+                        heard = latest_utterance(st["heard_hist"], raw)
+                        st["heard_hist"] = (st["heard_hist"] + [raw])[-8:]
                         st["heard"] = heard
                         st["turn_heard"] = True
                         if not st.get("utt"):
