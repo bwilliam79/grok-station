@@ -1006,11 +1006,11 @@ async def session(req):
                 direct = st.get("woke") == bot
 
                 async def waiting():
-                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name})
+                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct})
                     if not direct:
                         await play_fixed(asking_line(name), voice)
                         # the filler line flips the Pi to "speaking"; put it back on the spinning wait ring
-                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name})
+                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct})
 
                 async def still():
                     pcm = await tts_pcm(http, "Still working on it." if direct else f"Still asking {name}.", voice)

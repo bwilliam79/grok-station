@@ -963,6 +963,22 @@ def make_chime(path):
         w.writeframes((tone * 0.35 * 32767).astype("<i2").tobytes())
 
 
+HANDOFF_KEEPALIVE_S = 8  # well under the display's 20 s thinking hold
+
+
+def handoff_wait_text(ev):
+    """Wait-screen label. Direct wake ("Hey Ash") shows only the spinning ring; a bot-to-bot handoff names the bot.
+    A relay that doesn't send `direct` gets the old label."""
+    if ev.get("direct") is True:
+        return "…"
+    name = str(ev.get("name", ""))[:24] or "a teammate"
+    return f"Checking with {name}…"
+
+
+def handoff_keepalive_due(s):
+    return bool(getattr(s, "active", False) and getattr(s, "handoff_text", None) and not getattr(s, "t_first_audio", None))
+
+
 def post_state(state=None, **kw):
     """POST /state. The log line is the state and the kinds of attachment (card / timer count), never the values."""
     body = {}
@@ -1029,6 +1045,7 @@ class Session:
 
     def __init__(self, play_dev, save=None, skip=VOICE_SKIP, echo_text=False, persona="grok"):
         self.q, self.feeding, self.active = queue.Queue(maxsize=400), True, True
+        self.handoff_text = None  # set while a teammate handoff wait screen is up
         self.skip = int(skip * 24000) * 2  # bytes of 24 kHz PCM16 still to drop
         self.echo_text = echo_text         # print transcripts: only for the manual --ask check, never the service log
         self.play_dev, self.save, self.t_end_speech, self.t_first_audio = play_dev, save, None, None
@@ -1050,6 +1067,20 @@ class Session:
             post_state("confirm", who=c["name"], text=c["text"], heard=f"{c['op']}|{c['list']}|{1 if c['needs_tap'] else 0}")
             return
         post_state(state, who=self.who, **kw)
+
+    def start_handoff_keepalive(self):
+        """The display drops a "thinking" screen after VOICE_HOLDS["thinking"] (20 s) without a new post,
+        but a teammate can take REPLY_WAIT (120 s). Re-post the wait screen until audio, handoff_done or session end."""
+        if getattr(self, "_ka", None) and self._ka.is_alive():
+            return
+        def loop():
+            while True:
+                time.sleep(HANDOFF_KEEPALIVE_S)
+                if not handoff_keepalive_due(self):
+                    return
+                self.state("thinking", heard=self.heard, text=self.handoff_text)
+        self._ka = threading.Thread(target=loop, daemon=True)
+        self._ka.start()
 
     def feed(self, pcm24):
         if self.skip > 0:
@@ -1165,7 +1196,9 @@ class Session:
                         # teammate handoff: the persona is asking its own Grok Bot; keep the thinking screen up
                         name = str(ev.get("name", ""))[:24] or "a teammate"
                         print("relay: handoff wait", flush=True)
-                        self.state("thinking", heard=self.heard, text=f"Checking with {name}…")
+                        self.handoff_text = handoff_wait_text(ev)
+                        self.state("thinking", heard=self.heard, text=self.handoff_text)
+                        self.start_handoff_keepalive()
                     elif t == "t1_confirm":
                         lst = " ".join(re.sub(r"[^A-Za-z ']", " ", str(ev.get("list") or "")).split())[:24]
                         self.t1_card = {"request_id": str(ev.get("request_id", ""))[:40], "name": str(ev.get("name", ""))[:24] or self.who,
@@ -1208,6 +1241,7 @@ class Session:
                                 kw["text"] = "…"
                             self.state(phase, **kw)
                     elif t == "handoff_done":
+                        self.handoff_text = None
                         print("relay: handoff done", flush=True)
                     elif t == "xai_error":
                         print("relay: xai error", flush=True)

@@ -23,7 +23,7 @@ after its own canary passes and the owner OKs it.
 5. The relay reads the reply once (it deletes the file on read) and checks the nonce, scope and lint again. It speaks
    the reply only if the session is still waiting. Otherwise it drops it, and a late reply finds no pending file.
 
-The Pi shows "Checking with <name>…" while it waits.
+The Pi shows "Checking with <name>…" while it waits on a bot-to-bot handoff; a direct wake ("Hey Ash") shows only the spinning ring. The wake listener re-posts the wait screen every 8 s so the display's 20 s thinking hold doesn't drop to the home screen.
 
 ## Persona route (no general-model answer)
 

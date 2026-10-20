@@ -480,3 +480,26 @@ class ToolCardForward(unittest.TestCase):
         self.assertTrue(spoken[0].get("done"))
         cleared = [b for b in self.display.bodies if b.get("timers") == []]
         self.assertTrue(cleared)
+
+
+class HandoffWaitScreen(unittest.TestCase):
+    def test_direct_wake_has_no_checking_label(self):
+        self.assertEqual(gw.handoff_wait_text({"name": "Ash", "direct": True}), "…")
+
+    def test_bot_to_bot_names_the_bot(self):
+        self.assertEqual(gw.handoff_wait_text({"name": "Ash", "direct": False}), "Checking with Ash…")
+
+    def test_old_relay_without_direct_keeps_label(self):
+        self.assertEqual(gw.handoff_wait_text({"name": "Ash"}), "Checking with Ash…")
+
+    def test_keepalive_beats_display_thinking_hold(self):
+        # regression: the display's 20 s thinking hold dropped to the home screen mid-wait
+        self.assertLess(gw.HANDOFF_KEEPALIVE_S, 20)
+        s = types.SimpleNamespace(active=True, handoff_text="…", t_first_audio=None)
+        self.assertTrue(gw.handoff_keepalive_due(s))
+        s.t_first_audio = 1.0
+        self.assertFalse(gw.handoff_keepalive_due(s))
+        s.t_first_audio, s.handoff_text = None, None
+        self.assertFalse(gw.handoff_keepalive_due(s))
+        s.handoff_text, s.active = "…", False
+        self.assertFalse(gw.handoff_keepalive_due(s))
