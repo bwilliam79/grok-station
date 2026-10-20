@@ -62,7 +62,9 @@ echo "== wake listener (Hey Grok)"
 run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
 sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
 run $O/wake/venv/bin/pip install --quiet --no-deps openwakeword
-run $O/wake/venv/bin/pip install --quiet onnxruntime numpy tqdm scipy scikit-learn requests "websockets>=17"
+# Lower bounds keep pip off ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name) while backtracking.
+run $O/wake/venv/bin/pip install --quiet "onnxruntime>=1.20" "numpy>=2.1" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
+  requests "websockets>=17"
 run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
 run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
 run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
