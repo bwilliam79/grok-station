@@ -5,7 +5,7 @@ HMAC-SHA256(key=normalized code, msg=sha256(station cert DER)).
 A `relay-*` name constraint is not expressible in the certificate, so
 issuance checks the DNS name itself.
 """
-import base64, datetime, hashlib, hmac, ipaddress, json, re, secrets, time
+import base64, datetime, hashlib, hmac, ipaddress, json, os, re, secrets, stat, time
 
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
@@ -444,18 +444,59 @@ class PairingWindow:
         self._close_port()
         return issued
 
+    def snapshot(self):
+        """Public window state. Never includes the code or the proof."""
+        self._expire_if_due()
+        expires_in = None
+        if self.expires_at is not None and self.phase in ("open", "pending", "locked"):
+            expires_in = max(0, int(self.expires_at - self._now()))
+        info = {
+            "phase": self.phase,
+            "expires_in": expires_in,
+            "tries_left": max(0, MAX_TRIES - self.tries),
+        }
+        if self.phase == "pending" and self._pending_pem:
+            try:
+                csr = load_csr(self._pending_pem)
+                info["relay_fingerprint"] = format_fingerprint(spki_fingerprint(csr.public_key()))
+            except PairingError:
+                pass
+        return info
+
+
+_CA_KEY = "ca-key.pem"
+_CA_CERT = "ca-cert.pem"
+_CA_REV = "revocations.json"
+_CA_MAX = 16 * 1024
+
+
+def _owner_only(path):
+    """True when path is a regular file and not group- or other-readable."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return False
+    return (st.st_mode & 0o077) == 0
+
 
 class StationCA:
     """EC P-256 pairing CA. Path length 0. The relay name is checked in `sign_csr`, not in the cert."""
 
-    def __init__(self, *, clock=None, rng=None, audit=None):
+    def __init__(self, *, clock=None, rng=None, audit=None, key=None, cert=None):
         self._clock = clock or time.time
         self._rng = rng or secrets.token_bytes
         self._sink = audit
         self.audits = []
         self._revoked = set()
-        self.key = ec.generate_private_key(ec.SECP256R1())
-        self.cert = self._self_sign()
+        self._rev_path = None
+        if key is None:
+            self.key = ec.generate_private_key(ec.SECP256R1())
+            self.cert = self._self_sign()
+        else:
+            self.key = key
+            self.cert = cert
 
     def __repr__(self):
         return "StationCA()"
@@ -550,6 +591,40 @@ class StationCA:
         self._audit("pair-csr-signed", short)
         return cert, short
 
+    def issue_local_client(self):
+        """Station client cert for calling the relay. The private key stays on the station.
+
+        This is not the relay's certificate and it is not audited (no serial is published).
+        """
+        key = ec.generate_private_key(ec.SECP256R1())
+        now = self._utc()
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "station-client")])
+        usage = x509.KeyUsage(
+            digital_signature=True,
+            content_commitment=False,
+            key_encipherment=False,
+            data_encipherment=False,
+            key_agreement=False,
+            key_cert_sign=False,
+            crl_sign=False,
+            encipher_only=False,
+            decipher_only=False,
+        )
+        cert = (
+            x509.CertificateBuilder()
+            .subject_name(name)
+            .issuer_name(self.cert.subject)
+            .public_key(key.public_key())
+            .serial_number(self._new_serial())
+            .not_valid_before(now)
+            .not_valid_after(now + datetime.timedelta(days=CLIENT_DAYS))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=True)
+            .add_extension(usage, critical=True)
+            .sign(self.key, hashes.SHA256())
+        )
+        return key, cert
+
     def revoke(self, serial):
         number = _as_serial(serial)
         if number is None:
@@ -558,6 +633,7 @@ class StationCA:
             return
         self._revoked.add(number)
         self._audit("unpair", _serial8(number))
+        self._save_revocations()
 
     def is_revoked(self, serial):
         number = _as_serial(serial)
@@ -579,6 +655,135 @@ class StationCA:
                 raise PairingError("revocation")
             cleaned.add(number)
         self._revoked = cleaned
+
+    def _save_revocations(self):
+        if not self._rev_path:
+            return
+        text = (self.revocation_json() + "\n").encode()
+        tmp = self._rev_path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, text)
+            os.fsync(fd)
+        except Exception:
+            os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        os.close(fd)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self._rev_path)
+
+    def _write_key(self, path):
+        pem = self.key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        # O_EXCL so two creators cannot clobber one key. Mode 0600 is owner-only.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.write(fd, pem)
+            os.fsync(fd)
+        except Exception:
+            os.close(fd)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        os.close(fd)
+        if not _owner_only(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise PairingError("ca-key-perms")
+
+    def _write_cert(self, path):
+        pem = self.cert.public_bytes(serialization.Encoding.PEM)
+        tmp = path + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            os.write(fd, pem)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+
+    @classmethod
+    def _ensure_dir(cls, directory):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        mode = stat.S_IMODE(os.stat(directory).st_mode)
+        if mode & 0o077:
+            raise PairingError("ca-dir")
+
+    @classmethod
+    def _load_key(cls, path):
+        if not _owner_only(path):
+            raise PairingError("ca-key-perms")
+        st = os.lstat(path)
+        if st.st_size <= 0 or st.st_size > _CA_MAX:
+            raise PairingError("ca-key")
+        try:
+            data = open(path, "rb").read(_CA_MAX + 1)
+            key = serialization.load_pem_private_key(data, password=None)
+        except (OSError, ValueError, TypeError):
+            raise PairingError("ca-key") from None
+        if not isinstance(key, ec.EllipticCurvePrivateKey) or not isinstance(key.curve, ec.SECP256R1):
+            raise PairingError("ca-key")
+        return key
+
+    @classmethod
+    def load_or_create(cls, directory, *, clock=None, rng=None, audit=None):
+        """Load the CA in `directory`, or create it. The key file is mode 0600.
+
+        The directory is mode 0700. A key that is group- or other-readable is
+        refused and left untouched. Reloading returns the same CA and the same
+        revocation set.
+        """
+        if not isinstance(directory, (str, os.PathLike)) or not str(directory):
+            raise PairingError("ca-dir")
+        directory = os.fspath(directory)
+        cls._ensure_dir(directory)
+        key_path = os.path.join(directory, _CA_KEY)
+        cert_path = os.path.join(directory, _CA_CERT)
+        rev_path = os.path.join(directory, _CA_REV)
+        if os.path.lexists(key_path):
+            return cls._load(directory, key_path, cert_path, rev_path, clock=clock, rng=rng, audit=audit)
+        ca = cls(clock=clock, rng=rng, audit=audit)
+        try:
+            ca._write_key(key_path)
+        except FileExistsError:
+            return cls._load(directory, key_path, cert_path, rev_path, clock=clock, rng=rng, audit=audit)
+        ca._write_cert(cert_path)
+        ca._rev_path = rev_path
+        ca._save_revocations()
+        return ca
+
+    @classmethod
+    def _load(cls, directory, key_path, cert_path, rev_path, *, clock, rng, audit):
+        key = cls._load_key(key_path)
+        try:
+            cert = load_cert(open(cert_path, "rb").read(_CA_MAX + 1))
+        except (OSError, PairingError):
+            raise PairingError("ca-cert") from None
+        if cert.public_key().public_numbers() != key.public_key().public_numbers():
+            raise PairingError("ca-cert")
+        ca = cls(clock=clock, rng=rng, audit=audit, key=key, cert=cert)
+        ca._rev_path = rev_path
+        if os.path.exists(rev_path):
+            try:
+                text = open(rev_path, encoding="utf-8").read(_CA_MAX)
+            except OSError:
+                raise PairingError("revocation") from None
+            ca.load_revocation_json(text)
+        else:
+            ca._save_revocations()
+        return ca
 
     def _signed_by_us(self, cert):
         if cert.issuer != self.cert.subject:

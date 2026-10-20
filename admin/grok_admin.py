@@ -8,8 +8,9 @@ through grok-station-helper (root, fixed subcommands, validated input) via sudo.
 10-minute step-up window on that session for saving a webhook, adding or renaming a bot, uploading a portrait, and
 changing the privacy toggle; removing a bot or webhook always asks again. Speaker names stay on this Pi. Stdlib only.
 """
-import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl
+import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl, sys
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 E = os.environ.get
@@ -21,6 +22,13 @@ STATE_DIR = E("ADMIN_STATE_DIR", "/var/lib/grok-station/admin")
 RUN_DIR = E("ADMIN_RUN_DIR", "/run/grok-station-admin")  # setup.json lives here (dir 0750, group grok)
 WEB = E("ADMIN_WEB_DIR", os.path.join(HERE, "web"))
 HELPER = E("ADMIN_HELPER", "sudo -n /usr/local/lib/grok-station/grok-station-helper").split()
+_RELAY_SRC = os.path.join(os.path.dirname(HERE), "relay")
+if os.path.isdir(_RELAY_SRC) and _RELAY_SRC not in sys.path:
+    sys.path.insert(0, _RELAY_SRC)
+import pairing  # noqa: E402
+import pair_listener  # noqa: E402
+import release  # noqa: E402
+from cryptography.hazmat.primitives import serialization  # noqa: E402
 WAKE_CTL = E("ADMIN_WAKE_CTL", "http://127.0.0.1:8789")
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
 ENROLLED = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled") + "/wakewords.enrolled.json"
@@ -518,6 +526,14 @@ ACTIVE_ENROLL = ("recording", "uploading", "training")
 WEBHOOK_HOST = "api2.cursor.sh"
 RELAY_ENV = E("ADMIN_RELAY_ENV", "/etc/grok-station/admin-relay.env")
 RELAY_UNCONFIGURED = "The station can't reach the relay's admin API yet"
+PAIR_HOST = E("GROK_STATION_PAIR_HOST", "0.0.0.0")
+PAIR_PORT = int(E("GROK_STATION_PAIR_PORT", "8443"))
+RELAY_FETCHER = None  # tests: (method, path, payload) -> None or (status, dict). No network.
+MANIFEST_FETCHER = None  # tests: () -> manifest dict or bytes. No network.
+STATION_POST = None  # tests: (payload) -> ignored. Shows or clears the pairing fingerprint.
+PAIR_SOCKET_FACTORY = None
+PAIR_CA = PAIR_WINDOW = PAIR_LISTENER = PAIR_ISSUANCE = None
+_VERSION_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
 BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
@@ -1434,6 +1450,628 @@ def time_body(j):
     return body, None, label, tz
 
 
+# ------------------------------------------------------------------ relay pairing + updates
+_PAIR_STOP = None
+_PAIR_THREAD = None
+_ISO_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+_XAI_CODE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_UPDATE_REASONS = {"bad-args", "not-in-manifest", "downgrade", "relay-failed", "station-failed"}
+
+
+def ca_dir():
+    return os.path.join(STATE_DIR, "pairing-ca")
+
+
+def paired_dir():
+    return os.path.join(STATE_DIR, "paired-relay")
+
+
+def _pair_clock():
+    return now()
+
+
+def append_audit(line):
+    """Append one already-formatted audit line. Drops anything with a secret marker."""
+    if not isinstance(line, str) or not line or "\n" in line or "\r" in line:
+        return
+    low = line.lower()
+    if "-----begin" in low or "://" in low or "bearer " in low:
+        return
+    p = path("relay-audit.log")
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        return
+
+
+def _audit_event(line):
+    parts = line.split(" ")
+    return parts[3] if len(parts) >= 4 else ""
+
+
+def recent_audit(limit=20, event_prefix=None):
+    try:
+        lines = open(path("relay-audit.log"), encoding="utf-8").read().splitlines()
+    except OSError:
+        lines = []
+    if event_prefix:
+        lines = [ln for ln in lines if _audit_event(ln).startswith(event_prefix)]
+    return lines[-limit:]
+
+
+def _audit_update(event, detail="-"):
+    if not isinstance(detail, str) or not detail:
+        detail = "-"
+    ts = datetime.fromtimestamp(int(now()), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        line = release.format_audit(ts, "admin", "station", event, detail)
+    except ValueError:
+        return
+    append_audit(line)
+
+
+def _vt(value):
+    if not isinstance(value, str) or not _VERSION_RE.fullmatch(value):
+        return None
+    return tuple(int(part) for part in value[1:].split("."))
+
+
+def _station_ver():
+    """Release version, or None when VERSION is not vX.Y.Z (a dev tree)."""
+    return version() if _vt(version()) else None
+
+
+def station_cert_bytes():
+    try:
+        with open(os.path.join(TLS_DIR, "cert.pem"), "rb") as handle:
+            data = handle.read(64 * 1024)
+    except OSError:
+        return None
+    if not data or b"PRIVATE" in data:
+        return None
+    return data
+
+
+def station_fingerprint_hex():
+    raw = station_cert_bytes()
+    if not raw:
+        return None
+    try:
+        return pairing.fingerprint_bytes(raw).hex()
+    except pairing.PairingError:
+        return None
+
+
+def _show_station_fp():
+    fp = station_fingerprint_hex()
+    if not fp or len(fp) != 64:
+        return
+    payload = {"fingerprint": fp}
+    post = STATION_POST
+    if post is not None:
+        try:
+            post(payload)
+        except Exception:
+            pass
+        return
+    helper("display-pairing", stdin=payload)
+
+
+def _clear_station_fp():
+    payload = {"clear": True}
+    post = STATION_POST
+    if post is not None:
+        try:
+            post(payload)
+        except Exception:
+            pass
+        return
+    helper("display-pairing", stdin=payload)
+
+
+def _on_pair_bind():
+    ok, _ = helper("pair-fw-open")
+    if not ok:
+        return False
+    _show_station_fp()
+    return True
+
+
+def _on_pair_unbind():
+    helper("pair-fw-close")
+    _clear_station_fp()
+
+
+def _start_pair_thread():
+    global _PAIR_STOP, _PAIR_THREAD
+    if _PAIR_THREAD is not None and _PAIR_THREAD.is_alive():
+        return
+    _PAIR_STOP = threading.Event()
+    listener = PAIR_LISTENER
+    _PAIR_THREAD = threading.Thread(target=listener.serve, args=(_PAIR_STOP,), name="pair-port", daemon=True)
+    _PAIR_THREAD.start()
+
+
+def load_ca():
+    global PAIR_CA
+    if PAIR_CA is None:
+        PAIR_CA = pairing.StationCA.load_or_create(ca_dir(), clock=_pair_clock, audit=append_audit)
+    return PAIR_CA
+
+
+def ensure_pair():
+    """Load the CA and the pairing window. The listener stays unbound until the window is open."""
+    global PAIR_CA, PAIR_WINDOW, PAIR_LISTENER, PAIR_ISSUANCE
+    load_ca()
+    cert = station_cert_bytes()
+    if cert is None or not os.path.isfile(os.path.join(TLS_DIR, "key.pem")):
+        raise pairing.PairingError("station-cert")
+    if PAIR_WINDOW is None:
+        PAIR_WINDOW = pairing.PairingWindow(cert, ca=PAIR_CA, clock=_pair_clock, audit=append_audit)
+    if PAIR_ISSUANCE is None:
+        PAIR_ISSUANCE = pair_listener.Issuance()
+    if PAIR_LISTENER is None:
+        PAIR_LISTENER = pair_listener.PairListener(
+            PAIR_WINDOW, PAIR_ISSUANCE,
+            os.path.join(TLS_DIR, "cert.pem"), os.path.join(TLS_DIR, "key.pem"),
+            host=PAIR_HOST, port=PAIR_PORT, socket_factory=PAIR_SOCKET_FACTORY,
+            on_bind=_on_pair_bind, on_unbind=_on_pair_unbind,
+        )
+        _start_pair_thread()
+    return PAIR_LISTENER
+
+
+def sync_pair_port():
+    listener = PAIR_LISTENER
+    if listener is None:
+        return False
+    try:
+        listener.poll()
+    except Exception:
+        return False
+    return bool(listener.bound)
+
+
+def reset_pair_runtime():
+    """Stop the pairing thread and drop in-memory window state. Disk CA stays."""
+    global PAIR_CA, PAIR_WINDOW, PAIR_LISTENER, PAIR_ISSUANCE, _PAIR_STOP, _PAIR_THREAD
+    global RELAY_FETCHER, MANIFEST_FETCHER, STATION_POST
+    stop, thread, listener = _PAIR_STOP, _PAIR_THREAD, PAIR_LISTENER
+    if stop is not None:
+        stop.set()
+    if listener is not None:
+        try:
+            listener.unbind()
+        except Exception:
+            pass
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2)
+    PAIR_CA = PAIR_WINDOW = PAIR_LISTENER = PAIR_ISSUANCE = None
+    _PAIR_STOP = _PAIR_THREAD = None
+    RELAY_FETCHER = None
+    MANIFEST_FETCHER = None
+    STATION_POST = None
+
+
+def _write_bytes(dest, data, mode):
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = f"{dest}.{secrets.token_hex(4)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+    os.chmod(tmp, mode)
+    os.replace(tmp, dest)
+
+
+def _paired_record():
+    doc = read_json(os.path.join(paired_dir(), "relay.json"), None)
+    return doc if isinstance(doc, dict) else None
+
+
+def _key_file_ok(p):
+    if os.path.islink(p) or not _private_file(p):
+        return False
+    return True
+
+
+def save_paired(serial, cert_expiry, relay_fp, key, cert, ca_cert):
+    """Store the station's client key (mode 0600) and the relay serial. No admin-relay.env changes."""
+    directory = paired_dir()
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    _write_bytes(os.path.join(directory, "client-key.pem"), key_pem, 0o600)
+    _write_bytes(os.path.join(directory, "client-cert.pem"), cert.public_bytes(serialization.Encoding.PEM), 0o644)
+    _write_bytes(os.path.join(directory, "ca.pem"), ca_cert.public_bytes(serialization.Encoding.PEM), 0o644)
+    write_json(os.path.join(directory, "relay.json"), {
+        "serial": serial,
+        "cert_expiry": cert_expiry,
+        "relay_fingerprint": relay_fp,
+    })
+
+
+def drop_paired_files():
+    """Remove the paired client files. Does not touch admin-relay.env."""
+    directory = paired_dir()
+    for name in ("client-key.pem", "client-cert.pem", "ca.pem", "relay.json"):
+        try:
+            os.unlink(os.path.join(directory, name))
+        except OSError:
+            pass
+
+
+def relay_mtls_config():
+    """Prefer the paired client cert. Fall back to admin-relay.env. Never deletes that file.
+
+    A paired key with no relay URL still needs admin-relay.env for the origin. Until the
+    one-time re-pair, the env file's own client cert is used.
+    """
+    env = relay_settings()
+    directory = paired_dir()
+    key_p = os.path.join(directory, "client-key.pem")
+    cert_p = os.path.join(directory, "client-cert.pem")
+    ca_p = os.path.join(directory, "ca.pem")
+    paired = _key_file_ok(key_p) and os.path.isfile(cert_p) and os.path.isfile(ca_p)
+    if paired and env:
+        return {
+            "origin": env["origin"], "ca": env["ca"], "cert": cert_p, "key": key_p,
+            "token": env.get("token"), "pin": env.get("pin") or "", "source": "paired",
+        }
+    if env:
+        return {
+            "origin": env["origin"], "ca": env["ca"], "cert": env["cert"], "key": env["key"],
+            "token": env.get("token"), "pin": env.get("pin") or "", "source": "env",
+        }
+    return None
+
+
+def _relay_configured():
+    return RELAY_FETCHER is not None or relay_mtls_config() is not None
+
+
+def relay_admin_fetch(method, path, payload=None):
+    """Call the relay admin API over mTLS. RELAY_FETCHER skips the network in tests.
+
+    POST /admin/update sends only {"version": "..."}.
+    """
+    if path == "/admin/update":
+        if not isinstance(payload, dict) or set(payload) != {"version"} or not _vt(payload.get("version")):
+            return 400, {"error": "bad request"}
+    if RELAY_FETCHER is not None:
+        return RELAY_FETCHER(method, path, payload)
+    cfg = relay_mtls_config()
+    if not cfg:
+        return None
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = False
+    try:
+        ctx.load_verify_locations(cafile=cfg["ca"])
+        ctx.load_cert_chain(certfile=cfg["cert"], keyfile=cfg["key"])
+    except (OSError, ssl.SSLError):
+        return 503, {"error": RELAY_DOWN}
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _RelayHTTPS(ctx, _pinned_connection(cfg.get("pin") or "")),
+        _NoRedirect(),
+    )
+    headers = {"Accept": "application/json"}
+    token = cfg.get("token")
+    if isinstance(token, str) and token:
+        headers["Authorization"] = "Bearer " + token
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(cfg["origin"] + path, data=data, headers=headers, method=method)
+    try:
+        with opener.open(req, timeout=10) as resp:
+            status, raw = resp.status, resp.read(1 << 20)
+    except urllib.error.HTTPError as err:
+        status = err.code
+        try:
+            raw = err.read(1 << 20)
+        except Exception:
+            raw = b""
+    except Exception as err:
+        print(f"relay admin failed: {type(err).__name__}", flush=True)
+        return 503, {"error": RELAY_DOWN}
+    try:
+        parsed = json.loads(raw.decode() or "{}")
+    except ValueError:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return status, parsed
+
+
+def _safe_time(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and 0 <= float(value) < 4_000_000_000:
+        return int(value)
+    if isinstance(value, str) and _ISO_TIME.fullmatch(value):
+        return value
+    return None
+
+
+def _safe_rate(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value < 0 or value > 1_000_000:
+            return None
+        return int(value) if isinstance(value, int) or float(value).is_integer() else value
+    if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/-]{1,32}", value):
+        return value
+    return None
+
+
+def public_relay_status(data, latency_ms):
+    """Fields the browser may see. Question text, URLs, tokens and keys are dropped."""
+    data = data if isinstance(data, dict) else {}
+    xai = data.get("xai")
+    if xai == "ok":
+        xai_out = "ok"
+    elif isinstance(xai, str) and _XAI_CODE.fullmatch(xai):
+        xai_out = xai
+    else:
+        xai_out = "error"
+    last4 = data.get("key_last4")
+    if not (isinstance(last4, str) and re.fullmatch(r"[A-Za-z0-9]{4}", last4)):
+        last4 = None
+    pii = data.get("pii_mode")
+    if isinstance(pii, bool):
+        pii = "on" if pii else "off"
+    elif pii not in ("on", "off"):
+        pii = None
+    ver = data.get("version") if _vt(data.get("version")) else None
+    if isinstance(latency_ms, bool) or not isinstance(latency_ms, (int, float)) or not 0 <= latency_ms <= 120_000:
+        latency = None
+    else:
+        latency = int(latency_ms)
+    expiry = _safe_time(data.get("cert_expiry"))
+    if expiry is None:
+        rec = _paired_record() or {}
+        expiry = rec.get("cert_expiry") if isinstance(rec.get("cert_expiry"), str) and _ISO_TIME.fullmatch(rec["cert_expiry"]) else None
+    return {
+        "version": ver,
+        "last_seen": _safe_time(data.get("last_seen")),
+        "latency_ms": latency,
+        "xai": xai_out,
+        "key_last4": last4,
+        "cert_expiry": expiry,
+        "pii_mode": pii,
+        "rate": _safe_rate(data.get("rate")),
+    }
+
+
+def fetch_relay_status():
+    if not _relay_configured() and not _paired_record():
+        return None
+    started = time.perf_counter()
+    got = relay_admin_fetch("GET", "/admin/status", None)
+    latency = int((time.perf_counter() - started) * 1000)
+    if not got or got[0] != 200:
+        return None
+    pub = public_relay_status(got[1], latency)
+    if pub.get("version"):
+        cache = read_json(path("update-check.json"), {})
+        if not isinstance(cache, dict):
+            cache = {}
+        cache["relay_version"] = pub["version"]
+        write_json(path("update-check.json"), cache)
+    return pub
+
+
+def _outdated(relay_version):
+    cache = read_json(path("update-check.json"), {})
+    available = cache.get("available") if isinstance(cache, dict) else None
+    left, right = _vt(relay_version), _vt(available)
+    return bool(left and right and right > left)
+
+
+def relay_state_name(status):
+    phase = PAIR_WINDOW.phase if PAIR_WINDOW is not None else "idle"
+    if phase in ("open", "pending"):
+        return "pairing"
+    if not _relay_configured() and not _paired_record():
+        return "not-set-up"
+    if not status:
+        return "error"
+    if _outdated(status.get("version")):
+        return "outdated"
+    return "connected"
+
+
+def pairing_public(code=None):
+    """Window fields for the browser. `code` is set only by the start and new-code responses."""
+    if PAIR_WINDOW is None:
+        info = {"expires_in": None, "tries_left": pairing.MAX_TRIES}
+    else:
+        snap = PAIR_WINDOW.snapshot()
+        info = {"expires_in": snap.get("expires_in"), "tries_left": snap.get("tries_left")}
+        fp = snap.get("relay_fingerprint")
+        if isinstance(fp, str) and fp:
+            info["relay_fingerprint"] = fp
+    if code:
+        info["code"] = code
+    return info
+
+
+def _settings_path():
+    return path("update-settings.json")
+
+
+def _load_manifest():
+    if MANIFEST_FETCHER is not None:
+        raw = MANIFEST_FETCHER()
+    else:
+        def fetcher(url, context):
+            req = urllib.request.Request(
+                url, headers={"Accept": "application/json", "User-Agent": "station-admin"})
+            with urllib.request.urlopen(req, timeout=10, context=context) as resp:
+                return resp.read(release.MAX_MANIFEST_BYTES + 1)
+        raw = release.fetch_manifest(fetcher)
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    if isinstance(raw, (bytes, bytearray)):
+        doc = json.loads(bytes(raw))
+        if not isinstance(doc, dict):
+            raise release.ManifestError("bad-format", "manifest")
+        return doc
+    raise release.ManifestError("bad-format", "manifest")
+
+
+def _cant_check(reason):
+    if reason == "expired":
+        return {"title": release.EXPIRED_TITLE, "message": release.EXPIRED_MESSAGE}
+    return {"title": release.EXPIRED_TITLE, "message": "Updates can't be checked right now."}
+
+
+def _store_check(available, cant, plan, station_only, relay_version):
+    prev = read_json(path("update-check.json"), {})
+    if not isinstance(prev, dict):
+        prev = {}
+    if relay_version is None:
+        relay_version = prev.get("relay_version") if _vt(prev.get("relay_version")) else None
+    write_json(path("update-check.json"), {
+        "available": available,
+        "cant_check": cant,
+        "plan": plan,
+        "station_only_allowed": bool(station_only),
+        "relay_version": relay_version,
+        "checked_at": int(now()),
+    })
+
+
+def run_update_check():
+    """Fetch the manifest (injected in tests) and cache the plan. No socket unless the fetcher opens one."""
+    try:
+        manifest = _load_manifest()
+        station = _station_ver() or "v0.0.0"
+        result = release.check_update(station, manifest, now=datetime.fromtimestamp(now(), timezone.utc))
+    except release.ManifestError as err:
+        reason = err.reason if err.reason in ("expired", "future", "bad-format", "fetch-failed") else "fetch-failed"
+        _store_check(None, _cant_check(reason), None, False, None)
+        _audit_update("update-check-expired" if reason == "expired" else "update-check-failed", reason if reason != "expired" else "-")
+        return
+    status = fetch_relay_status()
+    relay_v = status.get("version") if status else None
+    if result.reason == "expired":
+        _store_check(None, _cant_check("expired"), None, False, relay_v)
+        _audit_update("update-check-expired", "-")
+        return
+    available = result.version if result.update and _vt(result.version) else None
+    plan, station_only = None, False
+    if relay_v and _vt(station):
+        try:
+            planned = release.plan_update(station, relay_v, manifest)
+            plan = list(planned)
+            station_only = bool(planned.station_only_allowed)
+        except release.ManifestError:
+            plan = None
+    _store_check(available, None, plan, station_only, relay_v)
+    detail = result.version if _vt(result.version) else (result.reason or "-")
+    if detail is None:
+        detail = "-"
+    _audit_update("update-check", detail if isinstance(detail, str) else "-")
+
+
+def updates_view():
+    cache = read_json(path("update-check.json"), {})
+    if not isinstance(cache, dict):
+        cache = {}
+    try:
+        settings = release.load_settings(_settings_path())
+    except (OSError, ValueError):
+        settings = {"autocheck": False}
+    relay_v = cache.get("relay_version") if _vt(cache.get("relay_version")) else None
+    cant = cache.get("cant_check")
+    if not isinstance(cant, dict):
+        cant = None
+    plan = cache.get("plan") if isinstance(cache.get("plan"), list) else None
+    return {
+        "installed": {"station": version(), "relay": relay_v},
+        "available": cache.get("available") if _vt(cache.get("available")) else None,
+        "cant_check": cant,
+        "plan": plan,
+        "station_only_allowed": bool(cache.get("station_only_allowed")),
+        "autocheck": settings.get("autocheck") is True,
+        "history": recent_audit(20, "update"),
+    }
+
+
+def run_apply(version):
+    """Relay first (only {"version"}), then the station helper. A relay failure skips the station."""
+    manifest = _load_manifest()
+    station = _station_ver()
+    if station is None:
+        _audit_update("update-rejected", "bad-args")
+        return 400, {"error": "This station's version isn't a release."}
+    try:
+        checked = release.check_update(station, manifest, now=datetime.fromtimestamp(now(), timezone.utc))
+        station_decision = release.validate_update_request({"version": version}, station, manifest)
+    except release.ManifestError:
+        _audit_update("update-rejected", "bad-args")
+        return 400, {"error": "The update request isn't valid."}
+    if checked.reason == "expired":
+        _audit_update("update-check-expired", "-")
+        return 409, {"error": release.EXPIRED_MESSAGE}
+    if station_decision.reason == "not-in-manifest":
+        _audit_update("update-rejected", "not-in-manifest")
+        return 400, {"error": "That version isn't the release."}
+    if station_decision.reason == "bad-args":
+        _audit_update("update-rejected", "bad-args")
+        return 400, {"error": "The update request isn't valid."}
+    status = fetch_relay_status()
+    relay_v = status.get("version") if status else None
+    if not relay_v:
+        cache = read_json(path("update-check.json"), {})
+        relay_v = cache.get("relay_version") if isinstance(cache, dict) else None
+    relay_needs = True
+    if relay_v and _vt(relay_v):
+        relay_decision = release.validate_update_request({"version": version}, relay_v, manifest)
+        if relay_decision.reason == "not-in-manifest":
+            _audit_update("update-rejected", "not-in-manifest")
+            return 400, {"error": "That version isn't the release."}
+        relay_needs = bool(relay_decision.ok)
+    station_needs = bool(station_decision.ok)
+    if not relay_needs and not station_needs:
+        _audit_update("update-rejected", "downgrade")
+        return 400, {"error": "That version isn't newer."}
+    if relay_needs:
+        got = relay_admin_fetch("POST", "/admin/update", {"version": version})
+        if not got or got[0] != 200:
+            _audit_update("update-rejected", "relay-failed")
+            return 502, {"error": "The relay did not update. The station was not changed."}
+    if station_needs:
+        ok, out = helper("station-update", version, timeout=120)
+        if not ok:
+            detail = "bad-args" if isinstance(out, dict) and out.get("error") == "bad version" else "station-failed"
+            if detail not in _UPDATE_REASONS:
+                detail = "station-failed"
+            _audit_update("update-rejected", detail)
+            return 500, {"error": "The station update did not start."}
+    _audit_update("update-apply", version)
+    return 202, {"ok": True, "version": version}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "grok-station-admin"
     protocol_version = "HTTP/1.1"
@@ -1741,50 +2379,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200 if code == 202 else 409, {"ok": code == 202, "error": None if code == 202 else "The station is busy. Try again in a moment."})
         return self.send(404, {"error": "not found"})
 
-    # secrets (write-only)
+    # secrets: relay token, relay URL and the xAI key are not stored from this page
     def api_get_secrets(self, p, q, j):
-        m = secrets_meta()
-        ok, out = helper("secret-status")
-        live = out.get("secrets", {}) if ok else {}
-        res = {}
-        for name in ("relay_token",):
-            e = dict(m.get(name, {}))
-            if live.get(name):
-                e.update(set=live[name].get("set", False), last4=live[name].get("last4"))
-            res[name] = e
-        env = env_file("wake")
-        res["relay_url"] = {"value": env.get("GROK_RELAY_URL", "")}
-        res["xai_key"] = {"where": "Stored on the voice service computer, never on the station.",
-                          "set": None, "replace": False}
-        return self.send(200, res)
+        if p != "/api/secrets":
+            return self.send(404, {"error": "not found"})
+        return self.send(200, {})
 
     def api_post_secrets(self, p, q, j):
-        parts = p.split("/")  # /api/secrets/<name>[/test]
-        name = parts[3] if len(parts) > 3 else ""
-        if name == "relay_token":
-            val = j.get("value")
-            url = j.get("url")
-            if val is not None and (not isinstance(val, str) or not 16 <= len(val) <= 200 or not re.fullmatch(r"[\x21-\x7e]+", val)):
-                return self.send(400, {"error": "That doesn't look like a station token."})
-            if url is not None and not re.fullmatch(r"wss://[A-Za-z0-9.-]{1,253}(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?", str(url)):
-                return self.send(400, {"error": "The relay address must start with wss://."})
-            test_only = len(parts) > 4 and parts[4] == "test"
-            ok, out = helper("relay-test", stdin={"token": val, "url": url}, timeout=20)
-            note_secret(name, test=ok)
-            if not ok:
-                return self.send(400, {"ok": False, "error": out.get("error", "Couldn't reach the voice service."), "checks": out.get("checks")})
-            if test_only or (val is None and url is None):
-                return self.send(200, {"ok": True, "checks": out.get("checks")})
-            ok2, out2 = helper("relay-save", stdin={"token": val, "url": url})
-            if not ok2:
-                return self.send(500, {"error": "Tested OK but couldn't save."})
-            if val:
-                note_secret(name, value=val)
-            if not busy():
-                helper("restart", "wake")
-            return self.send(200, {"ok": True, "checks": out.get("checks"), "saved": True})
-        if name == "xai_key":
-            return self.send(409, {"error": "The xAI key lives on the voice service computer. Change it there (relay secrets)."})
         return self.send(404, {"error": "not found"})
 
     # network
@@ -2304,16 +2905,9 @@ class Handler(BaseHTTPRequestHandler):
                                  headers=[("Content-Disposition", f'attachment; filename="{unit}.log"')])
             return self.send(200, {"lines": out.splitlines()[-500:]})
         if p == "/api/system/update":
-            try:
-                req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/commits/main",
-                                             headers={"Accept": "application/vnd.github+json", "User-Agent": "grok-station"})
-                with urllib.request.urlopen(req, timeout=8) as r:
-                    c = json.loads(r.read(500000))
-                latest = {"sha": c["sha"], "date": c["commit"]["committer"]["date"], "message": c["commit"]["message"].splitlines()[0][:120]}
-            except Exception:
-                return self.send(503, {"error": "Can't check for updates right now."})
-            cur = version()
-            return self.send(200, {"current": cur, "latest": latest, "update_ready": not latest["sha"].startswith(cur.split("-")[-1][:7]) if cur != "dev" else True})
+            return self.send(404, {"error": "not found"})
+        if p != "/api/system":
+            return self.send(404, {"error": "not found"})
         return self.send(200, {"version": version(), "health": health(), "services": services(), "network": net_summary(),
                                "tls": {**tls_info(), "url": admin_url()}})
 
@@ -2330,15 +2924,166 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"error": "A conversation or enrollment is running.", "can_force": True})
             ok, _ = helper("reboot")
             return self.send(202 if ok else 500, {"ok": ok})
-        if p == "/api/system/update":
-            sha = str(j.get("sha", ""))
-            if not re.fullmatch(r"[0-9a-f]{40}", sha):
-                return self.send(400, {"error": "bad version"})
-            if busy():
-                return self.send(409, {"error": "A conversation or enrollment is running. Try again when it ends."})
-            ok, out = helper("update", sha, timeout=300)
-            return self.send(202 if ok else 500, {"ok": ok} if ok else {"error": out.get("error", "Update failed; the old version is still running.")})
         return self.send(404, {"error": "not found"})
+
+    # -- voice relay pairing
+    def api_get_relay(self, p, q, j):
+        if p != "/api/relay":
+            return self.send(404, {"error": "not found"})
+        if PAIR_LISTENER is not None:
+            sync_pair_port()
+        status = fetch_relay_status()
+        return self.send(200, {
+            "state": relay_state_name(status),
+            "pairing": pairing_public(),
+            "relay": status,
+            "audit": recent_audit(20),
+        })
+
+    def api_post_relay(self, p, q, j):
+        if p == "/api/relay/pair/start":
+            return self._pair_start(j)
+        if p == "/api/relay/pair/new-code":
+            return self._pair_new_code(j)
+        if p == "/api/relay/pair/cancel":
+            return self._pair_cancel(j)
+        if p == "/api/relay/pair/confirm":
+            return self._pair_confirm(j)
+        if p == "/api/relay/unpair":
+            return self._unpair(j)
+        return self.send(404, {"error": "not found"})
+
+    def _pair_start(self, j):
+        if not self.need_password(j, always=True):
+            return
+        try:
+            ensure_pair()
+        except pairing.PairingError:
+            return self.send(503, {"error": "The station certificate isn't ready."})
+        code = PAIR_WINDOW.open(now())
+        if not code:
+            return self.send(409, {"error": "Pairing is already open."})
+        sync_pair_port()
+        return self.send(200, {
+            "state": "pairing",
+            "pairing": pairing_public(code),
+            "relay": None,
+            "audit": recent_audit(20),
+        })
+
+    def _pair_new_code(self, j):
+        if not self.need_password(j, always=False):
+            return
+        if PAIR_WINDOW is None:
+            return self.send(409, {"error": "Pairing isn't open."})
+        code = PAIR_WINDOW.new_code()
+        if not code:
+            return self.send(409, {"error": "Pairing isn't open."})
+        return self.send(200, {"state": "pairing", "pairing": pairing_public(code), "audit": recent_audit(20)})
+
+    def _pair_cancel(self, j):
+        if not self.need_password(j, always=False):
+            return
+        if PAIR_WINDOW is None or not PAIR_WINDOW.cancel():
+            return self.send(409, {"error": "Pairing isn't open."})
+        sync_pair_port()
+        return self.send(200, {"ok": True})
+
+    def _pair_confirm(self, j):
+        if not self.need_password(j, always=False):
+            return
+        if PAIR_WINDOW is None or PAIR_CA is None or PAIR_LISTENER is None:
+            return self.send(409, {"error": "Nothing to confirm."})
+        snap = PAIR_WINDOW.snapshot()
+        shown = snap.get("relay_fingerprint")
+        hexfp = "".join(shown.split()).lower() if isinstance(shown, str) else ""
+        if not re.fullmatch(r"[0-9a-f]{64}", hexfp):
+            hexfp = ""
+        pending_id = PAIR_WINDOW._pending_id
+        with PAIR_LISTENER.lock:
+            issued = PAIR_WINDOW.confirm_match()
+        if not issued:
+            return self.send(409, {"error": "Nothing to confirm."})
+        cert, _serial8 = issued
+        der = cert.public_bytes(serialization.Encoding.DER)
+        match = re.search(rb"relay-([0-9a-f]{16})", der)
+        pid = pending_id if isinstance(pending_id, str) and re.fullmatch(r"[0-9a-f]{16}", pending_id) else ""
+        if not pid and match:
+            pid = match.group(1).decode("ascii")
+        if pid and PAIR_ISSUANCE is not None:
+            cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+            ca_pem = PAIR_CA.cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
+            PAIR_ISSUANCE.put(pid, cert_pem, ca_pem)
+        expiry = cert.not_valid_after_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            key, local = PAIR_CA.issue_local_client()
+            save_paired(format(cert.serial_number, "x"), expiry, hexfp, key, local, PAIR_CA.cert)
+        except OSError:
+            sync_pair_port()
+            return self.send(500, {"error": "The certificate was signed but could not be stored."})
+        sync_pair_port()
+        return self.send(200, {"ok": True})
+
+    def _unpair(self, j):
+        if not self.need_password(j, always=True):
+            return
+        rec = _paired_record()
+        if not isinstance(rec, dict) or not rec.get("serial"):
+            return self.send(409, {"error": "No relay is paired."})
+        try:
+            load_ca().revoke(rec["serial"])
+        except pairing.PairingError:
+            return self.send(409, {"error": "No relay is paired."})
+        drop_paired_files()
+        if PAIR_WINDOW is not None and PAIR_WINDOW.phase in ("open", "pending"):
+            PAIR_WINDOW.cancel()
+            sync_pair_port()
+        return self.send(200, {"ok": True})
+
+    # -- updates
+    def api_get_updates(self, p, q, j):
+        if p != "/api/updates":
+            return self.send(404, {"error": "not found"})
+        return self.send(200, updates_view())
+
+    def api_post_updates(self, p, q, j):
+        if p == "/api/updates/check":
+            if not self.need_password(j, always=False):
+                return
+            run_update_check()
+            return self.send(200, updates_view())
+        if p == "/api/updates/apply":
+            if not self.need_password(j, always=False):
+                return
+            if not isinstance(j, dict) or not set(j) <= {"version", "password"} or "version" not in j:
+                _audit_update("update-rejected", "bad-args")
+                return self.send(400, {"error": "The update request isn't valid."})
+            version_s = j.get("version")
+            if not isinstance(version_s, str) or not _VERSION_RE.fullmatch(version_s):
+                _audit_update("update-rejected", "bad-args")
+                return self.send(400, {"error": "The update request isn't valid."})
+            try:
+                code, body = run_apply(version_s)
+            except release.ManifestError:
+                _audit_update("update-check-failed", "fetch-failed")
+                return self.send(503, {"error": "Updates can't be checked right now."})
+            return self.send(code, body)
+        return self.send(404, {"error": "not found"})
+
+    def api_put_updates(self, p, q, j):
+        if p != "/api/updates/autocheck":
+            return self.send(404, {"error": "not found"})
+        if not self.need_password(j, always=False):
+            return
+        on = j.get("on") if isinstance(j, dict) else None
+        if not isinstance(on, bool):
+            return self.send(400, {"error": "Say whether checking is on."})
+        try:
+            release.set_autocheck(_settings_path(), on)
+        except (OSError, ValueError):
+            return self.send(500, {"error": "Couldn't save that."})
+        _audit_update("update-autocheck", "on" if on else "off")
+        return self.send(200, {"ok": True, "autocheck": on})
 
 
 def services():

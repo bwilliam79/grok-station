@@ -35,6 +35,8 @@ WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after fai
 FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE, STATUS_EV = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3, pygame.USEREVENT + 4
+PAIRING_EV = pygame.USEREVENT + 5
+PAIRING = {"fingerprint": None}  # 64 hex digits while a relay pairing window is open; None hides the screen
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
 CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
@@ -191,13 +193,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._state()
         if not ipaddress.ip_address(self.client_address[0].removeprefix("::ffff:")).is_private:
             return self._reply(403, {"error": "lan only"})
-        if self.path not in ("/show", "/enroll"):
+        if self.path not in ("/show", "/enroll", "/pairing"):
             return self._reply(404, {"error": "not found"})
         auth = self.headers.get("Authorization", "")
         if not TOKEN or not hmac.compare_digest(auth.encode(), f"Bearer {TOKEN}".encode()):
             return self._reply(401, {"error": "unauthorized"})
         if self.path == "/enroll":
             return self._enroll()
+        if self.path == "/pairing":
+            return self._pairing()
         try:
             n = int(self.headers.get("Content-Length", 0))
             if n > 8192:
@@ -238,6 +242,20 @@ class Handler(BaseHTTPRequestHandler):
             code, out = 503, {"error": "wake listener unreachable"}
         print(f"enroll request from {self.client_address[0]}: {code}", flush=True)
         self._reply(code, out)
+
+    def _pairing(self):
+        """LAN POST /pairing, same token as /show. {fingerprint: 64 hex} or {clear: true}."""
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            if n > 1024:
+                return self._reply(413, {"error": "too large"})
+            j = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return self._reply(400, {"error": "bad json"})
+        if not apply_pairing(j):
+            return self._reply(400, {"error": "bad fingerprint"})
+        pygame.event.post(pygame.event.Event(PAIRING_EV))
+        self._reply(200, {"ok": True})
 
     def _state(self):
         """Localhost-only, no token: the wake listener on the same Pi drives voice states.
@@ -2106,6 +2124,88 @@ def read_cert(now=None):
     return None
 
 
+def pairing_font_px(se):
+    """At least 28 px on an 800x480 screen, and larger as the short side grows."""
+    return max(28, int(round(min(se, 2160) * 28 / 480)))
+
+
+def _bundled_mono():
+    directory = os.path.join(ASSETS, "fonts")
+    if not os.path.isdir(directory):
+        return None
+    for name in sorted(os.listdir(directory)):
+        low = name.lower()
+        if low.endswith((".ttf", ".otf")) and "mono" in low:
+            return os.path.join(directory, name)
+    return None
+
+
+_pair_fonts = {}
+
+
+def pairing_mono(px):
+    """A bundled monospace face if the repo has one, otherwise pygame's monospace."""
+    px = max(28, int(px))
+    cached = _pair_fonts.get(px)
+    if cached is not None:
+        return cached
+    bundled = _bundled_mono()
+    chosen = None
+    size = px
+    while size <= px + 48:
+        chosen = pygame.font.Font(bundled, size) if bundled else pygame.font.SysFont("monospace", size)
+        if chosen.get_height() >= px:
+            break
+        size += 2
+    _pair_fonts[px] = chosen
+    return chosen
+
+
+def pairing_lines(fp):
+    """4 lines x 4 groups of 4 hex digits. None when `fp` is not 64 hex digits."""
+    text = str(fp or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", text):
+        return None
+    groups = [text[i:i + 4].upper() for i in range(0, 64, 4)]
+    return [" ".join(groups[i:i + 4]) for i in range(0, 16, 4)]
+
+
+def apply_pairing(doc):
+    """Remember the fingerprint to draw, or clear it. The code itself is never stored."""
+    if not isinstance(doc, dict):
+        return False
+    if doc.get("clear") is True:
+        PAIRING["fingerprint"] = None
+        return True
+    fp = doc.get("fingerprint")
+    if not isinstance(fp, str) or pairing_lines(fp) is None:
+        return False
+    PAIRING["fingerprint"] = fp.strip().lower()
+    return True
+
+
+def draw_pairing(surf, L, now, fp):
+    """Heading plus the full station fingerprint. Lines are not shortened to fit."""
+    surf.fill(BG)
+    w, h = surf.get_size()
+    se = min(w, h)
+    topbar(surf, se, "Relay", now)
+    lines = pairing_lines(fp) or []
+    px = pairing_font_px(se)
+    head_px = max(28, int(round(se * 32 / 480)))
+    head = font("display", head_px).render("Check this matches", True, TEXT)
+    mono = pairing_mono(px)
+    rendered = [mono.render(line, True, TEXT) for line in lines]
+    gap = max(6, round(se * 8 / 480))
+    block = head.get_height() + gap + sum(row.get_height() + gap for row in rendered)
+    y = max(round(0.18 * h), (h - block) // 2)
+    surf.blit(head, ((w - head.get_width()) // 2, y))
+    y += head.get_height() + gap
+    for row in rendered:
+        surf.blit(row, ((w - row.get_width()) // 2, y))
+        y += row.get_height() + gap
+
+
 def draw_cert(surf, L, now, d):
     """New admin page certificate: the URL and the full SHA-256 fingerprint to compare with the browser's."""
     surf.fill(BG)
@@ -2239,6 +2339,12 @@ def main():
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
+        pf = PAIRING.get("fingerprint")
+        if pf:
+            LAST_TIMER_RECT = None
+            disp.show(draw_pairing, now, pf, fade=fade, snapshot=snapshot)
+            last_key = ("pairing", now.tm_min, pf)
+            return
         cd = setup.get("cert")
         if cd and not msg and not thinking():
             disp.show(draw_cert, now, cd, fade=fade, snapshot=snapshot)
@@ -2345,7 +2451,12 @@ def main():
                 setup["cert"] = cd
                 paint(fade=True)
                 print(f"cert screen: {'on' if cd else 'off'}", flush=True)
-        if setup["doc"] or setup.get("cert"):
+            pf = PAIRING.get("fingerprint")
+            if pf != setup.get("pairing"):
+                setup["pairing"] = pf
+                paint(fade=True)
+                print(f"pairing screen: {'on' if pf else 'off'}", flush=True)
+        if setup["doc"] or setup.get("cert") or PAIRING.get("fingerprint"):
             wait = min(wait, 2.0)
         if TIMER_CHIPS and not setup["doc"] and not (last_key and last_key[0] == "night"):
             delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss and the ringing pulse step together
@@ -2402,6 +2513,8 @@ def main():
                 paint(snapshot=False)
         elif ev.type == STATUS_EV:
             paint(snapshot=False)
+        elif ev.type == PAIRING_EV:
+            paint(fade=True)
         elif ev.type == pygame.QUIT:
             break
         elif ev.type == pygame.NOEVENT:
@@ -2478,6 +2591,7 @@ def demo(out, size):
     shots.append(("setup-hotspot", draw_hotspot, (now, dict(sd, mode="hotspot", ssid="grok-station-7F3A", password="hearth-4821",
                                                             url="https://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr, fingerprint=sd["fingerprint"]))))
     shots.append(("admin-cert", draw_cert, (now, {"fingerprint": sd["fingerprint"], "url": "https://grok-station.local"})))
+    shots.append(("pairing-check", draw_pairing, (now, "0123456789abcdef" * 4)))
     shots.append(("t1-confirm", draw_session, (now, {"from": "Finn", "heard": "add|grocery|0", "text": "oat milk and two lemons", "state": "confirm"})))
     for name, painter, args in shots:
         disp.screen.fill(BG)

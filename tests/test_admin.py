@@ -94,8 +94,13 @@ def setup_doc():
 def reset_state():
     for d in (os.environ["ADMIN_STATE_DIR"], os.environ["ADMIN_RUN_DIR"]):
         for n in os.listdir(d):
-            os.unlink(os.path.join(d, n))
+            p = os.path.join(d, n)
+            if os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+            else:
+                os.unlink(p)
     ga.AUTH.__init__()
+    ga.reset_pair_runtime()
 
 
 GOOD = "kitchen table lamp 42"
@@ -246,36 +251,27 @@ class LanOnly(unittest.TestCase):
 
 
 class Secrets(unittest.TestCase):
-    def test_write_only_last4(self):
+    def test_relay_token_and_xai_key_routes_are_gone(self):
         c = signed_in()
         tok = "abcdefghijklmnopqrstuvwxyz0123456789-SECRET"
-        st, j = c.req("POST", "/api/secrets/relay_token", {"value": tok, "url": "wss://relay.example:8443/"})
-        self.assertEqual(st, 200, j)
+        st, j = c.req("POST", "/api/secrets/relay_token", {"value": tok, "url": "wss://relay.example.invalid:8443/"})
+        self.assertEqual(st, 404, j)
+        st, j = c.req("POST", "/api/secrets/xai_key", {"value": "xai-123"})
+        self.assertEqual(st, 404, j)
         st, j = c.req("GET", "/api/secrets")
-        s = json.dumps(j)
-        self.assertNotIn(tok, s); self.assertNotIn("SECRET", s)
-        self.assertEqual(j["relay_token"]["last4"], "wxyz")  # live last4 from the helper
-        self.assertTrue(j["relay_token"]["set"])
-        meta = open(os.path.join(os.environ["ADMIN_STATE_DIR"], "secrets.json")).read()
-        self.assertNotIn(tok, meta)
-        self.assertIn("CRET", meta)  # last 4 only
+        self.assertEqual(st, 200)
+        self.assertNotIn("relay_token", j)
+        self.assertNotIn("relay_url", j)
+        self.assertNotIn("xai_key", j)
+        self.assertNotIn(tok, json.dumps(j))
+        self.assertFalse(os.path.exists(os.path.join(os.environ["ADMIN_STATE_DIR"], "secrets.json")))
 
-    def test_bad_token_not_saved(self):
+    def test_removed_save_does_not_call_helper(self):
         c = signed_in()
         open(os.environ["FAKE_LOG"], "w").close()
-        st, j = c.req("POST", "/api/secrets/relay_token", {"value": "bad-token-bad-token-1"})
-        self.assertEqual(st, 400)
-        self.assertIn("didn't accept", j["error"])
-        log = [json.loads(l)["argv"][0] for l in open(os.environ["FAKE_LOG"])]
-        self.assertNotIn("relay-save", log)  # old token keeps working
-
-    def test_validation_and_xai_key_lives_on_relay(self):
-        c = signed_in()
-        self.assertEqual(c.req("POST", "/api/secrets/relay_token", {"value": "short"})[0], 400)
-        self.assertEqual(c.req("POST", "/api/secrets/relay_token", {"url": "http://evil.example/"})[0], 400)
-        st, j = c.req("POST", "/api/secrets/xai_key", {"value": "xai-123"})
-        self.assertEqual(st, 409)
-        self.assertIn("voice service computer", c.req("GET", "/api/secrets")[1]["xai_key"]["where"])
+        self.assertEqual(c.req("POST", "/api/secrets/relay_token", {"value": "bad-token-bad-token-1"})[0], 404)
+        log = open(os.environ["FAKE_LOG"]).read()
+        self.assertNotIn("relay-save", log)
 
     def test_no_secrets_in_request_log(self):
         out = []
@@ -335,11 +331,12 @@ class WakeWordsAndSpeakers(unittest.TestCase):
 
 
 class SystemAndSettings(unittest.TestCase):
-    def test_reboot_needs_confirm_update_needs_sha(self):
+    def test_reboot_needs_confirm_and_old_update_is_gone(self):
         c = signed_in()
         self.assertEqual(c.req("POST", "/api/system/reboot", {})[0], 400)
         self.assertEqual(c.req("POST", "/api/system/reboot", {"confirm": True})[0], 202)
-        self.assertEqual(c.req("POST", "/api/system/update", {"sha": "main; rm -rf /"})[0], 400)
+        self.assertEqual(c.req("GET", "/api/system/update")[0], 404)
+        self.assertEqual(c.req("POST", "/api/system/update", {"sha": "a" * 40})[0], 404)
 
     def test_busy_guard(self):
         c = signed_in()
@@ -348,7 +345,7 @@ class SystemAndSettings(unittest.TestCase):
         try:
             self.assertEqual(c.req("POST", "/api/system/restart-voice")[0], 409)
             self.assertEqual(c.req("POST", "/api/system/reboot", {"confirm": True})[0], 409)
-            self.assertEqual(c.req("POST", "/api/system/update", {"sha": "a" * 40})[0], 409)
+            self.assertEqual(c.req("POST", "/api/system/update", {"sha": "a" * 40})[0], 404)
         finally:
             ga.wake = old
 

@@ -156,19 +156,82 @@ def relay_test():
     out({"ok": True, "checks": checks})
 
 
-def relay_save():
+# Fixed pairing firewall. No address, port, or other value is taken from the request.
+PAIR_FW_PORT = 8443
+PAIR_FW_V4 = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
+PAIR_FW_V6 = ("fc00::/7", "fe80::/10")
+_STATION_VERSION = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def pair_fw_ruleset():
+    """nftables text: accept tcp/8443 only from local ranges, drop every other source."""
+    v4 = ", ".join(PAIR_FW_V4)
+    v6 = ", ".join(PAIR_FW_V6)
+    return (
+        "table inet grok_pair {\n"
+        "\tchain input {\n"
+        "\t\ttype filter hook input priority 0; policy accept;\n"
+        f"\t\ttcp dport {PAIR_FW_PORT} ip saddr {{ {v4} }} accept\n"
+        f"\t\ttcp dport {PAIR_FW_PORT} ip6 saddr {{ {v6} }} accept\n"
+        f"\t\ttcp dport {PAIR_FW_PORT} drop\n"
+        "\t}\n"
+        "}\n"
+    )
+
+
+def pair_fw_open():
+    """Install the fixed table. Stdin is ignored."""
+    rules = pair_fw_ruleset()
+    run("nft", "delete", "table", "inet", "grok_pair")
+    p = subprocess.run(["nft", "-f", "-"], input=rules.encode(), capture_output=True, timeout=15)
+    if p.returncode:
+        fail("firewall")
+    out({"ok": True})
+
+
+def pair_fw_close():
+    """Remove the pairing table. Stdin is ignored. Missing table is fine."""
+    run("nft", "delete", "table", "inet", "grok_pair")
+    out({"ok": True})
+
+
+def station_update(version):
+    """Stage a station update. The only argument is a vX.Y.Z version."""
+    if not isinstance(version, str) or not _STATION_VERSION.fullmatch(version):
+        fail("bad version")
+    out({"ok": True, "version": version})
+
+
+def display_pairing():
+    """POST /pairing on the local station display. The token is not echoed."""
     j = stdin_json()
-    upd = {}
-    if j.get("token"):
-        if not re.fullmatch(r"[\x21-\x7e]{16,200}", str(j["token"])) or '"' in j["token"]:
-            fail("bad token")
-        upd["GROK_RELAY_TOKEN"] = j["token"]
-    if j.get("url"):
-        if not re.fullmatch(r"wss://[A-Za-z0-9.-]{1,253}(:\d{1,5})?(/[A-Za-z0-9._~/-]*)?", str(j["url"])):
-            fail("bad url")
-        upd["GROK_RELAY_URL"] = j["url"]
-    if upd:
-        env_write("wake", upd)
+    if j.get("clear") is True:
+        body = {"clear": True}
+    else:
+        fp = j.get("fingerprint")
+        if not isinstance(fp, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", fp):
+            fail("bad fingerprint")
+        body = {"fingerprint": fp.lower()}
+    env = env_read("display")
+    token = env.get("GROK_STATION_TOKEN", "")
+    if not token or len(token) > 200 or any(c in token for c in "\r\n"):
+        fail("no display token")
+    port = env.get("GROK_STATION_PORT", "8787")
+    if not re.fullmatch(r"[0-9]{2,5}", str(port)) or not 1 <= int(port) <= 65535:
+        port = "8787"
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%s/pairing" % port,
+        data=data,
+        headers={"Content-Type": "application/json", "Authorization": "Bearer " + token},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            if r.status != 200:
+                fail("display")
+    except Exception:
+        fail("display")
     out({"ok": True})
 
 
@@ -360,8 +423,14 @@ def main():
         secret_status()
     if cmd == "relay-test":
         relay_test()
-    if cmd == "relay-save":
-        relay_save()
+    if cmd == "pair-fw-open" and len(a) == 1:
+        pair_fw_open()
+    if cmd == "pair-fw-close" and len(a) == 1:
+        pair_fw_close()
+    if cmd == "station-update" and len(a) == 2:
+        station_update(a[1])
+    if cmd == "display-pairing" and len(a) == 1:
+        display_pairing()
     if cmd == "net-status":
         net_status()
     if cmd == "wifi-scan":
