@@ -266,6 +266,8 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             body = await req.json()
             seen["bodies"].append(body)
             seen["auths"].append(req.headers.get("Authorization", ""))
+            pend_path = os.path.join(self.relay.PENDING_DIR, body["request_id"] + ".json")
+            seen.setdefault("pending", []).append(json.load(open(pend_path)))
             if mode == "deny":
                 return web.Response(status=401)
             if mode == "reply":
@@ -315,10 +317,20 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(body["answered_in_s"], 0)
             self.assertIsNone(body["error"])
             self.assertEqual(len(seen["bodies"]), 1)
-            q = seen["bodies"][0]["question"]
-            self.assertIn(self.relay.TEST_QUESTION, q)
-            self.assertIn(self.handoff.BEGIN, q)
-            self.assertEqual(seen["bodies"][0]["persona"], "jules")
+            body0 = seen["bodies"][0]
+            self.assertEqual(set(body0), {"source", "v", "request_id", "persona", "test"})
+            self.assertEqual(body0["v"], 2)
+            self.assertIs(body0["test"], True)
+            for dropped in ("question", "pii_mode", "reply_by", "tier_max"):
+                self.assertNotIn(dropped, body0)
+            pend = seen["pending"][0]
+            self.assertEqual(pend["question"], self.relay.TEST_QUESTION)
+            self.assertIs(pend["test"], True)
+            self.assertIs(pend["pii_mode"], True)
+            self.assertEqual(pend["tier_max"], 0)
+            self.assertTrue(pend["reply_by"])
+            self.assertIsInstance(pend["expires_ms"], int)
+            self.assertEqual(body0["persona"], "jules")
             self.assertEqual(seen["auths"], ["Bearer " + KEY1])
             limits = json.load(open(self.relay._limits.path))
             self.assertEqual(limits["bots"]["jules"]["n"], 1)             # a test counts like a handoff

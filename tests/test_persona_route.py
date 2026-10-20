@@ -40,14 +40,15 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.mkdtemp()
         self.snap = {k: getattr(relay, k) for k in (
             "HANDOFF", "URL", "log", "tts_pcm", "VOICES", "PERSONAS_FILE", "WEBHOOKS_FILE",
-            "PENDING_DIR", "REPLIES_DIR", "STILL_AFTER", "REPLY_WAIT", "ALERT_DIR", "_limits")}
+            "PENDING_DIR", "REPLIES_DIR", "STILL_AFTER", "REPLY_WAIT", "ALERT_DIR", "_limits",
+            "MINTED_FILE")}
         self.personas_snap = dict(relay._personas)
         self.hooks_snap = {"mtime": relay._hooks.get("mtime"), "map": dict(relay._hooks.get("map") or {})}
         self.alerted_snap = set(relay.alerted)
         self.busy = relay.stats["busy"]
         self.addCleanup(self._restore)
 
-        self.lines, self.tts, self.calls = [], [], []
+        self.lines, self.tts, self.calls, self.pendings = [], [], [], []
         self.reply_text, self.reply_delay, self.mode = TACOS, 0, "reply"
         self.alert_dir = os.path.join(self.tmp, "alerts")
         os.makedirs(self.alert_dir)
@@ -84,6 +85,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay._personas.update(self.personas_snap)
         relay._hooks.clear()
         relay._hooks.update(self.hooks_snap)
+        relay._policy.update(mtime=None, pii=True)
         relay.alerted.clear()
         relay.alerted.update(self.alerted_snap)
         relay.stats["busy"] = self.busy
@@ -97,10 +99,14 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(relay.lint("see example.com", []))
         self.assertIsNotNone(relay.lint("order 123456", []))
         self.assertIn("kitchen timers", relay.SAFETY)
-        self.assertIn("kitchen timers", relay.SAFETY_NORMAL)
-        self.assertIn("shared family room", relay.SAFETY)
-        self.assertNotIn("shared family room", relay.SAFETY_NORMAL)
-        self.assertIn("don't read out secrets, passwords, codes, account numbers or exact addresses", relay.SAFETY_NORMAL)
+        self.assertIn("don't read out passwords, keys, codes, SSNs or card numbers", relay.SAFETY)
+        self.assertIn("personal details like addresses, phone numbers or emails", relay.SAFETY)
+        off = relay.safety_text(False)
+        self.assertIn("kitchen timers", off)
+        self.assertIn("don't read out passwords, keys, codes, SSNs or card numbers", off)
+        self.assertNotIn("personal details", off)
+        self.assertNotIn("shared family room", relay.SAFETY)
+        self.assertNotIn("shared family room", off)
         roster = {"jules": {"name": "Jules", "aliases": []}, "hank": {"name": "Hank", "aliases": ["Henry"]}}
         self.assertEqual(relay.addressed_persona(ASK_JULES, roster), ("jules", DINNER))
         self.assertEqual(relay.addressed_persona(DINNER, roster), (None, None))
@@ -142,6 +148,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         async def hook(req):
             body = await req.json()
             self.calls.append(body)
+            pend_path = os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")
+            if os.path.isfile(pend_path):
+                self.pendings.append(json.load(open(pend_path)))
             if self.mode == "silent":
                 return web.json_response({"ok": True})
             pend = json.load(open(os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")))
@@ -289,7 +298,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updates[0]["turn_detection"],
                          {"type": "server_vad", "create_response": False, "interrupt_response": True})
         self.assertEqual(updates[0]["voice"], "ara")
-        self.assertIn("shared family room", updates[0]["instructions"])
+        self.assertIn("don't read out passwords, keys, codes, SSNs or card numbers", updates[0]["instructions"])
+        self.assertIn("personal details like addresses, phone numbers or emails", updates[0]["instructions"])
+        self.assertNotIn("shared family room", updates[0]["instructions"])
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
         self.assertEqual(replies[0], "Asking Jules\u2026")
@@ -300,8 +311,15 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["binaries"][0], b"TTS:" + "Asking Jules\u2026".encode())
         self.assertEqual(out["binaries"][-1], b"TTS:" + TACOS.encode())
         self.assertEqual(len(self.calls), 1)  # the tool call must not ask a second time
-        self.assertEqual(self.calls[0]["question"], f"{handoff.BEGIN}\n{DINNER}\n{handoff.END}")
+        self.assertEqual(set(self.calls[0]), {"source", "v", "request_id", "persona"})
+        self.assertEqual(self.calls[0]["v"], 2)
+        self.assertNotIn("question", self.calls[0])
+        self.assertEqual(self.pendings[0]["question"], DINNER)
+        self.assertIs(self.pendings[0]["pii_mode"], True)
+        self.assertEqual(self.pendings[0]["tier_max"], 0)
+        self.assertIs(self.pendings[0]["test"], False)
         self.assertNotIn(TOOL_Q, json.dumps(self.calls))
+        self.assertNotIn(TOOL_Q, json.dumps(self.pendings))
         self.assertEqual([e["text"] for e in out["events"] if e["type"] == "heard"], [DINNER])
         self.assertTrue(any(e.get("type") == "handoff_wait" and e.get("name") == "Jules" for e in out["events"]))
         self.assertTrue(any(e.get("type") == "handoff_done" for e in out["events"]))
@@ -323,32 +341,48 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"])
 
-    async def test_guest_rejects_a_factual_reply(self):
-        self.reply_text = BEARS
-        out = await self.drive(DINNER, persona="jules")  # no t1: guest on, fail closed
-        self._assert_routed_silence(out)
-        self.assertEqual(self._replies(out["events"]),
-                         ["Asking Jules\u2026", relay.handoff_line("Jules", "reject")])
-        self.assertNotIn(BEARS, json.dumps(out["events"]))
-        self.assertTrue(any("verdict=reject (lint:money)" in l for l in self.lines))
-        self._quiet(BEARS, "$85", DINNER, TOKEN, out["url"])
+    def _set_pii(self, on):
+        relay.MINTED_FILE = os.path.join(self.tmp, "minted", "voice-tokens.json")
+        relay._policy.update(mtime=None, pii=True)
+        relay.write_policy(bool(on))
 
-    async def test_normal_mode_speaks_the_factual_reply(self):
+    async def test_pii_on_speaks_a_factual_reply_and_blocks_email(self):
+        """Guest mode is gone. A factual reply is spoken. An email is blocked only because pii_mode is on."""
         self.reply_text = BEARS
-        out = await self.drive(DINNER, persona="jules", t1={"guest": False})
-        updates = self._updates(out["upstream"])
-        self.assertFalse(updates[0]["turn_detection"]["create_response"])
-        self.assertIn("don't read out secrets, passwords, codes", updates[0]["instructions"])
-        self.assertNotIn("shared family room", updates[0]["instructions"])
+        out = await self.drive(DINNER, persona="jules")
         self._assert_routed_silence(out)
         self.assertEqual(self._replies(out["events"])[-1], BEARS)
-        self.assertEqual(self.tts[-1], (BEARS, "ara"))
-        self.assertTrue(any("verdict=spoken" in l for l in self.lines))
-        self._quiet(BEARS, DINNER, TOKEN, out["url"])
+        self.assertFalse(any("lint:" in l for l in self.lines))
+        self._quiet(BEARS, "$85", DINNER, TOKEN, out["url"])
+        relay._limits = handoff.Limits(os.path.join(self.tmp, "limits-email.json"), relay.today)
+        self.reply_text = "write ada@example.com please"
+        self.lines.clear()
+        out = await self.drive(DINNER, persona="jules")
+        self._assert_routed_silence(out)
+        self.assertEqual(self._replies(out["events"])[-1], relay.handoff_line("Jules", "reject"))
+        self.assertNotIn("ada@example.com", json.dumps(out["events"]))
+        self.assertTrue(any("verdict=reject (lint:email)" in l for l in self.lines))
+        self._quiet("ada@example.com", DINNER, TOKEN, out["url"])
 
-    async def test_normal_mode_still_rejects_a_secret(self):
+    async def test_pii_off_speaks_email_and_drops_the_personal_clause(self):
+        self._set_pii(False)
+        self.reply_text = "write ada@example.com please"
+        out = await self.drive(DINNER, persona="jules")
+        updates = self._updates(out["upstream"])
+        self.assertFalse(updates[0]["turn_detection"]["create_response"])
+        self.assertIn("don't read out passwords, keys, codes, SSNs or card numbers", updates[0]["instructions"])
+        self.assertNotIn("personal details", updates[0]["instructions"])
+        self.assertNotIn("shared family room", updates[0]["instructions"])
+        self._assert_routed_silence(out)
+        self.assertEqual(self._replies(out["events"])[-1], "write ada@example.com please")
+        self.assertTrue(any("verdict=spoken" in l for l in self.lines))
+        self.assertIs(self.pendings[0]["pii_mode"], False)
+        self._quiet("ada@example.com", DINNER, TOKEN, out["url"])
+
+    async def test_pii_off_still_rejects_a_secret(self):
+        self._set_pii(False)
         self.reply_text = SECRET
-        out = await self.drive("tell me the code", persona="jules", t1={"guest": False})
+        out = await self.drive("tell me the code", persona="jules")
         self._assert_routed_silence(out)
         self.assertEqual(self._replies(out["events"])[-1], relay.handoff_line("Jules", "reject"))
         self.assertNotIn(SECRET, json.dumps(out["events"]))
@@ -381,8 +415,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._replies(out["events"])[0], "Asking Jules\u2026")
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self.assertEqual(len(self.calls), 1)
-        self.assertEqual(self.calls[0]["question"], f"{handoff.BEGIN}\n{DINNER}\n{handoff.END}")
+        self.assertNotIn("question", self.calls[0])
         self.assertEqual(self.calls[0]["persona"], "jules")
+        self.assertEqual(self.pendings[0]["question"], DINNER)
         self.assertTrue(any(l == "persona route -> jules" for l in self.lines))
         self._canary(True)  # response.created was buffered, then counted and dropped
         self._quiet(DINNER, ASK_JULES, TACOS, TOKEN, out["url"], PRE)

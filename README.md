@@ -290,15 +290,17 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   and the bare host names listed in the registry's top-level `private_hostnames` (kept in the private file, not the
   repo). Unknown fields or a failed check skip the entry (logged by slug and reason). If xAI's voice list can't be
   fetched, no persona goes on voice (fail closed; the relay retries every 5 min). The file is re-read when it changes. Every persona prompt gets a fixed safety line from
-  the code (shared room, guest-safe, no personal data, never claims an action).
+  the code: don't read out passwords, keys, codes, SSNs or card numbers, and, when `pii_mode` is on, personal
+  details such as addresses, phone numbers or emails. It also never claims an action (kitchen timers excepted).
   - Grok gets a `talk_to(persona, question)` tool listing the roster. "Ask Sam …", "let me talk to Lee", "back to
     Grok" switch the **same** realtime session to that persona's voice and instructions (`session.update`), and the
     persona answers. A backup rule in the relay switches on "ask/tell/talk to/switch to <name or alias>" if the model
     didn't. The relay sends `{"type":"persona","slug","name"}`, and the display shows that name and portrait.
   - Personas answer live from their prompt and facts only. Anything beyond that gets "I can't reach my full notes
     from the station yet". Handing questions to the real teammate isn't built yet.
-  - `GET /personas` (token) lists slugs, names and aliases; `GET /portrait/<slug>` (token) serves a registry
-    persona's photo only. The Pi caches both in `GROK_STATION_PORTRAITS` (default `/opt/grok-station/portraits`,
+  - `GET /personas` (token) lists slugs, names and aliases, plus `portraits_version` (bumped when a portrait is
+    written). `GET /portrait/<slug>` (token) serves `<slug>.png` from the writable portrait dir first
+    (`PORTRAIT_WRITE`, a bot or admin upload), then a registry persona's photo. The Pi caches both in `GROK_STATION_PORTRAITS` (default `/opt/grok-station/portraits`,
     owned by the listener user) at startup and hourly (`grok_wake.py --sync` runs it once). The display reads
     `personas.json` there. `/show` never shows a photo (monogram only), and drops the name if it, or any word in it,
     matches Grok or a persona name, slug or alias after normalization (NFKC, hidden characters removed, casefolded,
@@ -532,9 +534,30 @@ and a privacy lint on both ends. Off until enabled per bot. Each bot uses its ow
 Bots page). Router mode is retired (routine runs can't SendToAgent). Waits up to 120 s, saying "Asking <Name>…" while
 it starts and "Still asking <Name>." at 20 s.
 
+The webhook is `v: 2` and carries only `source`, `request_id` and `persona` (plus `test` and `include_avatar` when
+those apply). The question, `pii_mode`, `reply_by` and `tier_max` are not on the wire. They are written to
+`voice/pending/<request_id>.json` (question capped at 500). The bot fetches the question from tile-ingest
+`GET /voice/request/<request_id>`.
+
+**pii_mode** (Privacy → "Block personal info in replies") defaults on. The relay stores it in `<bots>/policy.json`
+(mode 600) and copies `{"pii_mode": bool}` to `/voice/minted/policy.json` (mode 644) for tile-ingest. Missing or
+invalid means on. Delete `policy.json` and restart to set it back to on. There is no guest mode on the relay; a
+stale `guest` key is ignored. Every spoken reply blocks passwords, keys, SSNs and card numbers. Emails, phones,
+addresses and the other personal details are blocked only while `pii_mode` is on.
+
+**Avatars.** A bot uploads with `POST /voice/avatar` (voice-token bearer, `X-Grok-Persona`, raw png/jpeg/webp up to
+2 MB, or JSON `image_b64`). The relay square-crops to a 512 PNG with no metadata, 6 per hour per bot. That path is on
+the public TLS listener (`GROK_STATION_AVATAR_PORT`, default 8792) with no client certificate. The station page
+uploads through `POST /admin/bots/<slug>/avatar` (mTLS) and can ask the bot to redraw with
+`POST /admin/bots/<slug>/avatar-request` (a test webhook with `include_avatar: true`).
+
+Audit lines are append-only and mirrored to `/voice/audit/audit.log`. On the stats-dashboard host, create
+`./voice/audit` (or `GROK_STATION_AUDIT`) writable by relay uid 10001 and readable by tile-ingest. The relay does
+not create that directory itself.
+
 A wake word or a spoken name that lands on a persona with a webhook does not get a general-model answer. The relay
 asks that bot itself and speaks only the fixed filler and the bot's linted reply (or a fixed error). Grok, and a
-persona with no webhook, are unchanged. The admin guest-mode switch is gone; **pii_mode** replaces it (Privacy → "Block personal info in replies", on by default). See [docs/handoff.md](docs/handoff.md).
+persona with no webhook, are unchanged. See [docs/handoff.md](docs/handoff.md).
 
 ### Voice notes (T1, off)
 

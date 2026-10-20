@@ -9,11 +9,15 @@ after its own canary passes and the owner OKs it.
    A wake word or a spoken name that lands on a persona with a webhook does not wait for that tool: the relay calls
    the handoff itself on the final transcript. See [Persona route](#persona-route-no-general-model-answer).
 2. The relay applies limits (per bot: 8/day, at least 30 s apart, one outstanding; plus a global daily total). A failed
-   POST still counts. The relay then cleans the question (NFKC; control, zero-width and bidi characters dropped; 300-char
-   cap) and writes `voice/pending/<request_id>.json` with a random nonce and an expiry.
-3. One POST goes to that bot's own webhook, and it is never retried:
-   `{source:"grok-station", v:1, request_id:"vs_…22", persona, tier_max:0, reply_by, question}`. The question sits
-   between `<<<STATION_QUESTION untrusted>>>` and `<<<END_STATION_QUESTION>>>` as data.
+   POST still counts. The relay then cleans the question (NFKC; control, zero-width and bidi characters dropped; 500-char
+   cap) and writes `voice/pending/<request_id>.json`. That file is the relay → tile-ingest channel (a read-only mount
+   on the tile-ingest side; no bot token). It holds the cleaned question, `pii_mode` (the relay's setting at issue
+   time), `tier_max` 0, `test` (bool), `reply_by` (ISO), `expires_ms`, the persona, a random nonce and `v`.
+3. One POST goes to that bot's own webhook, and it is never retried. The body is only
+   `{source:"grok-station", v:2, request_id:"vs_…22", persona}`. An admin Test adds `"test": true`. An avatar redraw
+   request also adds `"include_avatar": true`. There is no question, no `pii_mode`, no `reply_by` and no `tier_max`
+   on the wire. The bot reads the question from tile-ingest `GET /voice/request/<request_id>` (tile-ingest serves that
+   from the pending file).
 4. The routine answers through tile-ingest `POST /voice/reply` `{request_id, text, tier, action_class}` with its own
    voice token. tile-ingest checks the schema, tier scope, privacy lint and pending binding, then writes `voice/replies/`.
 5. The relay reads the reply once (it deletes the file on read) and checks the nonce, scope and lint again. It speaks
@@ -28,7 +32,7 @@ When routing picks a persona that has its own webhook — the wake word at sessi
 `turn_detection.create_response` false (and `interrupt_response` true), never sends `response.create` for the turn, and
 cancels and drops any `response.*` audio or text that still arrives. None of that is forwarded to the station.
 
-On the final transcript the relay runs the same handoff as `check_notes` (limits, nonce, lint, guest rules). It speaks
+On the final transcript the relay runs the same handoff as `check_notes` (limits, nonce, lint, the current `pii_mode`). It speaks
 only a fixed filler, "Asking <Name>…", in the persona's voice (xAI TTS), the existing "Still asking <Name>." at 20 s,
 then the bot's linted reply via TTS. If there is no answer it speaks a fixed line, for example "<Name> didn't answer
 in time; try again or ask in the app.", or the other honest error lines. The model does not word any of it.
@@ -37,23 +41,84 @@ A persona with no webhook keeps the previous behavior, and so does Grok. If mode
 turn anyway, the relay logs `canary persona-route model-output`, sends the usual ntfy alert, and drops it. The log is
 the verdict only, never the text.
 
-## Reply lint (guest vs normal)
+## Reply lint (always-blocked, plus PII when pii_mode is on)
 
-Guest mode (the admin switch, or a missing station status) keeps the full voice lint: control and bidi characters,
-long digit runs, links, email, IP addresses, private hosts, phone numbers, the bare secret-word list, money, medical
-details, street addresses and VINs.
+There is no guest mode on the relay. A stale `guest` key in `policy.json`, the limits file, or a persona entry is
+ignored at startup and is not written back. Spoken-reply lint is the same structural checks as before (request id,
+nonce, persona binding, schema, length cap, T0, the handoff caps) plus two content lists. Nothing else is
+content-based: a bare link, a short digit run, money, a VIN, medical wording, or the word "password" with no value
+all pass.
 
-Normal mode (guest off) speaks a factual reply. It still rejects control and bidi characters, secrets (a long
-high-entropy token, an `sk-` / `xai-` / `ghp_` prefix, "password is …", a PEM block), email, phone, SSN, card numbers
-(Luhn), bank account and routing numbers, IP addresses, private host names (the private-host list and
-`.lan` / `.local` / `localhost`), street addresses and VINs. It does not reject a bare link or domain, a digit run that
-is not one of those numbers, money, medical wording, or the words "pin" / "token" / "password" with no value.
+Before the content lists, the reply is normalized: NFKC, lowercase, spelled-out digits (`zero`/`oh`/`one`…`nine`),
+then spaces, dashes and dots between digits are removed. An exception inside the lint fails closed (the reply is
+dropped as `error`).
 
-The persona safety prompt matches that split. Guest mode keeps the shared-room rules. Normal mode says the persona is
-speaking in the owner's home and must not read out secrets, passwords, codes, account numbers or exact addresses.
+**Always blocked**, whether or not `pii_mode` is on:
 
-Logs stay verdict and rule code only. Reply text is never logged. The registry lint (persona name, prompt, facts) is
-unchanged; it is not the spoken-reply gate.
+- a password, passcode, pin, token, API key or secret that has a value (`password is …`, `pin: …`)
+- key prefixes `sk-`, `xai-`, `ghp_`, `github_pat_`, `AKIA`, `Bearer` plus a value, and a PEM private key
+- a high-entropy token of 32 or more characters
+- an SSN (including one spelled out)
+- a card number of 13–19 digits that passes Luhn (including one spelled out)
+
+**Blocked only when `pii_mode` is true:** household names from the private registry, email addresses, phone numbers,
+street addresses, IP addresses, MAC addresses, and private host names (`.lan` / `.local` / `.internal` /
+`home.arpa` / `localdomain` / `localhost`, plus the registry's `private_hostnames`). With `pii_mode` false an email
+is spoken; an SSN is still not.
+
+The persona safety prompt is one text: "don't read out passwords, keys, codes, SSNs or card numbers", and, when
+`pii_mode` is on, "or personal details like addresses, phone numbers or emails". The registry lint (persona name,
+prompt, facts) is unchanged; it is not the spoken-reply gate. Logs stay verdict and rule code only. Reply text is
+never logged.
+
+T1 notes keep their own station guest gate (`relay/t1.py`, the Pi's `t1` query). That gate is not this lint.
+
+## pii_mode (service-owned)
+
+`pii_mode` lives in `<bots dir>/policy.json` (mode 600), `{"pii_mode": true}` and nothing else. Missing, unreadable,
+or a non-boolean value means **true**. The relay also writes the same object to `/voice/minted/policy.json` (mode 644,
+atomic replace) at startup and whenever the setting changes, so tile-ingest can read it from the minted mount.
+
+`GET /admin/policy` returns `{"pii_mode": bool}`. `PUT /admin/policy` with `{"pii_mode": bool, "actor": "…"}` writes
+both files and appends an audit line `<ts> <actor> - pii-mode on|off -`. Same mTLS and admin token as the other
+`/admin` routes. The step-up password is the Pi admin's job, before it calls this.
+
+There is no HTTP factory-reset route. To put the switch back to on, delete `policy.json` and restart the relay, or
+call `factory_reset_policy()` (it writes `true` to both files). Startup runs `ensure_policy()`, so a missing file
+becomes an explicit `true` on disk.
+
+## Avatars
+
+`POST /voice/avatar` is how a bot uploads its portrait. Headers: `Authorization: Bearer <voice token>` and
+`X-Grok-Persona: <slug>`. The token is valid when `sha256` matches a hash stored for that slug in the relay-minted
+file (constant-time compare). The body is raw `image/png`, `image/jpeg` or `image/webp`, at most 2 MB, or JSON
+`{"image_b64": "…"}`. Pillow decodes it with a pixel cap, centre square-crops, resizes to 512×512 and re-encodes a
+PNG with no metadata. The file is written atomically to the portraits writable dir as `<slug>.png` (mode 644).
+`GET /portrait/<slug>` serves that file before the read-only portrait dirs. Six uploads per slug per hour.
+`401` bad token, `404` unknown slug, `413` too large, `415` not an image, `429` over the hourly cap. The audit line
+is `<ts> bot <slug> avatar-upload <sha8>` (first 8 hex chars of the PNG's sha256). No image bytes and no token.
+
+The public TLS front exposes this path on `:8444` (`GROK_STATION_AVATAR_PORT`, default host port 8792) with TLS and
+**no** client certificate. Everything else on that listener is 404. mTLS on `:8443` is unchanged.
+
+The admin API (mTLS + admin token), used by the station page:
+
+| Method | Path | Body | Result |
+| --- | --- | --- | --- |
+| POST | `/admin/bots/<slug>/avatar` | raw image, or JSON `image_b64` + `actor` | same transcode; a raw upload with no `X-Actor` is actor `admin`; not counted in the bot's 6/hour |
+| POST | `/admin/bots/<slug>/avatar-request` | `{"actor": "admin"}` | 202 `{test_id}`. A test-flagged webhook (`test` and `include_avatar` both true). Own request id, same caps, cannot resolve some other request |
+
+`GET /personas` includes `portraits_version`, a counter bumped on every successful write, so a client can tell that a
+portrait changed.
+
+## Audit log
+
+`audit.log` in the bots dir is append-only (`O_APPEND`). The relay never rewrites or truncates it. Each line is also
+appended to `/voice/audit/audit.log` (mode 644) when that directory already exists. Compose mounts
+`${GROK_STATION_AUDIT:-./voice/audit}` at `/voice/audit` (read-write). On the stats-dashboard host, create that
+directory writable by the relay uid (10001) and readable by tile-ingest. If the directory is absent the relay skips
+the mirror and does not create `/voice`. Lines carry actor, slug, action and a last-4 or an 8-char hash. Never a
+secret, a URL, a question, or reply text.
 
 ## Tiers
 T0 is `answer` only. T1 adds `note` (reversible internal writes after an on-screen read-back and confirm). T2 adds
@@ -96,16 +161,21 @@ printable characters. `actor` is a short label from the Pi (`admin`), used only 
 | DELETE | `/admin/bots/<slug>` | actor | added persona removed; registry persona hidden; webhook and minted token removed |
 | PUT | `/admin/bots/<slug>/webhook` | url, key, actor | `{ok, last4}` |
 | DELETE | `/admin/bots/<slug>/webhook` | actor | |
-| POST | `/admin/bots/<slug>/test` | url?, key? | 202 `{test_id}`. Optional url/key are tried unsaved, same allowlist |
+| POST | `/admin/bots/<slug>/test` | url?, key? | 202 `{test_id}`. Optional url/key are tried unsaved, same allowlist. The webhook has `test: true` and no question; the question is on the pending file |
 | GET | `/admin/bots/<slug>/test/<id>` | | `waiting` \| `ok` \| `failed` \| `cancelled` |
 | DELETE | `/admin/bots/<slug>/test/<id>` | | cancel: pending removed |
+| GET | `/admin/policy` | | `{"pii_mode": bool}` |
+| PUT | `/admin/policy` | `pii_mode`, `actor` | writes both policy files; audit `pii-mode on\|off` |
+| POST | `/admin/bots/<slug>/avatar` | raw image, or `image_b64` + `actor` | 512 PNG portrait |
+| POST | `/admin/bots/<slug>/avatar-request` | `actor` | 202 `{test_id}`, webhook `include_avatar: true` |
 
-A test is a normal handoff (fresh `request_id`, `handoff.payload`, question "Station test from the admin page. Reply
-with the single word: ok.") and it counts against the bot's handoff caps. It waits up to `REPLY_WAIT` (120 s).
+A test is a normal handoff (its own `request_id`, `handoff.payload` with `test: true`, question "Station test from the admin page. Reply
+with the single word: ok." stored only on the pending file) and it counts against the bot's handoff caps. A test
+request id never resolves a different, real request. It waits up to `REPLY_WAIT` (120 s).
 
 `$GROK_STATION_BOTS` (directory mode 700) is mounted read-write at `/bots` and holds `webhooks.json`,
 `webhooks.json.bak` (the previous file, one only), `personas-overlay.json`
-(`{"added":{slug:{name,voice}},"renamed":{slug:name},"hidden":[slug]}`), `bot-status.json` and `audit.log`.
+(`{"added":{slug:{name,voice}},"renamed":{slug:name},"hidden":[slug]}`), `bot-status.json`, `policy.json` and `audit.log`.
 Every write is a mode-600 temp file in that directory, fsync, then rename. `webhooks.json` is validated with
 `load_webhooks` before the rename; the relay reloads it only after. The overlay merges over the read-only registry:
 renames apply, hidden slugs drop off voice, and an added persona gets the prompt "You are <Name>, one of the

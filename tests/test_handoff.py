@@ -15,65 +15,92 @@ import relay  # noqa: E402
 
 
 class Units(unittest.TestCase):
-    def test_question_cleaned_capped_delimited(self):
-        q = handoff.clean("what\u200b's for \u202edinner\x07 " + "x" * 400, handoff.Q_MAX)
-        self.assertEqual(len(q), 300)
+    def test_question_cleaned_capped_and_not_on_the_webhook(self):
+        """The question is cleaned to 500 chars. The webhook does not carry it, pii_mode, reply_by or tier_max."""
+        q = handoff.clean("what\u200b's for \u202edinner\x07 " + "x" * 800, handoff.Q_MAX)
+        self.assertEqual(handoff.Q_MAX, 500)
+        self.assertEqual(len(q), 500)
         self.assertFalse(any(c in q for c in "\u200b\u202e\x07"))
-        p = handoff.payload(handoff.new_request_id(), "jules", q, "2026-10-19T21:00:00+00:00")
-        self.assertEqual((p["source"], p["v"], p["tier_max"]), ("grok-station", 1, 0))
-        self.assertTrue(p["question"].startswith(handoff.BEGIN + "\n") and p["question"].endswith("\n" + handoff.END))
+        rid = handoff.new_request_id()
+        p = handoff.payload(rid, "jules", q, "2026-10-19T21:00:00+00:00")
+        self.assertEqual((p["source"], p["v"], p["tier_max"]), ("grok-station", 2, 0))
+        wire = json.loads(json.dumps(p))
+        self.assertEqual(set(wire), {"source", "v", "request_id", "persona"})
+        for dropped in ("question", "pii_mode", "reply_by", "tier_max", "test"):
+            self.assertNotIn(dropped, wire)
         self.assertRegex(p["request_id"], handoff.REQUEST_ID)
+        flagged = json.loads(json.dumps(handoff.payload(rid, "jules", q, "t", test=True, include_avatar=True)))
+        self.assertEqual(set(flagged), {"source", "v", "request_id", "persona", "test", "include_avatar"})
+        self.assertIs(flagged["test"], True)
+        self.assertIs(flagged["include_avatar"], True)
 
-    def test_lint_one_reject_per_class_and_clean_pass(self):
-        rejects = {"chars": "tacos\u200b", "digits": "order 123456", "url": "see example.com", "email": "a@b",
-                   "ip": "at 203.0.113.7", "host": "on pantry.local", "vin": "car 1HGCM82633A004352 ok",
-                   "phone": "call 312-555-0187", "secret": "the password is fish", "money": "costs $40",
-                   "medical": "her medication list", "address": "at 1234 Oak Street"}
-        for code, t in rejects.items():
-            self.assertEqual(handoff.lint_reply(t), code, t)
-        self.assertEqual(handoff.lint_reply("on bigbox", ["bigbox"]), "host")
-        self.assertIsNone(handoff.lint_reply("Tacos on Tuesday and pasta on Wednesday."))
+    def test_lint_always_blocked_and_pii_only_when_on(self):
+        """Secrets, SSNs and cards are blocked with pii off. Email and the rest of PII are not.
 
-    def test_lint_normal_mode_loosens_guest_keeps_secrets(self):
-        """Before = guest (full rules). After = normal. Secrets and PII fail both; a factual reply only fails guest."""
+        Money, links, VINs, a bare password word, a short digit run and a routing number are not content rules.
+        """
         bears = "The Bears play the Packers Sunday at noon; tickets start around $85 on the team site."
-        token = "k7Qm9Zp2Lx8Nv4Tc6Rb1Hs5Yw3Jd0F"
+        long_token = "k7Qm9Zp2Lx8Nv4Tc6Rb1Hs5Yw3Jd0FaB9c"  # 32 or more, mixed, high entropy
+        short_token = "k7Qm9Zp2Lx8Nv4Tc6Rb1Hs5Yw3Jd0F"    # 30: under the cutoff, not a secret
+        # text, pii off, pii on
         table = [
-            # reply, before (guest), after (normal)
-            (bears, "money", None),
-            ("see example.com", "url", None),
-            ("order 123456", "digits", None),
-            ("order 123456789", "digits", None),  # 9 digits, not an ABA routing number
-            ("costs $40", "money", None),
-            ("her medication list", "medical", None),
-            ("enter the password", "secret", None),  # bare word, no value
+            (bears, None, None),
+            ("see example.com", None, None),
+            ("order 123456", None, None),
+            ("costs $40", None, None),
+            ("her medication list", None, None),
+            ("enter the password", None, None),
             ("the password is fish", "secret", "secret"),
             ("key sk-AbcdEFGH1234wxyz", "secret", "secret"),
             ("use xai-Abcd1234efgh5678", "secret", "secret"),
-            ("ghp_abcdefgh12345678", "digits", "secret"),
+            ("ghp_abcdefgh12345678", "secret", "secret"),
+            ("github_pat_11AAAAAAA0aaaaaaaaaa", "secret", "secret"),
+            ("AKIAIOSFODNN7EXAMPLE", "secret", "secret"),
+            ("Bearer abcdefghijklmnop", "secret", "secret"),
             ("-----BEGIN PRIVATE KEY-----", "secret", "secret"),
-            (token, "secret", "secret"),
-            ("ssn 123-45-6789", "secret", "ssn"),  # guest still hits the word; normal hits the number
-            ("number 123-45-6789", "ssn", "ssn"),
-            ("4111111111111111", "digits", "card"),
-            ("021000021", "digits", "routing"),
-            ("account number 12345678", "digits", "account"),
-            ("routing number 021000021", "digits", "routing"),
-            ("tacos\u200b", "chars", "chars"),
-            ("a@b", "email", "email"),
-            ("call 312-555-0187", "phone", "phone"),
-            ("at 203.0.113.7", "ip", "ip"),
-            ("on pantry.local", "host", "host"),
-            ("car 1HGCM82633A004352 ok", "vin", "vin"),
-            ("at 1234 Oak Street", "address", "address"),
+            (long_token, "secret", "secret"),
+            (short_token, None, None),
+            ("one-two-three-four-five-six-seven-eight-nine", "ssn", "ssn"),
+            ("ssn 123-45-6789", "ssn", "ssn"),
+            ("order 123456789", "ssn", "ssn"),  # 9 digits, valid SSN shape, not a routing number
+            ("four one one one one one one one one one one one one one one one", "card", "card"),
+            ("4111111111111111", "card", "card"),
+            ("4111111111111112", None, None),  # 16 digits, Luhn fail: not a card
+            ("021000021", None, None),
+            ("account number 12345678", None, None),
+            ("the routing number is on the check", None, None),
+            ("tacos\u200b", None, None),  # hidden chars are stripped on the reply path, not a content rule
+            ("write ada@example.com please", None, "email"),
+            ("a@b", None, "email"),
+            ("call 312-555-0187", None, "phone"),
+            ("at 203.0.113.7", None, "ip"),
+            ("mac aa:bb:cc:dd:ee:ff", None, "mac"),
+            ("on pantry.local", None, "host"),
+            ("car 1HGCM82633A004352 ok", None, None),
+            ("at 1234 Oak Street", None, "address"),
             ("Tacos on Tuesday and pasta on Wednesday.", None, None),
         ]
-        for text, before, after in table:
-            self.assertEqual(handoff.lint_reply(text, guest=True), before, "guest " + text)
-            self.assertEqual(handoff.lint_reply(text, guest=False), after, "normal " + text)
-        self.assertEqual(handoff.lint_reply("on bigbox", ["bigbox"], guest=False), "host")
-        self.assertEqual(handoff.lint_reply("on pantry.lan", guest=False), "host")
-        self.assertIsNone(handoff.lint_reply("the routing number is on the check", guest=False))
+        for text, off, on in table:
+            self.assertEqual(handoff.lint_reply(text, pii=False), off, "pii off " + text)
+            self.assertEqual(handoff.lint_reply(text, pii=True), on, "pii on " + text)
+        self.assertIsNone(handoff.lint_reply("on bigbox", ["bigbox"], pii=False))
+        self.assertEqual(handoff.lint_reply("on bigbox", ["bigbox"], pii=True), "host")
+        self.assertIsNone(handoff.lint_reply("on pantry.lan", pii=False))
+        self.assertEqual(handoff.lint_reply("on pantry.lan", pii=True), "host")
+        self.assertIsNone(handoff.lint_reply("ask Sam about dinner", names=["Sam"], pii=False))
+        self.assertEqual(handoff.lint_reply("ask Sam about dinner", names=["Sam"], pii=True), "name")
+
+    def test_lint_exception_fails_closed(self):
+        orig = handoff._lint
+
+        def boom(*_a, **_k):
+            raise RuntimeError("lint broke")
+
+        handoff._lint = boom
+        try:
+            self.assertEqual(handoff.lint_reply("hello there"), "error")
+        finally:
+            handoff._lint = orig
 
     def test_limits(self):
         lim = handoff.Limits(os.path.join(TMP, "lim.json"), lambda: "d1")
@@ -90,6 +117,11 @@ class Units(unittest.TestCase):
             bot = "abcdefghijklmnopqrstuvwxyz"[i // 8] * 3
             self.assertIsNone(lim2.take(bot, f"g{i}", now=1000 + 100 * i)); lim2.release(bot)
         self.assertEqual(lim2.take("zzz", "g", now=1e6), "global daily cap")
+        saved = json.load(open(lim.path))
+        saved["guest"] = True  # stale key from an older limits file
+        json.dump(saved, open(lim.path, "w"))
+        lim.release("hank")
+        self.assertNotIn("guest", json.load(open(lim.path)))
 
     def test_take_reply_binding_scope_replay(self):
         d = tempfile.mkdtemp()
@@ -101,6 +133,10 @@ class Units(unittest.TestCase):
         w(agent="hank"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32)[1], "unbound")
         w(tier=1, action_class="note"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32)[1], "above-scope")
         w(text="Call 312-555-0187"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32)[1], "lint:phone")
+        w(text="Call 312-555-0187"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32, pii=False),
+                                                      ("Call 312-555-0187", None))
+        w(text="ssn 123-45-6789"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32, pii=False)[1], "lint:ssn")
+        w(text="tacos\u200b tonight"); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32), ("tacos tonight", None))
         seen = set()
         w(text="**Tacos** tonight."); self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32, seen=seen), ("Tacos tonight.", None))
         self.assertEqual(handoff.take_reply(d, rid, "jules", "N" * 32, seen=seen), (None, None))   # consumed: speaks once
@@ -164,13 +200,15 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         for f in ("handoff.json",):
             try: os.remove(os.path.join(TMP, f))
             except OSError: pass
-        self.calls, self.mode, self.auths, self.paths = [], "reply", [], []
+        self.calls, self.mode, self.auths, self.paths, self.pendings = [], "reply", [], [], []
 
         async def hook(req):
             body = await req.json()
             self.calls.append(body)
             self.auths.append(req.headers.get("Authorization", ""))
             self.paths.append(req.path)
+            pend_path = os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")
+            self.pendings.append(json.load(open(pend_path)))
             if self.mode == "fail":
                 return web.Response(status=500)
             pend = json.load(open(os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")))  # tile-ingest's bind check
@@ -320,11 +358,20 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(router_token, " ".join(self.auths))
         self.assertEqual([c["persona"] for c in self.calls], ["jules"])
         body = self.calls[0]
-        self.assertEqual(set(body), {"source", "v", "request_id", "persona", "tier_max", "reply_by", "question"})
-        self.assertEqual((body["source"], body["v"], body["tier_max"], body["persona"]), ("grok-station", 1, 0, "jules"))
-        self.assertEqual(body["question"], f"{handoff.BEGIN}\n{q}\n{handoff.END}")
+        self.assertEqual(set(body), {"source", "v", "request_id", "persona"})
+        self.assertEqual((body["source"], body["v"], body["persona"]), ("grok-station", 2, "jules"))
+        for dropped in ("question", "pii_mode", "reply_by", "tier_max", "test"):
+            self.assertNotIn(dropped, body)
         self.assertRegex(body["request_id"], handoff.REQUEST_ID)
-        self.assertTrue(body["reply_by"])
+        pend = self.pendings[0]
+        self.assertEqual(pend["question"], q)
+        self.assertIs(pend["pii_mode"], True)
+        self.assertEqual(pend["tier_max"], 0)
+        self.assertIs(pend["test"], False)
+        self.assertTrue(pend["reply_by"])
+        self.assertIsInstance(pend["expires_ms"], int)
+        self.assertEqual(pend["request_id"], body["request_id"])
+        self.assertEqual(pend["persona"], "jules")
         blob = json.dumps(self.calls)
         self.assertNotIn(jules_token, blob)
         self.assertNotIn(router_token, blob)                                             # bearer is the header, not the body
