@@ -122,9 +122,12 @@ directory, and any other value is the directory. Compose mounts `${GROK_STATION_
 If it is absent the relay skips the mirror and does not create `/voice`.
 
 The mode (600 in the bots dir, 644 on the mirror) is set only when this write creates the file. `chmod` and
-`fchmod` errors `EPERM`, `EACCES` and `ENOTSUP` are ignored, so a host append-only flag cannot drop the line. On
-the host, `sudo chflags sappnd` marks a monthly file append-only. A root daily job sets `sappnd` on the current
-month and `schg` on previous months, and keeps 12 months.
+`fchmod` errors `EPERM`, `EACCES` and `ENOTSUP` are ignored, so the line is still written. Tile-ingest sees the
+mirror read-only at `/voice/audit`.
+
+Host-level append-only flags (`chflags sappnd`/`schg`) are not used. Colima's virtiofs share does not pass
+`O_APPEND` through, so `sappnd` blocks every container write (tested Oct 20, 2026). The owner decided (Oct 20) not
+to add a finished-month lock job; the audit lockdown is the relay fix only, with no file flags.
 
 Lines carry actor, slug, action and a last-4 or an 8-char hash. Never a secret, a URL, a question, or reply text.
 

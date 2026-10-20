@@ -558,9 +558,12 @@ value is the directory. Create `./voice/audit` (or `GROK_STATION_AUDIT`) writabl
 by tile-ingest. The relay does not create that directory, and an older `audit.log` is left in place.
 
 The mode (600 in the bots dir, 644 on the mirror) is set only when the relay creates the file. A `chmod` that
-fails with EPERM, EACCES or ENOTSUP is ignored, so the line is still written. On the host, `sudo chflags sappnd`
-marks a monthly file append-only. A root daily job sets `sappnd` on the current month and `schg` on previous
-months, and keeps 12 months.
+fails with EPERM, EACCES or ENOTSUP is ignored, so the line is still written. The mirror is mounted read-only
+into tile-ingest at `/voice/audit`.
+
+Host-level append-only flags (`chflags sappnd`/`schg`) are not used. Colima's virtiofs share does not pass
+`O_APPEND` through, so `sappnd` blocks every container write (tested Oct 20, 2026). The owner chose not to add a
+job that locks finished months, so integrity rests on the relay's append-only writes and the read-only mirror.
 
 A wake word or a spoken name that lands on a persona with a webhook does not get a general-model answer. The relay
 asks that bot itself and speaks only the fixed filler and the bot's linted reply (or a fixed error). Grok, and a

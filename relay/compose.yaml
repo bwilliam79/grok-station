@@ -53,8 +53,9 @@ services:
       - ${GROK_STATION_PORTRAITS_W:-./no-portraits}:/portraits/w
       # Append-only audit mirror, one UTC month per file (audit-YYYY-MM.log). Mode 644 is set only when the
       # relay creates the file. Create this directory writable by the relay uid and readable by tile-ingest.
-      # The relay does not create it, and skips the mirror when it is absent. A host `chflags sappnd` (EPERM
-      # on chmod) does not drop a line. It does not use a bot token. See docs/handoff.md.
+      # The relay does not create it, and skips the mirror when it is absent. tile-ingest mounts it read-only.
+      # No host append-only flags: Colima virtiofs drops O_APPEND, so chflags sappnd blocks all writes.
+      # It does not use a bot token. See docs/handoff.md.
       - ${GROK_STATION_AUDIT:-./voice/audit}:/voice/audit
       # T1 confirm events (read by tile-ingest, which alone holds the receipt key)
       - ${GROK_STATION_VOICE:-./no-voice}/confirms:/voice/confirms
