@@ -586,9 +586,8 @@ def status_icon_names(st):
 
 
 def status_icon_px(scale):
-    """22 px at 1080p, clamped to the 20–24 px spec, then multiplied by the display scale."""
-    spec = min(24, max(20, 22))
-    return max(1, int(round(spec * scale)))
+    """44 px at 1080p times the display scale, never under 28 px on screen."""
+    return max(28, int(round(44 * scale)))
 
 
 def _fallback_status_icon(name, px):
@@ -668,7 +667,7 @@ def draw_status_icons(surf, L, status=None, right=None, cy=None):
     px = status_icon_px(L.s)
     gap = max(1, int(round(8 * L.s)))
     if right is None:
-        right = L.w - L.m
+        right = L.w - max(6, int(round(16 * L.s)))
     if cy is None:
         cy = L(34) + L(72) // 2
     y = int(cy) - px // 2
@@ -1577,9 +1576,9 @@ def draw_topbar_clock(surf, L, now):
     global LAST_TOPBAR_RECT
     hhmm, ampm = clock_parts(now)
     y = L(34) + L(72) // 2
-    r = text_at(surf, "display", L(56), f"{hhmm} {ampm}", TEXT, (L.w - L.m, y), "midright")
+    icons = draw_status_icons(surf, L, cy=y)
+    r = text_at(surf, "display", L(56), f"{hhmm} {ampm}", TEXT, (icons.left - L(24), y), "midright")
     LAST_TOPBAR_RECT = r
-    draw_status_icons(surf, L, right=r.left - max(1, int(round(8 * L.s))), cy=r.centery)
     return r
 
 
@@ -1955,11 +1954,11 @@ def topbar(surf, se, label, now):
     clk = font("display", round(0.0563 * se)).render(f"{hhmm} {ampm}", True, hexc("D9CFC2"))
     hgt = max(lab.get_height(), clk.get_height())
     surf.blit(lab, (m, y + (hgt - lab.get_height()) // 2))
-    clk_x = surf.get_width() - m - clk.get_width()
     clk_y = y + (hgt - clk.get_height()) // 2
-    surf.blit(clk, (clk_x, clk_y))
     lay = Layout(surf.get_width(), surf.get_height())
-    draw_status_icons(surf, lay, right=clk_x - max(1, int(round(8 * lay.s))), cy=clk_y + clk.get_height() / 2)
+    icons = draw_status_icons(surf, lay, cy=clk_y + clk.get_height() / 2)
+    clk_x = icons.left - max(1, int(round(24 * lay.s))) - clk.get_width()
+    surf.blit(clk, (clk_x, clk_y))
 
 
 def draw_setup(surf, L, now, d):

@@ -185,7 +185,9 @@ class IconDraw(unittest.TestCase):
             "at": 0,
         }
         rect = gs.draw_status_icons(surf, L, status=st)
-        region = pygame.Rect(w // 2, 0, w // 2 - L.m, h // 5)
+        region = pygame.Rect(w // 2, 0, w // 2, h // 5)
+        self.assertGreaterEqual(rect.right, w - max(6, round(16 * L.s)) - 1)  # in the corner
+        self.assertGreaterEqual(rect.height, 28)
         self.assertTrue(region.contains(rect), f"{rect} outside {region}")
         bounds = _ink_bounds(surf, gs.BG)
         self.assertIsNotNone(bounds)
@@ -202,7 +204,7 @@ class IconDraw(unittest.TestCase):
         self.assertLess(rect2.width, rect.width)
         self.assertEqual(rect2.right, rect.right)
 
-    def test_sits_left_of_the_topbar_clock(self):
+    def test_clock_sits_left_of_the_icons(self):
         surf = pygame.Surface((1920, 1080))
         surf.fill(gs.BG)
         L = gs.Layout(1920, 1080)
@@ -220,7 +222,7 @@ class IconDraw(unittest.TestCase):
             gs.store_status(prev)
         self.assertIsNotNone(gs.LAST_STATUS_RECT)
         self.assertFalse(gs.LAST_STATUS_RECT.colliderect(gs.LAST_TOPBAR_RECT))
-        self.assertLessEqual(gs.LAST_STATUS_RECT.right, gs.LAST_TOPBAR_RECT.left)
+        self.assertLessEqual(gs.LAST_TOPBAR_RECT.right, gs.LAST_STATUS_RECT.left)
 
 
 if __name__ == "__main__":

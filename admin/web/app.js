@@ -710,7 +710,7 @@ function stepupOpen() { return !!stepupText(); }
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
   const v = S.avatarV ? "?v=" + S.avatarV : "";
-  return `<span class="avwrap${lg ? " lg" : ""}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
+  return `<span class="avwrap${lg ? " lg" : ""}" data-slug="${esc(slug)}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
 }
 function askPassword(title, text, label, send) {
   const d = document.createElement("div");
@@ -770,9 +770,16 @@ async function refreshBots(el) {
 }
 function bustPortraits(el) {
   S.avatarV = Date.now();
-  document.querySelectorAll("img.av").forEach(img => {
-    const base = (img.getAttribute("src") || "").split("?")[0];
-    if (base) img.src = base + "?v=" + S.avatarV;
+  // A portrait that failed to load earlier removed its <img>; put one back so a new upload shows.
+  document.querySelectorAll(".avwrap[data-slug]").forEach(w => {
+    let img = w.querySelector("img.av");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "av"; img.alt = "";
+      img.onerror = () => img.remove();
+      w.prepend(img);
+    }
+    img.src = "/api/portrait/" + encodeURIComponent(w.dataset.slug) + "?v=" + S.avatarV;
   });
   return refreshBots(el);
 }
