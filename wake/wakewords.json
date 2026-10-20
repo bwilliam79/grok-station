@@ -1,17 +1,27 @@
 {
  "models_dir": "/opt/grok-station/wake/models",
  "words": [
-  {"name": "hey_grok", "persona": "grok", "threshold": 0.5, "patience": 1},
-  {"name": "hey_ash", "persona": "ash", "threshold": 0.95, "patience": 1},
-  {"name": "hey_miles", "persona": "miles", "threshold": 0.6, "patience": 1},
-  {"name": "hey_kai", "persona": "kai", "threshold": 0.6, "patience": 1},
-  {"name": "hey_piper", "persona": "piper", "threshold": 0.5, "patience": 1},
-  {"name": "hey_jules", "persona": "jules", "threshold": 0.95, "patience": 1},
-  {"name": "hey_rhea", "persona": "rhea", "threshold": 0.8, "patience": 2, "provisional": true}
+  {
+   "name": "hey_grok",
+   "persona": "grok",
+   "threshold": 0.5,
+   "patience": 1
+  }
  ],
  "enroll": [
-  {"name": "hey_finn", "persona": "finn"},
-  {"name": "hey_hank", "persona": "hank"}
+  {
+   "name": "hey_finn",
+   "persona": "finn"
+  },
+  {
+   "name": "hey_hank",
+   "persona": "hank"
+  }
  ],
- "fallback": {"name": "hey_jarvis", "persona": "grok", "threshold": 0.5, "patience": 1}
+ "fallback": {
+  "name": "hey_jarvis",
+  "persona": "grok",
+  "threshold": 0.5,
+  "patience": 1
+ }
 }

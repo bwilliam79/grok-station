@@ -59,5 +59,15 @@ case "${1:-}" in
     for f in /boot/firmware/grok-station-reset /boot/grok-station-reset; do
       if [ -e "$f" ]; then rm -f "$f"; sync; reset; logger -t grok-station "admin password reset from boot partition file"; fi
     done ;;
-  *) echo "usage: sudo grok-station reset-admin" >&2; exit 2 ;;
+  set-key)
+    # Reads the xAI API key from stdin (hidden prompt on a terminal). Never echoed or logged.
+    [ "$(id -u)" = 0 ] || { echo "Run with sudo." >&2; exit 1; }
+    if [ -t 0 ]; then printf 'xAI API key (input hidden): ' >&2; stty -echo; IFS= read -r k; stty echo; echo >&2
+    else IFS= read -r k; fi
+    [ -n "$k" ] || { echo "No key given." >&2; exit 1; }
+    d=/etc/grok-station/secrets; install -d -o root -g root -m 0711 "$d"
+    t="$(mktemp "$d/.k.XXXXXX")"; printf '%s\n' "$k" > "$t"; unset k
+    chown grok-relay:grok-admin "$t"; chmod 0400 "$t"; mv -f "$t" "$d/xai_api_key"
+    systemctl restart grok-station-relay; echo "Key saved. Relay restarted." ;;
+  *) echo "usage: sudo grok-station reset-admin | set-key | tls-cert" >&2; exit 2 ;;
 esac

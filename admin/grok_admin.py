@@ -1132,6 +1132,21 @@ def _env_file(p):
     return vals
 
 
+LOCAL_RELAY_TOKEN = E("ADMIN_LOCAL_RELAY_TOKEN_FILE", "/etc/grok-station/secrets/admin_token")
+LOCAL_RELAY_ORIGIN = "http://127.0.0.1:" + E("RELAY_PORT", "8790")
+
+
+def local_relay_settings():
+    """Single device: the relay runs on this Pi on loopback. Token file is readable by this user only."""
+    try:
+        token = open(LOCAL_RELAY_TOKEN).read().strip()
+    except OSError:
+        return None
+    if not token or len(token) > 400 or "\n" in token:
+        return None
+    return {"origin": LOCAL_RELAY_ORIGIN, "token": token, "local": True}
+
+
 def relay_settings():
     """Admin relay settings from the env file, or None when the station isn't set up to call it.
 
@@ -1204,15 +1219,18 @@ def relay_call(method, path, payload=None, timeout=10, raw=None, content_type=No
     A failed call is (503, {error}). The exception text is not logged (it can contain the URL).
     raw is a request body sent as content_type (a portrait). It is not logged.
     """
-    cfg = relay_settings()
+    cfg = local_relay_settings() or relay_settings()
     if not cfg:
         return None
-    ctx = relay_ssl_context(cfg)
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({}),  # never send the admin token via a proxy
-        _RelayHTTPS(ctx, _pinned_connection(cfg["pin"])),
-        _NoRedirect(),
-    )
+    if cfg.get("local"):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    else:
+        ctx = relay_ssl_context(cfg)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),  # never send the admin token via a proxy
+            _RelayHTTPS(ctx, _pinned_connection(cfg["pin"])),
+            _NoRedirect(),
+        )
     headers = {"Authorization": "Bearer " + cfg["token"], "Accept": "application/json"}
     if raw is not None:
         data = raw if isinstance(raw, bytes) else bytes(raw)

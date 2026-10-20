@@ -1,0 +1,30 @@
+[Unit]
+Description=grok-station voice relay (loopback, same Pi)
+After=network.target
+
+[Service]
+User=grok-relay
+Group=grok-admin
+UMask=0007
+Environment=GROK_SECRETS_DIR=/etc/grok-station/secrets
+Environment=GROK_STATE_DIR=/var/lib/grok-station
+Environment=GROK_SHARED_STATE=1
+Environment=RELAY_BIND=127.0.0.1
+Environment=RELAY_PORT=8790
+ExecStart=/opt/grok-station/relay/venv/bin/python /opt/grok-station/relay/relay.py
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/grok-station
+MemoryMax=300M
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

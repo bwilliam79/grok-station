@@ -1,6 +1,0 @@
-# Caddy for the LAN TLS front, run as a non-root user. The stock binary carries a cap_net_bind_service file capability,
-# which can't be exec'd with cap_drop ALL; a plain copy drops it (port 8443 doesn't need it).
-FROM caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
-RUN cp /usr/bin/caddy /usr/bin/caddy.nocap && mv /usr/bin/caddy.nocap /usr/bin/caddy && \
-    addgroup -S -g 10002 caddyrun && adduser -S -D -H -u 10002 -G caddyrun caddyrun
-USER 10002:10002

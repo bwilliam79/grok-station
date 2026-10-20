@@ -2,8 +2,8 @@
 """grok-station wake listener + voice client (proof of concept).
 
 Captures the USB headset mic at 48 kHz via `arecord`, decimates to 16 kHz for openWakeWord (ONNX).
-On a wake it plays a chime, shows "listening", and (if GROK_RELAY_URL is set) opens one session to the
-voice relay: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
+On a wake it plays a chime, shows "listening", and opens one session to the voice relay on
+127.0.0.1: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
 `aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
 A tool card (`{"type":"card",...}`) is forwarded on that same POST. Timers post their full list
 (`{"timers":[{id,label,ends_at_epoch,ringing}]}`) when the set changes — set, cancel, ring, clear —
@@ -11,9 +11,8 @@ and the display counts down locally. Logs name the event type only, never a temp
 The wake detector is paused during a session so the reply can't re-trigger it.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
 `grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
-A wss:// GROK_RELAY_URL uses mutual TLS: the server must chain to GROK_RELAY_CA (only that CA is trusted) and the
-client presents GROK_RELAY_CERT / GROK_RELAY_KEY. Each defaults to a systemd credential (relay-ca.crt,
-relay-client.crt, relay-client.key in $CREDENTIALS_DIRECTORY; see systemd/grok-station-wake-tls.conf).
+The relay is ws://127.0.0.1:<RELAY_PORT>/ws (default port 8790). The bearer token is read from
+GROK_LOCAL_TOKEN_FILE (default /etc/grok-station/secrets/local_token); RELAY_TOKEN is only a local fallback.
 Personas: the relay may switch the session to a teammate ({"type":"persona","slug","name"}); the display then shows
 that name and portrait. At startup (and hourly) the client caches GET /personas and each GET /portrait/<slug> into
 GROK_STATION_PORTRAITS (default /opt/grok-station/portraits, never in git); the display reads personas.json there to
@@ -46,7 +45,20 @@ CAP_RATE = int(E("WAKE_CAPTURE_RATE", "16000"))  # the device's native capture r
 DECIM = CAP_RATE // 16000
 _K = np.sinc(np.arange(-32, 33) / DECIM) * np.hamming(65); _K /= _K.sum()  # low-pass FIR for decimation
 CHUNK = 1280                                     # 80 ms at 16 kHz, what openWakeWord expects
-RELAY_URL, RELAY_TOKEN = E("GROK_RELAY_URL", ""), E("GROK_RELAY_TOKEN", "")
+RELAY_URL = "ws://127.0.0.1:%s/ws" % E("RELAY_PORT", "8790")
+
+
+def relay_token():
+    """Bearer for the loopback relay. The file is group-readable by this user. Never logged."""
+    path = E("GROK_LOCAL_TOKEN_FILE", "/etc/grok-station/secrets/local_token")
+    try:
+        with open(path) as f:
+            tok = f.read().strip()
+        if tok and "\n" not in tok and "\r" not in tok:
+            return tok
+    except OSError:
+        pass
+    return E("RELAY_TOKEN", "") or E("GROK_RELAY_TOKEN", "")
 VOICE_GAIN = float(E("VOICE_GAIN", str(GAIN)))   # gain on the audio sent to Grok
 VOICE_SKIP = float(E("VOICE_SKIP_MS", "300")) / 1000  # drop this much post-wake audio (tail of the wake word)
 PORTRAITS = E("GROK_STATION_PORTRAITS", "/opt/grok-station/portraits")
@@ -60,24 +72,12 @@ def up24(x, prev):
     return np.interp(np.arange(len(x) * 3 // 2) / 1.5, np.arange(len(xs)), xs)
 
 
-def relay_ssl():
-    """TLS context for a wss:// relay: private-CA pin plus client certificate. None for plain ws://."""
-    if not RELAY_URL.startswith("wss://"):
-        return None
-    import ssl
-    cred = lambda env, name: E(env) or os.path.join(E("CREDENTIALS_DIRECTORY", "."), name)
-    ctx = ssl.create_default_context(cafile=cred("GROK_RELAY_CA", "relay-ca.crt"))  # trusts only this CA
-    ctx.minimum_version = ssl.TLSVersion.TLSv1_3
-    ctx.load_cert_chain(cred("GROK_RELAY_CERT", "relay-client.crt"), cred("GROK_RELAY_KEY", "relay-client.key"))
-    return ctx
-
-
 def relay_get(path):
-    """GET a relay path (https with the same mTLS + token as the voice session). Returns bytes or None."""
+    """GET a loopback relay path with the local bearer token. Returns bytes or None."""
     base = re.sub(r"^ws", "http", RELAY_URL).rsplit("/ws", 1)[0]
     try:
-        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {RELAY_TOKEN}"})
-        with urllib.request.urlopen(req, timeout=8, context=relay_ssl()) as r:
+        req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {relay_token()}"})
+        with urllib.request.urlopen(req, timeout=8) as r:
             return r.read(2 << 20)
     except Exception as e:
         print(f"relay get {path.split('/')[1]} failed: {type(e).__name__}", flush=True)
@@ -126,14 +126,15 @@ def persona_loop():
                 f()
             except Exception as e:
                 print(f"{f.__name__} failed: {type(e).__name__}", flush=True)
-        fast = time.time() < ENROLL_STATE.get("fast_until", 0)  # after an enrollment: poll for the new model
-        SYNC_NOW.wait(300 if fast else 3600)
+        SYNC_NOW.wait(DROP_POLL_S)
         SYNC_NOW.clear()
 
 
 # ---------------------------------------------------------------- enroll mode (docs/enroll.md)
-ENROLL_DIR = E("WAKE_ENROLL_DIR", "/opt/grok-station/wake/enroll")      # local copy of recorded clips
+ENROLL_DIR = E("WAKE_ENROLL_DIR", "/var/lib/grok-station/enroll/inbox")  # clips stay on this Pi
 ENROLLED_DIR = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled")  # models trained from real clips
+DROP_DIR = E("WAKE_DROP_DIR", "/var/lib/grok-station/wakewords")  # onnx + json dropped for the listener
+DROP_POLL_S = 60
 CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0.1 only
 ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
 ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None}
@@ -463,9 +464,10 @@ SESSION_OPEN = threading.Event()         # a voice session is on screen: enrollm
 
 
 def relay_post(path, body, ctype="application/octet-stream"):
+    """Loopback POST. Enrollment no longer uses this; personas still can."""
     base = re.sub(r"^ws", "http", RELAY_URL).rsplit("/ws", 1)[0]
-    req = urllib.request.Request(base + path, body, {"Authorization": f"Bearer {RELAY_TOKEN}", "Content-Type": ctype})
-    with urllib.request.urlopen(req, timeout=15, context=relay_ssl()) as r:
+    req = urllib.request.Request(base + path, body, {"Authorization": f"Bearer {relay_token()}", "Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=15) as r:
         return r.status
 
 
@@ -594,8 +596,6 @@ def control_server():
                 return self._r(400, {"error": "unknown phrase", "phrases": sorted(enroll_phrases())})
             if req.get("error") == "count":
                 return self._r(400, {"error": "count must be 20-30"})
-            if not RELAY_URL:
-                return self._r(503, {"error": "no relay configured"})
             if setup_mode():
                 return self._r(423, {"error": "setup needed"})
             if ENROLL_STATE["busy"]:
@@ -640,9 +640,11 @@ def last_session(phrase):
     return ses[-1] if ses else None
 
 
+TRAINER_LATER = "needs the trainer app (coming later)"
+
+
 def enroll(req, read16, play):
-    """Record req["count"] clips with the enrollment screens (prompt, get ready, recording, too loud / didn't hear it,
-    saved), upload each, mark the session ready, then follow its training to a pass/fail notice."""
+    """Record req["count"] clips onto this Pi. Training does not run here."""
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
     words = phrase.replace("_", " ").title()
     say = f"“{words}”"
@@ -684,35 +686,27 @@ def enroll(req, read16, play):
             path = os.path.join(d, f"{i - 1:02d}.wav")
             with wave.open(path, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(clip.astype("<i2").tobytes())
-            try:
-                enroll_stage("uploading", "Sending the clips.", phrase, ses)
-                with open(path, "rb") as f:
-                    relay_post(f"/enroll/{phrase}/{ses}/{i - 1:02d}.wav", f.read(), "audio/wav")
-                sent += 1
-            except Exception as e:
-                print(f"enroll upload {i} failed: {type(e).__name__}", flush=True)
+            sent += 1
             if i < n:
                 show(i, "saved")
                 for _ in range(int(0.6 / 0.08)):
                     read16()
             i += 1
-        ok = False
-        if sent >= (5 if prior else 10):
-            try:
-                body = {"persona": relay_persona(persona), "count": sent, **({"prior": prior} if prior else {})}
-                relay_post(f"/enroll/{phrase}/{ses}/done", json.dumps(body).encode(), "application/json")
-                ok = True
-            except Exception as e:
-                print(f"enroll done failed: {type(e).__name__}", flush=True)
-        print(f"enroll end {phrase}: {i - 1} recorded, {sent} uploaded, {'ready' if ok else 'NOT submitted'}", flush=True)
+        ok = sent >= (5 if prior else 10)
+        body = {"phrase": phrase, "persona": persona, "count": sent, **({"prior": prior} if prior else {})}
+        try:
+            with open(os.path.join(d, "session.json"), "w") as f:
+                json.dump(body, f)
+        except OSError as e:
+            print(f"enroll save failed: {type(e).__name__}", flush=True)
+            ok = False
+        print(f"enroll end {phrase}: {i - 1} recorded, {sent} saved, {'kept' if ok else 'NOT kept'}", flush=True)
         if ok:
-            ENROLL_STATE["fast_until"] = time.time() + 3 * 3600
-            SYNC_NOW.set()
-            enroll_stage("training", "Training.", phrase, ses)
-            post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|uploaded|")
+            enroll_stage("saved", TRAINER_LATER, phrase, ses)
+            post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|saved|")
             threading.Thread(target=follow_training, args=(phrase, ses, say, persona), daemon=True).start()
         else:
-            enroll_stage("failed", "Couldn't send the clips.", phrase, ses)
+            enroll_stage("failed", "Couldn't save the clips.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/{n}|error|")
         time.sleep(6)
     finally:
@@ -744,87 +738,86 @@ def _train_outcome(j):
 
 
 def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
-    """Poll the relay until training finishes, then post a short notice (waiting out an open voice session).
-
-    published → "Hey Finn is ready". failed_quality → more clips. A hard failure keeps the enroll error screen.
-    """
-    t0, shown_queue = time.time(), False
-    while time.time() - t0 < limit:
-        raw = relay_get(f"/enroll/{phrase}/{ses}/status")
-        try:
-            j = json.loads(raw) if raw else {}
-        except ValueError:
-            j = {}
-        st = j.get("state")
-        outcome = _train_outcome(j)
-        if st == "queued" and not shown_queue and not SESSION_OPEN.is_set():
-            enroll_stage("training", "Training.", phrase, ses)
-            post_state("enroll", text=say, who=persona, heard=f"0/0|queued|{int(j.get('position', 1))}")
-            shown_queue = True
-        elif outcome in ("published", "failed_quality"):
-            while SESSION_OPEN.is_set():
-                time.sleep(2)
-            ok = outcome == "published"
-            print(f"enroll result {phrase} {ses}: {'passed' if ok else 'not passed'}", flush=True)
-            enroll_stage("published" if ok else "failed_quality",
-                         "Ready." if ok else training_notice(phrase, False), phrase, ses)
-            post_state("notice", text=training_notice(phrase, ok), who=persona)
-            if ok:
-                SYNC_NOW.set()
-            return
-        elif outcome == "failed":
-            while SESSION_OPEN.is_set():
-                time.sleep(2)
-            print(f"enroll result {phrase} {ses}: failed", flush=True)
-            enroll_stage("failed", "Training didn't pass.", phrase, ses)
-            post_state("enroll", text=say, who=persona, heard="0/0|error|")
-            return
-        time.sleep(every)
+    """Clips stay in the inbox. Training runs in the trainer app, not on this Pi."""
+    while SESSION_OPEN.is_set():
+        time.sleep(min(2, every or 2))
+        if time.time() < 0:  # keep the signature used by callers and tests
+            break
+    enroll_stage("saved", TRAINER_LATER, phrase, ses)
+    post_state("notice", text=TRAINER_LATER, who=persona)
 
 
-def sync_wakewords():
-    """Fetch models published from real-voice enrollment (GET /wakewords, /wakeword/<name>.onnx). Each file is checked
-    against its sha256; wakewords.enrolled.json lists the active ones. Sets RELOAD when anything changed."""
-    if not RELAY_URL:
-        return
-    raw = relay_get("/wakewords")
-    try:
-        items = json.loads(raw)["wakewords"] if raw else None
-    except (ValueError, KeyError, TypeError):
-        items = None
-    if items is None:
-        return
+def load_dropped_wakewords(directory=None):
+    """onnx + json in the drop dir. A sha256 mismatch is rejected and not loaded."""
     import hashlib
-    os.makedirs(ENROLLED_DIR, exist_ok=True)
-    words, changed = [], False
-    for it in items:
-        name, persona, sha = str(it.get("name", "")), str(it.get("persona", "")), str(it.get("sha256", ""))
-        if not (phrase_ok(name) and persona_ok(persona) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+    directory = directory or DROP_DIR
+    accepted = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return accepted
+    for fn in names:
+        if not fn.endswith(".json"):
             continue
-        path = os.path.join(ENROLLED_DIR, name + ".onnx")
-        have = hashlib.sha256(open(path, "rb").read()).hexdigest() if os.path.isfile(path) else ""
-        if have != sha:
-            blob = relay_get(f"/wakeword/{name}.onnx")
-            if not blob or hashlib.sha256(blob).hexdigest() != sha:
-                print(f"wakeword {name}: download failed or checksum mismatch", flush=True)
-                continue
-            with open(path + ".tmp", "wb") as f:
-                f.write(blob)
-            os.replace(path + ".tmp", path)
-            changed = True
-            print(f"wakeword {name}: new enrolled model", flush=True)
-        words.append({"name": name, "persona": persona, "threshold": float(it.get("threshold", 0.5)),
-                      "patience": int(it.get("patience", 1)), "path": path, "enrolled": True})
+        stem = fn[:-5]
+        try:
+            with open(os.path.join(directory, fn)) as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            print(f"wakeword {stem}: checksum mismatch", flush=True)
+            continue
+        if not isinstance(doc, dict):
+            print(f"wakeword {stem}: checksum mismatch", flush=True)
+            continue
+        name, persona = str(doc.get("name", stem)), str(doc.get("persona", ""))
+        sha = str(doc.get("sha256", "")).lower()
+        if name != stem or not (phrase_ok(name) or wake_name_ok(name)) or not persona_ok(persona):
+            print(f"wakeword {stem}: checksum mismatch", flush=True)
+            continue
+        if not re.fullmatch(r"[0-9a-f]{64}", sha):
+            print(f"wakeword {name}: checksum mismatch", flush=True)
+            continue
+        op = os.path.join(directory, name + ".onnx")
+        try:
+            blob = open(op, "rb").read()
+        except OSError:
+            print(f"wakeword {name}: checksum mismatch", flush=True)
+            continue
+        if hashlib.sha256(blob).hexdigest() != sha:
+            print(f"wakeword {name}: checksum mismatch", flush=True)
+            continue
+        try:
+            threshold = float(doc.get("threshold", 0.5))
+            patience = int(doc.get("patience", 1))
+        except (TypeError, ValueError):
+            print(f"wakeword {name}: checksum mismatch", flush=True)
+            continue
+        accepted.append({"name": name, "persona": persona, "threshold": threshold, "patience": patience,
+                         "path": op, "enrolled": True, "sha256": sha})
+    return accepted
+
+
+def sync_wakewords(directory=None):
+    """Load models dropped into the wakewords directory. Sets RELOAD when the accepted set changes."""
+    words = load_dropped_wakewords(directory)
+    try:
+        os.makedirs(ENROLLED_DIR, exist_ok=True)
+    except OSError:
+        if words:
+            RELOAD.set()
+        return words
     cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
     old = open(cfgp).read() if os.path.isfile(cfgp) else ""
     new = json.dumps({"words": words}, indent=1)
     if new != old:
-        with open(cfgp + ".tmp", "w") as f:
-            f.write(new)
-        os.replace(cfgp + ".tmp", cfgp)
-        changed = True
-    if changed:
+        try:
+            with open(cfgp + ".tmp", "w") as f:
+                f.write(new)
+            os.replace(cfgp + ".tmp", cfgp)
+        except OSError as e:
+            print(f"wakeword list: {type(e).__name__}", flush=True)
         RELOAD.set()
+    return words
 
 
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
@@ -1113,15 +1106,14 @@ class Session:
         try:
             for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
                 try:
-                    tls = {"ssl": relay_ssl()} if RELAY_URL.startswith("wss://") else {}
                     q = [f"persona={self.persona}"] if self.persona != "grok" else []
                     tq = timers_query()
                     if tq:
                         q.append("timers=" + tq)
                     q.append("t1=" + t1_query())
                     url = RELAY_URL + ("?" + "&".join(q) if q else "")
-                    ws = connect(url, additional_headers={"Authorization": f"Bearer {RELAY_TOKEN}"},
-                                 open_timeout=4, max_size=1 << 22, legacy=True, **tls)
+                    ws = connect(url, additional_headers={"Authorization": f"Bearer {relay_token()}"},
+                                 open_timeout=4, max_size=1 << 22, legacy=True)
                     break
                 except Exception as e:
                     err = e

@@ -438,6 +438,15 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self._canary(True)  # response.created was buffered, then counted and dropped
         self._quiet(DINNER, ASK_JULES, TACOS, TOKEN, out["url"], PRE)
 
+    async def test_single_wake_word_hands_off_to_a_bot(self):
+        """Single device: only "Hey Grok" is enabled. "Hey Grok, ask Jules X" still hands off to Jules."""
+        out = await self.drive(ASK_JULES, persona="grok")
+        self._assert_routed_silence(out)
+        self.assertEqual(self._replies(out["events"])[0], "Asking Jules\u2026")
+        self.assertEqual(self.calls[0]["persona"], "jules")
+        self.assertEqual(self.pendings[0]["question"], DINNER)
+        self.assertEqual(self._replies(out["events"])[-1], TACOS)
+
     async def test_persona_without_a_webhook_keeps_the_model(self):
         out = await self.drive("what time is it", persona="hank")
         updates = self._updates(out["upstream"])

@@ -877,3 +877,32 @@ def set_autocheck(path, on):
     doc["autocheck"] = on
     _atomic_json(path, doc)
     return "update-autocheck on" if on else "update-autocheck off"
+
+
+def assert_tag(ref):
+    """Tags only: vX.Y.Z. Branch names, raw commits and pre-release tags are refused."""
+    if not isinstance(ref, str) or _VERSION.fullmatch(ref) is None:
+        raise ManifestError("bad-format", "version")
+    return ref
+
+
+def assert_tag_on_main(ref, on_main):
+    """on_main(ref) must be True when the tag commit is an ancestor of main. The callback is injected."""
+    assert_tag(ref)
+    if not callable(on_main) or on_main(ref) is not True:
+        raise ManifestError("not-on-main", "version")
+    return ref
+
+
+def apply_decision(tag, manifest, file_sha, health_ok):
+    """keep only when the tag is valid, the tarball sha256 matches, and the health check passed."""
+    assert_tag(tag)
+    try:
+        want = manifest["components"]["station"]["sha256"]
+    except (KeyError, TypeError):
+        return "rollback"
+    if _norm_sha(file_sha) != _norm_sha(want):
+        return "rollback"
+    if health_ok is not True:
+        return "rollback"
+    return "keep"

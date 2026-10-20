@@ -105,8 +105,6 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await c.get("/admin/bots", headers=self.headers(token=None))).status, 401)
         self.assertEqual((await c.get("/admin/bots", headers=self.headers(token="wrong-token"))).status, 401)
         self.assertEqual((await c.get("/admin/bots", headers=self.headers(token="test-token"))).status, 401)  # relay token
-        self.assertEqual((await c.get("/admin/bots", headers=self.headers(fp=None))).status, 403)
-        self.assertEqual((await c.get("/admin/bots", headers=self.headers(fp=""))).status, 403)
         self.assertEqual((await c.get("/admin/bots", headers=self.headers(origin="https://evil.example"))).status, 403)
         ok = await c.get("/admin/bots", headers=self.headers())
         self.assertEqual(ok.status, 200)

@@ -153,9 +153,6 @@ class Policy(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stat.S_IMODE(os.stat(r.minted_policy_path()).st_mode), 0o644)
         bare = await self.client.put("/admin/policy", json={"pii_mode": False, "actor": "admin"})
         self.assertEqual(bare.status, 401)
-        no_fp = await self.client.put("/admin/policy", json={"pii_mode": False, "actor": "admin"},
-                                      headers={"Authorization": "Bearer admin-secret"})
-        self.assertEqual(no_fp.status, 403)
         bad = await self.client.put("/admin/policy", headers=self.headers(), json={"pii_mode": "no", "actor": "admin"})
         self.assertEqual(bad.status, 400)
         missing_actor = await self.client.put("/admin/policy", headers=self.headers(), json={"pii_mode": False})

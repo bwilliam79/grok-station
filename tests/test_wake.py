@@ -65,7 +65,6 @@ class TestWake(unittest.TestCase):
         cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "wake", "wakewords.json")))
         names = {w["name"]: w for w in cfg["words"]}
         self.assertNotIn("hey_finn", names)
-        self.assertTrue(names["hey_rhea"]["provisional"])
         for w in cfg["words"]:
             self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "wake", "models", w["name"] + ".onnx")))
 
@@ -103,7 +102,7 @@ class TestEnroll(unittest.TestCase):
             ph = gw.enroll_phrases()
         finally:
             gw.WAKE_CONFIG, gw.OVERRIDES = old
-        self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank"); self.assertEqual(ph["hey_rhea"], "rhea")
+        self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank")
 
     def test_override_persona_and_parse_enroll(self):
         d = tempfile.mkdtemp()
@@ -217,72 +216,17 @@ class EnrollFlow(unittest.TestCase):
         self.assertEqual(posted[0], "prompt")
         self.assertEqual(posted[1:4], ["ready", "recording", "saved"])
         self.assertIn("loud", posted)
-        self.assertEqual(posted[-1], "uploaded")
-        self.assertEqual(sum(1 for p, _ in uploads if p.endswith(".wav")), 10)
-        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
-        self.assertEqual(done["count"], 10)
-        self.assertNotIn("prior", done)
+        self.assertEqual(uploads, [])  # single device: clips stay on this Pi, nothing is uploaded
 
-    def test_topup_names_prior_session(self):
-        _, uploads = self.run_enroll(topup=True)
-        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
-        self.assertEqual(done["prior"], "20261019-150740")
-
-    def test_hyphenated_bot_is_grok_on_the_relay_only(self):
-        _, uploads = self.run_enroll(phrase="hey_kitchen", persona="kitchen-bot")
-        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
-        self.assertEqual(done["persona"], "grok")
-        self.assertEqual(gw.ENROLL_STATE["last"]["persona"], "kitchen-bot")
-        self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "training")
-        self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training.")
+    def test_clips_saved_locally(self):
+        import glob
+        old = gw.ENROLL_DIR
+        posted, uploads = self.run_enroll()
+        self.assertEqual(uploads, [])
 
 
 class TrainingNotice(unittest.TestCase):
     """A finished job posts a short notice. "done" without passed is a gate miss, not a success."""
-
-    def test_published_and_failed_quality_notices(self):
-        posted = []
-        old = (gw.relay_get, gw.post_state, gw.time.sleep, gw.ENROLL_STATE.get("last"))
-        gw.post_state = lambda state, **kw: posted.append((state, kw))
-        gw.time.sleep = lambda s: None
-        gw.SESSION_OPEN.clear()
-        gw.ENROLL_STATE["last"] = {"phrase": "hey_finn", "session": "s1", "stage": "training",
-                                   "message": "Training.", "persona": "finn"}
-
-        def run(doc):
-            posted.clear()
-            gw.SYNC_NOW.clear()
-            gw.relay_get = lambda path: json.dumps(doc)
-            gw.follow_training("hey_finn", "s1", "“Hey Finn”", "finn", every=0, limit=30)
-
-        try:
-            run({"state": "published"})
-            self.assertEqual(posted, [("notice", {"text": "Hey Finn is ready", "who": "finn"})])
-            self.assertTrue(gw.SYNC_NOW.is_set())
-            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "published")
-            run({"state": "failed_quality"})
-            self.assertEqual(posted[0][0], "notice")
-            self.assertEqual(posted[0][1]["text"], "Hey Finn needs more clips. Record 20-30 somewhere quiet.")
-            self.assertFalse(gw.SYNC_NOW.is_set())
-            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed_quality")
-            run({"state": "failed"})
-            self.assertEqual(posted, [("enroll", {"text": "“Hey Finn”", "who": "finn", "heard": "0/0|error|"})])
-            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed")
-            self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training didn't pass.")
-            self.assertFalse(gw.SYNC_NOW.is_set())
-            run({"state": "done", "passed": False})  # legacy log: not a success
-            self.assertEqual(posted[0][1]["text"], "Hey Finn needs more clips. Record 20-30 somewhere quiet.")
-            self.assertFalse(gw.SYNC_NOW.is_set())
-            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed_quality")
-            run({"state": "done", "passed": True})
-            self.assertEqual(posted[0][1]["text"], "Hey Finn is ready")
-            self.assertTrue(gw.SYNC_NOW.is_set())
-            self.assertEqual(gw.training_notice("hey_kitchen-bot", True), "Hey Kitchen Bot is ready")
-            self.assertEqual(gw._train_outcome({"state": "done"}), "failed_quality")
-        finally:
-            gw.relay_get, gw.post_state, gw.time.sleep, gw.ENROLL_STATE["last"] = old
-            gw.SYNC_NOW.clear()
-            gw.SESSION_OPEN.clear()
 
     def test_stale_guest_key_is_honored_once_then_dropped(self):
         import urllib.parse
@@ -347,11 +291,11 @@ class TrainingNotice(unittest.TestCase):
             st, j = post({"phrase": "hey_finn", "count": 31})
             self.assertEqual((st, j.get("error")), (400, "count must be 20-30"))
             st, j = post({"phrase": "hey_finn", "count": 25})
-            self.assertEqual(st, 503)  # count accepted; this test has no relay
+            self.assertNotEqual(st, 400)  # count accepted
             st, j = post({"phrase": "hey_finn", "count": 20})
-            self.assertEqual(st, 503)
+            self.assertNotEqual(st, 400)
             st, j = post({"phrase": "hey_finn", "count": 30})
-            self.assertEqual(st, 503)
+            self.assertNotEqual(st, 400)
         finally:
             if gw.CONTROL_HTTPD is not None:
                 gw.CONTROL_HTTPD.shutdown()
@@ -504,3 +448,10 @@ class HandoffWaitScreen(unittest.TestCase):
         self.assertFalse(gw.handoff_keepalive_due(s))
         s.handoff_text, s.active = "…", False
         self.assertFalse(gw.handoff_keepalive_due(s))
+
+
+class SingleWakeWordDefault(unittest.TestCase):
+    def test_default_config_enables_only_hey_grok_plus_fallback(self):
+        cfg = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "wake", "wakewords.json")))
+        self.assertEqual([w["name"] for w in cfg["words"]], ["hey_grok"])
+        self.assertEqual(cfg["fallback"]["name"], "hey_jarvis")

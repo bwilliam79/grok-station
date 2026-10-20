@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""grok-station voice relay: holds the xAI key so the Pi never does.
+"""grok-station voice relay: runs on the same Pi as the display and holds the xAI key.
 
-The Pi opens ws://<relay>:8790/ws with "Authorization: Bearer $RELAY_TOKEN" and streams mic audio
+The station opens ws://127.0.0.1:8790/ws with "Authorization: Bearer <local token>" and streams mic audio
 as binary PCM16 24 kHz mono frames. The relay opens one xAI realtime session per connection
 (server VAD) and sends back binary frames of reply audio (PCM16 24 kHz mono) plus small JSON events:
   {"type":"ready"} {"type":"speech_started"} {"type":"speech_stopped"} {"type":"heard","text":...}
@@ -15,28 +15,28 @@ with no speech in progress and no response (measured from session start or the l
 short noise that gets no reply doesn't end the turn), or at MAX_SESSION seconds.
 GET /health returns {"ok":true} (details only with the token).
 
-Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env. Requests with an Origin header
-(browsers) are refused; one session at a time (atomic check-and-set); no daily talk-time cap (per-turn and
-per-session caps only); 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
-capped. Alerts (lockout, handoff) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
+Hardening: secrets come from files under /etc/grok-station/secrets (env-overridable), not the process environment
+on the Pi. Requests with an Origin header (browsers) are refused; one session at a time (atomic check-and-set);
+no daily talk-time cap (per-turn and per-session caps only); 5 bad tokens from a source in 10 min lock it out
+for 15 min; upstream audio per session is capped. The listener binds 127.0.0.1. Alerts (lockout, handoff) go as
+JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 """
-import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, socket, tempfile, time, unicodedata
+import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
 import handoff
 import tools as station_tools
 import t1
-import control
-import release
-import release_fetch
 
 E = os.environ.get
+SECRETS_DIR = E("GROK_SECRETS_DIR", "/etc/grok-station/secrets")
+STATE_DIR = E("GROK_STATE_DIR", "/var/lib/grok-station")
 
 
 def secret(name, multi=False):
-    """Read /run/secrets/<name> (compose secrets); env fallback only for local runs."""
+    """Read $GROK_SECRETS_DIR/<name>. Env NAME (upper) is only the fallback for local runs and tests."""
     try:
-        with open(f"/run/secrets/{name}") as f:
+        with open(os.path.join(SECRETS_DIR, name)) as f:
             v = f.read()
     except OSError:
         v = E(name.upper(), "")
@@ -44,11 +44,20 @@ def secret(name, multi=False):
     return lines if multi else (lines[0] if lines else "")
 
 
+def _token_lines():
+    """Station bearer tokens. The file is local_token. RELAY_TOKEN is accepted so existing tests keep working."""
+    lines = secret("local_token", multi=True)
+    if lines:
+        return lines
+    return [l.strip() for l in E("RELAY_TOKEN", "").splitlines() if l.strip()]
+
+
 KEY = secret("xai_api_key")
-TOKENS = [t.encode() for t in secret("relay_token", multi=True)]  # one per line: current (+ next, while rotating)
-ADMIN_TOKEN = secret("admin_token").encode()  # Bots admin API; separate from the station's relay token
+TOKENS = [t.encode() for t in _token_lines()]
+ADMIN_TOKEN = secret("admin_token").encode()  # loopback bots API; the station token does not pass
 MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
+BIND = E("RELAY_BIND", "127.0.0.1")
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))  # MAX_SESSION is per turn
 MULTI_TURN = E("MULTI_TURN", "1") != "0"           # keep the session open for a follow-up after each reply
 MAX_TOTAL = float(E("MAX_TOTAL", "180"))            # all turns of one connection together
@@ -58,14 +67,13 @@ INSTRUCTIONS = E("INSTRUCTIONS", (
 TZ = E("TZ_NAME", "America/Chicago")                  # for the "current date and time" line in the instructions
 KEYTERMS = [t.strip()[:50] for t in (secret("keyterms") or "Grok").split(",") if t.strip()][:100]  # transcription bias
 MAX_UP_SECONDS = float(E("MAX_UP_SECONDS", str(MAX_TOTAL + 5 if MULTI_TURN else 65)))     # upstream audio per session (PCM16 24 kHz = 48000 B/s)
-ALERT_DIR = E("ALERT_DIR", "/alerts")                  # optional: ntfy outbox (files <ms>-<hex>.json)
+ALERT_DIR = E("ALERT_DIR", os.path.join(STATE_DIR, "alerts"))  # optional: ntfy outbox (files <ms>-<hex>.json)
 LOCK_FAILS, LOCK_WINDOW, LOCK_FOR = 5, 600, 900
-PERSONAS_FILE = E("PERSONAS_FILE", "/config/personas.json")  # private registry, mounted read-only; absent = Grok only
-PORTRAIT_DIRS = [d for d in E("PORTRAIT_DIRS", "/portraits/a:/portraits/b").split(":") if d]
-TLS_HOST = E("TLS_HOST", "tls")  # the Caddy front; only its X-Client-Cert-Fp header is trusted for the lockout key
-PORTRAIT_WRITE = E("PORTRAIT_WRITE", "/portraits/w")  # bot-uploaded portraits; served before the read-only dirs
-AUDIT_MIRROR = E("AUDIT_MIRROR", "/voice/audit/audit.log")  # legacy: a *.log path uses its directory, else the directory
-AUDIT_MIRROR_DIR = E("AUDIT_MIRROR_DIR", "")  # preferred mirror directory; empty falls back to AUDIT_MIRROR (/voice/audit)
+PERSONAS_FILE = E("PERSONAS_FILE", os.path.join(STATE_DIR, "personas", "personas.json"))  # absent = Grok only
+PORTRAIT_DIRS = [d for d in E("PORTRAIT_DIRS", os.path.join(STATE_DIR, "portraits")).split(":") if d]
+PORTRAIT_WRITE = E("PORTRAIT_WRITE", os.path.join(STATE_DIR, "portraits"))  # bot-uploaded portraits; served first
+AUDIT_MIRROR = E("AUDIT_MIRROR", os.path.join(STATE_DIR, "audit", "audit.log"))  # a *.log path uses its directory
+AUDIT_MIRROR_DIR = E("AUDIT_MIRROR_DIR", "")  # preferred mirror directory; empty falls back to AUDIT_MIRROR
 AVATAR_MAX, AVATAR_PIXELS, AVATAR_HOUR = 2 << 20, 4_194_304, 6
 _NAME_RE = re.compile(r"[a-z][a-z .'-]{1,39}")
 
@@ -99,10 +107,10 @@ _policy = {"mtime": None, "pii": True}
 _portraits_version = 0
 _avatar_hits = {}  # slug -> [monotonic timestamps] for POST /voice/avatar, 6/hour
 # Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1. Each bot uses its own webhook.
-# Router mode is retired. Webhooks live in the writable bots dir (mode 600), not a compose secret. Every bot answers at T0.
+# Router mode is retired. Webhooks live in the bots dir (mode 600). Every bot answers at T0.
 HANDOFF = E("HANDOFF_ENABLED", "0") == "1"
-WEBHOOKS_FILE = E("WEBHOOKS_FILE", "/bots/webhooks.json")
-MINTED_FILE = E("VOICE_MINTED_FILE", "/voice/minted/voice-tokens.json")
+WEBHOOKS_FILE = E("WEBHOOKS_FILE", os.path.join(STATE_DIR, "bots", "webhooks.json"))
+MINTED_FILE = E("VOICE_MINTED_FILE", os.path.join(STATE_DIR, "voice", "minted", "voice-tokens.json"))
 _hooks = {"mtime": None, "map": {}}
 _runs = {}          # admin test id -> in-memory record (pasted url/key live only until that test posts)
 _run_tasks = set()
@@ -120,8 +128,16 @@ def _stat_ns(path):
         return None
 
 
+def file_mode(mode):
+    """GROK_SHARED_STATE=1 keeps group rw so grok-admin and grok-relay share state files."""
+    if mode == 0o600 and os.environ.get("GROK_SHARED_STATE") == "1":
+        return 0o660
+    return mode
+
+
 def atomic_write(path, data, mode=0o600):
     """Write path by temp file in the same directory, fsync, then rename. One file, no partial reads."""
+    mode = file_mode(mode)
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".tmp-", dir=directory)
@@ -168,10 +184,11 @@ def webhooks():
         # Names only. The URL and token never go to the log.
         log(f"handoff: {len(bots)} bot webhook(s): {' '.join(bots)}".rstrip())
     return _hooks["map"]
-PENDING_DIR, REPLIES_DIR = E("HANDOFF_PENDING", "/voice/pending"), E("HANDOFF_REPLIES", "/voice/replies")
+PENDING_DIR = E("HANDOFF_PENDING", os.path.join(STATE_DIR, "voice", "pending"))
+REPLIES_DIR = E("HANDOFF_REPLIES", os.path.join(STATE_DIR, "voice", "replies"))
 REPLY_WAIT = float(E("REPLY_WAIT", "120"))          # seconds the station waits for a teammate's answer
 STILL_AFTER = float(E("STILL_AFTER", "20"))         # then says "Still asking <bot>" once, wait screen stays up
-_limits = handoff.Limits(E("HANDOFF_STATE", "/state/handoff.json"), lambda: today())
+_limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "handoff.json")), lambda: today())
 _seen_rids = set()
 
 
@@ -188,7 +205,6 @@ def lint(text, hosts):
         if re.search(r"(?<![a-z0-9-])" + re.escape(h) + r"(?![a-z0-9-])", low):
             return "internal host name"
     return None
-_tls_ip = {"at": 0.0, "ip": None}
 URL = f"wss://api.x.ai/v1/realtime?model={MODEL}"
 QUIET = {"response.output_audio.delta", "response.audio.delta", "response.output_audio_transcript.delta",
          "response.audio_transcript.delta", "conversation.item.input_audio_transcription.updated"}
@@ -689,17 +705,7 @@ def backup_target(text, roster):
 
 
 def lock_key(req):
-    """Per client certificate when the request came through the Caddy front, else the source address."""
-    fp = req.headers.get("X-Client-Cert-Fp", "")
-    if fp and re.fullmatch(r"[0-9a-fA-F]{40,128}", fp):
-        if time.monotonic() - _tls_ip["at"] > 60:
-            try:
-                _tls_ip["ip"] = socket.gethostbyname(TLS_HOST)
-            except OSError:
-                _tls_ip["ip"] = None
-            _tls_ip["at"] = time.monotonic()
-        if _tls_ip["ip"] and req.remote == _tls_ip["ip"]:
-            return "cert:" + fp[:16].lower()
+    """Source address. The relay listens on loopback, so this is the local client."""
     return req.remote or "?"
 
 
@@ -740,148 +746,6 @@ async def portrait_route(req):
     return web.json_response({"error": "not found"}, status=404)
 
 
-ENROLL_DIR = E("ENROLL_DIR", "/enroll")          # inbox for station enroll clips (host dir, rw); absent = disabled
-WAKEWORD_DIR = E("WAKEWORD_DIR", "/wakewords")   # trained models published by the training host (ro)
-PHRASE, SESSION, CLIP = re.compile(r"^hey_[a-z]{2,16}$"), re.compile(r"^\d{8}-\d{6}$"), re.compile(r"^(\d{2})\.wav$")
-MAX_CLIPS = 40
-
-
-def wav_ok(b):
-    """16 kHz mono PCM16 WAV, 0.3-5 s. Header parsed by hand; nothing else is accepted."""
-    import io, wave
-    try:
-        with wave.open(io.BytesIO(b)) as w:
-            n = w.getnframes()
-            return ((w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2) and 4800 <= n <= 80000
-                    and len(w.readframes(n)) == 2 * n)  # header and data agree (no truncated upload)
-    except Exception:
-        return False
-
-
-async def gate(req):
-    src = lock_key(req)
-    if locked_out(src):
-        return web.json_response({"error": "locked out"}, status=429)
-    if not authorized(req):
-        note_failure(src)
-        return web.json_response({"error": "unauthorized"}, status=401)
-    return None
-
-
-async def enroll_route(req):
-    """POST /enroll/<phrase>/<session>/<NN>.wav (clip) or .../done (JSON {"persona","count"}): write to the inbox."""
-    bad = await gate(req)
-    if bad:
-        return bad
-    ph, ses, item = (req.match_info.get(k, "") for k in ("phrase", "session", "item"))
-    if not (os.path.isdir(ENROLL_DIR) and PHRASE.match(ph) and SESSION.match(ses)):
-        return web.json_response({"error": "bad request"}, status=400)
-    d = os.path.join(ENROLL_DIR, ph, ses)
-    if (req.content_length or 0) > 200_000:
-        return web.json_response({"error": "too large"}, status=413)
-    body = await req.read()  # whole body (content.read(n) can return a partial chunk); aiohttp caps it at 1 MiB
-    m = CLIP.match(item)
-    if m:
-        if int(m.group(1)) >= MAX_CLIPS or len(body) > 200_000 or not wav_ok(body):
-            return web.json_response({"error": "bad clip"}, status=400)
-        os.makedirs(d, exist_ok=True)
-        if os.path.exists(os.path.join(d, "READY")):
-            return web.json_response({"error": "session closed"}, status=409)
-        tmp = os.path.join(d, f".{item}.tmp")
-        with open(tmp, "wb") as f:
-            f.write(body)
-        os.replace(tmp, os.path.join(d, item))
-        log(f"enroll: {ph} {ses} clip {item}")
-        return web.json_response({"ok": True})
-    if item == "done":
-        try:
-            j = json.loads(body or b"{}")
-        except ValueError:
-            j = {}
-        persona = str(j.get("persona", ""))
-        prior = str(j.get("prior", ""))  # top-up: an earlier finished session of the same phrase to train with
-        if prior and not (SESSION.match(prior) and prior != ses and os.path.isfile(os.path.join(ENROLL_DIR, ph, prior, "READY"))):
-            return web.json_response({"error": "bad prior session"}, status=400)
-        n = len([f for f in os.listdir(d) if CLIP.match(f)]) if os.path.isdir(d) else 0
-        if n < (5 if prior else 10) or not SLUG.match(persona):
-            return web.json_response({"error": "need 10+ clips (5+ for a top-up) and a persona slug"}, status=400)
-        with open(os.path.join(d, ".READY.tmp"), "w") as f:
-            json.dump({"phrase": ph, "persona": persona, "clips": n, "at": int(time.time()), **({"prior": prior} if prior else {})}, f)
-        os.replace(os.path.join(d, ".READY.tmp"), os.path.join(d, "READY"))
-        log(f"enroll: {ph} {ses} ready ({n} clips)")
-        return web.json_response({"ok": True, "clips": n})
-    return web.json_response({"error": "bad request"}, status=400)
-
-
-def enroll_status(ph, ses):
-    """Training status of one inbox session: recording | queued (position, 1 = next/training) | done (passed) | failed."""
-    d = os.path.join(ENROLL_DIR, ph, ses)
-    if not os.path.isdir(d):
-        return {"state": "unknown"}
-    if os.path.exists(os.path.join(d, "FAILED")):
-        return {"state": "failed"}
-    if os.path.exists(os.path.join(d, "DONE")):
-        try:
-            with open(os.path.join(d, "result.json")) as f:
-                r = json.load(f)
-        except (OSError, ValueError):
-            r = {}
-        return {"state": "done", "passed": bool(r.get("passed"))}
-    ready = os.path.join(d, "READY")
-    if not os.path.exists(ready):
-        return {"state": "recording"}
-    mine, ahead = os.path.getmtime(ready), 0
-    for p in os.listdir(ENROLL_DIR):
-        if not PHRASE.match(p) or not os.path.isdir(os.path.join(ENROLL_DIR, p)):
-            continue
-        for x in os.listdir(os.path.join(ENROLL_DIR, p)):
-            o = os.path.join(ENROLL_DIR, p, x)
-            if (p, x) != (ph, ses) and os.path.exists(os.path.join(o, "READY")) and not any(
-                    os.path.exists(os.path.join(o, k)) for k in ("DONE", "FAILED")) and os.path.getmtime(os.path.join(o, "READY")) < mine:
-                ahead += 1
-    return {"state": "queued", "position": ahead + 1}
-
-
-async def enroll_status_route(req):
-    """GET /enroll/<phrase>/<session>/status (token): the station follows its enrollment to a pass/fail notice."""
-    bad = await gate(req)
-    if bad:
-        return bad
-    ph, ses = req.match_info.get("phrase", ""), req.match_info.get("session", "")
-    if not (os.path.isdir(ENROLL_DIR) and PHRASE.match(ph) and SESSION.match(ses)):
-        return web.json_response({"error": "bad request"}, status=400)
-    return web.json_response(enroll_status(ph, ses))
-
-
-async def wakewords_route(req):
-    """GET /wakewords: published models (name, persona, threshold, patience, sha256, metrics)."""
-    bad = await gate(req)
-    if bad:
-        return bad
-    out = []
-    if os.path.isdir(WAKEWORD_DIR):
-        for f in sorted(os.listdir(WAKEWORD_DIR)):
-            if f.endswith(".json") and PHRASE.match(f[:-5]) and os.path.isfile(os.path.join(WAKEWORD_DIR, f[:-5] + ".onnx")):
-                try:
-                    with open(os.path.join(WAKEWORD_DIR, f)) as fh:
-                        j = json.load(fh)
-                    out.append({k: j[k] for k in ("name", "persona", "threshold", "patience", "sha256", "trained", "recall_real", "fa_h") if k in j})
-                except (OSError, ValueError, KeyError):
-                    continue
-    return web.json_response({"wakewords": out})
-
-
-async def wakeword_file(req):
-    bad = await gate(req)
-    if bad:
-        return bad
-    name = req.match_info.get("name", "")
-    f = os.path.join(WAKEWORD_DIR, name + ".onnx")
-    if PHRASE.match(name) and os.path.isfile(f) and os.path.getsize(f) <= 4 << 20:
-        with open(f, "rb") as fh:
-            return web.Response(body=fh.read(), content_type="application/octet-stream", headers={"Cache-Control": "no-store"})
-    return web.json_response({"error": "not found"}, status=404)
-
 
 async def load_voices():
     while not VOICES:
@@ -898,6 +762,12 @@ async def fetch_voices():
         VOICES.update(v.get("voice_id", "").lower() for v in j.get("voices", []) if v.get("voice_id"))
     except Exception as e:
         log("voices: list failed, personas not voice-checked:", type(e).__name__)
+    if VOICES:
+        try:
+            atomic_write(os.path.join(STATE_DIR, "voices", "offered.json"),
+                         (json.dumps({"voices": sorted(VOICES)}) + "\n").encode(), 0o644)
+        except OSError:
+            pass
     log(f"voices: {len(VOICES)} offered")
     _personas["mtime"] = None  # re-validate the registry against the list
     persona_list()
@@ -914,7 +784,7 @@ async def health(req):
 def _mark_busy(n):
     """Session flag plus a file the host updater can see. No await, no secrets."""
     stats["busy"] = n
-    path = os.environ.get("VOICE_BUSY", "/state/voice-busy")
+    path = os.environ.get("VOICE_BUSY", os.path.join(STATE_DIR, "state", "voice-busy"))
     try:
         if n:
             directory = os.path.dirname(path) or "."
@@ -1921,7 +1791,7 @@ def admin_authorized(req):
 
 
 async def admin_gate(req):
-    """Bearer admin token, a client-cert fingerprint from Caddy, and no Origin. Bad tokens share /ws lockout."""
+    """Bearer admin token and no Origin. Bad tokens share /ws lockout. Loopback only; no client certificate."""
     if "Origin" in req.headers:
         return web.json_response({"error": "origin not allowed"}, status=403)
     src = lock_key(req)
@@ -1930,9 +1800,6 @@ async def admin_gate(req):
     if not admin_authorized(req):
         note_failure(src)
         return web.json_response({"error": "unauthorized"}, status=401)
-    fp = req.headers.get("X-Client-Cert-Fp", "")
-    if not isinstance(fp, str) or not fp.strip():
-        return web.json_response({"error": "client certificate required"}, status=403)
     return None
 
 
@@ -2332,217 +2199,9 @@ async def admin_avatar_request(req):
     return web.json_response({"test_id": tid}, status=202)
 
 
-# Station control channel. Caddy (:8445) requires a client cert from the pinned station CA and
-# forwards that leaf as X-Client-Cert plus its fingerprint. The checks live in control.py.
-# Station-side issuance is not in this repo: the station pairing CA is assumed to issue the
-# station client cert (SAN DNS station-<16 lowercase hex>, EKU clientAuth only, CA bit clear).
-# A relay-<16 hex> pairing cert is the other direction and is rejected. Revocation is a JSON
-# file the station publishes; this process does not dial out to fetch it. The container writes
-# an update request file and does not run docker.
-_seen = {}
-_xai_cache = {"mono": None, "value": None}
-XAI_PROBE = None  # tests inject a session open/close probe; production uses default_xai_probe
-MANIFEST_FETCHER = None  # tests inject; production fetches MANIFEST_URL over verified HTTPS
-
-
-def _read_bytes(path):
-    try:
-        with open(path, "rb") as handle:
-            return handle.read()
-    except OSError:
-        return None
-
-
-def _control_now():
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def load_station_revocation():
-    """Missing file: nothing revoked. Unreadable shape: fail closed (None)."""
-    raw = _read_bytes(os.environ.get("STATION_REVOCATION_FILE", "/station-ca/revocation.json"))
-    if raw is None:
-        return set()
-    return control.load_revocation(raw)
-
-
-def verify_control_client(req, now=None):
-    """Leaf chained to the pinned station CA, or None. See control.verify_station_client."""
-    leaf = control.load_header_cert(req.headers.get("X-Client-Cert", ""))
-    ca = _read_bytes(os.environ.get("STATION_CA_FILE", "/station-ca/ca.crt"))
-    if not control.verify_station_client(leaf, ca, load_station_revocation(), now or _control_now()):
-        return None
-    if not control.fingerprint_matches(leaf, req.headers.get("X-Client-Cert-Fp", "")):
-        return None
-    return control.load_cert_bytes(leaf)
-
-
-def _installed_text():
-    raw = _read_bytes(os.environ.get("RELAY_INSTALLED", "/state/installed.json"))
-    if not raw:
-        return ""
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return ""
-
-
-def _banned_secrets():
-    found = []
-    if isinstance(KEY, str) and len(KEY) >= 8:
-        found.append(KEY)
-    blobs = [ADMIN_TOKEN]
-    blobs.extend(TOKENS if isinstance(TOKENS, list) else [])
-    for blob in blobs:
-        if isinstance(blob, bytes) and len(blob) >= 8:
-            try:
-                found.append(blob.decode("utf-8"))
-            except UnicodeDecodeError:
-                continue
-    return tuple(found)
-
-
-def audit_control(event, detail):
-    """`<ts> station relay <event> <detail>`. Detail is a token: no secrets, addresses, or questions."""
-    if not isinstance(event, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,32}", event) is None:
-        return
-    if not isinstance(detail, str) or re.fullmatch(r"[!-~]{1,64}", detail) is None:
-        return
-    if "@" in detail or "://" in detail or "BEGIN" in detail or "?" in detail:
-        return
-    for secret in _banned_secrets():
-        if secret and secret in detail:
-            return
-    _write_audit_line(f"{_audit_stamp()} station relay {event} {detail}\n")
-
-
-def _rate_usage():
-    """Voice time since this process started, against the per-connection cap. Not a secret."""
-    try:
-        used = round(float(stats.get("seconds") or 0), 1)
-    except (TypeError, ValueError):
-        used = 0.0
-    try:
-        busy = int(stats.get("busy") or 0)
-    except (TypeError, ValueError):
-        busy = 0
-    return {"used_s": used, "cap_s": MAX_TOTAL, "busy": busy}
-
-
-async def default_xai_probe():
-    """Open one realtime session and close it. Returns ok or an error code. No transcript."""
-    if not KEY:
-        return "no-key"
-    try:
-        timeout = ClientTimeout(total=8)
-        async with ClientSession(timeout=timeout) as http:
-            async with http.ws_connect(
-                URL, headers={"Authorization": "Bearer " + KEY}, heartbeat=20, timeout=timeout,
-            ) as ws:
-                await ws.send_json({"type": "session.update", "session": {}})
-                await ws.close()
-        return "ok"
-    except Exception as err:
-        code = re.sub(r"[^A-Za-z0-9._:-]", "", type(err).__name__)[:32]
-        return code or "error"
-
-
-async def cached_xai(now_mono=None):
-    """Probe result, reused for 60 seconds. Tests pass XAI_PROBE and may pass now_mono."""
-    now_mono = time.monotonic() if now_mono is None else now_mono
-    cached, at = _xai_cache.get("value"), _xai_cache.get("mono")
-    if cached is not None and isinstance(at, (int, float)) and now_mono - at < 60:
-        return cached
-    probe = XAI_PROBE or default_xai_probe
-    try:
-        value = probe()
-        if asyncio.iscoroutine(value):
-            value = await value
-    except Exception:
-        value = "error"
-    value = control.sanitize_xai(value)
-    _xai_cache["mono"] = now_mono
-    _xai_cache["value"] = value
-    return value
-
-
-def _voice_busy():
-    if stats.get("busy"):
-        return True
-    raw = _read_bytes(os.environ.get("VOICE_BUSY", "/state/voice-busy"))
-    return bool(raw and raw.strip() not in (b"", b"0"))
-
-
-def _fetch_manifest():
-    """Manifest bytes or a dict. The default fetcher is release_fetch.https_get (verified TLS, allow-listed hops)."""
-    if MANIFEST_FETCHER is not None:
-        body = MANIFEST_FETCHER()
-    else:
-        body = release.fetch_manifest(release_fetch.https_get)
-    return release.parse_manifest(body)
-
-
 async def healthz(_req):
     """Loopback health gate for the host updater. No secrets."""
     return web.json_response({"ok": True})
-
-
-async def admin_status(req):
-    """GET /admin/status. Station mTLS only. No question text, replies, or secrets."""
-    if "Origin" in req.headers:
-        return web.json_response({"error": "origin not allowed"}, status=403)
-    leaf = verify_control_client(req)
-    if leaf is None:
-        return web.json_response({"error": "client certificate required"}, status=403)
-    control.note_seen(_seen, _control_now())
-    version, _tag, compat = control.read_release_file(_installed_text())
-    usage = _rate_usage()
-    doc = control.status_document(
-        version, compat, control.last_seen_text(_seen), await cached_xai(),
-        control.key_last4(KEY if isinstance(KEY, str) else ""),
-        control.cert_expiry(leaf), pii_mode(), usage,
-        control.recent_audit_lines(bots_dir(), _banned_secrets(), 20),
-    )
-    doc["rate"] = usage["used_s"]
-    return web.json_response(doc)
-
-
-async def admin_update(req):
-    """POST /admin/update. Bad args do not fetch. Busy is 409 and does not fetch. No docker here."""
-    if "Origin" in req.headers:
-        audit_control("update-rejected", "bad-args")
-        return web.json_response({"error": "bad request"}, status=400)
-    if verify_control_client(req) is None:
-        audit_control("update-rejected", "cert")
-        return web.json_response({"error": "client certificate required"}, status=403)
-    try:
-        raw = await req.read()
-    except Exception:
-        raw = b""
-    version, _tag, _compat = control.read_release_file(_installed_text())
-    if control.body_bad_args(raw, version):
-        audit_control("update-rejected", "bad-args")
-        return web.json_response({"error": "bad request"}, status=400)
-    path = os.environ.get("UPDATE_REQUEST", "/state/update-request.json")
-    if _voice_busy() or os.path.exists(path):
-        audit_control("update-deferred", "busy")
-        return web.json_response({"error": "deferred", "reason": "busy"}, status=409)
-    try:
-        manifest = _fetch_manifest()
-    except release.ManifestError as err:
-        reason = err.reason if err.reason in ("expired", "future", "bad-format", "fetch-failed") else "fetch-failed"
-        audit_control("update-rejected", reason)
-        return web.json_response({"error": reason}, status=400)
-    decision = release.validate_update_request(raw, version, manifest)
-    if not decision.ok:
-        audit_control("update-rejected", decision.reason or "bad-args")
-        return web.json_response({"error": decision.reason or "bad-args"}, status=400)
-    try:
-        atomic_write(path, control.enqueue_body(decision.version), 0o600)
-    except OSError:
-        audit_control("update-rejected", "fetch-failed")
-        return web.json_response({"error": "unavailable"}, status=400)
-    audit_control("update-queued", decision.version)
-    return web.json_response({"ok": True, "status": "queued", "version": decision.version})
 
 
 ADMIN_ROUTES = [
@@ -2555,7 +2214,6 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
-    web.get("/admin/status", admin_status), web.post("/admin/update", admin_update),
 ]
 
 
@@ -2567,14 +2225,11 @@ if __name__ == "__main__":
     app = web.Application(client_max_size=8 << 20)  # avatar bodies are checked again at 2 MB
     app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),
-                    web.post("/enroll/{phrase}/{session}/{item}", enroll_route),
-                    web.get("/enroll/{phrase}/{session}/status", enroll_status_route),
-                    web.get("/wakewords", wakewords_route), web.get("/wakeword/{name}.onnx", wakeword_file),
                     *ADMIN_ROUTES])
     async def start_voices(_app):
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)
-    log(f"relay on :{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
+    log(f"relay on {BIND}:{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
         f"keyterms={len(KEYTERMS)} tz={TZ} caps=turn {MAX_SESSION:g}s/session {MAX_TOTAL:g}s (no daily cap) "
         f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")
-    web.run_app(app, port=PORT, print=None, access_log=None)
+    web.run_app(app, host=BIND, port=PORT, print=None, access_log=None)

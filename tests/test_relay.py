@@ -136,27 +136,6 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ev[-1], "done")                    # no 429
         self.assertEqual(u["sessions"], 10_001)
 
-    def test_enroll_status(self):
-        d = tempfile.mkdtemp(); old = relay.ENROLL_DIR; relay.ENROLL_DIR = d
-        try:
-            mk = lambda ph, ses, *files: [os.makedirs(os.path.join(d, ph, ses), exist_ok=True)] + [
-                open(os.path.join(d, ph, ses, f), "w").write("{}") for f in files]
-            mk("hey_finn", "20261019-150740", "READY")
-            import time as _t; _t.sleep(0.02)
-            mk("hey_rhea", "20261019-151005", "READY")
-            self.assertEqual(relay.enroll_status("hey_rhea", "20261019-151005"), {"state": "queued", "position": 2})
-            self.assertEqual(relay.enroll_status("hey_finn", "20261019-150740")["position"], 1)
-            open(os.path.join(d, "hey_finn", "20261019-150740", "result.json"), "w").write('{"passed": false}')
-            open(os.path.join(d, "hey_finn", "20261019-150740", "DONE"), "w").write("")
-            self.assertEqual(relay.enroll_status("hey_finn", "20261019-150740"), {"state": "done", "passed": False})
-            self.assertEqual(relay.enroll_status("hey_rhea", "20261019-151005")["position"], 1)
-            mk("hey_hank", "20261019-151148")
-            self.assertEqual(relay.enroll_status("hey_hank", "20261019-151148"), {"state": "recording"})
-            open(os.path.join(d, "hey_hank", "20261019-151148", "FAILED"), "w").write("")
-            self.assertEqual(relay.enroll_status("hey_hank", "20261019-151148"), {"state": "failed"})
-        finally:
-            relay.ENROLL_DIR = old
-
     def test_end_phrases(self):
         for t in ("Thanks", "thank you so much", "That's all", "that’s it.", "no thanks", "bye", "okay thanks Grok",
                   "goodbye Hank", "bye Hank", "ok thanks Hank", "thanks, that's it", "Thanks Hank, bye.",
