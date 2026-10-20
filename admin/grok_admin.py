@@ -193,12 +193,13 @@ class Auth:
             self.publish()
             return None
 
-    def login(self, user, pw):
+    def login(self, pw):
+        """Password only (no username). An older auth.json with a username keeps working: only the hash is read."""
         with LOCK:
             if self.locked() or self.setup_required():
                 return None
             rec = self.rec
-        ok = user == "admin" and check_password(str(pw or ""), rec)
+        ok = check_password(str(pw or ""), rec)
         with LOCK:
             if not ok:
                 self.note_fail()
@@ -533,6 +534,7 @@ RELAY_ENV = E("ADMIN_RELAY_ENV", "/etc/grok-station/admin-relay.env")
 RELAY_UNCONFIGURED = "The station can't reach the relay's admin API yet"
 LS_REMOTE = None  # tests: () -> "<40 hex>" or raises OSError. No network.
 UPDATE_REPO = "https://github.com/bwilliam79/grok-station"
+REBOOT_FLAG = E("ADMIN_REBOOT_FLAG", "/run/grok-station-reboot-required")  # install.sh: boot options changed
 RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
 BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
@@ -1613,6 +1615,7 @@ def updates_view():
         "checked_at": cache.get("checked_at") if isinstance(cache.get("checked_at"), int) else None,
         "autocheck": load_update_settings()["autocheck"],
         "job": update_job(),
+        "reboot_required": os.path.exists(REBOOT_FLAG),
         "history": recent_audit(20, "update"),
     }
 
@@ -1834,16 +1837,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- xAI key: write-only. The value is passed to the root helper on stdin and never stored, logged or echoed here.
     def api_get_xai_key(self, p, q, j):
-        return self.send(200, {"set": xai_key_set()})
+        st = xai_key_set()
+        last4 = str(read_json(path("xai_key_hint.json"), {}).get("last4", "")) if st else ""
+        return self.send(200, {"set": st, "last4": last4 if re.fullmatch(r"[A-Za-z0-9]{4}", last4) else ""})
 
     def api_post_xai_key(self, p, q, j):
         key = str(j.get("key", "")).strip()
         if not XAI_KEY_RE.fullmatch(key):
             return self.send(400, {"error": "That doesn't look like an xAI API key."})
         ok, out = helper("xai-key-set", stdin={"key": key})
+        last4 = key[-4:] if ok else ""  # only the last 4 characters are kept, to say which key is set
         key = None
         if not ok:
             return self.send(503, {"error": "Couldn't save the key. Try again."})
+        write_json(path("xai_key_hint.json"), {"last4": last4})
         AUTH.publish()
         return self.send(200, {"ok": True, "set": True})
 
@@ -1873,9 +1880,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_post_login(self, p, q, j):
         if AUTH.locked():
             return self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
-        s = AUTH.login(str(j.get("username", "")), j.get("password"))
+        s = AUTH.login(j.get("password"))
         if not s:
-            return self.send(429 if AUTH.locked() else 401, {"error": "Wrong username or password.", "locked_s": AUTH.locked()})
+            return self.send(429 if AUTH.locked() else 401, {"error": "Wrong password.", "locked_s": AUTH.locked()})
         return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL)])
 
     def api_post_logout(self, p, q, j):

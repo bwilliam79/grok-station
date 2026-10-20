@@ -95,6 +95,28 @@ class Install(unittest.TestCase):
         self.assertIn("wake/models/hey_grok.onnx", sh)
         self.assertNotIn("jarvis", sh.lower())
 
+    def test_fresh_install_reboots_update_does_not(self):
+        env = dict(os.environ, NO_COLOR="1")
+        env.pop("GROK_STATION_NONINTERACTIVE", None)
+        for extra in ([], ["--no-reboot"]):
+            r = subprocess.run(["sh", os.path.join(ROOT, "install.sh"), "--dry-run", *extra], capture_output=True, text=True,
+                               timeout=30, env=env, stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("After the reboot, open on a phone or laptop", r.stdout)
+            self.assertIn("Reboot to finish: sudo reboot", r.stdout)  # dry run never reboots or prompts
+            self.assertNotIn("Press Enter", r.stdout)
+        r = subprocess.run(["sh", os.path.join(ROOT, "install.sh"), "--dry-run"], capture_output=True, text=True, timeout=30,
+                           env=dict(env, GROK_STATION_NONINTERACTIVE="1"), stdin=subprocess.DEVNULL)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("reboot", r.stdout.lower().replace("reboot-required", ""))
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        self.assertIn("--no-reboot", sh)
+        self.assertIn("read -r _ < /dev/tty", sh)
+        self.assertIn("GROK_STATION_NO_RESTART=1", sh)
+        files = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
+        self.assertIn('if [ "${GROK_STATION_NO_RESTART:-0}" != 1 ]', files)
+        self.assertIn("GROK_STATION_NONINTERACTIVE=1", open(os.path.join(ROOT, "tools", "grok-station-update")).read())
+
     def test_relay_unit_is_loopback(self):
         unit = open(os.path.join(ROOT, "systemd", "grok-station-relay.service")).read()
         self.assertIn("RELAY_BIND=127.0.0.1", unit)

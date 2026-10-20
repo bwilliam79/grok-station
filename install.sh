@@ -3,17 +3,22 @@
 #   sudo ./install.sh              install or update (safe to re-run)
 #   sudo ./install.sh --verbose    stream every command's output (-v)
 #   sudo ./install.sh --dry-run    print what would run, change nothing (add -v to see the commands)
+#   sudo ./install.sh --no-reboot  fresh install: don't offer to reboot at the end
+# Fresh install (setup not done yet): services are enabled but not started; they start at the reboot the installer
+# offers at the end, so the setup code only appears once. Update (setup done, or run by grok-station-update.service):
+# services restart in place, with no prompt and no reboot.
 # Everything runs on this Pi: display, wake listener, admin page (HTTPS) and the voice relay (loopback only).
 # Secrets are generated here and never printed. The xAI key is entered on the admin page during first-run setup.
 # Command output goes to $LOG (default /var/log/grok-station-install.log); the screen shows one line per stage.
 set -eu
 cd "$(dirname "$0")"
-DRY=0; VERBOSE=0
+DRY=0; VERBOSE=0; NOREBOOT=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY=1 ;;
     -v|--verbose) VERBOSE=1 ;;
-    *) echo "usage: sudo ./install.sh [--verbose] [--dry-run]" >&2; exit 2 ;;
+    --no-reboot) NOREBOOT=1 ;;
+    *) echo "usage: sudo ./install.sh [--verbose] [--dry-run] [--no-reboot]" >&2; exit 2 ;;
   esac
 done
 run() { if [ "$DRY" = 1 ]; then echo "+ $*"; else "$@"; fi; }
@@ -21,6 +26,10 @@ sh_() { if [ "$DRY" = 1 ]; then echo "+ sh -c '$1'"; else sh -c "$1"; fi; }
 O=/opt/grok-station; S=/etc/grok-station/secrets; V=/var/lib/grok-station
 VER="$(git -c safe.directory="$PWD" rev-parse --short HEAD 2>/dev/null || echo dev)"
 FLAGS="${TMPDIR:-/tmp}/grok-station-install.$$"; mkdir -p "$FLAGS"; trap 'rm -rf "$FLAGS"' EXIT
+# Setup is complete once an admin password and the xAI key exist. Then (or from the update unit) this is an update.
+setup_done() { grep -q '"password"' /var/lib/grok-station/admin/auth.json 2>/dev/null && [ -s $S/xai_api_key ]; }
+if [ "${GROK_STATION_NONINTERACTIVE:-0}" = 1 ] || setup_done; then MODE=update; else MODE=fresh; fi
+REBOOT_FLAG=/run/grok-station-reboot-required  # read by the admin page; gone after the reboot
 
 # ---- output: colors only on a TTY without NO_COLOR
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -150,7 +159,8 @@ st_boot() {  # boot splash and kiosk; hides the blinking console cursor
 }
 
 st_web() {  # admin page (HTTPS) and services
-  run sh tools/install-files.sh "$PWD" "$VER"
+  if [ "$MODE" = update ]; then run sh tools/install-files.sh "$PWD" "$VER"
+  else run env GROK_STATION_NO_RESTART=1 sh tools/install-files.sh "$PWD" "$VER"; fi
   # Update button on the admin page: a fixed oneshot unit that re-runs bootstrap.sh from this clone.
   sh_ "printf '%s\\n' '$PWD' > /etc/grok-station/source-dir && chmod 0644 /etc/grok-station/source-dir"
   run install -o root -g root -m755 tools/grok-station-update /usr/local/lib/grok-station/grok-station-update
@@ -158,21 +168,41 @@ st_web() {  # admin page (HTTPS) and services
   run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
   run systemctl daemon-reload
   run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
-  run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
+  if [ "$MODE" = update ]; then
+    run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
+  else  # fresh: everything starts at the reboot, so the setup code shows once, on a clean boot
+    run systemctl stop grok-station-admin grok-station grok-station-wake grok-station-relay || true
+  fi
 }
 
 st_health() {
-  # Post-install check: every service must be active and the admin page must answer on HTTPS.
-  if [ "$DRY" = 1 ]; then echo "+ check grok-station-relay grok-station-admin grok-station grok-station-wake, https://127.0.0.1/"; return 0; fi
-  sleep 3; bad=0
+  # Post-install check. Update: every service must be active and the admin page must answer on HTTPS.
+  # Fresh install: nothing runs until the reboot, so check what the boot needs (units, config, venvs, imports).
+  if [ "$DRY" = 1 ]; then echo "+ check grok-station-relay grok-station-admin grok-station grok-station-wake ($MODE)"; return 0; fi
+  bad=0
   for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do
-    i=0; until systemctl is-active -q $u || [ $i -ge 20 ]; do sleep 1; i=$((i+1)); done
-    if systemctl is-active -q $u; then echo "ok   $u"; else
-      echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; bad=1; fi
+    if [ -f /etc/systemd/system/$u.service ] && systemctl is-enabled -q $u; then echo "ok   $u enabled"; else echo "!!   $u is not installed or enabled"; bad=1; fi
   done
-  i=0; until curl -ks -o /dev/null --max-time 5 https://127.0.0.1/ || [ $i -ge 10 ]; do sleep 2; i=$((i+1)); done
-  if curl -ks -o /dev/null --max-time 5 https://127.0.0.1/; then echo "ok   admin page answers on https://127.0.0.1"; else
-    echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; bad=1; fi
+  for f in /etc/grok-station/env $S/local_token $S/admin_token /opt/grok-station/VERSION; do
+    if [ -s "$f" ]; then echo "ok   $f"; else echo "!!   missing $f"; bad=1; fi
+  done
+  chk() { if "$@" >/dev/null 2>&1; then echo "ok   $*"; else echo "!!   failed: $*"; "$@" 2>&1 | tail -n 5; bad=1; fi; }
+  chk $O/relay/venv/bin/python -c 'import aiohttp'
+  chk $O/relay/venv/bin/python -m py_compile $O/relay/relay.py
+  chk $O/wake/venv/bin/python -c 'import openwakeword, onnxruntime, numpy, websockets'
+  chk python3 -c 'import pygame, qrcode, cryptography'
+  chk python3 -m py_compile /opt/grok-station/grok_station.py /opt/grok-station/admin/grok_admin.py
+  if [ "$MODE" = update ]; then
+    sleep 3
+    for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do
+      i=0; until systemctl is-active -q $u || [ $i -ge 20 ]; do sleep 1; i=$((i+1)); done
+      if systemctl is-active -q $u; then echo "ok   $u running"; else
+        echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; bad=1; fi
+    done
+    i=0; until curl -ks -o /dev/null --max-time 5 https://127.0.0.1/ || [ $i -ge 10 ]; do sleep 2; i=$((i+1)); done
+    if curl -ks -o /dev/null --max-time 5 https://127.0.0.1/; then echo "ok   admin page answers on https://127.0.0.1"; else
+      echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; bad=1; fi
+  fi
   [ -e /dev/fb0 ] || touch "$FLAGS/nofb"
   [ "$bad" = 0 ]
 }
@@ -185,22 +215,40 @@ stage "Installing the display"          st_display
 stage "Installing voice relay"          st_relay
 stage "Installing wake listener (Hey Grok)" st_wake
 stage "Setting up boot screen"          st_boot
-stage "Starting web service"            st_web
+stage "Setting up web service"          st_web
 stage "Checking health"                 st_health
 
 HOST="$(hostname 2>/dev/null || echo grok-station)"
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+addresses() {
+  echo "  ${C_C}https://$HOST.local${C_0}"
+  if [ -n "$IP" ]; then echo "  ${C_C}https://$IP${C_0}"; fi
+}
 echo
-if [ "$DRY" = 1 ]; then echo "${C_G}${C_B}Dry run done ($VER).${C_0} Commands are in $LOG."; else
-  echo "${C_G}${C_B}Done ($VER).${C_0} The display and the admin page are running."; fi
-echo "Open on a phone or laptop:"
-echo "  ${C_C}https://$HOST.local${C_0}"
-[ -n "$IP" ] && echo "  ${C_C}https://$IP${C_0}"
-echo "Then enter the setup code shown on the station screen, set an admin password and paste your xAI API key."
-[ -e "$FLAGS/nofb" ] && echo "${C_Y}!${C_0} No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
-if [ -e "$FLAGS/reboot" ]; then
-  echo
-  echo "${C_Y}${C_B}Boot options changed (cmdline.txt). REBOOT NOW: sudo reboot${C_0}"
-  echo "The setup screen comes back after the reboot."
+if [ "$DRY" = 1 ]; then echo "${C_G}${C_B}Dry run done ($VER, $MODE).${C_0} Commands are in $LOG."; fi
+if [ "$MODE" = update ]; then
+  [ "$DRY" = 1 ] || echo "${C_G}${C_B}Updated ($VER).${C_0} The display and the admin page are running:"
+  addresses
+  if [ -e "$FLAGS/reboot" ]; then
+    echo "${C_Y}!${C_0} Boot options changed. Reboot when convenient: sudo reboot"
+    echo "reboot required: boot options changed" >> "$LOG"
+    [ "$DRY" = 1 ] || touch "$REBOOT_FLAG"
+  fi
+  echo "Log: $LOG"
+  exit 0
 fi
+[ "$DRY" = 1 ] || echo "${C_G}${C_B}Installed ($VER).${C_0} The station starts after a reboot."
+echo "After the reboot, open on a phone or laptop:"
+addresses
+echo "Then enter the setup code shown on the station screen, set an admin password and paste your xAI API key."
 echo "(Fallback without a browser: sudo grok-station set-key)   Log: $LOG"
+echo
+if [ "$DRY" = 1 ] || [ "$NOREBOOT" = 1 ]; then echo "Reboot to finish: sudo reboot"; exit 0; fi
+if { : < /dev/tty; } 2>/dev/null && [ -t 1 ]; then
+  printf '%sPress Enter to reboot (Ctrl-C to skip)%s ' "$C_B" "$C_0"
+  IFS= read -r _ < /dev/tty || { echo; echo "Reboot to finish: sudo reboot"; exit 0; }
+  echo "Rebooting…"
+  systemctl reboot
+else
+  echo "Reboot to finish: sudo reboot"
+fi

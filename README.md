@@ -49,10 +49,12 @@ The installer prints one line per stage with a check or a cross. Everything else
 - Installs the display app, the voice relay and the Hey Grok wake listener (the relay and the wake listener each in their own Python venv) under `/opt/grok-station`.
 - Sets quiet boot options in `cmdline.txt`, including `vt.global_cursor_default=0`, which hides the blinking console cursor. It adds `disable_splash=1` to `config.txt`, sets up the boot splash, and turns off the login prompt on the screen (tty1).
 - Installs the `grok-station` command and creates a self-signed certificate for the admin page.
-- Enables and starts four systemd services: `grok-station`, `grok-station-wake`, `grok-station-relay` and `grok-station-admin`.
-- Runs a health check. Each service must be active and the admin page must answer on `https://127.0.0.1`. If something fails, the installer prints its last log lines and exits with an error.
+- Enables four systemd services: `grok-station`, `grok-station-wake`, `grok-station-relay` and `grok-station-admin`. On a fresh install they are not started; they start at the reboot.
+- Runs a static health check: unit files enabled, config and tokens present, venvs and Python imports working. If something fails, the installer prints its last log lines and exits with an error.
 
-If the installer changed the boot options it tells you to reboot (`sudo reboot`). The setup screen comes back after the reboot.
+At the end of a fresh install it asks **Press Enter to reboot (Ctrl-C to skip)**. Without a terminal (or with `--no-reboot`, or `--dry-run`) it prints `Reboot to finish: sudo reboot` instead. After the reboot, open the addresses it printed and enter the code shown on the screen.
+
+Updates (setup already done, or run by the admin page's Update button) restart the services in place, never prompt and never reboot. If an update changed the boot options, the Updates page says a reboot is needed.
 
 ## 3. First-run setup in the browser
 
@@ -62,8 +64,8 @@ On a phone or laptop on the same network:
 
 1. Open one of those addresses. The certificate is self-signed, so your browser shows a warning. Accept it to continue. (Port 80 only redirects to HTTPS.)
 2. Enter the setup code from the station screen. It isn't case-sensitive and works once.
-3. Set the admin password (at least 10 characters).
-4. Paste your xAI API key. It is write-only: after saving, only the last 4 characters are shown.
+3. Set the admin password (at least 10 characters). There is no username: you sign in with the password only.
+4. Paste your xAI API key. It is write-only: after saving, the Voice page then shows **Key set, ending ••••1234** with a **Replace key** button; the key itself is never shown.
 
 Voice starts once the key is saved.
 

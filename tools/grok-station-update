@@ -5,5 +5,5 @@
 set -eu
 SRC=$(cat /etc/grok-station/source-dir 2>/dev/null || true)
 [ -n "$SRC" ] && [ -f "$SRC/bootstrap.sh" ] && [ -d "$SRC/.git" ] || { echo "No grok-station clone recorded in /etc/grok-station/source-dir" >&2; exit 1; }
-export GROK_STATION_DIR="$SRC" NO_COLOR=1
+export GROK_STATION_DIR="$SRC" NO_COLOR=1 GROK_STATION_NONINTERACTIVE=1  # update mode: restart in place, never prompt or reboot
 exec sh "$SRC/bootstrap.sh"

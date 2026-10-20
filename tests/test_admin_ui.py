@@ -80,10 +80,21 @@ class AdminUI(unittest.TestCase):
         self.assertIn(">Update</button>", up)
         self.assertIn("localTime(", _fn(js, "historyHTML"))  # history in local time, not raw ISO Z
 
+    def test_key_status_then_replace(self):
+        f = _fn(self.js, "xaiKeyPanel")
+        for t in ("Key set", "ending ••••", "Replace key", "Cancel", "st.set && !replacing ? status : form"):
+            self.assertIn(t, f)
+
+    def test_login_is_password_only(self):
+        login = _fn(self.js, "loginScreen")
+        self.assertNotIn("Username", login)
+        self.assertNotIn('autocomplete="username"', login)
+        self.assertIn('{password: $("#p").value}', login)
+
     def test_buttons_after_inputs_are_spaced(self):
         self.assertIn("form>.btn{margin-top:14px}", self.css)
         self.assertIn("form+.note{margin-top:12px}", self.css)
-        self.assertIn('<div id="xke"></div><button class="btn p" id="xks">Save key</button></form>', self.js)
+        self.assertIn('<div id="xke"></div><div class="inline" style="margin-top:14px"><button class="btn p" id="xks">Save key</button>', self.js)
 
     def test_add_bot_wizard_and_connect_webhook(self):
         js = self.js

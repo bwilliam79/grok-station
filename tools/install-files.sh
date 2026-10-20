@@ -29,6 +29,8 @@ install -m644 "$S"/systemd/grok-station.service "$S"/systemd/grok-station-admin.
 echo "$V" > /opt/grok-station/VERSION
 systemctl daemon-reload
 systemctl enable grok-station-admin.service >/dev/null 2>&1 || true
-systemctl restart grok-station || true
-[ -d /opt/grok-station/wake ] && systemctl restart grok-station-wake || true
-systemctl restart grok-station-admin
+if [ "${GROK_STATION_NO_RESTART:-0}" != 1 ]; then  # a fresh install starts everything at its reboot instead
+  systemctl restart grok-station || true
+  [ -d /opt/grok-station/wake ] && systemctl restart grok-station-wake || true
+  systemctl restart grok-station-admin
+fi

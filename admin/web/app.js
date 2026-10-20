@@ -134,7 +134,6 @@ function passwordScreen() {  // wizard step 1 (forced)
 function loginScreen() {  // 01b + 01c
   root().innerHTML = `<div class="center"><form class="card auth" id="f">
     <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 style="font-size:24px">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
-    <div class="field"><label for="u">Username</label><input class="inp" id="u" value="admin" autocomplete="username" autocapitalize="none" required></div>
     <div class="field"><label for="p">Password</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" type="password" id="p" autocomplete="current-password" required>
       <button type="button" class="btn g sm" id="show">Show</button></div></div>
     <div id="e"></div><div class="field"><button class="btn p" id="go">Sign in</button></div>
@@ -152,7 +151,7 @@ function loginScreen() {  // 01b + 01c
   $("#f").onsubmit = async ev => {
     ev.preventDefault();
     busyBtn($("#go"), true);
-    const r = await api("POST", "/api/login", {username: $("#u").value.trim(), password: $("#p").value});
+    const r = await api("POST", "/api/login", {password: $("#p").value});
     $("#p").value = "";
     busyBtn($("#go"), false);
     if (!r.ok) return errBox($("#e"), r.status === 429 ? lockMsg(r.data.locked_s || 900) : r.data.error);
@@ -276,7 +275,8 @@ async function paintUpdates(el) {
   const d = r.ok && r.data ? r.data : {};
   const job = d.job || {}, running = job.state === "running";
   const auto = !!d.autocheck;
-  el.innerHTML = `${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">Couldn't reach GitHub to check for updates. Check the station's internet connection.</div>` : ""}
+  el.innerHTML = `${d.reboot_required ? `<div class="banner warn" style="flex-wrap:wrap">The last update changed boot options. Reboot the station (System, Reboot) to finish.</div>` : ""}
+    ${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">Couldn't reach GitHub to check for updates. Check the station's internet connection.</div>` : ""}
     ${!r.ok ? `<div class="banner bad" style="flex-wrap:wrap">${esc((r.data && r.data.error) || "Can't load updates.")}</div>` : ""}
     <div class="card"><h2>Station</h2>
       <div class="row"><span>Installed</span><span class="right mono">${esc(d.installed || "—")}</span></div>
@@ -621,12 +621,18 @@ const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 6: 5, 7: 6};
 const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 6, 6: 7, 7: 8};
 const WIZ_BACK = {3: 2, 4: 2, 5: 3, 6: 5, 7: 6};
 /* xAI key: write-only. The page never receives the key back, only whether one is set. */
-async function xaiKeyPanel(el, onSaved) {
+async function xaiKeyPanel(el, onSaved, replacing) {
   const st = (await api("GET", "/api/xai-key")).data || {};
-  el.innerHTML = `<form id="xk" autocomplete="off"><div class="field"><label for="xkv">xAI API key <span class="help">${st.set ? "A key is set. Paste a new one to replace it." : "Not set yet."}</span></label>
+  const form = `<form id="xk" autocomplete="off"><div class="field"><label for="xkv">${st.set ? "New xAI API key" : "xAI API key"} <span class="help">${st.set ? "Replaces the current key." : "Not set yet."}</span></label>
     <input class="inp" type="password" id="xkv" autocomplete="off" spellcheck="false" placeholder="xai-..."></div>
-    <div id="xke"></div><button class="btn p" id="xks">Save key</button></form>
+    <div id="xke"></div><div class="inline" style="margin-top:14px"><button class="btn p" id="xks">Save key</button>${st.set ? `<button type="button" class="btn g" id="xkc">Cancel</button>` : ""}</div></form>`;
+  const status = `<div class="row" id="xkst"><span class="dot ok"></span><b style="color:var(--ok, #2e9e5b)">Key set</b>${st.last4 ? ` <span class="mono">ending ••••${esc(st.last4)}</span>` : ""}
+    <button type="button" class="btn g sm" id="xkr" style="margin-left:auto">Replace key</button></div>`;
+  el.innerHTML = `${st.set && !replacing ? status : form}
     <p class="note">The key is saved on this station for the voice relay only. It is never shown again. Voice starts once it is saved.</p>`;
+  if (st.set && !replacing) { $("#xkr", el).onclick = () => xaiKeyPanel(el, onSaved, true); return; }
+  if ($("#xkc", el)) $("#xkc", el).onclick = () => xaiKeyPanel(el, onSaved, false);
+  if (replacing) $("#xkv", el).focus();
   $("#xk", el).onsubmit = async ev => {
     ev.preventDefault();
     const inp = $("#xkv", el), btn = $("#xks", el);
@@ -635,9 +641,9 @@ async function xaiKeyPanel(el, onSaved) {
     inp.value = "";
     busyBtn(btn, false, "Save key");
     if (!r.ok) return errBox($("#xke", el), r.data.error || "Couldn't save the key.");
-    errBox($("#xke", el), "");
-    $("#xke", el).innerHTML = `<div class="banner ok">Key saved. Voice is on.</div>`;
     if (S.state) S.state.xai_key_set = true;
+    toast("Key saved. Voice is on.");
+    await xaiKeyPanel(el, onSaved, false);
     if (onSaved) onSaved();
   };
 }

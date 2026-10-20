@@ -141,7 +141,7 @@ class SetupCode(unittest.TestCase):
 
     def test_no_default_password_login_refused_before_setup(self):
         for pw in ("", "admin", "password", "grok-station"):
-            st, _ = C().req("POST", "/api/login", {"username": "admin", "password": pw})
+            st, _ = C().req("POST", "/api/login", {"password": pw})
             self.assertIn(st, (401, 429))
         self.assertFalse(os.path.exists(os.path.join(os.environ["ADMIN_STATE_DIR"], "auth.json")))
 
@@ -193,11 +193,11 @@ class Lockout(unittest.TestCase):
         signed_in()
         c = C()
         for i in range(5):
-            st, _ = c.req("POST", "/api/login", {"username": "admin", "password": "nope-nope-nope"})
+            st, _ = c.req("POST", "/api/login", {"password": "nope-nope-nope"})
         self.assertEqual(st, 429)
-        self.assertEqual(c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 429)
+        self.assertEqual(c.req("POST", "/api/login", {"password": GOOD})[0], 429)
         CLOCK[0] += 901
-        self.assertEqual(c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 200)
+        self.assertEqual(c.req("POST", "/api/login", {"password": GOOD})[0], 200)
 
 
 class Sessions(unittest.TestCase):
@@ -216,7 +216,7 @@ class Sessions(unittest.TestCase):
 
     def test_logout_and_password_change_end_sessions(self):
         c = signed_in()
-        other = C(); other.req("POST", "/api/login", {"username": "admin", "password": GOOD})
+        other = C(); other.req("POST", "/api/login", {"password": GOOD})
         self.assertEqual(other.req("GET", "/api/home")[0], 200)
         st, _ = c.req("POST", "/api/password", {"old": GOOD, "new": "a brand new pass 7"})
         self.assertEqual(st, 200)
@@ -284,7 +284,7 @@ class Secrets(unittest.TestCase):
         try:
             c = signed_in()
             c.req("POST", "/api/secrets/relay_token", {"value": "abcdefghijklmnopqrstuvwxyz-LOGTEST"})
-            c.req("POST", "/api/login", {"username": "admin", "password": "pw-in-log-test"})
+            c.req("POST", "/api/login", {"password": "pw-in-log-test"})
         finally:
             builtins.print = real
         blob = "\n".join(out)
@@ -924,7 +924,7 @@ class StepUp(unittest.TestCase):
         self._save()
         self.c.req("POST", "/api/logout", {})
         self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
-        self.assertEqual(self.c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 200)
+        self.assertEqual(self.c.req("POST", "/api/login", {"password": GOOD})[0], 200)
         self.assertIsNone(self._until())
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 403)
         self._save()
@@ -942,7 +942,7 @@ class StepUp(unittest.TestCase):
         self.assertFalse(j["signed_in"])
         self.assertIsNone(j["stepup_until"])
         self.assertEqual(ga.AUTH.sessions, {})
-        self.assertEqual(self.c.req("POST", "/api/login", {"username": "admin", "password": GOOD})[0], 200)
+        self.assertEqual(self.c.req("POST", "/api/login", {"password": GOOD})[0], 200)
         self.assertIsNone(self._until())
         self._save()
         rec = next(iter(ga.AUTH.sessions.values()))
@@ -1410,7 +1410,8 @@ class FirstRunKey(unittest.TestCase):
         ga.AUTH.publish()
         self.assertFalse(os.path.exists(os.path.join(os.environ["ADMIN_RUN_DIR"], "setup.json")))
         st, j = c.req("GET", "/api/xai-key")
-        self.assertEqual(j, {"set": True})
+        self.assertEqual(j, {"set": True, "last4": self.KEY[-4:]})  # only the last 4 characters
+        self.assertNotIn(self.KEY[:-4], open(ga.path("xai_key_hint.json")).read())
 
     def test_key_api_needs_sign_in(self):
         reset_state()
@@ -1479,3 +1480,38 @@ class Updates(unittest.TestCase):
         self.assertEqual(j["state"], "ready" if ga.xai_key_set() else "no-key")
         self.assertNotIn("pairing", j)
         self.assertEqual(c.req("POST", "/api/relay/pair/start", {"password": GOOD})[0], 404)
+
+
+class PasswordOnly(unittest.TestCase):
+    def test_no_username_and_old_record_still_works(self):
+        signed_in()
+        self.assertEqual(C().req("POST", "/api/login", {"password": GOOD})[0], 200)
+        self.assertEqual(C().req("POST", "/api/login", {"username": "anything", "password": GOOD})[0], 200)  # ignored
+        rec = json.load(open(ga.path("auth.json")))
+        self.assertNotIn("username", rec)
+        rec["username"] = "admin"  # older schema: username next to the hash
+        json.dump(rec, open(ga.path("auth.json"), "w"))
+        ga.AUTH.__init__()
+        self.assertEqual(C().req("POST", "/api/login", {"password": GOOD})[0], 200)
+        st, j = C().req("POST", "/api/login", {"password": "wrong-password-1"})
+        self.assertEqual(st, 401); self.assertEqual(j["error"], "Wrong password.")
+
+
+class XaiKeyStatus(unittest.TestCase):
+    def test_last4_only(self):
+        c = signed_in()
+        key = "xai-" + "Q" * 40 + "Wx9z"
+        orig = ga.helper
+        def fake(cmd, stdin=None):
+            open(ga.XAI_KEY_FILE, "w").write(stdin["key"]); return True, ""
+        ga.helper = fake
+        try:
+            st, _ = c.req("POST", "/api/xai-key", {"key": key})
+        finally:
+            ga.helper = orig
+            open(ga.XAI_KEY_FILE, "w").write("set\n")
+        if st != 200:
+            self.skipTest("key format differs")
+        st, j = c.req("GET", "/api/xai-key")
+        self.assertEqual(j, {"set": True, "last4": "Wx9z"})
+        self.assertNotIn(key[:-4], open(ga.path("xai_key_hint.json")).read())
