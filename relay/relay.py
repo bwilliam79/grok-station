@@ -223,9 +223,9 @@ def note_model_output(st):
     n = st.get("model_out", 0) + 1
     st["model_out"] = n
     if n == 1:
+        # Expected now and then: the model starts a reply before the route lands; the event is dropped,
+        # so this is logged, not pushed (it was paging on normal direct-wake replies).
         log("canary persona-route model-output")
-        alert("persona-route-model-output", "grok-station relay: persona route model output",
-              "canary persona-route model-output")
 
 
 def alert(kind, title, message, priority=4):
@@ -579,16 +579,22 @@ def handoff_error(name, verdict):
     return f'Say exactly: "{handoff_line(name, verdict)}" Don\'t guess the answer.'
 
 
-async def tts_pcm(http, text, voice):
-    """Short PCM16 24 kHz line from xAI TTS, or None. Text is a fixed template; nothing is logged."""
+TTS_SHORT_S, TTS_REPLY_S = 6, 90  # fillers/fixed lines vs a teammate's whole spoken reply
+
+
+async def tts_pcm(http, text, voice, max_s=TTS_SHORT_S):
+    """PCM16 24 kHz audio from xAI TTS, or None. Capped at max_s seconds; nothing is logged.
+
+    A teammate reply must use max_s=TTS_REPLY_S: the old fixed 6 s cap cut replies off mid-sentence."""
     try:
-        async with http.post("https://api.x.ai/v1/tts", headers={"Authorization": f"Bearer {KEY}"}, timeout=ClientTimeout(total=8),
+        async with http.post("https://api.x.ai/v1/tts", headers={"Authorization": f"Bearer {KEY}"},
+                             timeout=ClientTimeout(total=8 if max_s <= TTS_SHORT_S else 30),
                              json={"text": text, "voice_id": voice, "language": "en",
                                    "output_format": {"codec": "pcm", "sample_rate": 24000}}) as r:
             if r.status != 200:
                 return None
             b = await r.read()
-            return b[:24000 * 2 * 6]  # at most 6 s
+            return b[:24000 * 2 * int(max_s)]
     except Exception:
         return None
 
@@ -911,11 +917,17 @@ async def session(req):
                 "audio": {"input": audio_in, "output": {"format": {"type": "audio/pcm", "rate": 24000}}}}})
             st = {"speaking": False, "responding": False, "speech": False, "quiet_since": time.monotonic(),
                   "playing": False, "turn": 1, "turn_t0": time.monotonic(),
-                  "persona": slug0, "again": False, "audio": False, "switched": False, "hold": False,
+                  "persona": slug0, "woke": slug0, "again": False, "audio": False, "switched": False, "hold": False,
                   "timers": station_tools.parse_timers(req.query.get("timers", "")[:1500], time.time()),
                   "station": station, "t1": None, "drop_model": persona_routed(slug0), "model_out": 0, "buf": [],
                   "turn_heard": False, "utt": 0, "answered_utt": None, "heard": "", "saw_response": False,
-                  "guard": any(persona_routed(s) for s in roster)}
+                  "guard": any(persona_routed(s) for s in roster), "xai_active": False, "cancel_sent": False}
+
+            async def cancel_response():
+                """response.cancel only while xAI has a response in flight; a stray cancel is invalid_request_error."""
+                if st.get("xai_active") and not st.get("cancel_sent"):
+                    st["cancel_sent"] = True
+                    await up.send_json({"type": "response.cancel"})
 
             async def t1_finish(verdict, how, source):
                 """Record the outcome for tile-ingest and tell the Pi; the persona then says one fixed line."""
@@ -925,7 +937,7 @@ async def session(req):
                 log(f"t1 {p.rid} agent={p.persona} verdict={verdict} how={how}")  # no text
                 await pi.send_json({"type": "t1_result", "request_id": p.rid, "ok": verdict == "confirm"})
                 if st["responding"]:
-                    await up.send_json({"type": "response.cancel"})
+                    await cancel_response()
                 line = ("Okay, saving it now." if verdict == "confirm" else
                         "That needs the call button on the speaker, so I didn't save it." if verdict == "tap-required" else
                         "Okay, I didn't save it.")
@@ -962,10 +974,10 @@ async def session(req):
                 log(f"persona -> {slug}")
                 return True
 
-            async def play_fixed(text, voice):
-                """Speak a fixed line through TTS. Nothing here is worded by the realtime model."""
+            async def play_fixed(text, voice, max_s=TTS_SHORT_S):
+                """Speak a fixed line (or a teammate's linted reply) through TTS. Never worded by the realtime model."""
                 await pi.send_json({"type": "reply", "text": text})
-                pcm = await tts_pcm(http, text, voice)
+                pcm = await tts_pcm(http, text, voice, max_s)
                 if pcm:
                     await pi.send_bytes(pcm)
 
@@ -990,12 +1002,18 @@ async def session(req):
                 st.update(hold=True, responding=True)
                 h0 = time.monotonic()
 
+                # Woken as this bot ("Hey Ash"): no "Asking Ash" filler; only a bot-to-bot handoff says it.
+                direct = st.get("woke") == bot
+
                 async def waiting():
                     await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name})
-                    await play_fixed(asking_line(name), voice)
+                    if not direct:
+                        await play_fixed(asking_line(name), voice)
+                        # the filler line flips the Pi to "speaking"; put it back on the spinning wait ring
+                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name})
 
                 async def still():
-                    pcm = await tts_pcm(http, f"Still asking {name}.", voice)
+                    pcm = await tts_pcm(http, "Still working on it." if direct else f"Still asking {name}.", voice)
                     if pcm:
                         await pi.send_json({"type": "handoff_still", "name": name,
                                             "audio": base64.b64encode(pcm).decode()})
@@ -1014,9 +1032,9 @@ async def session(req):
                         await pi.send_json({"type": "t1_confirm", "request_id": text["request_id"], "slug": bot,
                                             "name": name, "op": text["op"], "list": text["list"], "text": text["text"],
                                             "needs_tap": text["needs_tap"]})
-                        await play_fixed(t1.readback(name, text), voice)
+                        await play_fixed(t1.readback(name, text), voice, TTS_REPLY_S)
                     return await end_routed_turn()
-                await play_fixed(text if text else handoff_line(name, verdict), voice)
+                await play_fixed(text if text else handoff_line(name, verdict), voice, TTS_REPLY_S if text else TTS_SHORT_S)
                 return await end_routed_turn()
 
             async def pi_to_xai():
@@ -1088,7 +1106,7 @@ async def session(req):
                     count_buf()
                     st["responding"] = True  # hold the no-speech cap across the handoff
                     if saw:
-                        await up.send_json({"type": "response.cancel"})
+                        await cancel_response()
                     st["drop_model"] = True
                     if slug != st["persona"]:
                         await switch(slug)
@@ -1100,6 +1118,10 @@ async def session(req):
                         continue
                     ev = json.loads(m.data)
                     t = ev.get("type", "")
+                    if t == "response.created":
+                        st.update(xai_active=True, cancel_sent=False)
+                    elif t == "response.done":
+                        st.update(xai_active=False, cancel_sent=False)
                     if t not in QUIET:
                         log("xai", t)  # event type only; no content, no key
                     # A routed turn: cancel and drop model speech. Never forward it, never response.create for it.
@@ -1108,7 +1130,7 @@ async def session(req):
                             note_model_output(st)
                         if t == "response.created":
                             st["saw_response"] = True
-                            await up.send_json({"type": "response.cancel"})
+                            await cancel_response()
                         continue
                     # Hold model speech until the transcript, so a spoken name can still drop it.
                     if (st.get("guard") and not st.get("drop_model") and not st.get("turn_heard")
@@ -1146,7 +1168,7 @@ async def session(req):
                         if v == "early":
                             log(f"t1 {st['t1'].rid} verdict=early-ignored")  # heard during the read-back: never counts
                             if st["responding"]:
-                                await up.send_json({"type": "response.cancel"})
+                                await cancel_response()
                             continue
                         await t1_finish(v, "spoken", "station-mic")
                     elif t == "conversation.item.input_audio_transcription.completed":
@@ -1159,7 +1181,7 @@ async def session(req):
                         if st["turn"] > 1 and is_end_phrase(heard):
                             st["buf"] = []
                             if st["responding"]:
-                                await up.send_json({"type": "response.cancel"})
+                                await cancel_response()
                             await pi.send_json({"type": "done"})
                             return "user ended"
                         if st.get("answered_utt") == st.get("utt"):
@@ -1181,7 +1203,7 @@ async def session(req):
                         if addr and addr != st["persona"] and st.get("drop_model") and not persona_routed(addr):
                             st["buf"] = []
                             if st["responding"]:
-                                await up.send_json({"type": "response.cancel"})
+                                await cancel_response()
                                 st["responding"] = False
                             await switch(addr)
                             st["drop_model"] = False
@@ -1201,7 +1223,7 @@ async def session(req):
                         if target and target != st["persona"] and not st["audio"]:
                             log(f"backup rule: switching to {target}")
                             if st["responding"]:
-                                await up.send_json({"type": "response.cancel"})
+                                await cancel_response()
                                 st["again"] = True
                             await switch(target)
                     elif t == "response.function_call_arguments.done":
@@ -1217,7 +1239,7 @@ async def session(req):
                                 q = str(args.get("question") or "") or st.get("heard") or ""
                                 if str(q).strip():
                                     if st["responding"]:
-                                        await up.send_json({"type": "response.cancel"})
+                                        await cancel_response()
                                         st["responding"] = False
                                     count_buf()
                                     st["drop_model"] = True
@@ -1247,7 +1269,7 @@ async def session(req):
                             q = str(args.get("question") or "") or st.get("heard") or ""
                             if q.strip():
                                 if st["responding"]:
-                                    await up.send_json({"type": "response.cancel"})
+                                    await cancel_response()
                                     st["responding"] = False
                                 count_buf()
                                 if slug != st["persona"]:

@@ -1829,8 +1829,6 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     if state == "confirm":
         return draw_confirm(surf, L, now, msg)
     surf.fill(BG)
-    if state == "listening":
-        pygame.draw.rect(surf, LISTENING, (0, 0, L.w, max(3, L(8))))  # "mic open" bar along the top
     draw_topbar_clock(surf, L, now)
     who, heard, text = msg.get("from", ""), msg.get("heard", ""), msg["text"]
     card = clean_card(msg.get("card")) if isinstance(msg.get("card"), dict) else None

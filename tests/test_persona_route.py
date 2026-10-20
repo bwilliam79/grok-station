@@ -72,8 +72,11 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), relay.today)
         relay.log = lambda *a: self.lines.append(" ".join(map(str, a)))
 
-        async def fake_tts(http, text, voice):
+        self.tts_caps = []
+
+        async def fake_tts(http, text, voice, max_s=relay.TTS_SHORT_S):
             self.tts.append((text, voice))
+            self.tts_caps.append((text, max_s))
             return b"TTS:" + str(text).encode()
 
         relay.tts_pcm = fake_tts
@@ -136,9 +139,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
             if name.endswith(".json"):
                 docs.append(json.load(open(os.path.join(self.alert_dir, name))))
         got = [d for d in docs if d.get("message") == "canary persona-route model-output"]
-        self.assertEqual(len(got), 1 if fired else 0)
-        if fired:
-            self.assertIn("persona route model output", got[0].get("title", ""))
+        self.assertEqual(got, [])  # logged only; never pushed to ntfy
 
     async def drive(self, transcript, persona=None, t1=None, function_call=False, timeout=8):
         """One station turn against the fake upstream. Returns station events, binary frames and upstream JSON."""
@@ -291,6 +292,21 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(out["binaries"])
         self.assertTrue(all(b.startswith(b"TTS:") for b in out["binaries"]))
 
+    async def test_long_reply_is_not_cut_to_six_seconds(self):
+        # 14:55 UTC regression: a 186-char reply was TTS-capped at 6 s and the follow-up opened mid-sentence
+        out = await self.drive(DINNER, persona="jules", function_call=True)
+        self.assertIn((TACOS, relay.TTS_REPLY_S), self.tts_caps)
+        self.assertGreaterEqual(relay.TTS_REPLY_S, 60)
+        fillers = [c for t, c in self.tts_caps if t != TACOS]
+        self.assertTrue(all(c == relay.TTS_SHORT_S for c in fillers))
+
+    async def test_one_cancel_per_model_response(self):
+        # a cancel with no response in flight is xAI invalid_request_error
+        out = await self.drive(DINNER, persona="jules", function_call=True)
+        types = [e.get("type") for e in out["upstream"]]
+        self.assertLessEqual(types.count("response.cancel"), 1)
+        self.assertFalse(any("xai error" in l for l in self.lines))
+
     async def test_wake_route_drops_model_and_speaks_webhook(self):
         out = await self.drive(DINNER, persona="jules", function_call=True)
         updates = self._updates(out["upstream"])
@@ -303,12 +319,10 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("shared family room", updates[0]["instructions"])
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
-        self.assertEqual(replies[0], "Asking Jules\u2026")
+        self.assertNotIn("Asking Jules\u2026", replies)  # woken as Jules: no filler
         self.assertEqual(replies[-1], TACOS)
         self.assertNotIn("Still asking Jules.", [t for t, _ in self.tts])
-        self.assertEqual(self.tts[0], ("Asking Jules\u2026", "ara"))
         self.assertEqual(self.tts[-1], (TACOS, "ara"))
-        self.assertEqual(out["binaries"][0], b"TTS:" + "Asking Jules\u2026".encode())
         self.assertEqual(out["binaries"][-1], b"TTS:" + TACOS.encode())
         self.assertEqual(len(self.calls), 1)  # the tool call must not ask a second time
         self.assertEqual(set(self.calls[0]), {"source", "v", "request_id", "persona"})
@@ -331,12 +345,12 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay.STILL_AFTER = 0.15
         out = await self.drive(DINNER, persona="jules")
         self._assert_routed_silence(out)
-        self.assertEqual([t for t, v in self.tts], ["Asking Jules\u2026", "Still asking Jules.", TACOS])
+        self.assertEqual([t for t, v in self.tts], ["Still working on it.", TACOS])
         self.assertTrue(all(v == "ara" for _, v in self.tts))
         still = [e for e in out["events"] if e.get("type") == "handoff_still"]
         self.assertEqual(len(still), 1)
         self.assertEqual(still[0]["name"], "Jules")
-        self.assertEqual(base64.b64decode(still[0]["audio"]), b"TTS:Still asking Jules.")
+        self.assertEqual(base64.b64decode(still[0]["audio"]), b"TTS:Still working on it.")
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"])
@@ -396,8 +410,8 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         out = await self.drive(DINNER, persona="jules", timeout=6)
         line = "Jules didn't answer in time; try again or ask in the app."
         self._assert_routed_silence(out)
-        self.assertEqual(self._replies(out["events"]), ["Asking Jules\u2026", line])
-        self.assertIn("Still asking Jules.", [t for t, _ in self.tts])
+        self.assertEqual(self._replies(out["events"]), [line])
+        self.assertIn("Still working on it.", [t for t, _ in self.tts])
         self.assertEqual(self.tts[-1][0], line)
         self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
         self._quiet(DINNER, TOKEN, out["url"])

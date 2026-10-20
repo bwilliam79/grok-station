@@ -544,8 +544,10 @@ Inter and Inter Tight by The Inter Project Authors, SIL Open Font License 1.1 (`
 ## Teammate handoff (off by default)
 A persona can ask its own Grok Bot and speak the answer, answer-only (T0), with per-bot tokens, limits, nonce binding
 and a privacy lint on both ends. Off until enabled per bot. Each bot uses its own webhook (set from the admin
-Bots page). Router mode is retired (routine runs can't SendToAgent). Waits up to 120 s, saying "Asking <Name>…" while
-it starts and "Still asking <Name>." at 20 s.
+Bots page). Router mode is retired (routine runs can't SendToAgent). Waits up to 120 s on the spinning ring. A bot-to-bot
+handoff ("ask Ash …") says "Asking <Name>…" first and "Still asking <Name>." at 20 s; waking a bot directly ("Hey Ash")
+skips the asking line and says "Still working on it." at 20 s. The whole reply is spoken (TTS cap 90 s; fixed lines 6 s)
+before the follow-up listening window opens.
 
 The webhook is `v: 2` and carries only `source`, `request_id` and `persona` (plus `test` and `include_avatar` when
 those apply). The question, `pii_mode`, `reply_by` and `tier_max` are not on the wire. They are written to

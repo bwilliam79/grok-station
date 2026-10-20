@@ -221,6 +221,18 @@ class TestListeningScreen(unittest.TestCase):
         self.assertNotIn("to wake\\u201d", src); self.assertNotIn("” to wake", src)
 
 
+class NoListeningBar(unittest.TestCase):
+    def test_no_teal_bar_across_the_top(self):
+        gs.TIMER_CHIPS[:] = []
+        for size in ((800, 480), (1024, 600), (1920, 1080)):
+            surf = pygame.Surface(size)
+            gs.draw_session(surf, gs.Layout(*size), time.localtime(),
+                            {"from": "Grok", "voice": True, "heard": "", "text": "Go ahead, I\u2019m listening.",
+                             "state": "listening"}, "listening", 0.0)
+            teal = sum(tuple(surf.get_at((x, 2)))[:3] == tuple(gs.LISTENING)[:3] for x in range(size[0]))
+            self.assertLess(teal, size[0] // 4, f"teal bar at {size}")
+
+
 class ListeningRing(unittest.TestCase):
     def render(self, t):
         c = pygame.Surface((400, 400), pygame.SRCALPHA)
