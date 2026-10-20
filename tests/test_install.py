@@ -21,6 +21,24 @@ class Install(unittest.TestCase):
         for m in local:
             self.assertIn(m + ".py", line)
 
+    def test_admin_imports_are_installed(self):
+        """The admin page crash-looped on a fresh Pi: pairing, pair_listener and release were never installed."""
+        src = open(os.path.join(ROOT, "admin", "grok_admin.py")).read()
+        files = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
+        mods = set(re.findall(r"^import (\w+)  # noqa: E402", src, re.M))
+        self.assertTrue({"pairing", "pair_listener", "release"} <= mods)
+        for m in mods:
+            local = [d for d in ("admin", "relay") if os.path.isfile(os.path.join(ROOT, d, m + ".py"))]
+            self.assertTrue(local, m)
+            self.assertIn(f"{local[0]}/{m}.py", files, m)
+
+    def test_post_install_check(self):
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        for u in ("grok-station-relay", "grok-station-admin", "grok-station ", "grok-station-wake"):
+            self.assertIn(u, sh.split("Post-install check", 1)[1])
+        self.assertIn("https://127.0.0.1/", sh)
+        self.assertIn("journalctl -u grok-station-admin", sh)
+
     def test_relay_unit_is_loopback(self):
         unit = open(os.path.join(ROOT, "systemd", "grok-station-relay.service")).read()
         self.assertIn("RELAY_BIND=127.0.0.1", unit)

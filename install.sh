@@ -17,7 +17,7 @@ VER="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
 echo "== packages"
 run apt-get update
 run apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame python3-qrcode python3-venv \
-  python3-pip python3-cryptography alsa-utils openssl libegl1 libegl-mesa0 libgles2 libgbm1 libgl1-mesa-dri
+  python3-pip python3-cryptography alsa-utils openssl curl libegl1 libegl-mesa0 libgles2 libgbm1 libgl1-mesa-dri
 
 echo "== users"
 sh_ 'id grok >/dev/null 2>&1 || useradd -r -m -s /usr/sbin/nologin grok'
@@ -82,11 +82,18 @@ run usermod -aG grok-admin grok-admin   # admin page reads admin_token (group gr
 run systemctl daemon-reload
 run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
 run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
-# The display must really be up: wait for it, show its log if it isn't.
+# Post-install check: every service must be active and the admin page must answer on HTTPS.
 if [ "$DRY" = 0 ]; then
-  i=0; until systemctl is-active -q grok-station || [ $i -ge 15 ]; do sleep 1; i=$((i+1)); done
-  systemctl is-active -q grok-station || { echo "!! The display service did not start:"; journalctl -u grok-station -n 20 --no-pager; }
-  [ -e /dev/fb0 ] || echo "!! No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
+  sleep 3
+  for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do
+    i=0; until systemctl is-active -q $u || [ $i -ge 20 ]; do sleep 1; i=$((i+1)); done
+    if systemctl is-active -q $u; then echo "ok   $u"; else
+      echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; FAILED=1; fi
+  done
+  i=0; until curl -ks -o /dev/null --max-time 5 https://127.0.0.1/ || [ $i -ge 10 ]; do sleep 2; i=$((i+1)); done
+  if curl -ks -o /dev/null --max-time 5 https://127.0.0.1/; then echo "ok   admin page answers on https://127.0.0.1"; else
+    echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; FAILED=1; fi
+  [ -e /dev/fb0 ] || echo "!!   No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
 fi
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
@@ -99,3 +106,4 @@ if [ "$BOOT_CHANGED" = yes ]; then
   echo "*** The setup screen comes back after the reboot."
 fi
 echo "(Fallback without a browser: sudo grok-station set-key)"
+[ "${FAILED:-0}" = 0 ] || { echo "Install finished with errors (see above)."; exit 1; }
