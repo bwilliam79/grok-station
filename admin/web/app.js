@@ -6,7 +6,8 @@ const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&am
 const root = () => $("#root");
 let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0};
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
-const WORD = n => "Hey " + PERSONA(String(n).replace(/^hey_/, "").replace(/_/g, " "));
+const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+const ENROLL_ACTIVE = ["recording", "uploading", "training"];
 
 async function api(method, path, body) {
   const opt = {method, credentials: "same-origin", headers: {"X-GS-Admin": "1"}};
@@ -331,13 +332,98 @@ async function wakePanel(el, opts = {}) {
   $("#rec", el).onclick = () => enrollDrawer(null, names, () => wakePanel(el, opts));
 }
 
-async function enrollDrawer(phrase, names, done) {  // §9: phrase+teammate, speaker (Pi-only names), clip count, record
+function enrollProgressHTML(word, id) {
+  const label = {recording: "Recording", uploading: "Uploading", training: "Training", ready: "Ready", failed: "Didn't work"}[word.state] || "Waiting";
+  const kind = word.state === "failed" ? "bad" : word.state === "ready" ? "ok" : "busy";
+  const msg = word.message ? ` · ${esc(word.message)}` : "";
+  return `<div class="banner ${kind}"><span class="pill ${kind}"><i></i>${label}</span> ${esc(WORD(id))}${msg}</div>`;
+}
+
+function watchEnroll(d, id, box) {
+  const tick = async () => {
+    if (!document.body.contains(d)) { clearInterval(d.t); return; }
+    const s = await api("GET", "/api/enroll/status");
+    const w = ((s.data && s.data.words) || {})[id];
+    if (!w) return;
+    box.innerHTML = enrollProgressHTML(w, id);
+    if (w.state === "ready" || w.state === "failed") {
+      clearInterval(d.t);
+      const go = $("#dgo", d);
+      if (go) go.textContent = w.state === "ready" ? "Done" : "Record voice";
+    }
+  };
+  tick();
+  d.t = setInterval(tick, 2000);
+}
+
+async function enrollDrawer(phrase, names, done, persona) {
+  if (!phrase) return enrollNew(done, persona || "");
+  return enrollExisting(phrase, names, done);
+}
+
+async function enrollNew(done, persona) {  // free-text phrase + which bot it opens
+  const [spR, botR] = await Promise.all([api("GET", "/api/wakewords"), api("GET", "/api/bots")]);
+  const sp = ((spR.data || {}).speakers) || [];
+  const bots = [{slug: "grok", name: "Grok"}].concat(((botR.data || {}).bots) || []);
+  if (persona && !bots.some(b => b.slug === persona)) bots.push({slug: persona, name: persona});
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<div class="drawer" role="dialog" aria-label="Record a wake word"><div class="inline"><h2 style="font:600 22px var(--disp)">Record a wake word</h2><button class="btn g sm right" id="dx">Close</button></div>
+    <div class="field"><label for="ph">Wake word</label><input class="inp" id="ph" maxlength="48" placeholder="hey kitchen" autocomplete="off" spellcheck="false">
+      <p class="note" id="phnote">Two to four words. It doesn't have to contain the bot's name — one bot can have several.</p></div>
+    <div class="field"><label for="bot">Opens</label><select class="sel" id="bot">${bots.map(b => `<option value="${esc(b.slug)}"${b.slug === (persona || "grok") ? " selected" : ""}>${esc(b.name)}</option>`).join("")}</select></div>
+    <div class="field"><label for="spk">Whose voice?</label><select class="sel" id="spk"><option value="">Choose…</option>${sp.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.guest ? " (guest)" : ""}</option>`).join("")}<option value="+">+ Add speaker</option></select>
+      <p class="note">Speaker names stay on this station. The training computer only sees an ID like <span class="mono">spk-3f9a</span>. Ask guests first; their clips are deleted after training.</p>
+      <div id="addsp" hidden class="inline" style="margin-top:8px"><input class="inp" id="spn" maxlength="32" placeholder="Name" style="flex:1"><label class="help"><input type="checkbox" id="spg"> Guest</label><button class="btn sm" id="spa">Add</button></div></div>
+    <div class="field"><label for="cnt">Clips <span class="help" id="cntv"></span></label><input type="range" id="cnt" min="10" max="40" step="1" value="10"></div>
+    <div id="de"></div>
+    <div class="field"><button class="btn p" id="dgo">Start on the station</button></div>
+    <div id="prog"></div>
+    <p class="note">The station guides you: say the word after each chime, at normal volume, from where you usually stand.</p></div>`;
+  document.body.appendChild(d);
+  const close = () => { clearInterval(d.t); d.remove(); done && done(); };
+  $("#dx", d).onclick = close;
+  const cl = () => ($("#cntv", d).textContent = `${$("#cnt", d).value} (about ${Math.max(1, Math.round($("#cnt", d).value * 6 / 60))} min)`);
+  $("#cnt", d).oninput = cl; cl();
+  $("#spk", d).onchange = () => ($("#addsp", d).hidden = $("#spk", d).value !== "+");
+  $("#spa", d).onclick = async () => {
+    const r = await api("POST", "/api/speakers", {name: $("#spn", d).value, guest: $("#spg", d).checked});
+    if (!r.ok) return errBox($("#de", d), r.data.error);
+    const o = document.createElement("option"); o.value = r.data.id; o.textContent = $("#spn", d).value;
+    $("#spk", d).insertBefore(o, $("#spk", d).lastElementChild); $("#spk", d).value = r.data.id; $("#addsp", d).hidden = true;
+  };
+  let checkTimer = 0, phraseBad = false;
+  $("#ph", d).oninput = () => {
+    clearTimeout(checkTimer);
+    const v = $("#ph", d).value;
+    checkTimer = setTimeout(async () => {
+      if (!$("#ph", d) || $("#ph", d).value !== v) return;
+      if (!v.trim()) { phraseBad = false; errBox($("#de", d), ""); $("#phnote", d).textContent = "Two to four words. It doesn't have to contain the bot's name — one bot can have several."; return; }
+      const r = await api("POST", "/api/enroll/check", {phrase: v});
+      if (!$("#ph", d) || $("#ph", d).value !== v) return;
+      phraseBad = !r.ok;
+      if (r.ok) { errBox($("#de", d), ""); $("#phnote", d).textContent = `Saves as ${r.data.id}.`; }
+      else { errBox($("#de", d), (r.data && r.data.error) || "That phrase won't work."); $("#phnote", d).textContent = ""; }
+    }, 300);
+  };
+  $("#dgo", d).onclick = async () => {
+    const spk = $("#spk", d).value;
+    if (phraseBad) return;
+    if (!spk || spk === "+") return errBox($("#de", d), "Pick whose voice this is.");
+    busyBtn($("#dgo", d), true, "Starting…");
+    const r = await api("POST", "/api/enroll", {phrase: $("#ph", d).value, persona: $("#bot", d).value, count: +$("#cnt", d).value, speaker: spk});
+    if (!(r.status === 202 || r.ok)) { busyBtn($("#dgo", d), false, "Start on the station"); return errBox($("#de", d), r.data.error || "The station couldn't start recording."); }
+    errBox($("#de", d), ""); $("#dgo", d).textContent = "Recording on the station…";
+    watchEnroll(d, (r.data && r.data.id) || "", $("#prog", d));
+  };
+}
+
+async function enrollExisting(phrase, names, done) {  // record more clips of a word already on the station
   const sp = (await api("GET", "/api/wakewords")).data.speakers || [];
   const d = document.createElement("div");
   d.className = "sheet";
   d.innerHTML = `<div class="drawer" role="dialog" aria-label="Record a wake word"><div class="inline"><h2 style="font:600 22px var(--disp)">Record a wake word</h2><button class="btn g sm right" id="dx">Close</button></div>
-    <div class="field"><label for="ph">Wake word</label><select class="sel" id="ph">${names.map(n => `<option value="${esc(n)}"${n === phrase ? " selected" : ""}>${esc(WORD(n))}</option>`).join("")}</select>
-      <p class="note">New words are added on the voice service computer first; then they show up here.</p></div>
+    <div class="field"><label for="ph">Wake word</label><select class="sel" id="ph">${names.map(n => `<option value="${esc(n)}"${n === phrase ? " selected" : ""}>${esc(WORD(n))}</option>`).join("")}</select></div>
     <div class="field"><label for="spk">Whose voice?</label><select class="sel" id="spk"><option value="">Choose…</option>${sp.map(s => `<option value="${esc(s.id)}">${esc(s.name)}${s.guest ? " (guest)" : ""}</option>`).join("")}<option value="+">+ Add speaker</option></select>
       <p class="note">Speaker names stay on this station. The training computer only sees an ID like <span class="mono">spk-3f9a</span>. Ask guests first; their clips are deleted after training.</p>
       <div id="addsp" hidden class="inline" style="margin-top:8px"><input class="inp" id="spn" maxlength="32" placeholder="Name" style="flex:1"><label class="help"><input type="checkbox" id="spg"> Guest</label><button class="btn sm" id="spa">Add</button></div></div>
@@ -365,14 +451,38 @@ async function enrollDrawer(phrase, names, done) {  // §9: phrase+teammate, spe
     const r = await api("POST", "/api/enroll", {phrase: $("#ph", d).value, count: +$("#cnt", d).value, speaker: spk});
     if (!(r.status === 202 || r.ok)) { busyBtn($("#dgo", d), false, "Start on the station"); return errBox($("#de", d), r.data.error || "The station couldn't start recording."); }
     errBox($("#de", d), ""); $("#dgo", d).textContent = "Recording on the station…";
-    d.t = setInterval(async () => {
-      const s = await api("GET", "/api/enroll");
-      const last = s.data.last || {};
-      $("#prog", d).innerHTML = s.data.enrolling ? `<div class="banner ok"><span class="pill ok"><i></i>Recording</span> ${esc(WORD(last.phrase || ""))} · ${esc(last.count || "")} clips. Follow the station screen.</div>`
-        : `<div class="banner busy"><span class="pill busy"><i></i>Queued for training</span> Results appear on this page when training finishes.</div>`;
-      if (!s.data.enrolling) { clearInterval(d.t); $("#dgo", d).textContent = "Done"; }
-    }, 2000);
+    watchEnroll(d, (r.data && r.data.id) || $("#ph", d).value, $("#prog", d));
   };
+}
+
+function openVoiceStatus(bot, el) {  // reopen the in-progress (or failed) attempt; does not start a new recording
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<div class="drawer" role="dialog" aria-label="Wake word status"><div class="inline"><h2 style="font:600 22px var(--disp)">${esc(bot.name || "Wake word")}</h2><button class="btn g sm right" id="dx">Close</button></div>
+    <div id="vbox"></div>
+    <div class="field"><button class="btn" id="again" type="button" hidden>Record again</button></div>
+    <p class="note">Closing this leaves the recording running. The button keeps its place after a reload.</p></div>`;
+  document.body.appendChild(d);
+  const tick = async () => {
+    if (!document.body.contains(d)) { clearInterval(d.t); return; }
+    const s = await api("GET", "/api/enroll/status");
+    const words = (s.data && s.data.words) || {};
+    const rows = Object.entries(words).filter(([, w]) => (w.persona || "grok") === bot.slug);
+    const active = rows.filter(([, w]) => ENROLL_ACTIVE.includes(w.state));
+    const failed = rows.filter(([, w]) => w.state === "failed");
+    const show = active[0] || failed[failed.length - 1];
+    const box = $("#vbox", d);
+    if (!box) return;
+    if (!show) { box.innerHTML = `<p class="note">Nothing in progress.</p>`; $("#again", d).hidden = true; return; }
+    const [id, w] = show;
+    box.innerHTML = enrollProgressHTML(w, id);
+    const again = $("#again", d);
+    again.hidden = w.state !== "failed";
+    again.onclick = () => { clearInterval(d.t); d.remove(); enrollDrawer(null, [], () => refreshBots(el), bot.slug); };
+  };
+  tick();
+  d.t = setInterval(tick, 2000);
+  $("#dx", d).onclick = () => { clearInterval(d.t); d.remove(); if (el) refreshBots(el); };
 }
 
 async function displayPanel(el) {
@@ -595,15 +705,27 @@ function paintBots(el, bots) {
   if (count) count.textContent = `${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured`;
   const list = $("#blist", el);
   if (!list) return;
-  list.innerHTML = bots.map(b => `<div class="botrow">${avatar(b.slug, b.name)}
+  const voice = el._voice || {};
+  list.innerHTML = bots.map(b => {
+    const info = voice[b.slug] || {};
+    return `<div class="botrow">${avatar(b.slug, b.name)}
     <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div></div>
-    <button class="btn sm" data-bot="${esc(b.slug)}">Configure</button></div>`).join("") || `<p class="help">No bots yet.</p>`;
+    <button class="btn sm" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
+    <button class="btn sm" data-bot="${esc(b.slug)}">Configure</button></div>`;
+  }).join("") || `<p class="help">No bots yet.</p>`;
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
+  list.querySelectorAll("[data-voice]").forEach(btn => btn.onclick = () => {
+    const bot = bots.find(b => b.slug === btn.dataset.voice);
+    const info = voice[bot.slug] || {};
+    if (info.processing || info.state === "failed") openVoiceStatus(bot, el);
+    else enrollDrawer(null, [], () => refreshBots(el), bot.slug);
+  });
 }
 async function refreshBots(el) {
-  const r = await api("GET", "/api/bots");
+  const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
   if (!r.ok || !$("#blist", el)) return null;
   noteStepup(r.data);
+  el._voice = (s.data && s.data.buttons) || {};
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, r.data.bots || []);
@@ -871,13 +993,14 @@ function addBot(voices, el) {
   };
 }
 async function pageBots(el) {
-  const [r, g] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/guest")]);
+  const [r, g, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/guest"), api("GET", "/api/enroll/status")]);
   const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
   const guest = !!(g.data || {}).guest;
   const bots = data.bots || [];
-  const n = s => bots.filter(b => (b.status || {}).state === s).length;
+  const n = st => bots.filter(b => (b.status || {}).state === st).length;
   const slot = $("#topr");
   if (slot) slot.innerHTML = `<button class="btn sm" id="avatars" type="button">Refresh avatars</button>`;
+  el._voice = (s.data && s.data.buttons) || {};
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
       <span class="stepup" id="sulock" hidden></span>
@@ -898,6 +1021,7 @@ async function pageBots(el) {
     toast(x.data && x.data.running ? "Avatar refresh already running." : "Refreshing avatars.");
     setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 2000);
   };
+  every(3000, () => { if (document.body.contains(el) && $("#blist", el)) refreshBots(el); });
   $("#add", el).onclick = () => addBot(data.voices || [], el);
   $("#guest", el).onclick = async () => {
     const on = !$("#guest", el).classList.contains("on");

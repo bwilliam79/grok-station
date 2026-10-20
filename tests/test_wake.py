@@ -1,6 +1,6 @@
 import re
 """Wake client: persona events keep the listening phase, 16 kHz capture upsampling, patience. No network, no audio."""
-import io, json, os, sys, types, unittest
+import io, json, os, sys, tempfile, types, unittest
 from contextlib import redirect_stdout
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "wake"))
@@ -96,17 +96,80 @@ class TestEnroll(unittest.TestCase):
         self.assertTrue(12000 <= len(y) <= 12000 + 8000 + 640)
 
     def test_enroll_phrases(self):
-        old = gw.WAKE_CONFIG
+        old = gw.WAKE_CONFIG, gw.OVERRIDES
         gw.WAKE_CONFIG = os.path.join(os.path.dirname(__file__), "..", "wake", "wakewords.json")
+        gw.OVERRIDES = os.path.join(tempfile.mkdtemp(), "missing-overrides.json")
         try:
             ph = gw.enroll_phrases()
         finally:
-            gw.WAKE_CONFIG = old
+            gw.WAKE_CONFIG, gw.OVERRIDES = old
         self.assertEqual(ph["hey_finn"], "finn"); self.assertEqual(ph["hey_hank"], "hank"); self.assertEqual(ph["hey_rhea"], "rhea")
+
+    def test_override_persona_and_parse_enroll(self):
+        d = tempfile.mkdtemp()
+        cfg, ov = os.path.join(d, "wakewords.json"), os.path.join(d, "wake-overrides.json")
+        with open(cfg, "w") as f:
+            json.dump({"words": [{"name": "hey_finn", "persona": "finn"}], "enroll": [{"name": "hey_hank", "persona": "hank"}]}, f)
+        with open(ov, "w") as f:
+            json.dump({"hey_kitchen": {"persona": "kitchen-bot"}, "hey_finn": {"enabled": False, "threshold": 0.3, "persona": "grok"}}, f)
+        old = gw.WAKE_CONFIG, gw.OVERRIDES
+        gw.WAKE_CONFIG, gw.OVERRIDES = cfg, ov
+        try:
+            ph = gw.enroll_phrases()
+            self.assertEqual(ph["hey_kitchen"], "kitchen-bot")
+            self.assertEqual(ph["hey_finn"], "grok")  # override persona wins over the config
+            self.assertEqual(ph["hey_hank"], "hank")
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10}),
+                             {"phrase": "hey_hank", "persona": "hank", "count": 10, "topup": False})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "persona": "grok"})["persona"], "hank")
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen"})["persona"], "kitchen-bot")
+            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 12, "topup": True}),
+                             {"phrase": "okay_finn", "persona": "finn", "count": 12, "topup": True})
+            self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn"}))
+            self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn", "persona": "Not A Slug"}))
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5}), {"error": "count"})
+            self.assertIsNone(gw.parse_enroll({"phrase": "hey_hank", "count": "ten"}))
+        finally:
+            gw.WAKE_CONFIG, gw.OVERRIDES = old
+        self.assertTrue(gw.phrase_ok("hey_kitchen")); self.assertTrue(gw.phrase_ok("okay_finn")); self.assertTrue(gw.phrase_ok("hey_finn"))
+        self.assertFalse(gw.phrase_ok("hey")); self.assertFalse(gw.phrase_ok("a_b_c_d_e"))
+        self.assertFalse(gw.phrase_ok("extraordinarily_supercalifragilistic"))
+        self.assertEqual(gw.relay_persona("kitchen-bot"), "grok")
+        self.assertEqual(gw.relay_persona("finn"), "finn")
+        self.assertTrue(gw.persona_ok("kitchen-bot")); self.assertTrue(gw.persona_ok("grok"))
+
+    def test_apply_overrides_persona_wins_and_off_still_removes(self):
+        entries = {"hey_kitchen": {"name": "hey_kitchen", "persona": "grok", "threshold": 0.5},
+                   "hey_finn": {"name": "hey_finn", "persona": "finn", "threshold": 0.5}}
+        ov = {"hey_kitchen": {"persona": "kitchen-bot", "threshold": 0.3},
+              "hey_finn": {"enabled": False, "persona": "grok"},
+              "okay_finn": {"persona": "finn"}}
+        out = gw.apply_wake_overrides(entries, ov)
+        self.assertEqual(out["hey_kitchen"]["persona"], "kitchen-bot")
+        self.assertEqual(out["hey_kitchen"]["threshold"], 0.3)
+        self.assertNotIn("hey_finn", out)
+        self.assertNotIn("okay_finn", out)  # a mapping with no model yet is not inserted here
+
+    def test_enroll_stage_ignores_a_stale_session(self):
+        old = gw.ENROLL_STATE.get("last")
+        try:
+            gw.ENROLL_STATE["last"] = None
+            gw.enroll_stage("training", "Training.", "hey_finn", "s1")
+            self.assertIsNone(gw.ENROLL_STATE["last"])
+            gw.ENROLL_STATE["last"] = {"phrase": "hey_finn", "session": "s1", "stage": "recording",
+                                       "message": "Say it on the station.", "persona": "finn"}
+            gw.enroll_stage("uploading", "Sending the clips.", "hey_finn", "other")
+            gw.enroll_stage("uploading", "Sending the clips.", "hey_kitchen", "s1")
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "recording")
+            gw.enroll_stage("training", "Training.", "hey_finn", "s1")
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "training")
+            self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training.")
+        finally:
+            gw.ENROLL_STATE["last"] = old
 
 
 class EnrollFlow(unittest.TestCase):
-    def run_enroll(self, n=10, loud_at=(), topup=False):
+    def run_enroll(self, n=10, loud_at=(), topup=False, phrase="hey_finn", persona="finn"):
         import tempfile, threading
         posted, uploads, reads = [], [], {"n": 0}
         clip = {"k": 0}
@@ -132,8 +195,8 @@ class EnrollFlow(unittest.TestCase):
         gw.time.sleep = lambda s: None
         try:
             if topup:
-                os.makedirs(os.path.join(gw.ENROLL_DIR, "hey_finn", "20261019-150740"))
-            gw.enroll({"phrase": "hey_finn", "persona": "finn", "count": n, "topup": topup}, read16, "default")
+                os.makedirs(os.path.join(gw.ENROLL_DIR, phrase, "20261019-150740"))
+            gw.enroll({"phrase": phrase, "persona": persona, "count": n, "topup": topup}, read16, "default")
         finally:
             (gw.post_state, gw.relay_post, gw.subprocess.Popen, gw.ENROLL_DIR, gw.np.concatenate, gw.follow_training, gw.time.sleep) = old
         return posted, uploads
@@ -155,6 +218,14 @@ class EnrollFlow(unittest.TestCase):
         _, uploads = self.run_enroll(topup=True)
         done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
         self.assertEqual(done["prior"], "20261019-150740")
+
+    def test_hyphenated_bot_is_grok_on_the_relay_only(self):
+        _, uploads = self.run_enroll(phrase="hey_kitchen", persona="kitchen-bot")
+        done = json.loads([b for p, b in uploads if p.endswith("/done")][0])
+        self.assertEqual(done["persona"], "grok")
+        self.assertEqual(gw.ENROLL_STATE["last"]["persona"], "kitchen-bot")
+        self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "training")
+        self.assertEqual(gw.ENROLL_STATE["last"]["message"], "Training.")
 
 
 class _FakeDisplay:

@@ -136,6 +136,24 @@ screen matches Grok's: same solid pulsing ring, with their portrait (no persona:
 `WAKE_MODEL` / `WAKE_THRESHOLD` behaviour applies. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
 the voice relay below (when configured).
 
+**Recording a wake word.** Wake words → "Record a wake word" takes a free-text phrase (two to four words, such as
+"hey kitchen" or "okay finn") and the bot it opens: a slug from the Bots list, or Grok. The phrase does not have to
+contain the bot's name, and one bot can have several. The station lowercases it, keeps letters, spaces and
+apostrophes, collapses spaces, treats `_` as a word break, drops apostrophes, and joins the words with `_`
+(`hey kitchen` → `hey_kitchen`, at most 32 characters, `^[a-z]+(_[a-z]+){1,3}$`). It refuses a phrase that is shorter
+than two words or six letters ("Too short. Use two or three words."), longer than four words, only common words such
+as "hey" or "okay", an exact duplicate of a word already on the station, or too close to one — including Hey Jarvis and
+words that are turned off. Record voice on a word that is already listed still records more clips of that same word.
+The mapping (phrase id → persona) is saved in `wake-overrides.json` (the listener's `WAKE_OVERRIDES`,
+`/var/lib/grok-station/admin/wake-overrides.json` on the Pi). A hit opens that persona. Training status for each phrase
+is kept on the station in `enroll-status.json` (`idle`, `recording`, `uploading`, `training`, `ready`, `failed`, plus a
+short message). The Bots page shows "Processing…" on that bot's "Record voice" button while one of its phrases is
+recording, uploading, or training. The button says "Record voice" again once the model is ready or the attempt failed
+(the panel shows the short reason). Closing the panel or reloading the page reads the same file. The relay's enroll upload
+still only accepts `hey_<word>` (`^hey_[a-z]{2,16}$`), so `hey_kitchen` can train and `okay_finn` cannot until that
+check is widened. A bot slug with a dash is not a relay persona (`^[a-z]{2,16}$`): the listener submits the training
+job as `grok` and still opens the real slug from the overrides.
+
 Setup on the Pi (venv, since openWakeWord's tflite dependency has no Trixie arm64 wheel):
 
 ```sh

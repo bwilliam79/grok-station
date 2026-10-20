@@ -323,8 +323,13 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         self.assertNotIn(j["id"], json.dumps(sent))
         sp = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json")))
         self.assertEqual(sp[j["id"]]["name"], "Alex Example")
+        models = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "models.json")))
+        self.assertEqual(models["hey_hank"]["speakers"], [j["id"]])
+        self.assertNotIn("Alex", json.dumps(models))
         self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": j["id"]})[0], 400)
-        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 10})[0], 400)
+        # "Hey Hank!" is the known word hey_hank, so this re-records it (the listener is down here).
+        st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 10})
+        self.assertEqual((st, out.get("id")), (503, "hey_hank"))
 
 
 class SystemAndSettings(unittest.TestCase):
@@ -577,6 +582,10 @@ class Bots(unittest.TestCase):
         self.assertIn('autocomplete="off"', js); self.assertIn("Waiting for", js)
         for s in ("Voice note", "yes, save it", "call button"):
             self.assertNotIn(s, js)
+        self.assertIn("data-voice", js)
+        self.assertIn("openVoiceStatus", js)
+        self.assertIn('"/api/enroll/check"', js)
+        self.assertIn('"/api/enroll/status"', js)
 
     def test_refresh_avatars_proxies_wake_without_password(self):
         calls = []
@@ -595,6 +604,234 @@ class Bots(unittest.TestCase):
         self.assertEqual(calls, [("POST", "/personas/sync", {}), ("POST", "/personas/sync", {})])
         self.assertEqual(C().req("POST", "/api/bots/refresh-avatars", {})[0], 401)
 
+
+
+
+class WakePhraseAndStatus(unittest.TestCase):
+    """Custom wake phrase: normalization, quality checks, persona mapping, training status."""
+
+    def setUp(self):
+        reset_state()
+        if os.path.exists(ga.ENROLLED):
+            os.remove(ga.ENROLLED)
+        self.wake = ga.wake
+        self.sent = []
+
+    def tearDown(self):
+        ga.wake = self.wake
+        if os.path.exists(ga.ENROLLED):
+            os.remove(ga.ENROLLED)
+
+    def enroll_up(self, replies):
+        """Wake listener stand-in. `replies` is consumed in order; the last one sticks."""
+        box = {"i": 0}
+
+        def fake(method, p, body=None, timeout=3):
+            self.sent.append((method, p, body))
+            i = min(box["i"], len(replies) - 1)
+            box["i"] += 1
+            return replies[i]
+
+        ga.wake = fake
+
+    def test_normalize_phrase(self):
+        self.assertEqual(ga.normalize_phrase("  Hey   Kitchen! "), ("hey_kitchen", ["hey", "kitchen"]))
+        self.assertEqual(ga.normalize_phrase("Hey, Kitchen"), ("hey_kitchen", ["hey", "kitchen"]))
+        self.assertEqual(ga.normalize_phrase("OKAY FINN"), ("okay_finn", ["okay", "finn"]))
+        self.assertEqual(ga.normalize_phrase("hey  kitchen's  light"), ("hey_kitchens_light", ["hey", "kitchens", "light"]))
+        self.assertEqual(ga.normalize_phrase("hey_hank"), ("hey_hank", ["hey", "hank"]))  # id the Record button posts
+        self.assertEqual(ga.normalize_phrase("don\u2019t stop"), ("dont_stop", ["dont", "stop"]))
+        self.assertEqual(ga.normalize_phrase(""), ("", []))
+        self.assertTrue(ga.phrase_ok("hey_finn"))
+        self.assertTrue(ga.phrase_ok("okay_finn"))
+        self.assertFalse(ga.phrase_ok("hey"))
+        self.assertLessEqual(len("hey_kitchen"), ga.PHRASE_MAX)
+
+    def test_each_quality_reason(self):
+        self.assertEqual(ga.phrase_problem("cat"), ga.TOO_SHORT)
+        self.assertEqual(ga.phrase_problem("kitchen"), ga.TOO_SHORT)          # one word
+        self.assertEqual(ga.phrase_problem("hi bob"), ga.TOO_SHORT)           # two words, five letters
+        self.assertEqual(ga.phrase_problem("hey"), "“Hey” is only common words like “hey” or “okay”. Add a word that's yours.")
+        self.assertEqual(ga.phrase_problem("okay"), "“Okay” is only common words like “hey” or “okay”. Add a word that's yours.")
+        self.assertEqual(ga.phrase_problem("hey okay"), "“Hey Okay” is only common words like “hey” or “okay”. Add a word that's yours.")
+        self.assertEqual(ga.phrase_problem("alpha beta gamma delta epsilon"), ga.TOO_LONG)
+        self.assertEqual(ga.phrase_problem("extraordinarily supercalifragilistic"), ga.TOO_LONG_ID)
+        self.assertEqual(ga.phrase_problem("Hey Finn!"), "“Hey Finn” is already a wake word.")
+        self.assertEqual(ga.phrase_problem("hey_jarvis"), "“Hey Jarvis” is already a wake word.")
+        self.assertEqual(ga.phrase_problem("hey fin"), "Too close to “Hey Finn”. Pick something that sounds different.")
+        self.assertEqual(ga.phrase_problem("play jarvis"), "Too close to “Hey Jarvis”. Pick something that sounds different.")
+        # turned off on the admin page, still a known word
+        ga.write_json(ga.path("wake-overrides.json"), {"hey_finn": {"enabled": False, "threshold": 0.3}}, 0o640)
+        self.assertEqual(ga.phrase_problem("hey fin"), "Too close to “Hey Finn”. Pick something that sounds different.")
+        self.assertIsNone(ga.phrase_problem("okay finn"))
+        self.assertIsNone(ga.phrase_problem("Hey Kitchen!"))
+        c = signed_in()
+        st, j = c.req("POST", "/api/enroll/check", {"phrase": "Hey Kitchen!"})
+        self.assertEqual((st, j), (200, {"ok": True, "id": "hey_kitchen", "label": "Hey Kitchen"}))
+        st, j = c.req("POST", "/api/enroll/check", {"phrase": "hey fin"})
+        self.assertEqual((st, j["error"]), (400, "Too close to “Hey Finn”. Pick something that sounds different."))
+        st, j = c.req("POST", "/api/enroll", {"phrase": "cat", "count": 5, "persona": "grok"})
+        self.assertEqual((st, j["error"]), (400, "Pick a wake word and 10 to 40 clips."))
+
+    def test_mapping_saved_and_rerecord_keeps_persona(self):
+        c = signed_in()
+        st, sp = c.req("POST", "/api/speakers", {"name": "  Alex   Example "})
+        self.enroll_up([(202, {"ok": True}), (503, {"error": "wake listener unreachable"})])
+        CLOCK[0] = 1_700_000_000
+        st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Kitchen!", "count": 12, "persona": "kitchen-bot",
+                                              "speaker": sp["id"]})
+        self.assertEqual(st, 202)
+        self.assertEqual(j["id"], "hey_kitchen")
+        self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
+        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 12, "topup": False, "persona": "kitchen-bot"})
+        self.assertNotIn("Alex", json.dumps(self.sent))
+        self.assertNotIn(sp["id"], json.dumps(self.sent))
+        ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
+        ov = json.load(open(ov_path))
+        self.assertEqual(ov["hey_kitchen"], {"persona": "kitchen-bot"})
+        self.assertEqual(stat.S_IMODE(os.stat(ov_path).st_mode), 0o640)
+        words = {w["name"]: w for w in c.req("GET", "/api/wakewords")[1]["words"]}
+        self.assertEqual(words["hey_kitchen"]["persona"], "kitchen-bot")
+        doc = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "enroll-status.json")))
+        self.assertEqual(doc["hey_kitchen"]["state"], "recording")
+        self.assertEqual(doc["hey_kitchen"]["persona"], "kitchen-bot")
+        self.assertFalse(doc["hey_kitchen"]["had_model"])
+        models = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "models.json")))
+        self.assertEqual(models["hey_kitchen"]["speakers"], [sp["id"]])
+        self.assertNotIn("Alex", json.dumps(models))
+        # a second phrase for the same bot, and a different bot on an existing word, are different checks
+        st, j = c.req("POST", "/api/enroll", {"phrase": "hey finn", "count": 10, "persona": "grok"})
+        self.assertEqual((st, j["error"]), (400, "“Hey Finn” is already a wake word."))
+        self.sent.clear()
+        st, j = c.req("POST", "/api/enroll", {"phrase": "okay finn", "count": 10, "persona": "grok"})
+        self.assertNotEqual(st, 202)
+        ov = json.load(open(ov_path))
+        self.assertNotIn("okay_finn", ov)  # listener refused: the new mapping is dropped
+        self.assertEqual(ov["hey_kitchen"]["persona"], "kitchen-bot")
+
+    def test_status_transitions(self):
+        prev = {}
+        busy = {"enrolling": True, "last_enroll": {"phrase": "hey_kitchen", "stage": "recording",
+                                                    "message": "Say it on the station.", "persona": "grok", "session": "s1"}}
+        got = ga.derive_enroll_status(prev, busy, set(), 100)
+        self.assertEqual(got["hey_kitchen"]["state"], "recording")
+        self.assertEqual(got["hey_kitchen"]["updated_at"], 100)
+        again = ga.derive_enroll_status(got, busy, set(), 250)
+        self.assertEqual(again["hey_kitchen"]["updated_at"], 100)  # unchanged stage does not bump the clock
+        up = {"enrolling": False, "last_enroll": {"phrase": "hey_kitchen", "stage": "uploading",
+                                                   "message": "Sending the clips.", "persona": "grok", "session": "s1"}}
+        got = ga.derive_enroll_status(again, up, set(), 300)
+        self.assertEqual(got["hey_kitchen"]["state"], "training")  # clips sent, model not published yet
+        self.assertEqual(got["hey_kitchen"]["updated_at"], 300)
+        self.assertFalse(got["hey_kitchen"]["had_model"])
+        ready = ga.derive_enroll_status(got, up, {"hey_kitchen"}, 400)
+        self.assertEqual(ready["hey_kitchen"]["state"], "ready")
+        self.assertEqual(ready["hey_kitchen"]["message"], "Ready.")
+        busy_up = {"enrolling": True, "last_enroll": dict(up["last_enroll"], stage="uploading")}
+        still = {"hey_kitchen": {"state": "uploading", "message": "Sending the clips.", "updated_at": 1,
+                                 "persona": "grok", "had_model": False, "session": "s1"}}
+        self.assertEqual(ga.derive_enroll_status(still, busy_up, {"hey_kitchen"}, 450)["hey_kitchen"]["state"], "uploading")
+        topup = {"hey_kitchen": {"state": "uploading", "message": "Sending the clips.", "updated_at": 1,
+                                 "persona": "grok", "had_model": True, "session": "s1"}}
+        self.assertEqual(ga.derive_enroll_status(topup, up, {"hey_kitchen"}, 460)["hey_kitchen"]["state"], "training")
+        failed = {"enrolling": False, "last_enroll": {"phrase": "hey_kitchen", "stage": "failed",
+                                                       "message": "Needs more clips.", "persona": "grok"}}
+        stay = ga.derive_enroll_status(ready, failed, {"hey_kitchen"}, 600)
+        self.assertEqual(stay["hey_kitchen"]["state"], "failed")
+        self.assertEqual(stay["hey_kitchen"]["message"], "Needs more clips.")
+        # listener down: keep what was saved, but a published model still finishes a training row
+        training = {"okay_finn": {"state": "training", "message": "Training.", "updated_at": 7,
+                                  "persona": "finn", "had_model": False}}
+        self.assertEqual(ga.derive_enroll_status(training, None, set(), 800)["okay_finn"]["state"], "training")
+        self.assertEqual(ga.derive_enroll_status(training, None, set(), 800)["okay_finn"]["updated_at"], 7)
+        published = ga.derive_enroll_status(training, None, {"okay_finn"}, 800)
+        self.assertEqual(published["okay_finn"]["state"], "ready")
+        self.assertEqual(published["okay_finn"]["message"], "Ready.")
+        # a model that was already there when recording started is not a new publish
+        old_model = {"hey_kitchen": {"state": "training", "message": "Training.", "updated_at": 9,
+                                     "persona": "grok", "had_model": True}}
+        self.assertEqual(ga.derive_enroll_status(old_model, None, {"hey_kitchen"}, 900)["hey_kitchen"]["state"], "training")
+
+    def test_status_persists_across_a_new_handler(self):
+        c = signed_in()
+        CLOCK[0] = 1_700_000_100
+        ga.write_enroll_status({"hey_kitchen": {"state": "recording", "message": "Say it on the station.",
+                                                "updated_at": 10, "persona": "kitchen-bot", "had_model": False,
+                                                "session": "s1"}})
+        self.enroll_up([
+            (200, {"enrolling": True, "last_enroll": {"phrase": "hey_kitchen", "stage": "recording",
+                                                       "message": "Say it on the station.", "persona": "kitchen-bot",
+                                                       "session": "s1"}}),
+            (503, {"error": "wake listener unreachable"}),
+            (200, {"enrolling": False, "last_enroll": {"phrase": "hey_kitchen", "stage": "training",
+                                                        "message": "Training.", "persona": "kitchen-bot", "session": "s1"}}),
+            (503, {"error": "wake listener unreachable"}),
+        ])
+        st, j = c.req("GET", "/api/enroll/status")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["words"]["hey_kitchen"]["state"], "recording")
+        self.assertEqual(j["words"]["hey_kitchen"]["updated_at"], 10)
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Processing…")
+        self.assertTrue(j["buttons"]["kitchen-bot"]["processing"])
+        c2 = C()  # another request builds another Handler; the cookie is the same sign-in
+        c2.jar = dict(c.jar)
+        st, j = c2.req("GET", "/api/enroll/status")
+        self.assertEqual(j["words"]["hey_kitchen"]["state"], "recording")
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Processing…")
+        os.makedirs(os.path.dirname(ga.ENROLLED), exist_ok=True)
+        json.dump({"words": [{"name": "hey_kitchen", "persona": "grok"}]}, open(ga.ENROLLED, "w"))
+        st, j = c.req("GET", "/api/enroll/status")
+        self.assertEqual(j["words"]["hey_kitchen"]["state"], "ready")
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Record voice")
+        self.assertFalse(j["buttons"]["kitchen-bot"]["processing"])
+        self.assertEqual(j["buttons"]["kitchen-bot"]["message"], "")
+        path = os.path.join(os.environ["ADMIN_STATE_DIR"], "enroll-status.json")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
+        saved = json.load(open(path))
+        c3 = C()
+        c3.jar = dict(c.jar)
+        st, j = c3.req("GET", "/api/enroll/status")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["words"]["hey_kitchen"]["state"], "ready")
+        self.assertEqual(j["buttons"]["kitchen-bot"]["label"], "Record voice")
+        self.assertEqual(json.load(open(path)), saved)  # listener down: the file is what the next page load reads
+
+    def test_record_button(self):
+        processing = ga.record_button([
+            {"state": "failed", "message": "Needs more clips.", "updated_at": 9, "phrase": "okay_finn"},
+            {"state": "training", "message": "Training.", "updated_at": 2, "phrase": "hey_kitchen"},
+        ])
+        self.assertEqual(processing["label"], "Processing…")
+        self.assertTrue(processing["processing"])
+        self.assertEqual(processing["phrase"], "hey_kitchen")  # training wins over a newer failure
+        self.assertEqual(processing["state"], "training")
+        failed = ga.record_button([
+            {"state": "ready", "message": "Ready.", "updated_at": 1, "phrase": "hey_kitchen"},
+            {"state": "failed", "message": "Needs more clips.", "updated_at": 5, "phrase": "okay_finn"},
+        ])
+        self.assertEqual(failed, {"label": "Record voice", "processing": False, "message": "Needs more clips.",
+                                  "phrase": "okay_finn", "state": "failed"})
+        ready = ga.record_button([{"state": "ready", "message": "Ready.", "updated_at": 4, "phrase": "hey_kitchen"}])
+        self.assertEqual(ready["label"], "Record voice")
+        self.assertFalse(ready["processing"])
+        self.assertEqual(ready["message"], "")
+        self.assertEqual(ready["state"], "ready")
+        idle = ga.record_button([])
+        self.assertEqual(idle["label"], "Record voice")
+        self.assertEqual(idle["state"], "idle")
+        buttons = ga.buttons_for({
+            "hey_kitchen": {"state": "training", "message": "Training.", "updated_at": 3, "persona": "kitchen-bot"},
+            "play_lamp": {"state": "ready", "message": "Ready.", "updated_at": 1, "persona": "kitchen-bot"},
+            "okay_finn": {"state": "failed", "message": "Needs more clips.", "updated_at": 4, "persona": "finn"},
+            "hey_lamp": {"state": "failed", "message": "Nope.", "updated_at": 8, "persona": "Not A Slug"},
+        })
+        self.assertEqual(buttons["kitchen-bot"]["label"], "Processing…")
+        self.assertEqual(buttons["kitchen-bot"]["phrase"], "hey_kitchen")
+        self.assertEqual(buttons["finn"]["label"], "Record voice")
+        self.assertEqual(buttons["finn"]["state"], "failed")
+        self.assertEqual(buttons["finn"]["message"], "Needs more clips.")
+        self.assertEqual(buttons["grok"]["phrase"], "hey_lamp")  # a persona that isn't a bot slug counts as Grok
+        self.assertEqual(buttons["grok"]["message"], "Nope.")
 
 class StepUp(unittest.TestCase):
     """Sudo-style window on the session: 10 minutes from the password, no slide."""

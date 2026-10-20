@@ -375,22 +375,33 @@ def note_secret(name, value=None, test=None):
 def wakewords():
     cfg = read_json(WAKE_CONFIG, {})
     ov = read_json(path("wake-overrides.json"), {})
+    if not isinstance(ov, dict):
+        ov = {}
     enrolled = {w.get("name"): w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict)}
     models = read_json(path("models.json"), {})  # Pi-only: phrase -> {speakers: [ids], trained_at, clips}
-    out = []
-    for w in cfg.get("words", []) + cfg.get("enroll", []):
-        n = w.get("name")
-        if not n:
+    rows = [w for w in cfg.get("words", []) + cfg.get("enroll", []) if isinstance(w, dict)]
+    have = {w.get("name") for w in rows}
+    fb = cfg.get("fallback") if isinstance(cfg.get("fallback"), dict) else None
+    for name, o in ov.items():
+        # a phrase recorded on this station (phrase id -> persona), not one of the built-in words
+        if name in have or not isinstance(o, dict) or (fb and name == fb.get("name")):
             continue
-        o = ov.get(n, {})
+        if phrase_ok(name) and persona_ok(str(o.get("persona") or "")):
+            rows.append({"name": name, "persona": o["persona"]})
+    out = []
+    for w in rows:
+        n = w.get("name")
+        if not n or any(x["name"] == n for x in out):
+            continue
+        o = ov.get(n) if isinstance(ov.get(n), dict) else {}
         e = enrolled.get(n, {})
         has_model = n in enrolled or os.path.isfile(os.path.join(cfg.get("models_dir", ""), n + ".onnx"))
-        out.append({"name": n, "persona": w.get("persona", "grok"), "enabled": o.get("enabled", True) and has_model,
+        persona = str(o.get("persona")) if persona_ok(str(o.get("persona") or "")) else w.get("persona", "grok")
+        out.append({"name": n, "persona": persona, "enabled": o.get("enabled", True) and has_model,
                     "has_model": has_model, "sensitivity": round(1 - float(o.get("threshold", e.get("threshold", w.get("threshold", 0.5)))), 2),
                     "provisional": bool(w.get("provisional")), "enrolled": n in enrolled, "metrics": e.get("metrics"),
                     "trained_on": models.get(n)})
-    fb = cfg.get("fallback")
-    if fb:
+    if fb and fb.get("name"):
         out.append({"name": fb["name"], "persona": fb.get("persona", "grok"), "enabled": True, "backup": True, "has_model": True,
                     "sensitivity": round(1 - float(fb.get("threshold", 0.5)), 2)})
     return out
@@ -413,8 +424,15 @@ def lan_ok(ip):
 
 
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
-PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
+# 2–4 words, letters only, 32 characters. Still matches every hey_<name> the station already ships.
+PHRASE_RE = re.compile(r"^[a-z]+(?:_[a-z]+){1,3}$")
+PHRASE_MAX = 32
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,23}$")  # persona slug; "grok" is reserved and rejected separately
+COMMON_WORDS = frozenset({"hey", "hi", "ok", "okay", "yo", "ah", "oh", "um", "uh"})
+TOO_SHORT = "Too short. Use two or three words."
+TOO_LONG = "Too long. Use two, three, or four words."
+TOO_LONG_ID = "Too long. Keep it to 32 characters."
+ACTIVE_ENROLL = ("recording", "uploading", "training")
 WEBHOOK_HOST = "api2.cursor.sh"
 RELAY_ENV = E("ADMIN_RELAY_ENV", "/etc/grok-station/admin-relay.env")
 RELAY_UNCONFIGURED = "The station can't reach the relay's admin API yet"
@@ -428,6 +446,303 @@ ASSET_TYPE = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf", "ic
 
 def slug_ok(slug):
     return isinstance(slug, str) and SLUG_RE.fullmatch(slug) is not None and slug != "grok"
+
+
+def phrase_ok(name):
+    return isinstance(name, str) and len(name) <= PHRASE_MAX and PHRASE_RE.fullmatch(name) is not None
+
+
+def persona_ok(slug):
+    """Grok, or a bot slug from the Bots list (letters, digits, dashes)."""
+    return slug == "grok" or slug_ok(slug)
+
+
+def phrase_label(name):
+    return " ".join(p.capitalize() for p in str(name).split("_") if p)
+
+
+def too_close_msg(label):
+    return f"Too close to “{label}”. Pick something that sounds different."
+
+
+def duplicate_msg(label):
+    return f"“{label}” is already a wake word."
+
+
+def common_msg(label):
+    return f"“{label}” is only common words like “hey” or “okay”. Add a word that's yours."
+
+
+def normalize_phrase(text):
+    """Lowercase, keep letters, spaces and apostrophes, collapse spaces.
+
+    Underscores are word breaks, so an id the page already has (hey_hank) stays that id.
+    Apostrophes are removed. The model id is the words joined with "_" (hey_kitchen).
+    Returns (model_id, words). An empty phrase is ("", []).
+    """
+    s = str(text or "").lower().replace("\u2019", "'").replace("\u2018", "'").replace("_", " ")
+    s = re.sub(r"[^a-z' ]+", "", s)
+    words = []
+    for w in " ".join(s.split()).split(" "):
+        w = w.strip("'").replace("'", "")
+        if w:
+            words.append(w)
+    return "_".join(words), words
+
+
+def levenshtein(a, b):
+    if a == b:
+        return 0
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def lev_ratio(a, b):
+    """1 at a match, 0 when nothing is shared. Compared at >= 0.75."""
+    if a == b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return 1.0 - levenshtein(a, b) / max(len(a), len(b))
+
+
+def syllables(word):
+    w = re.sub(r"[^a-z]", "", str(word).lower())
+    if not w:
+        return 0
+    count, prev = 0, False
+    for ch in w:
+        vowel = ch in "aeiouy"
+        if vowel and not prev:
+            count += 1
+        prev = vowel
+    if w.endswith("e") and count > 1 and not w.endswith(("le", "ye")):
+        count -= 1
+    return max(1, count)
+
+
+def phrase_syllables(words):
+    return sum(syllables(w) for w in words)
+
+
+def known_phrase_ids():
+    return [w["name"] for w in wakewords() if w.get("name")]
+
+
+def phrase_personas():
+    """phrase id -> persona, including the backup word and phrases recorded on this station."""
+    return {w["name"]: w.get("persona") or "grok" for w in wakewords() if w.get("name")}
+
+
+def phrase_problem(text, known=None):
+    """None when the phrase can be a new wake word, otherwise the sentence to show."""
+    mid, words = normalize_phrase(text)
+    letters = sum(len(w) for w in words)
+    if words and all(w in COMMON_WORDS for w in words):
+        return common_msg(phrase_label(mid))
+    if len(words) < 2 or letters < 6:
+        return TOO_SHORT
+    if len(words) > 4:
+        return TOO_LONG
+    if not phrase_ok(mid):
+        return TOO_LONG_ID
+    known = list(known_phrase_ids() if known is None else known)
+    if mid in known:
+        return duplicate_msg(phrase_label(mid))
+    mine_syl = phrase_syllables(words)
+    for other in known:
+        if not isinstance(other, str) or not other:
+            continue
+        ow = [p for p in other.split("_") if p]
+        if not ow:
+            continue
+        if lev_ratio(mid, other) >= 0.75 or (words[-1] == ow[-1] and mine_syl == phrase_syllables(ow)):
+            return too_close_msg(phrase_label(other))
+    return None
+
+
+def persona_allowed(slug):
+    """Grok, or a slug on the Bots list. When that list can't be loaded, a well-formed slug is enough."""
+    if not persona_ok(slug):
+        return False
+    if slug == "grok":
+        return True
+    got = relay_call("GET", "/admin/bots")
+    if not got or got[0] != 200:
+        return True
+    data = got[1] if isinstance(got[1], dict) else {}
+    return any(isinstance(b, dict) and b.get("slug") == slug for b in (data.get("bots") or []))
+
+
+def save_phrase_persona(phrase, persona):
+    """Remember phrase id -> persona in the overrides the wake listener already reads."""
+    ov = read_json(path("wake-overrides.json"), {})
+    if not isinstance(ov, dict):
+        ov = {}
+    o = ov.get(phrase) if isinstance(ov.get(phrase), dict) else {}
+    o["persona"] = persona
+    ov[phrase] = o
+    write_json(path("wake-overrides.json"), ov, 0o640)
+
+
+def drop_phrase_persona(phrase):
+    ov = read_json(path("wake-overrides.json"), {})
+    if isinstance(ov, dict) and phrase in ov:
+        ov.pop(phrase, None)
+        write_json(path("wake-overrides.json"), ov, 0o640)
+
+
+def read_enroll_status():
+    doc = read_json(path("enroll-status.json"), {})
+    return doc if isinstance(doc, dict) else {}
+
+
+def write_enroll_status(doc):
+    write_json(path("enroll-status.json"), doc, 0o640)
+
+
+def enrolled_phrase_ids():
+    return {w.get("name") for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
+
+
+def set_enroll_state(phrase, state, message, persona=None, session=None, had_model=None):
+    doc = read_enroll_status()
+    old = doc.get(phrase) if isinstance(doc.get(phrase), dict) else {}
+    row = {"state": state, "message": message, "updated_at": int(now())}
+    who = persona or old.get("persona")
+    if who:
+        row["persona"] = who
+    ses = session or old.get("session")
+    if ses:
+        row["session"] = ses
+    if had_model is None:
+        had_model = old.get("had_model")
+    if had_model is not None:
+        row["had_model"] = bool(had_model)
+    doc[phrase] = row
+    write_enroll_status(doc)
+    return row
+
+
+def _status_row(phrase, state, message, now_ts, prev, persona=None, session=None, had_model=None):
+    old = prev.get(phrase) if isinstance(prev.get(phrase), dict) else {}
+    row = {"state": state, "message": message, "updated_at": now_ts}
+    if old.get("state") == state and (old.get("message") or "") == (message or ""):
+        row["updated_at"] = old.get("updated_at", now_ts)
+    who = persona or old.get("persona")
+    if who:
+        row["persona"] = who
+    ses = session or old.get("session")
+    if ses:
+        row["session"] = ses
+    if had_model is None:
+        had_model = old.get("had_model")
+    if had_model is not None:
+        row["had_model"] = bool(had_model)
+    return row
+
+
+def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
+    """Fold the listener's enroll stage and any published model into the persisted per-phrase status.
+
+    wake_status None means the listener didn't answer: keep what was saved, and still notice a model
+    that landed in the enrolled list. had_model is whether a model already existed when this attempt
+    started, so a top-up doesn't look finished just because the previous model is still there.
+    """
+    prev = prev if isinstance(prev, dict) else {}
+    out = {}
+    for k, v in prev.items():
+        if isinstance(k, str) and isinstance(v, dict) and v.get("state") in ("idle", *ACTIVE_ENROLL, "ready", "failed"):
+            out[k] = dict(v)
+    enrolled = {n for n in (enrolled_names or []) if n}
+    last, busy = {}, False
+    if isinstance(wake_status, dict):
+        busy = bool(wake_status.get("enrolling"))
+        last = wake_status.get("last_enroll") if isinstance(wake_status.get("last_enroll"), dict) else {}
+    phrase = str(last.get("phrase") or "")
+    stage = str(last.get("stage") or "")
+    msg = str(last.get("message") or "")[:160]
+    persona = str(last.get("persona")) if persona_ok(str(last.get("persona") or "")) else None
+    session = last.get("session") if isinstance(last.get("session"), str) else None
+    if phrase_ok(phrase):
+        entry = out.get(phrase) or {}
+        state, new_msg = None, msg
+        if busy:
+            state = stage if stage in ACTIVE_ENROLL else "recording"
+            new_msg = msg or {"recording": "Say it on the station.", "uploading": "Sending the clips.",
+                              "training": "Training."}[state]
+        elif stage == "failed":
+            state, new_msg = "failed", msg or "Training didn't pass."
+        elif stage == "ready":
+            state, new_msg = "ready", msg or "Ready."
+        elif stage in ACTIVE_ENROLL or entry.get("state") in ACTIVE_ENROLL:
+            state, new_msg = "training", msg or "Training."
+        if state:
+            had = entry.get("had_model")
+            if had is None and state == "recording":
+                had = phrase in enrolled
+            out[phrase] = _status_row(phrase, state, new_msg, now_ts, out, persona, session, had)
+    if not busy:
+        for name, row in list(out.items()):
+            if name in enrolled and row.get("state") in ("uploading", "training") and not row.get("had_model"):
+                out[name] = _status_row(name, "ready", "Ready.", now_ts, out)
+    return out
+
+
+def refresh_enroll_status():
+    """Poll the wake listener and the enrolled-model list, then write enroll-status.json."""
+    code, st = wake("GET", "/status")
+    wake_status = st if code == 200 and isinstance(st, dict) else None
+    prev = read_enroll_status()
+    doc = derive_enroll_status(prev, wake_status, enrolled_phrase_ids(), int(now()))
+    if doc != prev:
+        write_enroll_status(doc)
+    return doc
+
+
+def record_button(rows):
+    """What the Bots page shows for one bot, from that bot's phrase statuses.
+
+    "Processing…" while any phrase is recording, uploading or training. Otherwise "Record voice".
+    A failed attempt keeps "Record voice" and carries the short reason for the status panel.
+    """
+    rows = [r for r in rows if isinstance(r, dict)]
+
+    def ts(r):
+        return r.get("updated_at") or 0
+
+    active = [r for r in rows if r.get("state") in ACTIVE_ENROLL]
+    if active:
+        top = max(active, key=ts)
+        return {"label": "Processing…", "processing": True, "message": top.get("message") or "Processing…",
+                "phrase": top.get("phrase") or "", "state": top.get("state")}
+    if not rows:
+        return {"label": "Record voice", "processing": False, "message": "", "phrase": "", "state": "idle"}
+    top = max(rows, key=ts)
+    if top.get("state") == "failed":
+        return {"label": "Record voice", "processing": False, "message": top.get("message") or "Something went wrong.",
+                "phrase": top.get("phrase") or "", "state": "failed"}
+    return {"label": "Record voice", "processing": False, "message": "", "phrase": top.get("phrase") or "",
+            "state": top.get("state") or "idle"}
+
+
+def buttons_for(doc):
+    groups = {}
+    for name, row in (doc or {}).items():
+        if not isinstance(row, dict):
+            continue
+        who = str(row.get("persona") or "")
+        if not persona_ok(who):
+            who = "grok"
+        groups.setdefault(who, []).append({**row, "phrase": name})
+    return {who: record_button(rows) for who, rows in groups.items()}
 
 
 def webhook_url_ok(url):
@@ -1267,23 +1582,61 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True})
 
     def api_post_enroll(self, p, q, j):
-        phrase, count = str(j.get("phrase", "")), j.get("count", 10)
-        spk = str(j.get("speaker", ""))
-        if not PHRASE_RE.fullmatch(phrase) or not isinstance(count, int) or not 10 <= count <= 40:
+        if p == "/api/enroll/check":
+            err = phrase_problem(j.get("phrase", ""))
+            if err:
+                return self.send(400, {"error": err})
+            mid, _words = normalize_phrase(j.get("phrase", ""))
+            return self.send(200, {"ok": True, "id": mid, "label": phrase_label(mid)})
+        raw, count = j.get("phrase", ""), j.get("count", 10)
+        spk = str(j.get("speaker") or "")
+        mid, _words = normalize_phrase(raw)
+        if isinstance(count, bool) or not isinstance(count, int) or not 10 <= count <= 40:
             return self.send(400, {"error": "Pick a wake word and 10 to 40 clips."})
+        if not phrase_ok(mid):
+            return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word and 10 to 40 clips."})
         if spk and spk not in speakers():
             return self.send(400, {"error": "Pick a speaker."})
-        code, out = wake("POST", "/enroll", {"phrase": phrase, "count": count, "topup": bool(j.get("topup"))})
-        if code == 202 and spk:  # speaker name -> opaque id stays on the Pi; uploads carry no name
-            m = read_json(path("models.json"), {})
-            e = m.setdefault(phrase, {"speakers": []})
-            if spk not in e["speakers"]:
-                e["speakers"].append(spk)
-            e["last_session_at"] = int(now())
-            write_json(path("models.json"), m, 0o600)
+        personas = phrase_personas()
+        persona = j.get("persona")
+        creating = mid not in personas
+        if creating:
+            err = phrase_problem(raw)
+            if err:
+                return self.send(400, {"error": err})
+            if not isinstance(persona, str) or not persona_allowed(persona):
+                return self.send(400, {"error": "Pick a bot."})
+            save_phrase_persona(mid, persona)
+            who = persona
+        else:
+            who = personas.get(mid) or "grok"
+            if isinstance(persona, str) and persona and persona != who:
+                return self.send(400, {"error": duplicate_msg(phrase_label(mid))})
+        code, out = wake("POST", "/enroll", {"phrase": mid, "count": count, "topup": bool(j.get("topup")),
+                                              "persona": who})
+        if not isinstance(out, dict):
+            out = {}
+        if code != 202 and creating:
+            drop_phrase_persona(mid)
+        elif code == 202:
+            set_enroll_state(mid, "recording", "Say it on the station.", who,
+                             had_model=mid in enrolled_phrase_ids())
+            if spk:  # speaker name -> opaque id stays on the Pi; uploads carry no name
+                m = read_json(path("models.json"), {})
+                e = m.setdefault(mid, {"speakers": []})
+                if spk not in e["speakers"]:
+                    e["speakers"].append(spk)
+                e["last_session_at"] = int(now())
+                write_json(path("models.json"), m, 0o600)
+        elif not creating:
+            set_enroll_state(mid, "failed", out.get("error") or "Couldn't start recording.", who)
+        out = {**out, "id": mid}
         return self.send(code, out)
 
     def api_get_enroll(self, p, q, j):
+        if p == "/api/enroll/status":
+            doc = refresh_enroll_status()
+            return self.send(200, {"words": doc, "buttons": buttons_for(doc)})
         code, st = wake("GET", "/status")
         return self.send(200, {"enrolling": st.get("enrolling") if code == 200 else None,
                                "last": st.get("last_enroll") if code == 200 else None})

@@ -398,7 +398,35 @@ def setup_mode():
         return m if m in ("setup", "reset", "hotspot") else None
     except (OSError, ValueError, AttributeError):
         return None
-PHRASE_RE = re.compile(r"^hey_[a-z]{2,16}$")
+PHRASE_RE = re.compile(r"^[a-z]+(?:_[a-z]+){1,3}$")  # 2–4 words; every shipped hey_<name> still matches
+PHRASE_MAX = 32
+
+
+def phrase_ok(name):
+    return isinstance(name, str) and len(name) <= PHRASE_MAX and PHRASE_RE.fullmatch(name) is not None
+
+
+def persona_ok(slug):
+    """Grok, a teammate slug, or a bot slug (letters, digits, dashes)."""
+    return isinstance(slug, str) and (slug == "grok" or re.fullmatch(r"[a-z][a-z0-9-]{1,23}", slug) is not None)
+
+
+def relay_persona(slug):
+    """The training inbox wants ^[a-z]{2,16}$. The listener still opens the real slug from overrides."""
+    return slug if isinstance(slug, str) and re.fullmatch(r"[a-z]{2,16}", slug) else "grok"
+
+
+def enroll_stage(stage, message, phrase=None, session=None):
+    """Record where this enrollment is, on the status the admin page polls. Ignore a stale session."""
+    last = ENROLL_STATE.get("last")
+    if not isinstance(last, dict):
+        return
+    if phrase is not None and last.get("phrase") != phrase:
+        return
+    if session is not None and last.get("session") != session:
+        return
+    last["stage"] = stage
+    last["message"] = message
 CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
                                          # ring fills over it), too loud / didn't hear it hold before the retry
 ENROLL_COUNT, TOPUP_COUNT = 10, 10       # default clips per session; top-up offered when recall falls short
@@ -413,7 +441,10 @@ def relay_post(path, body, ctype="application/octet-stream"):
 
 
 def enroll_phrases():
-    """phrase -> persona for every phrase that may be enrolled: configured words plus the config's "enroll" list."""
+    """phrase -> persona for configured words, the config's "enroll" list, and admin-page mappings.
+
+    A custom phrase lives in the overrides file as {phrase: {persona}} — the same file the admin page writes.
+    """
     try:
         with open(WAKE_CONFIG) as f:
             cfg = json.load(f)
@@ -422,8 +453,17 @@ def enroll_phrases():
     out = {}
     for w in cfg.get("words", []) + cfg.get("enroll", []):
         n, ps = str(w.get("name", "")), str(w.get("persona", "grok"))
-        if PHRASE_RE.match(n) and SLUG_RE.match(ps):
+        if phrase_ok(n) and persona_ok(ps):
             out[n] = ps
+    try:
+        with open(OVERRIDES) as f:
+            ov = json.load(f)
+    except (OSError, ValueError):
+        ov = {}
+    if isinstance(ov, dict):
+        for name, o in ov.items():
+            if isinstance(o, dict) and phrase_ok(str(name)) and persona_ok(str(o.get("persona") or "")):
+                out[str(name)] = str(o["persona"])
     return out
 
 
@@ -450,6 +490,28 @@ def begin_persona_sync():
 
     threading.Thread(target=run, daemon=True).start()
     return True
+
+
+def parse_enroll(j):
+    """The body of POST /enroll. None when the phrase is not one this station can record.
+
+    persona on the body is only used for a phrase that isn't in the config or the overrides yet.
+    """
+    if not isinstance(j, dict):
+        return None
+    try:
+        phrase, count = str(j.get("phrase", "")), int(j.get("count", ENROLL_COUNT))
+    except (TypeError, ValueError):
+        return None
+    allowed = enroll_phrases()
+    persona = allowed.get(phrase)
+    if persona is None and phrase_ok(phrase) and persona_ok(str(j.get("persona") or "")):
+        persona = str(j["persona"])
+    if persona is None or not phrase_ok(phrase):
+        return None
+    if not 10 <= count <= 40:
+        return {"error": "count"}
+    return {"phrase": phrase, "persona": persona, "count": count, "topup": bool(j.get("topup"))}
 
 
 def control_server():
@@ -496,14 +558,12 @@ def control_server():
                 return self._r(404, {"error": "not found"})
             try:
                 j = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1024)) or b"{}")
-                phrase, count = str(j.get("phrase", "")), int(j.get("count", ENROLL_COUNT))
-                topup = bool(j.get("topup"))
             except Exception:
                 return self._r(400, {"error": "bad json"})
-            allowed = enroll_phrases()
-            if phrase not in allowed:
-                return self._r(400, {"error": "unknown phrase", "phrases": sorted(allowed)})
-            if not 10 <= count <= 40:
+            req = parse_enroll(j)
+            if req is None:
+                return self._r(400, {"error": "unknown phrase", "phrases": sorted(enroll_phrases())})
+            if req.get("error") == "count":
                 return self._r(400, {"error": "count must be 10-40"})
             if not RELAY_URL:
                 return self._r(503, {"error": "no relay configured"})
@@ -512,11 +572,11 @@ def control_server():
             if ENROLL_STATE["busy"]:
                 return self._r(409, {"error": "enrollment in progress"})
             try:
-                ENROLL_Q.put_nowait({"phrase": phrase, "persona": allowed[phrase], "count": count, "topup": topup})
+                ENROLL_Q.put_nowait(req)
             except queue.Full:
                 return self._r(409, {"error": "an enrollment is already queued"})
-            print(f"enroll queued: {phrase} x{count}{' (top-up)' if topup else ''}", flush=True)
-            return self._r(202, {"ok": True, "phrase": phrase, "persona": allowed[phrase], "count": count})
+            print(f"enroll queued: {req['phrase']} x{req['count']}{' (top-up)' if req.get('topup') else ''}", flush=True)
+            return self._r(202, {"ok": True, "phrase": req["phrase"], "persona": req["persona"], "count": req["count"]})
 
         def log_message(self, *a):
             pass
@@ -563,7 +623,8 @@ def enroll(req, read16, play):
     os.makedirs(d, exist_ok=True)
     ENROLL_STATE["busy"] = True
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
-    ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time()}
+    ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time(),
+                             "persona": persona, "stage": "recording", "message": "Say it on the station."}
     print(f"enroll start {phrase} x{n} session {ses}{f' (top-up of {prior})' if prior else ''}", flush=True)
     sent, i, tries = 0, 1, 0
     try:
@@ -595,6 +656,7 @@ def enroll(req, read16, play):
             with wave.open(path, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(clip.astype("<i2").tobytes())
             try:
+                enroll_stage("uploading", "Sending the clips.", phrase, ses)
                 with open(path, "rb") as f:
                     relay_post(f"/enroll/{phrase}/{ses}/{i - 1:02d}.wav", f.read(), "audio/wav")
                 sent += 1
@@ -608,7 +670,7 @@ def enroll(req, read16, play):
         ok = False
         if sent >= (5 if prior else 10):
             try:
-                body = {"persona": persona, "count": sent, **({"prior": prior} if prior else {})}
+                body = {"persona": relay_persona(persona), "count": sent, **({"prior": prior} if prior else {})}
                 relay_post(f"/enroll/{phrase}/{ses}/done", json.dumps(body).encode(), "application/json")
                 ok = True
             except Exception as e:
@@ -617,9 +679,11 @@ def enroll(req, read16, play):
         if ok:
             ENROLL_STATE["fast_until"] = time.time() + 3 * 3600
             SYNC_NOW.set()
+            enroll_stage("training", "Training.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|uploaded|")
             threading.Thread(target=follow_training, args=(phrase, ses, say, persona), daemon=True).start()
         else:
+            enroll_stage("failed", "Couldn't send the clips.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/{n}|error|")
         time.sleep(6)
     finally:
@@ -638,6 +702,7 @@ def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
             j = {}
         st = j.get("state")
         if st == "queued" and not shown_queue and not SESSION_OPEN.is_set():
+            enroll_stage("training", "Training.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/0|queued|{int(j.get('position', 1))}")
             shown_queue = True
         elif st in ("done", "failed"):
@@ -645,6 +710,7 @@ def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
                 time.sleep(2)
             passed = st == "done" and bool(j.get("passed"))
             print(f"enroll result {phrase} {ses}: {'passed' if passed else 'not passed'}", flush=True)
+            enroll_stage("ready" if passed else "failed", "Ready." if passed else "Needs more clips.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/0|{'passed' if passed else 'failed'}|{TOPUP_COUNT}")
             if passed:
                 SYNC_NOW.set()
@@ -669,7 +735,7 @@ def sync_wakewords():
     words, changed = [], False
     for it in items:
         name, persona, sha = str(it.get("name", "")), str(it.get("persona", "")), str(it.get("sha256", ""))
-        if not (PHRASE_RE.match(name) and SLUG_RE.match(persona) and re.fullmatch(r"[0-9a-f]{64}", sha)):
+        if not (phrase_ok(name) and persona_ok(persona) and re.fullmatch(r"[0-9a-f]{64}", sha)):
             continue
         path = os.path.join(ENROLLED_DIR, name + ".onnx")
         have = hashlib.sha256(open(path, "rb").read()).hexdigest() if os.path.isfile(path) else ""
@@ -708,6 +774,24 @@ def _word(w):
             "enrolled": bool(w.get("enrolled", False))}
 
 
+def apply_wake_overrides(entries, ov):
+    """On/off and sensitivity, plus a custom phrase -> persona. The mapping wins over the enrolled persona."""
+    if not isinstance(ov, dict):
+        return entries
+    for name, o in ov.items():
+        if not isinstance(o, dict) or name not in entries:
+            continue
+        if o.get("enabled") is False:
+            entries.pop(name, None)
+            print(f"wake word {name}: turned off on the admin page", flush=True)
+            continue
+        if isinstance(o.get("threshold"), (int, float)) and 0.05 <= float(o["threshold"]) <= 0.99:
+            entries[name]["threshold"] = float(o["threshold"])
+        if persona_ok(str(o.get("persona") or "")):
+            entries[name]["persona"] = str(o["persona"])
+    return entries
+
+
 def load_model():
     """One openWakeWord Model holding every configured word. Fills WORDS (model key -> word settings)."""
     from openwakeword.model import Model
@@ -732,18 +816,12 @@ def load_model():
                     entries[w["name"]] = dict(w)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
-    try:  # admin page: per-word on/off and sensitivity (Pi-local, survives relay syncs)
+    try:  # admin page: per-word on/off, sensitivity, and custom phrase -> persona
         with open(OVERRIDES) as f:
             ov = json.load(f)
     except (OSError, ValueError):
         ov = {}
-    for name, o in (ov.items() if isinstance(ov, dict) else []):
-        if name in entries and isinstance(o, dict):
-            if o.get("enabled") is False:
-                entries.pop(name)
-                print(f"wake word {name}: turned off on the admin page", flush=True)
-            elif isinstance(o.get("threshold"), (int, float)) and 0.05 <= o["threshold"] <= 0.99:
-                entries[name]["threshold"] = float(o["threshold"])
+    apply_wake_overrides(entries, ov)
     for raw in entries.values():
         w = _word(raw)
         path = raw.get("path") or os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
@@ -893,7 +971,7 @@ class Session:
         self.heard, self.reply, self.ready, self.responding = "", "", threading.Event(), False
         self.turns = 0  # finished turns; a multi-turn relay keeps the session open for a follow-up
         SESSION_OPEN.set()
-        self.persona = persona if SLUG_RE.match(persona or "") else "grok"
+        self.persona = persona if persona_ok(persona or "") else "grok"
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
         self.card = None  # last tool card; attached to later state posts until the session ends
         self.ws, self.t1_card = None, None
