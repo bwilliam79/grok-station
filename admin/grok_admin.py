@@ -139,7 +139,7 @@ class Auth:
             self.code = None
             if not xai_key_set():  # password done, key still missing: first-run screen asks for the key, voice off
                 doc = {"mode": "key", "host": hostname() + ".local", "url": admin_url(),
-                       "fingerprint": tls_info()["fingerprint"]}
+                       "ip": lan_ip(), "fingerprint": tls_info()["fingerprint"]}
                 if doc != read_json(f, {}):
                     write_json(f, doc, 0o640)
                 return
@@ -153,7 +153,7 @@ class Auth:
             c = str(old.get("code", ""))
             self.code = c if len(c) == 6 and all(ch in CODE_ALPHABET for ch in c) else new_code()
         doc = {"mode": self.mode(), "code": self.code, "host": hostname() + ".local", "url": admin_url(),
-               "fingerprint": tls_info()["fingerprint"]}
+               "ip": lan_ip(), "fingerprint": tls_info()["fingerprint"]}
         doc.update({k: v for k, v in read_json(os.path.join(RUN_DIR, "hotspot.json"), {}).items()
                     if k in ("ssid", "password", "url", "qr_join", "qr_open")})
         if doc != old:
@@ -1140,6 +1140,18 @@ def _env_file(p):
 
 XAI_KEY_FILE = E("ADMIN_XAI_KEY_FILE", "/etc/grok-station/secrets/xai_api_key")
 XAI_KEY_RE = re.compile(r"[A-Za-z0-9._-]{20,200}")
+
+
+def lan_ip():
+    """This station's LAN address for the setup screen (UDP connect sends nothing). "" if offline."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as so:
+            so.connect(("192.0.2.1", 9))  # TEST-NET: only picks the outgoing interface
+            ip = so.getsockname()[0]
+        return "" if ip.startswith("127.") else ip
+    except OSError:
+        return ""
 
 
 def xai_key_set():

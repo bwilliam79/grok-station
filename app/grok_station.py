@@ -2085,9 +2085,12 @@ def draw_setup(surf, L, now, d):
     topbar(surf, se, "Admin password reset" if reset else "Setup needed", now)
     host = str(d.get("host") or "grok-station.local")[:40]
     host = str(d.get("url") or "https://" + host)[:48]
+    ip = str(d.get("ip") or "")
+    ip = ip if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) else ""
     lines = [("display", 0.0938, "Almost done" if key else "Password reset" if reset else "Setup needed", TEXT, 0),
              ("body", 0.0498, "On your phone or laptop, open", hexc("E6DCCF"), 0.0164),
              ("display", 0.0627, host, LISTENING, 0.0059),
+             *([("body", 0.0420, "or https://" + ip, hexc("E6DCCF"), 0.0059)] if ip else []),
              ("body", 0.0498, "and add your xAI API key" if key else "and enter the new code:" if reset else "and enter this code:",
               hexc("E6DCCF"), 0.0164)]
     rend = [(font(k, round(px * se)).render(t, True, c), round(gap * se)) for k, px, t, c, gap in lines]

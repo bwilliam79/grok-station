@@ -68,10 +68,10 @@ run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
 run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
 
 echo "== boot splash and kiosk"
-C=/boot/firmware/cmdline.txt
-for o in quiet splash loglevel=3 vt.global_cursor_default=0 logo.nologo consoleblank=0 plymouth.ignore-serial-consoles; do
-  sh_ "grep -qw -- '$o' $C || sed -i '1s/\$/ $o/' $C"
-done
+BOOT_CHANGED=no
+if [ "$DRY" = 1 ]; then echo "+ python3 tools/boot-config.py"; else
+  [ "$(python3 tools/boot-config.py)" = reboot ] && BOOT_CHANGED=yes
+fi
 sh_ "grep -q '^disable_splash=1' /boot/firmware/config.txt || echo disable_splash=1 >> /boot/firmware/config.txt"
 sh_ "if sh tools/install-splash.sh '$PWD' --prepare; then plymouth-set-default-theme -R echo; else plymouth-set-default-theme -R text || true; fi"
 run systemctl mask getty@tty1.service
@@ -82,9 +82,20 @@ run usermod -aG grok-admin grok-admin   # admin page reads admin_token (group gr
 run systemctl daemon-reload
 run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
 run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
+# The display must really be up: wait for it, show its log if it isn't.
+if [ "$DRY" = 0 ]; then
+  i=0; until systemctl is-active -q grok-station || [ $i -ge 15 ]; do sleep 1; i=$((i+1)); done
+  systemctl is-active -q grok-station || { echo "!! The display service did not start:"; journalctl -u grok-station -n 20 --no-pager; }
+  [ -e /dev/fb0 ] || echo "!! No framebuffer (/dev/fb0) yet. Reboot to load the display driver."
+fi
+IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
 echo "Done ($VER). The display and the admin page are running."
-echo "Open https://$(hostname).local on a phone or laptop and follow the station screen:"
+echo "Open https://$(hostname).local${IP:+ or https://$IP} on a phone or laptop and follow the station screen:"
 echo "setup code, admin password, then your xAI API key. Voice starts once the key is saved."
-echo "Reboot once after the first install (boot splash and kiosk settings): sudo reboot"
+if [ "$BOOT_CHANGED" = yes ]; then
+  echo
+  echo "*** Boot options changed (cmdline.txt). REBOOT NOW: sudo reboot"
+  echo "*** The setup screen comes back after the reboot."
+fi
 echo "(Fallback without a browser: sudo grok-station set-key)"
