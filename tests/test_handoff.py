@@ -102,8 +102,38 @@ class Units(unittest.TestCase):
         finally:
             handoff._lint = orig
 
+    def test_limits_off_by_default(self):
+        self.assertEqual((handoff.PER_BOT_DAY, handoff.GLOBAL_DAY, handoff.GAP_S), (0, 0, 0))
+        lim = handoff.Limits(os.path.join(TMP, "lim-off.json"), lambda: "d1")
+        for i in range(100):                                                  # no daily cap, no gap
+            self.assertIsNone(lim.take("jules", f"r{i}", now=1000 + i))
+            self.assertEqual(lim.take("jules", "x", now=1000 + i), "outstanding")  # still one in flight
+            lim.release("jules")
+
+    def test_limits_env(self):
+        old = {k: os.environ.get(k) for k in ("HANDOFF_PER_BOT_DAY", "HANDOFF_GLOBAL_DAY", "HANDOFF_GAP_S")}
+        try:
+            os.environ.update(HANDOFF_PER_BOT_DAY="2", HANDOFF_GLOBAL_DAY="3", HANDOFF_GAP_S="10")
+            self.assertEqual(handoff._env_num("HANDOFF_PER_BOT_DAY", int), 2)
+            self.assertEqual(handoff._env_num("HANDOFF_GAP_S", float), 10.0)
+            os.environ.update(HANDOFF_PER_BOT_DAY="0", HANDOFF_GLOBAL_DAY="junk", HANDOFF_GAP_S="-5")
+            for k, c in (("HANDOFF_PER_BOT_DAY", int), ("HANDOFF_GLOBAL_DAY", int), ("HANDOFF_GAP_S", float)):
+                self.assertEqual(handoff._env_num(k, c), 0)
+            del os.environ["HANDOFF_PER_BOT_DAY"]
+            self.assertEqual(handoff._env_num("HANDOFF_PER_BOT_DAY", int), 0)
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        lim = handoff.Limits(os.path.join(TMP, "lim-set.json"), lambda: "d1", per_bot_day=2, global_day=3, gap_s=10)
+        self.assertIsNone(lim.take("a", "1", now=100)); lim.release("a")
+        self.assertEqual(lim.take("a", "2", now=105), "too soon")
+        self.assertIsNone(lim.take("a", "2", now=120)); lim.release("a")
+        self.assertEqual(lim.take("a", "3", now=200), "bot daily cap")
+        self.assertIsNone(lim.take("b", "4", now=200)); lim.release("b")
+        self.assertEqual(lim.take("c", "5", now=200), "global daily cap")
+
     def test_limits(self):
-        lim = handoff.Limits(os.path.join(TMP, "lim.json"), lambda: "d1")
+        lim = handoff.Limits(os.path.join(TMP, "lim.json"), lambda: "d1", per_bot_day=8, global_day=24, gap_s=30.0)
         self.assertIsNone(lim.take("jules", "r1", now=1000))
         self.assertEqual(lim.take("jules", "r2", now=1100), "outstanding")
         lim.release("jules")
@@ -112,8 +142,8 @@ class Units(unittest.TestCase):
             self.assertIsNone(lim.take("jules", f"r{i}", now=2000 + 31 * i)); lim.release("jules")
         self.assertEqual(lim.take("jules", "r9", now=9000), "bot daily cap")    # 8/day, the failed ones included
         self.assertIsNone(lim.take("hank", "h1", now=9000))                     # per bot
-        lim2 = handoff.Limits(os.path.join(TMP, "lim2.json"), lambda: "d1")
-        for i in range(handoff.GLOBAL_DAY):
+        lim2 = handoff.Limits(os.path.join(TMP, "lim2.json"), lambda: "d1", per_bot_day=8, global_day=24, gap_s=30.0)
+        for i in range(24):
             bot = "abcdefghijklmnopqrstuvwxyz"[i // 8] * 3
             self.assertIsNone(lim2.take(bot, f"g{i}", now=1000 + 100 * i)); lim2.release(bot)
         self.assertEqual(lim2.take("zzz", "g", now=1e6), "global daily cap")
@@ -250,6 +280,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
 
     async def test_post_failure_not_retried_and_counted(self):
         self.mode = "fail"
+        relay._limits.gap_s = 30.0                                    # gap is opt-in (HANDOFF_GAP_S)
         async with ClientSession() as http:
             self.assertEqual((await relay.ask_teammate(http, "jules", "q"))[1], "post-failed")
             self.assertEqual(len(self.calls), 1)                      # B4: never retried
@@ -337,6 +368,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(l.startswith("handoff: 1 bot webhook(s): jules") for l in self.lines))
 
     async def test_per_bot_webhook_ignores_a_router_entry(self):
+        relay._limits.gap_s = 30.0                                    # gap is opt-in (HANDOFF_GAP_S)
         router_url = str(self.srv.make_url("/hook"))
         bot_url = str(self.srv.make_url("/bot"))
         router_token, jules_token = "router-bearer-token", "jules-bearer-token"

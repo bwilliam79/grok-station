@@ -3,8 +3,8 @@ answer. Off unless HANDOFF_ENABLED=1 and that bot has its own webhook. Router mo
 dropped and never used. Every bot ships at T0 (answer only).
 
 Blockers covered here: B4 (one POST, never retried after the body is sent), B6 (question stripped of control/zero-width/bidi,
-capped at 500, stored on the pending file), B10 (per bot 8/day, >= 30 s apart, one outstanding; failed POSTs count; plus a
-global daily total), B13 (lint before speech: always-blocked secrets, plus PII only when pii_mode is on), B14 (nonce
+capped at 500, stored on the pending file), B10 (one outstanding per bot; optional per-bot/global daily caps and min gap via
+HANDOFF_PER_BOT_DAY / HANDOFF_GLOBAL_DAY / HANDOFF_GAP_S, all off by default; when on, failed POSTs count), B13 (lint before speech: always-blocked secrets, plus PII only when pii_mode is on), B14 (nonce
 bound pending file, single use, expiry; the answer is spoken only while the session still waits). Logs carry request_id,
 agent, length and verdict only. There is no guest mode on this path.
 """
@@ -14,7 +14,21 @@ REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
 Q_MAX, REPLY_MAX = 500, 400
 TIER_ACTIONS = {0: ("answer",), 1: ("answer", "note"), 2: ("answer", "note", "queue_approval")}
 MAX_TIER = 0                                   # pilot: every bot answers only; a reply above T0 is dropped
-PER_BOT_DAY, GAP_S, GLOBAL_DAY = 8, 30.0, 24
+
+
+def _env_num(name, cast):
+    """A cap from the relay env; unset, empty, 0, negative or junk means no limit (returns 0)."""
+    try:
+        v = cast(os.environ.get(name, "") or 0)
+    except ValueError:
+        return 0
+    return v if v > 0 else 0
+
+
+# Off by default (owner request 2026-10-20: no daily limits). 0 = no limit. The one-outstanding-per-bot check always applies.
+PER_BOT_DAY = _env_num("HANDOFF_PER_BOT_DAY", int)
+GLOBAL_DAY = _env_num("HANDOFF_GLOBAL_DAY", int)
+GAP_S = _env_num("HANDOFF_GAP_S", float)
 BEGIN, END = "<<<STATION_QUESTION untrusted>>>", "<<<END_STATION_QUESTION>>>"
 
 # Spoken-reply lint. Always blocked, after NFKC + lowercase + spelled-out digits + digit separators removed:
@@ -270,8 +284,11 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
 class Limits:
     """B10, persisted per day: {"day": .., "bots": {bot: {"n": .., "last": ..}}, "total": .., "out": {bot: rid}}."""
 
-    def __init__(self, path, day_fn):
+    def __init__(self, path, day_fn, per_bot_day=None, global_day=None, gap_s=None):
         self.path, self.day = path, day_fn
+        self.per_bot_day = PER_BOT_DAY if per_bot_day is None else per_bot_day
+        self.global_day = GLOBAL_DAY if global_day is None else global_day
+        self.gap_s = GAP_S if gap_s is None else gap_s
 
     def _load(self):
         try:
@@ -297,11 +314,11 @@ class Limits:
         b = s["bots"].setdefault(bot, {"n": 0, "last": 0.0})
         if s["out"].get(bot):
             return "outstanding"
-        if b["n"] >= PER_BOT_DAY:
+        if self.per_bot_day > 0 and b["n"] >= self.per_bot_day:
             return "bot daily cap"
-        if s["total"] >= GLOBAL_DAY:
+        if self.global_day > 0 and s["total"] >= self.global_day:
             return "global daily cap"
-        if now - b["last"] < GAP_S:
+        if self.gap_s > 0 and now - b["last"] < self.gap_s:
             return "too soon"
         b["n"] += 1
         b["last"] = now

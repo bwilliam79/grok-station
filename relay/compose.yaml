@@ -22,6 +22,10 @@ services:
       XAI_VOICE: luna
       # Teammate handoff: off unless HANDOFF_ENABLED=1 in .env (see docs/handoff.md). Webhooks are hot-reloaded.
       HANDOFF_ENABLED: ${HANDOFF_ENABLED:-0}
+      # Optional handoff caps; 0 or unset = no limit (default off).
+      HANDOFF_PER_BOT_DAY: ${HANDOFF_PER_BOT_DAY:-0}
+      HANDOFF_GLOBAL_DAY: ${HANDOFF_GLOBAL_DAY:-0}
+      HANDOFF_GAP_S: ${HANDOFF_GAP_S:-0}
       PORTRAIT_WRITE: /portraits/w
       AUDIT_MIRROR_DIR: /voice/audit
       # Station tools (relay/tools.py): weather location and zone come from .env; nothing location-specific in the repo.

@@ -253,6 +253,7 @@ class TestFlag(unittest.IsolatedAsyncioTestCase):
 
     async def test_test_rid_is_flagged_counted_and_cannot_resolve_a_real_request(self):
         r = self.relay
+        r._limits.gap_s = 30.0                                        # gap is opt-in (HANDOFF_GAP_S)
         async with ClientSession() as http:
             text, verdict = await r.ask_teammate(http, "jules", "what is for dinner?", test=True)
         self.assertEqual((text, verdict), ("write ada@example.com please", "ok"))

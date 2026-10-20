@@ -549,6 +549,15 @@ handoff ("ask Ash …") says "Asking <Name>…" first and "Still asking <Name>."
 skips the asking line and says "Still working on it." at 20 s. The whole reply is spoken (TTS cap 90 s; fixed lines 6 s)
 before the follow-up listening window opens.
 
+**Limits.** One request in flight per bot, always. The daily caps and the minimum gap are off by default; set
+them in the relay env if you want them (0, empty or unset means no limit):
+
+| Variable | Meaning |
+|---|---|
+| `HANDOFF_PER_BOT_DAY` | max handoffs per bot per day (failed attempts count) |
+| `HANDOFF_GLOBAL_DAY` | max handoffs across all bots per day |
+| `HANDOFF_GAP_S` | minimum seconds between handoffs to the same bot |
+
 The webhook is `v: 2` and carries only `source`, `request_id` and `persona` (plus `test` and `include_avatar` when
 those apply). The question, `pii_mode`, `reply_by` and `tier_max` are not on the wire. They are written to
 `voice/pending/<request_id>.json` (question capped at 500). The bot fetches the question from tile-ingest

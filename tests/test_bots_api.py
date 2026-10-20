@@ -380,7 +380,8 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(pending, [])
             await srv.close()
 
-            self.relay._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-cap.json"), self.relay.today)
+            self.relay._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-cap.json"), self.relay.today,
+                                                       per_bot_day=8)
             json.dump({"day": self.relay.today(), "bots": {"jules": {"n": 8, "last": 0}}, "total": 8, "out": {}},
                       open(self.relay._limits.path, "w"))
             srv, seen = await self._fake("reply")
