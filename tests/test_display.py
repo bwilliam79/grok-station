@@ -323,6 +323,32 @@ class EnrollScreens(unittest.TestCase):
             gs.draw_hotspot(surf, L, now, dict(sd, mode="hotspot", ssid="station-7F3A", password="hearth-4821",
                                                 url="https://10.42.0.1"))
 
+    def test_setup_screens_show_only_urls_and_code(self):
+        """No clock/label (topbar), no fingerprint, no footer: only the two https URLs and, before the password, the code."""
+        now = time.strptime("2026-10-19 19:42", "%Y-%m-%d %H:%M")
+        drawn, codes = [], []
+        old = (gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font)
+        real_font = gs.font
+
+        class F:
+            def __init__(self, f): self.f = f
+            def render(self, t, *a):
+                drawn.append(t); return self.f.render(t, *a)
+        gs.topbar = lambda *a, **k: drawn.append("TOPBAR")
+        gs.draw_fingerprint = lambda *a, **k: drawn.append("FINGERPRINT")
+        gs.code_box = lambda surf, se, code, *a, **k: codes.append(code)
+        gs.font = lambda kind, px: F(real_font(kind, px))
+        try:
+            surf = pygame.Surface((800, 480)); L = gs.Layout(800, 480)
+            base = {"host": "station.local", "url": "https://station.local", "ip": "192.0.2.5", "fingerprint": "AB:CD"}
+            gs.draw_setup(surf, L, now, dict(base, mode="setup", code="K7P4QX"))
+            self.assertEqual(drawn, ["https://station.local", "https://192.0.2.5"]); self.assertEqual(codes, ["K7P4QX"])
+            drawn.clear(); codes.clear()
+            gs.draw_setup(surf, L, now, dict(base, mode="key"))
+            self.assertEqual(drawn, ["https://station.local", "https://192.0.2.5"]); self.assertEqual(codes, [])
+        finally:
+            gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font = old
+
     def test_anim_specs(self):
         self.assertEqual(gs.anim_of(enroll_msg("ready", 1, ""))[1:], (0.9, False))
         self.assertEqual(gs.anim_of(enroll_msg("saved", 1, ""))[1:], (0.3, False))

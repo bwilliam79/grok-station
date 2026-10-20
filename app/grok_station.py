@@ -2075,54 +2075,25 @@ def topbar(surf, se, label, now):
 
 
 def draw_setup(surf, L, now, d):
-    """Setup needed (first run) or Password reset: amber lock ring beside (or above, on narrow screens) the steps."""
+    """First run, password reset, or "almost done" (key step): only the two https URLs and, before the password is
+    set, the setup code. No clock, no label, no fingerprint."""
     surf.fill(BG)
     w, h = surf.get_size()
     se = min(w, h)
-    m = round(0.075 * se)
-    reset = d.get("mode") == "reset"
     key = d.get("mode") == "key"
-    topbar(surf, se, "Admin password reset" if reset else "Setup needed", now)
-    host = str(d.get("host") or "grok-station.local")[:40]
-    host = str(d.get("url") or "https://" + host)[:48]
+    host = str(d.get("url") or "https://" + str(d.get("host") or "grok-station.local")[:40])[:48]
     ip = str(d.get("ip") or "")
-    ip = ip if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) else ""
-    lines = [("display", 0.0938, "Almost done" if key else "Password reset" if reset else "Setup needed", TEXT, 0),
-             ("body", 0.0498, "On your phone or laptop, open", hexc("E6DCCF"), 0.0164),
-             ("display", 0.0627, host, LISTENING, 0.0059),
-             *([("body", 0.0420, "or https://" + ip, hexc("E6DCCF"), 0.0059)] if ip else []),
-             ("body", 0.0498, "and add your xAI API key" if key else "and enter the new code:" if reset else "and enter this code:",
-              hexc("E6DCCF"), 0.0164)]
-    rend = [(font(k, round(px * se)).render(t, True, c), round(gap * se)) for k, px, t, c, gap in lines]
-    ring_d, ring_w, gap = round(0.2345 * se), max(3, round(0.0111 * se)), round(0.0703 * se)
+    urls = [host] + (["https://" + ip] if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip) else [])
+    rend = [font("display", round(0.0627 * se)).render(u, True, LISTENING) for u in urls]
+    gap = round(0.03 * se)
     code_h = 0 if key else round(0.0328 * se * 1.25 + 0.0938 * se * 1.2 + 0.0082 * se + 2 * 0.0164 * se)
-    text_w = max(r.get_width() for r, _ in rend)
-    text_h = sum(r.get_height() + g for r, g in rend) + round(0.0141 * se) + code_h
-    top, bottom = round(0.1524 * se), h - round(0.1172 * se)
-    side = ring_d + gap + text_w <= w - 2 * m
-    if side:
-        x0 = (w - (ring_d + gap + text_w)) // 2
-        cy = (top + bottom) // 2
-        lock_ring(surf, x0 + ring_d // 2, cy, ring_d, ring_w)
-        x, y = x0 + ring_d + gap, cy - text_h // 2
-        align = "left"
-    else:  # stacked: ring above, text centered
-        ring_d = round(ring_d * 0.7)
-        total = ring_d + round(0.03 * se) + text_h
-        y0 = max(top, (top + bottom - total) // 2)
-        lock_ring(surf, w // 2, y0 + ring_d // 2, ring_d, ring_w)
-        x, y, align = w // 2, y0 + ring_d + round(0.03 * se), "center"
-    for r, g in rend:
-        y += g
-        surf.blit(r, (x if align == "left" else x - r.get_width() // 2, y))
-        y += r.get_height()
+    total = sum(r.get_height() for r in rend) + gap * (len(rend) - 1) + (round(0.06 * se) + code_h if code_h else 0)
+    y = (h - total) // 2
+    for r in rend:
+        surf.blit(r, (w // 2 - r.get_width() // 2, y))
+        y += r.get_height() + gap
     if not key:
-        code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
-    foot = font("body", round(0.0328 * se)).render("Voice stays off until a new password is set" if reset
-                                                    else "Voice stays off until setup is done", True, MUTED)
-    fy = h - round(0.0657 * se) - foot.get_height()
-    fy = draw_fingerprint(surf, se, d, w - m, fy + foot.get_height())
-    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+        code_box(surf, se, d["code"], w // 2, y - gap + round(0.06 * se), align="center")
 
 
 FP_RE = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}")
