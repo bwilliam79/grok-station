@@ -323,8 +323,9 @@ class EnrollScreens(unittest.TestCase):
             gs.draw_hotspot(surf, L, now, dict(sd, mode="hotspot", ssid="station-7F3A", password="hearth-4821",
                                                 url="https://10.42.0.1"))
 
-    def test_setup_screens_show_only_urls_and_code(self):
-        """No clock/label (topbar), no fingerprint, no footer: only the two https URLs and, before the password, the code."""
+    def test_setup_screens_keep_steps_drop_clock_note_fingerprint(self):
+        """Heading, instructions, lock ring, both https URLs and (before the password) the code.
+        Removed: clock/label bar, voice-off note, certificate fingerprint."""
         now = time.strptime("2026-10-19 19:42", "%Y-%m-%d %H:%M")
         drawn, codes = [], []
         old = (gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font)
@@ -337,17 +338,25 @@ class EnrollScreens(unittest.TestCase):
         gs.topbar = lambda *a, **k: drawn.append("TOPBAR")
         gs.draw_fingerprint = lambda *a, **k: drawn.append("FINGERPRINT")
         gs.code_box = lambda surf, se, code, *a, **k: codes.append(code)
+        rings = []
+        old_ring = gs.lock_ring
+        gs.lock_ring = lambda *a, **k: rings.append(1)
         gs.font = lambda kind, px: F(real_font(kind, px))
         try:
             surf = pygame.Surface((800, 480)); L = gs.Layout(800, 480)
             base = {"host": "station.local", "url": "https://station.local", "ip": "192.0.2.5", "fingerprint": "AB:CD"}
-            gs.draw_setup(surf, L, now, dict(base, mode="setup", code="K7P4QX"))
-            self.assertEqual(drawn, ["https://station.local", "https://192.0.2.5"]); self.assertEqual(codes, ["K7P4QX"])
-            drawn.clear(); codes.clear()
-            gs.draw_setup(surf, L, now, dict(base, mode="key"))
-            self.assertEqual(drawn, ["https://station.local", "https://192.0.2.5"]); self.assertEqual(codes, [])
+            for mode, head, code in (("setup", "Setup needed", ["K7P4QX"]), ("key", "Almost done", [])):
+                drawn.clear(); codes.clear(); rings.clear()
+                gs.draw_setup(surf, L, now, dict(base, mode=mode, code="K7P4QX"))
+                self.assertIn(head, drawn)
+                self.assertTrue(any("finish setup" in t for t in drawn))
+                self.assertIn("https://station.local", drawn); self.assertIn("https://192.0.2.5", drawn)
+                self.assertEqual(codes, code); self.assertEqual(rings, [1])
+                self.assertNotIn("TOPBAR", drawn); self.assertNotIn("FINGERPRINT", drawn)
+                self.assertFalse(any("Voice stays off" in t for t in drawn))
         finally:
             gs.topbar, gs.draw_fingerprint, gs.code_box, gs.font = old
+            gs.lock_ring = old_ring
 
     def test_anim_specs(self):
         self.assertEqual(gs.anim_of(enroll_msg("ready", 1, ""))[1:], (0.9, False))
