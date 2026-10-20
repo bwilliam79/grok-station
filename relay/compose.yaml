@@ -7,7 +7,7 @@
 # Enroll mode (docs/enroll.md): clip inbox $GROK_STATION_ENROLL (rw, writable by uid 10001) and published models
 # $GROK_STATION_WAKEWORDS (ro), both on the training host.
 # Teammate handoff (off by default) and the Bots admin files live in $GROK_STATION_BOTS (dir 700, mounted rw at /bots):
-#   webhooks.json, webhooks.json.bak, personas-overlay.json, bot-status.json, audit.log. The relay writes these (mode 600).
+#   webhooks.json, webhooks.json.bak, personas-overlay.json, bot-status.json, audit-YYYY-MM.log. The relay writes these (mode 600).
 # Voice-token hashes the admin API mints go in $GROK_STATION_VOICE/minted (rw). tile-ingest reads that file.
 # LAN clients connect through the `tls` service (Caddy, wss + client certificate) on $GROK_STATION_TLS_PORT (8791);
 # certs come from $GROK_STATION_PKI (server.crt, server.key, client-ca.crt). The relay's own port is published on the
@@ -23,7 +23,7 @@ services:
       # Teammate handoff: off unless HANDOFF_ENABLED=1 in .env (see docs/handoff.md). Webhooks are hot-reloaded.
       HANDOFF_ENABLED: ${HANDOFF_ENABLED:-0}
       PORTRAIT_WRITE: /portraits/w
-      AUDIT_MIRROR: /voice/audit/audit.log
+      AUDIT_MIRROR_DIR: /voice/audit
       # Station tools (relay/tools.py): weather location and zone come from .env; nothing location-specific in the repo.
       TZ_NAME: ${TZ_NAME:-America/Chicago}
       WEATHER_LAT: ${WEATHER_LAT:-}
@@ -51,9 +51,10 @@ services:
       - ${GROK_STATION_VOICE:-./no-voice}/minted:/voice/minted
       # Bot-uploaded portraits (rw). GET /portrait serves <slug>.png from here before the read-only dirs.
       - ${GROK_STATION_PORTRAITS_W:-./no-portraits}:/portraits/w
-      # Append-only audit mirror. On the stats-dashboard host, create ./voice/audit (writable by the relay uid,
-      # readable by tile-ingest) and set GROK_STATION_AUDIT to it if it is not beside this compose file.
-      # The relay appends /voice/audit/audit.log (mode 644). It does not use a bot token. See docs/handoff.md.
+      # Append-only audit mirror, one UTC month per file (audit-YYYY-MM.log). Mode 644 is set only when the
+      # relay creates the file. Create this directory writable by the relay uid and readable by tile-ingest.
+      # The relay does not create it, and skips the mirror when it is absent. A host `chflags sappnd` (EPERM
+      # on chmod) does not drop a line. It does not use a bot token. See docs/handoff.md.
       - ${GROK_STATION_AUDIT:-./voice/audit}:/voice/audit
       # T1 confirm events (read by tile-ingest, which alone holds the receipt key)
       - ${GROK_STATION_VOICE:-./no-voice}/confirms:/voice/confirms

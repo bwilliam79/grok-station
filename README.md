@@ -551,9 +551,16 @@ the public TLS listener (`GROK_STATION_AVATAR_PORT`, default 8792) with no clien
 uploads through `POST /admin/bots/<slug>/avatar` (mTLS) and can ask the bot to redraw with
 `POST /admin/bots/<slug>/avatar-request` (a test webhook with `include_avatar: true`).
 
-Audit lines are append-only and mirrored to `/voice/audit/audit.log`. On the stats-dashboard host, create
-`./voice/audit` (or `GROK_STATION_AUDIT`) writable by relay uid 10001 and readable by tile-ingest. The relay does
-not create that directory itself.
+Audit lines are append-only, one UTC month per file: `<bots dir>/audit-YYYY-MM.log`, and the same line in
+`/voice/audit/audit-YYYY-MM.log` when that directory already exists. `AUDIT_MIRROR_DIR` (preferred, default
+`/voice/audit`) is the mirror directory. A legacy `AUDIT_MIRROR` that ends in `.log` uses its directory; any other
+value is the directory. Create `./voice/audit` (or `GROK_STATION_AUDIT`) writable by relay uid 10001 and readable
+by tile-ingest. The relay does not create that directory, and an older `audit.log` is left in place.
+
+The mode (600 in the bots dir, 644 on the mirror) is set only when the relay creates the file. A `chmod` that
+fails with EPERM, EACCES or ENOTSUP is ignored, so the line is still written. On the host, `sudo chflags sappnd`
+marks a monthly file append-only. A root daily job sets `sappnd` on the current month and `schg` on previous
+months, and keeps 12 months.
 
 A wake word or a spoken name that lands on a persona with a webhook does not get a general-model answer. The relay
 asks that bot itself and speaks only the fixed filler and the bot's linted reply (or a fixed error). Grok, and a

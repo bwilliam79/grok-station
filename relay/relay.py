@@ -20,7 +20,7 @@ Hardening: secrets come from files (/run/secrets/*, compose `secrets:`), not env
 per-session caps only); 5 bad tokens from a source in 10 min lock it out for 15 min; upstream audio per session is
 capped. Alerts (lockout, handoff) go as JSON files into ALERT_DIR for an ntfy forwarder, if mounted.
 """
-import asyncio, base64, datetime, hashlib, hmac, io, json, os, re, secrets, socket, tempfile, time, unicodedata
+import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, socket, tempfile, time, unicodedata
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
 import handoff
@@ -61,7 +61,8 @@ PERSONAS_FILE = E("PERSONAS_FILE", "/config/personas.json")  # private registry,
 PORTRAIT_DIRS = [d for d in E("PORTRAIT_DIRS", "/portraits/a:/portraits/b").split(":") if d]
 TLS_HOST = E("TLS_HOST", "tls")  # the Caddy front; only its X-Client-Cert-Fp header is trusted for the lockout key
 PORTRAIT_WRITE = E("PORTRAIT_WRITE", "/portraits/w")  # bot-uploaded portraits; served before the read-only dirs
-AUDIT_MIRROR = E("AUDIT_MIRROR", "/voice/audit/audit.log")  # append-only copy; skipped when the dir is absent
+AUDIT_MIRROR = E("AUDIT_MIRROR", "/voice/audit/audit.log")  # legacy: a *.log path uses its directory, else the directory
+AUDIT_MIRROR_DIR = E("AUDIT_MIRROR_DIR", "")  # preferred mirror directory; empty falls back to AUDIT_MIRROR (/voice/audit)
 AVATAR_MAX, AVATAR_PIXELS, AVATAR_HOUR = 2 << 20, 4_194_304, 6
 _NAME_RE = re.compile(r"[a-z][a-z .'-]{1,39}")
 
@@ -1343,8 +1344,34 @@ def status_path():
     return os.path.join(bots_dir(), "bot-status.json")
 
 
+def _audit_file_name(line=None):
+    """UTC month of this line (the YYYY-MM at the start of its stamp), else the current UTC month."""
+    month = None
+    if (isinstance(line, str) and len(line) >= 20 and line[4] == "-" and line[7] == "-" and line[10] == "T"
+            and line[:4].isdigit() and line[5:7].isdigit()):
+        month = line[:7]
+    if not month:
+        month = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m")
+    return "audit-" + month + ".log"
+
+
 def audit_path():
-    return os.path.join(bots_dir(), "audit.log")
+    """Current UTC month, `<bots dir>/audit-YYYY-MM.log`. An older audit.log is left where it is."""
+    return os.path.join(bots_dir(), _audit_file_name())
+
+
+def audit_mirror_dir():
+    """AUDIT_MIRROR_DIR when set. A legacy AUDIT_MIRROR ending in .log contributes its directory."""
+    if AUDIT_MIRROR_DIR:
+        return AUDIT_MIRROR_DIR
+    mirror = AUDIT_MIRROR or "/voice/audit"
+    if mirror.endswith(".log"):
+        return os.path.dirname(mirror) or "."
+    return mirror
+
+
+def audit_mirror_path():
+    return os.path.join(audit_mirror_dir(), _audit_file_name())
 
 
 def read_json_file(path):
@@ -1467,37 +1494,52 @@ def actor_ok(s):
     return isinstance(s, str) and _ACTOR.fullmatch(s) is not None
 
 
+def _mode_best_effort(fn, *args):
+    """Apply a mode. EPERM, EACCES and ENOTSUP are ignored so a host append-only flag cannot drop the write."""
+    try:
+        fn(*args)
+    except OSError as e:
+        ignored = (errno.EPERM, errno.EACCES, getattr(errno, "ENOTSUP", None), getattr(errno, "EOPNOTSUPP", None))
+        if e.errno not in ignored:
+            raise
+
+
 def _append_audit(path, line, mode):
-    """O_APPEND only. Never read, rewritten or truncated. fchmod so umask cannot leave the file group-readable."""
+    """O_APPEND|O_WRONLY. Mode is set only when this call creates the file. Never read, truncate, rename or delete."""
     directory = os.path.dirname(path) or "."
     if not os.path.isdir(directory):
         return False
-    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, mode)
     try:
-        os.fchmod(fd, mode)
+        fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+        created = True
+    except FileExistsError:
+        fd = os.open(path, os.O_APPEND | os.O_WRONLY)  # no O_CREAT: the file is already there
+        created = False
+    try:
+        if created:
+            _mode_best_effort(os.fchmod, fd, mode)  # umask must not widen a file this call just created
         os.write(fd, line.encode())
         os.fsync(fd)
     finally:
         os.close(fd)
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
+    if created:
+        _mode_best_effort(os.chmod, path, mode)
     return True
 
 
 def _write_audit_line(line):
     """Primary bots audit (mode 600), then the same line on the mirror when that directory already exists."""
+    name = _audit_file_name(line)  # UTC month of this line, not a separate clock read
     try:
-        _append_audit(audit_path(), line, 0o600)
+        _append_audit(os.path.join(bots_dir(), name), line, 0o600)
     except OSError as e:
         log("audit write failed", type(e).__name__)
         return
-    mirror = AUDIT_MIRROR
-    if not os.path.isdir(os.path.dirname(mirror) or "."):
+    directory = audit_mirror_dir()
+    if not os.path.isdir(directory):
         return  # unit tests and a host without the mount must not create /voice
     try:
-        _append_audit(mirror, line, 0o644)
+        _append_audit(os.path.join(directory, name), line, 0o644)
     except OSError as e:
         log("audit mirror failed", type(e).__name__)
 

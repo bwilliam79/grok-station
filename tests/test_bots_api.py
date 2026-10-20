@@ -172,13 +172,13 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         new = json.load(open(self.relay.WEBHOOKS_FILE))
         self.assertEqual(new["jules"]["token"], KEY2)
         self.assertEqual(self.handoff.load_webhooks(json.dumps(new))["jules"]["url"], GOOD_443)
-        audit = open(os.path.join(self.tmp, "audit.log")).read()
+        audit = open(self.relay.audit_path()).read()
         self.assertIn("webhook-save aaaa", audit)
         self.assertIn("webhook-save bbbb", audit)
         self.assertNotIn(KEY1, audit)
         self.assertNotIn(KEY2, audit)
         self.assertNotIn("api2.cursor.sh", audit)
-        self.assertEqual(self.mode(os.path.join(self.tmp, "audit.log")), 0o600)
+        self.assertEqual(self.mode(self.relay.audit_path()), 0o600)
         before = open(self.relay.WEBHOOKS_FILE, "rb").read()
         bak_before = open(bak, "rb").read()
         self.assertFalse(self.relay.write_webhooks({"jules": {"url": "http://evil.example/h", "token": "12345678"}}))
@@ -249,7 +249,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("jules", json.load(open(self.relay.MINTED_FILE))["agents"])
         hooks = json.load(open(self.relay.WEBHOOKS_FILE))
         self.assertNotIn("jules", hooks)
-        audit = open(os.path.join(self.tmp, "audit.log")).read()
+        audit = open(self.relay.audit_path()).read()
         self.assertRegex(audit, r"admin nova add -")
         self.assertRegex(audit, r"admin nova rename -")
         self.assertRegex(audit, r"admin jules rename -")
@@ -394,7 +394,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             await srv.close()
         finally:
             self.relay.REPLY_WAIT = old_wait
-        audit = open(os.path.join(self.tmp, "audit.log")).read()
+        audit = open(self.relay.audit_path()).read()
         for secret in (KEY1, "denied-key-zzzz", "api2.cursor.sh", "127.0.0.1", self.relay.TEST_QUESTION):
             self.assertNotIn(secret, audit)
         self.assertNotIn(self.relay.TEST_QUESTION, "\n".join(self.lines))

@@ -113,12 +113,20 @@ portrait changed.
 
 ## Audit log
 
-`audit.log` in the bots dir is append-only (`O_APPEND`). The relay never rewrites or truncates it. Each line is also
-appended to `/voice/audit/audit.log` (mode 644) when that directory already exists. Compose mounts
-`${GROK_STATION_AUDIT:-./voice/audit}` at `/voice/audit` (read-write). On the stats-dashboard host, create that
-directory writable by the relay uid (10001) and readable by tile-ingest. If the directory is absent the relay skips
-the mirror and does not create `/voice`. Lines carry actor, slug, action and a last-4 or an 8-char hash. Never a
-secret, a URL, a question, or reply text.
+Each UTC month is its own file, `audit-YYYY-MM.log`, in the bots dir. The relay opens it `O_APPEND|O_WRONLY` and
+never reads, rewrites, truncates, renames or deletes it. An older `audit.log` is left untouched. The same line is
+appended to `<mirror>/audit-YYYY-MM.log` when the mirror directory already exists. `AUDIT_MIRROR_DIR` (preferred,
+default `/voice/audit`) names that directory. `AUDIT_MIRROR` still works: a value that ends in `.log` uses its
+directory, and any other value is the directory. Compose mounts `${GROK_STATION_AUDIT:-./voice/audit}` at
+`/voice/audit` (read-write). Create that directory writable by the relay uid (10001) and readable by tile-ingest.
+If it is absent the relay skips the mirror and does not create `/voice`.
+
+The mode (600 in the bots dir, 644 on the mirror) is set only when this write creates the file. `chmod` and
+`fchmod` errors `EPERM`, `EACCES` and `ENOTSUP` are ignored, so a host append-only flag cannot drop the line. On
+the host, `sudo chflags sappnd` marks a monthly file append-only. A root daily job sets `sappnd` on the current
+month and `schg` on previous months, and keeps 12 months.
+
+Lines carry actor, slug, action and a last-4 or an 8-char hash. Never a secret, a URL, a question, or reply text.
 
 ## Tiers
 T0 is `answer` only. T1 adds `note` (reversible internal writes after an on-screen read-back and confirm). T2 adds
@@ -175,11 +183,12 @@ request id never resolves a different, real request. It waits up to `REPLY_WAIT`
 
 `$GROK_STATION_BOTS` (directory mode 700) is mounted read-write at `/bots` and holds `webhooks.json`,
 `webhooks.json.bak` (the previous file, one only), `personas-overlay.json`
-(`{"added":{slug:{name,voice}},"renamed":{slug:name},"hidden":[slug]}`), `bot-status.json`, `policy.json` and `audit.log`.
-Every write is a mode-600 temp file in that directory, fsync, then rename. `webhooks.json` is validated with
-`load_webhooks` before the rename; the relay reloads it only after. The overlay merges over the read-only registry:
-renames apply, hidden slugs drop off voice, and an added persona gets the prompt "You are <Name>, one of the
-household's assistant team." and no facts. `audit.log` is one line per change: ISO time, actor, persona, action
+(`{"added":{slug:{name,voice}},"renamed":{slug:name},"hidden":[slug]}`), `bot-status.json`, `policy.json` and
+`audit-YYYY-MM.log`. Every write except the monthly audit log is a mode-600 temp file in that directory, fsync,
+then rename. `webhooks.json` is validated with `load_webhooks` before the rename; the relay reloads it only after.
+The overlay merges over the read-only registry: renames apply, hidden slugs drop off voice, and an added persona
+gets the prompt "You are <Name>, one of the household's assistant team." and no facts. `audit-YYYY-MM.log` is one
+line per change: ISO time, actor, persona, action
 (`add|rename|remove|webhook-save|webhook-remove|test`), key last 4 or `-`. Never the key, the URL, or the question.
 `bot-status.json` stores `last_answered_at`, `last_error` and `last_error_at` per slug (no text), for real handoffs
 and for tests.

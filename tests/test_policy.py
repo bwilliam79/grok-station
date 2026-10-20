@@ -62,6 +62,7 @@ class Policy(unittest.IsolatedAsyncioTestCase):
         r = relay
         self.snap = {
             "WEBHOOKS_FILE": r.WEBHOOKS_FILE, "MINTED_FILE": r.MINTED_FILE, "AUDIT_MIRROR": r.AUDIT_MIRROR,
+            "AUDIT_MIRROR_DIR": r.AUDIT_MIRROR_DIR,
             "PENDING_DIR": r.PENDING_DIR, "REPLIES_DIR": r.REPLIES_DIR, "PERSONAS_FILE": r.PERSONAS_FILE,
             "ADMIN_TOKEN": r.ADMIN_TOKEN, "HANDOFF": r.HANDOFF, "log": r.log,
             "policy": dict(r._policy), "voices": set(r.VOICES),
@@ -74,6 +75,7 @@ class Policy(unittest.IsolatedAsyncioTestCase):
         r.REPLIES_DIR = os.path.join(self.tmp, "replies")
         r.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
         r.AUDIT_MIRROR = os.path.join(self.tmp, "voice-audit", "audit.log")
+        r.AUDIT_MIRROR_DIR = ""  # legacy AUDIT_MIRROR path, not a preferred directory from the environment
         os.makedirs(os.path.dirname(r.AUDIT_MIRROR))
         r.ADMIN_TOKEN = b"admin-secret"
         r._policy.update(mtime=None, pii=True)
@@ -91,6 +93,7 @@ class Policy(unittest.IsolatedAsyncioTestCase):
             await self.client.close()
         r, s = self.relay, self.snap
         r.WEBHOOKS_FILE, r.MINTED_FILE, r.AUDIT_MIRROR = s["WEBHOOKS_FILE"], s["MINTED_FILE"], s["AUDIT_MIRROR"]
+        r.AUDIT_MIRROR_DIR = s["AUDIT_MIRROR_DIR"]
         r.PENDING_DIR, r.REPLIES_DIR = s["PENDING_DIR"], s["REPLIES_DIR"]
         r.PERSONAS_FILE, r.ADMIN_TOKEN = s["PERSONAS_FILE"], s["ADMIN_TOKEN"]
         r.HANDOFF, r.log = s["HANDOFF"], s["log"]
@@ -137,10 +140,11 @@ class Policy(unittest.IsolatedAsyncioTestCase):
     async def test_put_writes_both_files_and_appends_audit(self):
         r = self.relay
         audit = r.audit_path()
+        mirror_path = r.audit_mirror_path()
         os.makedirs(os.path.dirname(audit), exist_ok=True)
         with open(audit, "w") as f:
             f.write("KEEP\n")
-        with open(r.AUDIT_MIRROR, "w") as f:
+        with open(mirror_path, "w") as f:
             f.write("KEEP\n")
         r.ensure_policy()
         self.assertEqual(json.load(open(r.policy_path())), {"pii_mode": True})
@@ -166,7 +170,7 @@ class Policy(unittest.IsolatedAsyncioTestCase):
         on = await self.client.put("/admin/policy", headers=self.headers(), json={"pii_mode": True, "actor": "admin"})
         self.assertEqual(await on.json(), {"pii_mode": True})
         text = open(audit).read()
-        mirror = open(r.AUDIT_MIRROR).read()
+        mirror = open(mirror_path).read()
         self.assertEqual(mirror, text)
         self.assertTrue(text.startswith("KEEP\n"))
         lines = [ln for ln in text.splitlines() if ln and ln != "KEEP"]

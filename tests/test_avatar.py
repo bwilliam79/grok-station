@@ -55,7 +55,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r = relay
         self.snap = {
             "WEBHOOKS_FILE": r.WEBHOOKS_FILE, "MINTED_FILE": r.MINTED_FILE, "PORTRAIT_WRITE": r.PORTRAIT_WRITE,
-            "PORTRAIT_DIRS": list(r.PORTRAIT_DIRS), "AUDIT_MIRROR": r.AUDIT_MIRROR, "PENDING_DIR": r.PENDING_DIR,
+            "PORTRAIT_DIRS": list(r.PORTRAIT_DIRS), "AUDIT_MIRROR": r.AUDIT_MIRROR,
+            "AUDIT_MIRROR_DIR": r.AUDIT_MIRROR_DIR, "PENDING_DIR": r.PENDING_DIR,
             "REPLIES_DIR": r.REPLIES_DIR, "PERSONAS_FILE": r.PERSONAS_FILE, "ADMIN_TOKEN": r.ADMIN_TOKEN,
             "REPLY_WAIT": r.REPLY_WAIT, "HANDOFF": r.HANDOFF, "log": r.log, "_limits": r._limits,
             "TOKENS": r.TOKENS, "version": r._portraits_version, "hits": dict(r._avatar_hits),
@@ -70,6 +71,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PORTRAIT_WRITE = os.path.join(self.tmp, "portraits")
         r.PORTRAIT_DIRS = [os.path.join(self.tmp, "ro")]
         r.AUDIT_MIRROR = os.path.join(self.tmp, "voice-audit", "audit.log")
+        r.AUDIT_MIRROR_DIR = ""  # legacy AUDIT_MIRROR path, not a preferred directory from the environment
         r.PENDING_DIR = os.path.join(self.tmp, "pending")
         r.REPLIES_DIR = os.path.join(self.tmp, "replies")
         r.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
@@ -122,7 +124,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         s = self.snap
         r.WEBHOOKS_FILE, r.MINTED_FILE = s["WEBHOOKS_FILE"], s["MINTED_FILE"]
         r.PORTRAIT_WRITE, r.PORTRAIT_DIRS = s["PORTRAIT_WRITE"], s["PORTRAIT_DIRS"]
-        r.AUDIT_MIRROR, r.PENDING_DIR, r.REPLIES_DIR = s["AUDIT_MIRROR"], s["PENDING_DIR"], s["REPLIES_DIR"]
+        r.AUDIT_MIRROR, r.AUDIT_MIRROR_DIR = s["AUDIT_MIRROR"], s["AUDIT_MIRROR_DIR"]
+        r.PENDING_DIR, r.REPLIES_DIR = s["PENDING_DIR"], s["REPLIES_DIR"]
         r.PERSONAS_FILE, r.ADMIN_TOKEN = s["PERSONAS_FILE"], s["ADMIN_TOKEN"]
         r.REPLY_WAIT, r.HANDOFF, r.log, r._limits = s["REPLY_WAIT"], s["HANDOFF"], s["log"], s["_limits"]
         r.TOKENS = s["TOKENS"]
@@ -179,7 +182,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         audit = open(self.relay.audit_path()).read()
         self.assertIn(f"bot jules avatar-upload {doc['sha8']}", audit)
         self.assertNotIn(self.token, audit)
-        self.assertIn(f"avatar-upload {doc['sha8']}", open(self.relay.AUDIT_MIRROR).read())
+        self.assertIn(f"avatar-upload {doc['sha8']}", open(self.relay.audit_mirror_path()).read())
         # registry decoy loses to the upload
         got = await self.client.get("/portrait/jules", headers={"Authorization": "Bearer test-token"})
         self.assertEqual(got.status, 200)
