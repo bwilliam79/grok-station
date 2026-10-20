@@ -34,6 +34,47 @@ class Units(unittest.TestCase):
         self.assertEqual(handoff.lint_reply("on bigbox", ["bigbox"]), "host")
         self.assertIsNone(handoff.lint_reply("Tacos on Tuesday and pasta on Wednesday."))
 
+    def test_lint_normal_mode_loosens_guest_keeps_secrets(self):
+        """Before = guest (full rules). After = normal. Secrets and PII fail both; a factual reply only fails guest."""
+        bears = "The Bears play the Packers Sunday at noon; tickets start around $85 on the team site."
+        token = "k7Qm9Zp2Lx8Nv4Tc6Rb1Hs5Yw3Jd0F"
+        table = [
+            # reply, before (guest), after (normal)
+            (bears, "money", None),
+            ("see example.com", "url", None),
+            ("order 123456", "digits", None),
+            ("order 123456789", "digits", None),  # 9 digits, not an ABA routing number
+            ("costs $40", "money", None),
+            ("her medication list", "medical", None),
+            ("enter the password", "secret", None),  # bare word, no value
+            ("the password is fish", "secret", "secret"),
+            ("key sk-AbcdEFGH1234wxyz", "secret", "secret"),
+            ("use xai-Abcd1234efgh5678", "secret", "secret"),
+            ("ghp_abcdefgh12345678", "digits", "secret"),
+            ("-----BEGIN PRIVATE KEY-----", "secret", "secret"),
+            (token, "secret", "secret"),
+            ("ssn 123-45-6789", "secret", "ssn"),  # guest still hits the word; normal hits the number
+            ("number 123-45-6789", "ssn", "ssn"),
+            ("4111111111111111", "digits", "card"),
+            ("021000021", "digits", "routing"),
+            ("account number 12345678", "digits", "account"),
+            ("routing number 021000021", "digits", "routing"),
+            ("tacos\u200b", "chars", "chars"),
+            ("a@b", "email", "email"),
+            ("call 312-555-0187", "phone", "phone"),
+            ("at 203.0.113.7", "ip", "ip"),
+            ("on pantry.local", "host", "host"),
+            ("car 1HGCM82633A004352 ok", "vin", "vin"),
+            ("at 1234 Oak Street", "address", "address"),
+            ("Tacos on Tuesday and pasta on Wednesday.", None, None),
+        ]
+        for text, before, after in table:
+            self.assertEqual(handoff.lint_reply(text, guest=True), before, "guest " + text)
+            self.assertEqual(handoff.lint_reply(text, guest=False), after, "normal " + text)
+        self.assertEqual(handoff.lint_reply("on bigbox", ["bigbox"], guest=False), "host")
+        self.assertEqual(handoff.lint_reply("on pantry.lan", guest=False), "host")
+        self.assertIsNone(handoff.lint_reply("the routing number is on the check", guest=False))
+
     def test_limits(self):
         lim = handoff.Limits(os.path.join(TMP, "lim.json"), lambda: "d1")
         self.assertIsNone(lim.take("jules", "r1", now=1000))

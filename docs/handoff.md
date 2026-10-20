@@ -6,6 +6,8 @@ after its own canary passes and the owner OKs it.
 
 ## Flow
 1. The persona calls `check_notes(question)`. The relay offers the tool only to a persona that has its own webhook.
+   A wake word or a spoken name that lands on a persona with a webhook does not wait for that tool: the relay calls
+   the handoff itself on the final transcript. See [Persona route](#persona-route-no-general-model-answer).
 2. The relay applies limits (per bot: 8/day, at least 30 s apart, one outstanding; plus a global daily total). A failed
    POST still counts. The relay then cleans the question (NFKC; control, zero-width and bidi characters dropped; 300-char
    cap) and writes `voice/pending/<request_id>.json` with a random nonce and an expiry.
@@ -18,6 +20,40 @@ after its own canary passes and the owner OKs it.
    the reply only if the session is still waiting. Otherwise it drops it, and a late reply finds no pending file.
 
 The Pi shows "Checking with <name>…" while it waits.
+
+## Persona route (no general-model answer)
+
+When routing picks a persona that has its own webhook — the wake word at session start, or a spoken name mid-session
+(`ask <Name> …`, `<Name>, …`) — the realtime model generates no response for that turn. The relay sets
+`turn_detection.create_response` false (and `interrupt_response` true), never sends `response.create` for the turn, and
+cancels and drops any `response.*` audio or text that still arrives. None of that is forwarded to the station.
+
+On the final transcript the relay runs the same handoff as `check_notes` (limits, nonce, lint, guest rules). It speaks
+only a fixed filler, "Asking <Name>…", in the persona's voice (xAI TTS), the existing "Still asking <Name>." at 20 s,
+then the bot's linted reply via TTS. If there is no answer it speaks a fixed line, for example "<Name> didn't answer
+in time; try again or ask in the app.", or the other honest error lines. The model does not word any of it.
+
+A persona with no webhook keeps the previous behavior, and so does Grok. If model audio or text shows up on a routed
+turn anyway, the relay logs `canary persona-route model-output`, sends the usual ntfy alert, and drops it. The log is
+the verdict only, never the text.
+
+## Reply lint (guest vs normal)
+
+Guest mode (the admin switch, or a missing station status) keeps the full voice lint: control and bidi characters,
+long digit runs, links, email, IP addresses, private hosts, phone numbers, the bare secret-word list, money, medical
+details, street addresses and VINs.
+
+Normal mode (guest off) speaks a factual reply. It still rejects control and bidi characters, secrets (a long
+high-entropy token, an `sk-` / `xai-` / `ghp_` prefix, "password is …", a PEM block), email, phone, SSN, card numbers
+(Luhn), bank account and routing numbers, IP addresses, private host names (the private-host list and
+`.lan` / `.local` / `localhost`), street addresses and VINs. It does not reject a bare link or domain, a digit run that
+is not one of those numbers, money, medical wording, or the words "pin" / "token" / "password" with no value.
+
+The persona safety prompt matches that split. Guest mode keeps the shared-room rules. Normal mode says the persona is
+speaking in the owner's home and must not read out secrets, passwords, codes, account numbers or exact addresses.
+
+Logs stay verdict and rule code only. Reply text is never logged. The registry lint (persona name, prompt, facts) is
+unchanged; it is not the spoken-reply gate.
 
 ## Tiers
 T0 is `answer` only. T1 adds `note` (reversible internal writes after an on-screen read-back and confirm). T2 adds

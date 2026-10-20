@@ -769,7 +769,7 @@ function openBot(bot, el) {
       <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
       <p class="note" id="pasted" hidden>Pasted · not saved</p>
     </div>
-    <div class="field inline"><button class="btn" id="test" type="button">Test</button><button class="btn p" id="save" type="button" disabled>Save</button></div>
+    <div class="field inline"><button class="btn" id="test" type="button">Test</button><button class="btn p" id="save" type="button">Save</button></div>
     <div id="tbox"></div>
     ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
     <div class="botfoot"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
@@ -778,7 +778,6 @@ function openBot(bot, el) {
   const sync = () => {
     const url = $("#burl", d).value.trim(), key = $("#bkey", d).value, dirty = url.length + key.length > 0;
     $("#pasted", d).hidden = !dirty;
-    $("#save", d).disabled = !(url && key);
     $("#test", d).disabled = !!testId || (dirty ? !(url && key) : !(bot.webhook && bot.webhook.configured));
   };
   if (!saved) fieldsOn();
@@ -854,9 +853,22 @@ function openBot(bot, el) {
     startPoll(r.data.test_id);
   };
   $("#save", d).onclick = () => {
-    const url = $("#burl", d).value.trim();
-    const key = $("#bkey", d).value;
-    if (!(url && key)) return;
+    const urlEl = $("#burl", d), keyEl = $("#bkey", d);
+    const url = urlEl.value.trim();
+    const key = keyEl.value;
+    let box = $("#berr", d);
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "berr";
+      $("#save", d).parentElement.insertAdjacentElement("afterend", box);
+    }
+    if (!(url && key)) {
+      if ($("#fields", d).hidden) { $("#saved", d).hidden = true; $("#fields", d).hidden = false; }
+      errBox(box, "Paste both the webhook URL and the key.");
+      (url ? keyEl : urlEl).focus();
+      return;
+    }
+    errBox(box, "");
     const send = async pw => {
       $("#bkey", d).value = "";
       sync();
