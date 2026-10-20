@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 # requirements.txt is pip-compile --generate-hashes output from requirements.in
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
-COPY relay.py handoff.py tools.py t1.py ./
+COPY relay.py handoff.py tools.py t1.py control.py release.py release_fetch.py ./
 USER relay
 EXPOSE 8790
 CMD ["python", "-u", "relay.py"]
