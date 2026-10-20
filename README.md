@@ -274,6 +274,11 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   ```
   Certs are valid 825 days; re-issue before expiry (`openssl x509 -enddate -noout -in <cert>`). To revoke the Pi,
   re-key the CA (or issue a new client CA) and restart `tls`.
+- **Control channel port (`GROK_STATION_CONTROL_PORT`, 8793):** the `tls` service's mTLS station control
+  channel (Caddy `:8445`). Unlike 8791 and 8792, it is published only on the host address in
+  `GROK_STATION_CONTROL_BIND`, which defaults to `127.0.0.1` (loopback). For the station to reach it, set
+  `GROK_STATION_CONTROL_BIND=<relay-host LAN IP>` in `relay/.env` and run `docker compose up -d tls`. Don't use
+  `0.0.0.0`. Restrict the port to the station's address in the host firewall too.
 - **Rotating tokens** (use `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`; never reuse a token
   between the relay, `/show`, or anything else):
   - Relay device token: add the new token as a second line of `relay_token` and `docker compose up -d` (both are
@@ -283,7 +288,10 @@ Pi: grok_wake.py ──LAN wss, client cert + device token──▶ tls (Caddy) 
   - `/show` token: set the new `GROK_STATION_TOKEN` in `/etc/grok-station/env`, `sudo systemctl restart
     grok-station`, then update every sender (e.g. the Apple Shortcut) right away; there is no overlap window.
 - Pi side: `/opt/grok-station/wake/venv/bin/pip install "websockets>=17"`, then add to `/etc/grok-station/wake.env`
-  (root, 600) `GROK_RELAY_URL=wss://<relay-host>.local:8791/ws` and `GROK_RELAY_TOKEN=...`. Put `client.key`,
+  (root, 600) `GROK_RELAY_URL=wss://<relay-host>.local:8791/ws` and `GROK_RELAY_TOKEN=...`. The display service
+  (admin Voice relay and Updates pages) reads `GROK_RELAY_URL` from `/etc/grok-station/env` first and falls back
+  to the wake env file. Set it in `/etc/grok-station/env` if the two should differ, then
+  `sudo systemctl restart grok-station`. Never put the token there. Put `client.key`,
   `client.crt` and `ca.crt` in `/etc/grok-station/tls/` (root, 600) and install the drop-in
   `systemd/grok-station-wake-tls.conf` as `/etc/systemd/system/grok-station-wake.service.d/tls.conf`; it passes
   them to the unprivileged listener as systemd credentials. Only that CA is trusted for the server, and TLS 1.3 is

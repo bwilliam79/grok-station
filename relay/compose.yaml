@@ -92,8 +92,9 @@ services:
       - "${GROK_STATION_TLS_PORT:-8791}:8443"
       # POST /voice/avatar only (Caddy :8444, TLS, no client cert). Bots upload portraits here.
       - "${GROK_STATION_AVATAR_PORT:-8792}:8444"
-      # Station control channel (Caddy :8445, mTLS, pinned station CA). Keep this on the LAN.
-      - "${GROK_STATION_CONTROL_PORT:-8793}:8445"
+      # Station control channel (Caddy :8445, mTLS, pinned station CA). Host bind address comes from
+      # GROK_STATION_CONTROL_BIND; the default is loopback only. Set it to the relay host's LAN address.
+      - "${GROK_STATION_CONTROL_BIND:-127.0.0.1}:${GROK_STATION_CONTROL_PORT:-8793}:8445"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ${GROK_STATION_PKI:?set GROK_STATION_PKI}:/pki:ro
