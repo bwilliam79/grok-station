@@ -1658,6 +1658,7 @@ function openBot(bot, el) {
       const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
       if (r.ok) {
         bot.webhook = {configured: true, last4: r.data.last4, saved_at: Math.floor(Date.now() / 1000)};
+        showRoutine(bot, r.data.routine);
         $("#burl", d).value = "";
         const dots = $(".dots", d);
         if (dots) dots.textContent = "•••• " + (r.data.last4 || "");
@@ -1732,6 +1733,32 @@ function openBot(bot, el) {
   });
 }
 const ADD_STEP_LABEL = "1 Bot · 2 Voice token · 3 Webhook · 4 Done";
+// Values the bot's routine needs, shown once after a webhook save. The reply token is not shown again.
+function routineText(bot, v) {
+  return [
+    `Station: ${v.station_url}` + ((v.station_urls || []).length > 1 ? ` (or ${v.station_urls.slice(1).join(", ")})` : ""),
+    `Cert SHA-256: ${v.fingerprint || "see the admin page"}`,
+    `Reply token (Authorization: Bearer ...): ${v.reply_token}`,
+    `1. When the webhook fires, read request_id from the body.`,
+    `2. GET ${v.station_url}/voice/request/<request_id> with the reply token. The JSON has "question".`,
+    `3. POST ${v.reply_url} with the reply token and JSON {"request_id":"<request_id>","text":"<answer, max 400 chars>","tier":0,"action_class":"answer"}.`,
+    `Answer within 2 minutes. Persona: ${bot.slug}.`,
+  ].join("\n");
+}
+function showRoutine(bot, v) {
+  if (!v || !v.reply_token) return;
+  const d = document.createElement("div");
+  d.className = "modal";
+  d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Routine values"><h2>Paste this into ${esc(bot.name || bot.slug)}'s routine</h2>
+    <p class="note">The reply token is shown only now. Saving the webhook again makes a new one.</p>
+    <p class="note">The station is reachable on your home network only. A routine running in the cloud can't reach it unless you give it a way in (see the README, "Connecting a bot").</p>
+    <textarea class="inp mono" id="rtext" rows="9" readonly>${esc(routineText(bot, v))}</textarea>
+    <div class="row"><button class="btn" id="rcopy" type="button">Copy</button><button class="btn" id="rdone" type="button">Done</button></div></div>`;
+  document.body.appendChild(d);
+  $("#rcopy", d).onclick = () => { navigator.clipboard && navigator.clipboard.writeText($("#rtext", d).value); toast("Copied."); };
+  $("#rdone", d).onclick = () => d.remove();
+}
+
 const HOOK_LATER = "Not connected yet - use Connect webhook on the Bots page";
 const TOKEN_WHAT = "This is the bot's own key to talk to the station's voice service.";
 const TOKEN_WHERE = "Paste it into the bot's Grok Bot routine settings as its voice token. The routine sends it as Authorization: Bearer <voice token> when it replies or uploads an avatar.";
@@ -1922,6 +1949,7 @@ function mountWebhookStep(root, bot, el, onFinish) {
         last4 = shownLast4(r.data && r.data.last4);
         bot.webhook = {configured: true, last4: last4 || null, saved_at: Math.floor(Date.now() / 1000)};
         showSaved();
+        showRoutine(bot, r.data && r.data.routine);
         errBox($("#herr", root), "");
         toast("Saved.");
         refreshBots(el);

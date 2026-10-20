@@ -108,7 +108,7 @@ _portraits_version = 0
 _avatar_hits = {}  # slug -> [monotonic timestamps] for POST /voice/avatar, 6/hour
 # Teammate handoff (real-bot pilot, see handoff.py). Off unless HANDOFF_ENABLED=1. Each bot uses its own webhook.
 # Router mode is retired. Webhooks live in the bots dir (mode 600). Every bot answers at T0.
-HANDOFF = E("HANDOFF_ENABLED", "0") == "1"
+HANDOFF = E("HANDOFF_ENABLED", "1") == "1"  # on: a bot answers only once it has a webhook (no daily caps)
 WEBHOOKS_FILE = E("WEBHOOKS_FILE", os.path.join(STATE_DIR, "bots", "webhooks.json"))
 MINTED_FILE = E("VOICE_MINTED_FILE", os.path.join(STATE_DIR, "voice", "minted", "voice-tokens.json"))
 _hooks = {"mtime": None, "map": {}}
@@ -1962,7 +1962,11 @@ async def admin_webhook_put(req):
     if not ok:
         return web.json_response({"error": "bad webhook"}, status=400)
     audit(body["actor"], slug, "webhook-save", key[-4:])
-    return web.json_response({"ok": True, "last4": key[-4:]})
+    try:
+        tok = set_reply_token(slug)  # new reply token on every save; the old one stops working
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    return web.json_response({"ok": True, "last4": key[-4:], "reply_token": tok})
 
 
 async def admin_webhook_delete(req):
@@ -1983,6 +1987,10 @@ async def admin_webhook_delete(req):
             return web.json_response({"error": "bad webhook"}, status=400)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
+    try:
+        drop_reply_token(slug)
+    except OSError:
+        pass
     audit(body["actor"], slug, "webhook-remove", tail)
     return web.json_response({"ok": True})
 
@@ -2204,6 +2212,104 @@ async def healthz(_req):
     return web.json_response({"ok": True})
 
 
+# ---------------------------------------------------------------- bot reply ingress (single device; was tile-ingest)
+# The admin HTTPS server forwards GET /voice/request/<rid> and POST /voice/reply here with the bot's own bearer.
+# Each bot has a reply token, generated when its webhook is saved; only its sha256 is kept (bots/reply_tokens.json).
+_RID = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+
+
+def reply_tokens_path():
+    return os.path.join(bots_dir(), "reply_tokens.json")
+
+
+def reply_tokens():
+    try:
+        with open(reply_tokens_path()) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_reply_token(slug):
+    """New reply token for slug. Returns the plaintext (shown once); stores the hash only."""
+    tok = "gsr_" + secrets.token_urlsafe(32)
+    d = reply_tokens()
+    d[slug] = hashlib.sha256(tok.encode()).hexdigest()
+    atomic_write(reply_tokens_path(), json.dumps(d).encode())
+    return tok
+
+
+def drop_reply_token(slug):
+    d = reply_tokens()
+    if d.pop(slug, None) is not None:
+        atomic_write(reply_tokens_path(), json.dumps(d).encode())
+
+
+def reply_bot(req):
+    """The bot slug whose reply token is on this request, or None."""
+    h = req.headers.get("Authorization", "")
+    if not h.startswith("Bearer ") or len(h) > 200:
+        return None
+    digest = hashlib.sha256(h[7:].strip().encode()).hexdigest()
+    for slug, want in reply_tokens().items():
+        if isinstance(want, str) and hmac.compare_digest(want, digest):
+            return slug
+    return None
+
+
+def _pending_for(rid, bot):
+    if not _RID.fullmatch(rid or ""):
+        return None
+    try:
+        with open(os.path.join(PENDING_DIR, rid + ".json")) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("persona") != bot or doc.get("request_id") != rid:
+        return None
+    if int(doc.get("expires_ms", 0)) < time.time() * 1000:
+        return None
+    return doc
+
+
+async def voice_request(req):
+    bot = reply_bot(req)
+    if not bot:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    doc = _pending_for(req.match_info.get("rid", ""), bot)
+    if not doc:
+        return web.json_response({"error": "not found"}, status=404)
+    return web.json_response({"request_id": doc["request_id"], "persona": bot, "question": doc.get("question", ""),
+                              "reply_by": doc.get("reply_by", ""), "tier_max": 0, "test": bool(doc.get("test"))})
+
+
+async def voice_reply(req):
+    bot = reply_bot(req)
+    if not bot:
+        return web.json_response({"error": "unauthorized"}, status=401)
+    try:
+        body = await req.json()
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"error": "bad request"}, status=400)
+    rid = str(body.get("request_id", ""))
+    doc = _pending_for(rid, bot)
+    if not doc:
+        return web.json_response({"error": "not found"}, status=404)
+    tier, ac, text = body.get("tier", 0), body.get("action_class", "answer"), body.get("text")
+    if not isinstance(tier, int) or tier > 0 or ac != "answer":
+        return web.json_response({"error": "above scope"}, status=403)
+    if not isinstance(text, str) or not text.strip() or len(text) > handoff.REPLY_MAX:
+        return web.json_response({"error": "bad text"}, status=400)
+    out = {"request_id": rid, "agent": bot, "nonce": doc.get("nonce", ""), "tier": 0, "action_class": "answer",
+           "text": text}
+    os.makedirs(REPLIES_DIR, exist_ok=True)
+    atomic_write(os.path.join(REPLIES_DIR, rid + ".json"), json.dumps(out).encode())
+    return web.json_response({"ok": True})
+
+
 ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
     web.patch("/admin/bots/{slug}", admin_bots_patch), web.delete("/admin/bots/{slug}", admin_bots_delete),
@@ -2214,6 +2320,7 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
+    web.get("/voice/request/{rid}", voice_request), web.post("/voice/reply", voice_reply),
 ]
 
 

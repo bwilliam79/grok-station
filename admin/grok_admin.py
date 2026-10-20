@@ -1165,6 +1165,17 @@ def xai_key_set():
 
 LOCAL_RELAY_TOKEN = E("ADMIN_LOCAL_RELAY_TOKEN_FILE", "/etc/grok-station/secrets/admin_token")
 LOCAL_RELAY_ORIGIN = "http://127.0.0.1:" + E("RELAY_PORT", "8790")
+VOICE_REQ = re.compile(r"^/voice/request/[A-Za-z0-9_-]{8,80}$")
+
+
+def station_urls():
+    """Base URLs a bot uses for the reply contract (LAN only)."""
+    import socket
+    out = ["https://" + socket.gethostname() + ".local"]
+    ip = lan_ip()
+    if ip:
+        out.append("https://" + ip)
+    return out
 
 
 def local_relay_settings():
@@ -2216,9 +2227,42 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self.route("PATCH")
 
+    def voice_ingress(self, method, p):
+        """Bot reply contract on this HTTPS port: GET /voice/request/<rid>, POST /voice/reply. LAN only.
+        No admin session; the bot's own reply token goes through to the loopback relay, which checks it."""
+        if not lan_ok(self.client_address[0]):
+            return self.send(403, {"error": "LAN only"})
+        ok = (method == "GET" and VOICE_REQ.fullmatch(p)) or (method == "POST" and p == "/voice/reply")
+        if not ok:
+            return self.send(404, {"error": "not found"})
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 8192:
+            return self.send(413, {"error": "too large"})
+        data = self.rfile.read(n) if method == "POST" else None
+        headers = {"Authorization": self.headers.get("Authorization", "")[:200], "Accept": "application/json"}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(LOCAL_RELAY_ORIGIN + p, data=data, headers=headers, method=method)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        try:
+            with opener.open(req, timeout=10) as r:
+                status, raw = r.status, r.read(65536)
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read(65536)
+        except Exception as e:
+            print(f"voice ingress failed: {type(e).__name__}", flush=True)
+            return self.send(503, {"error": "relay unavailable"})
+        try:
+            j = json.loads(raw.decode() or "{}")
+        except ValueError:
+            j = {}
+        return self.send(status, j if isinstance(j, dict) else {})
+
     def route(self, method):
         u = urllib.parse.urlsplit(self.path)
         p, q = u.path, dict(urllib.parse.parse_qsl(u.query))
+        if p.startswith("/voice/"):
+            return self.voice_ingress(method, p)
         if not self.guard(method != "GET"):
             return
         try:
@@ -2931,7 +2975,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data, (key, url, j.get("password")))
         last4 = key[-4:]
         audit(slug, "webhook-save", last4)
-        return self.send(200, {"ok": True, "last4": last4})
+        base = station_urls()
+        return self.send(200, {"ok": True, "last4": last4, "routine": {
+            "reply_token": data.get("reply_token"), "station_url": base[0], "station_urls": base,
+            "request_url": base[0] + "/voice/request/<request_id>", "reply_url": base[0] + "/voice/reply",
+            "fingerprint": tls_info()["fingerprint"]}})
 
     def bots_webhook_delete(self, slug, j):
         if not self.need_password(j, always=True):

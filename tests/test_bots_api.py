@@ -142,12 +142,14 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         r = await self.client.put("/admin/bots/jules/webhook", headers=h, json={"url": GOOD, "key": KEY1, "actor": "admin"})
         text = await r.text()
         self.assertEqual(r.status, 200)
-        self.assertEqual(json.loads(text), {"ok": True, "last4": "aaaa"})
+        got = json.loads(text); self.assertTrue(got.pop("reply_token").startswith("gsr_"))
+        self.assertEqual(got, {"ok": True, "last4": "aaaa"})
         self.assertNotIn(KEY1, text)
         self.assertNotIn(GOOD, text)
         r = await self.client.put("/admin/bots/jules/webhook", headers=h, json={"url": GOOD_443, "key": KEY2, "actor": "admin"})
         text = await r.text()
-        self.assertEqual(json.loads(text), {"ok": True, "last4": "bbbb"})
+        got = json.loads(text); got.pop("reply_token")
+        self.assertEqual(got, {"ok": True, "last4": "bbbb"})
         self.assertNotIn(KEY2, text)
         self.assertNotIn(GOOD_443, text)
         listed = await (await self.client.get("/admin/bots", headers=h)).json()
@@ -344,6 +346,48 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
                 return body
             await asyncio.sleep(0.05)
         return body
+
+    async def test_reply_ingress_on_the_station(self):
+        """Webhook save mints a reply token; the bot reads its question and its reply lands for take_reply."""
+        r = self.relay
+        resp = await self.client.put("/admin/bots/jules/webhook", headers=self.headers(),
+                                     json={"url": GOOD, "key": KEY1, "actor": "admin"})
+        self.assertEqual(resp.status, 200)
+        tok = (await resp.json())["reply_token"]
+        self.assertTrue(tok.startswith("gsr_"))
+        self.assertNotIn(tok, open(os.path.join(self.tmp, "reply_tokens.json")).read())  # hash only
+        self.assertEqual(self.mode(os.path.join(self.tmp, "reply_tokens.json")), 0o600)
+        rid = self.handoff.new_request_id()
+        self.handoff.write_pending(r.PENDING_DIR, rid, "jules", "n0nce", time.time() * 1000 + 60000, question="Is it raining?")
+        bot = {"Authorization": "Bearer " + tok}
+        self.assertEqual((await self.client.get("/voice/request/" + rid)).status, 401)
+        self.assertEqual((await self.client.get("/voice/request/" + rid, headers={"Authorization": "Bearer nope"})).status, 401)
+        g = await self.client.get("/voice/request/" + rid, headers=bot)
+        self.assertEqual(g.status, 200)
+        self.assertEqual((await g.json())["question"], "Is it raining?")
+        self.assertEqual((await self.client.post("/voice/reply", headers=bot, json={
+            "request_id": rid, "text": "x", "tier": 1, "action_class": "note"})).status, 403)
+        p = await self.client.post("/voice/reply", headers=bot, json={
+            "request_id": rid, "text": "No rain today.", "tier": 0, "action_class": "answer"})
+        self.assertEqual(p.status, 200)
+        self.assertEqual(self.handoff.take_reply(r.REPLIES_DIR, rid, "jules", "n0nce"), ("No rain today.", None))
+        # another bot's pending request is not visible with this token
+        rid2 = self.handoff.new_request_id()
+        self.handoff.write_pending(r.PENDING_DIR, rid2, "hank", "n2", time.time() * 1000 + 60000, question="q")
+        self.assertEqual((await self.client.get("/voice/request/" + rid2, headers=bot)).status, 404)
+        # removing the webhook revokes the token
+        await self.client.delete("/admin/bots/jules/webhook", headers=self.headers(), json={"actor": "admin"})
+        self.assertEqual((await self.client.get("/voice/request/" + rid, headers=bot)).status, 401)
+
+    def test_admin_forwards_only_the_two_voice_paths(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "grok_admin.py")).read()
+        self.assertIn('if p.startswith("/voice/"):\n            return self.voice_ingress(method, p)', src)
+        self.assertIn('method == "POST" and p == "/voice/reply"', src)
+        self.assertIn('if not lan_ok(self.client_address[0]):\n            return self.send(403', src)
+
+    def test_handoff_on_by_default(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "relay", "relay.py")).read()
+        self.assertIn('E("HANDOFF_ENABLED", "1")', src)
 
     async def test_webhook_round_trip_401_silence_cancel_and_caps(self):
         h = self.headers()

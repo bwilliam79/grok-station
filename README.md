@@ -645,8 +645,41 @@ them in the relay env if you want them (0, empty or unset means no limit):
 
 The webhook is `v: 2` and carries only `source`, `request_id` and `persona` (plus `test` and `include_avatar` when
 those apply). The question, `pii_mode`, `reply_by` and `tier_max` are not on the wire. They are written to
-`voice/pending/<request_id>.json` (question capped at 500). The bot fetches the question from tile-ingest
-`GET /voice/request/<request_id>`.
+`voice/pending/<request_id>.json` (question capped at 500). The bot fetches the question from the station
+`GET /voice/request/<request_id>` (see "Connecting a bot").
+
+### Connecting a bot
+
+Handoff is on by default. A bot answers only after its webhook is saved, and there are no daily limits.
+
+Do this once per bot:
+
+1. In the admin page, go to **Bots**, then **Add bot** (or **Connect webhook** on an existing row). Paste the bot's
+   Grok Bot routine webhook URL and key, then enter the admin password. The URL and key go to the relay's
+   `webhooks.json` (mode 600, readable only by the relay user) and are never shown again (only the last 4).
+2. The page then shows the values to paste into the routine. **The reply token is shown only this once.** Saving
+   the webhook again makes a new token and the old one stops working. Removing the webhook revokes the token.
+   - Station: `https://<hostname>.local` (or `https://<LAN IP>`). The cert is self-signed, so pin the fingerprint
+     shown, or skip verification on your LAN.
+   - When the webhook fires, read `request_id` from the body.
+   - `GET <station>/voice/request/<request_id>` with `Authorization: Bearer <reply token>` returns
+     `{"request_id", "persona", "question", "reply_by"}`.
+   - `POST <station>/voice/reply` with the same header and
+     `{"request_id":"...","text":"<answer, max 400 chars>","tier":0,"action_class":"answer"}`. Answer within 2 minutes.
+3. Say "Hey Grok, ask <bot> <question>".
+
+These two endpoints share the admin HTTPS port (443). They answer LAN addresses only, and the bot's token is
+checked on the loopback relay. Each token works only for its own bot's open requests.
+
+**Cloud routines can't reach the Pi as shipped (blocker).** The station calls the routine's webhook outbound, which
+is fine. But a routine running in the cloud has no route to `<hostname>.local` or a LAN IP, so it can't GET the
+question or POST the reply. Nothing is port-forwarded, and the station doesn't open anything to the internet. Polling
+can't fix this either: a routine doesn't keep a mailbox the Pi could poll. Your options:
+- run the bot's answering step somewhere on your LAN (it works as is), or
+- decide to give the station a narrow way in, for example an outbound tunnel (Tailscale Funnel or Cloudflare Tunnel)
+  that forwards only `/voice/request/*` and `/voice/reply` to port 443. Then use that tunnel URL as the station URL.
+  This exposes those two token-checked paths to the internet. It's your call, and it isn't set up by default.
+
 
 **pii_mode** (Privacy → "Block personal info in replies") defaults on. The relay stores it in `<bots>/policy.json`
 (mode 600) and copies `{"pii_mode": bool}` to `/voice/minted/policy.json` (mode 644) for tile-ingest. Missing or
