@@ -4,7 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const root = () => $("#root");
-let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0};
+let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0, pairCode: ""};
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
 const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 const ENROLL_ACTIVE = ["recording", "uploading", "training"];
@@ -34,6 +34,13 @@ function toast(msg, kind = "ok") {
   const t = $("#toast");
   t.innerHTML = `<div class="banner ${kind}" role="status">${esc(msg)}</div>`;
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.innerHTML = ""), 4000);
+}
+async function copyText(text) {
+  let value = String(text || "");
+  text = "";
+  try { await navigator.clipboard.writeText(value); toast("Copied."); }
+  catch (e) { toast("Select it and copy it.", "warn"); }
+  value = "";
 }
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function every(ms, fn) { fn(); S.timers.push(setInterval(fn, ms)); }
@@ -108,7 +115,7 @@ function wirePw(id1, id2, btn) {
 }
 function passwordScreen() {  // wizard step 1 (forced)
   root().innerHTML = `<div class="center"><form class="card auth" id="f" autocomplete="off">
-    <div class="phonestep" style="display:block">Step 1 of 7 · Code and password</div>
+    <div class="phonestep" style="display:block">Step 1 of 6 · Code and password</div>
     <h2 style="font-size:24px">Choose the admin password</h2>
     <p class="sub">You'll sign in as <b>admin</b> with this password. It's stored on the station as a salted hash only.</p>
     ${pwFields("p1", "p2")}<div id="e"></div>
@@ -214,48 +221,605 @@ function joinForm(el, ssid, secure, opts) {
   };
 }
 
-async function relayPanel(el, opts = {}) {  // secrets pattern §8
-  const r = await api("GET", "/api/secrets");
-  const s = r.data || {}, t = s.relay_token || {};
-  el.innerHTML = `<div class="card"><h2>Voice relay</h2><p class="sub">The station connects to the voice service over mutual TLS with its own token.</p>
-    <div class="field"><label for="ru">Relay address</label><input class="inp mono" id="ru" value="${esc((s.relay_url || {}).value)}" placeholder="wss://voice-host:8443/" spellcheck="false"></div>
-    <div class="row" style="margin-top:14px"><div class="secret">
-      <span class="lbl">🔒 Station token</span>
-      ${t.set ? `<span class="mono">••••${esc(t.last4 || "")}</span><span class="pill ok"><i></i>Saved</span><span class="help">${t.saved_at ? "saved " + ago(t.saved_at) : ""}${t.last_test ? " · checked " + ago(t.last_test.at) : ""}</span>`
-              : `<span class="pill warn"><i></i>Not set</span>`}</div>
-      <div class="right inline"><button class="btn sm" id="rt">Test</button><button class="btn sm" id="rr">Replace</button></div></div>
-    <div id="rep" hidden><div class="field"><label for="tok">New token</label><input class="inp mono" type="password" id="tok" autocomplete="off" spellcheck="false">
-      <p class="note" id="toklen">Paste the token from the voice service computer. Only its length is shown.</p></div></div>
-    <div class="field inline"><button class="btn p" id="rs">Test and save</button><button class="btn g" id="rc" hidden>Cancel</button></div>
-    <div id="res"></div>
-    <p class="note">The old token keeps working until the new one tests OK. Tokens never appear in logs, the page address or your browser storage.</p></div>`;
-  const tok = $("#tok", el);
-  tok.oninput = () => ($("#toklen", el).textContent = tok.value ? `${tok.value.length} characters` : "Paste the token from the voice service computer. Only its length is shown.");
-  $("#rr", el).onclick = () => { $("#rep", el).hidden = false; $("#rc", el).hidden = false; tok.focus(); };
-  $("#rc", el).onclick = () => { tok.value = ""; $("#rep", el).hidden = true; $("#rc", el).hidden = true; };
-  const show = (res, saved) => {
-    const c = res.data.checks || {};
-    const item = (ok, txt) => `<span class="pill ${ok ? "ok" : ok === false ? "bad" : "off"}"><i></i>${txt}</span>`;
-    $("#res", el).innerHTML = `<div class="banner ${res.ok ? "ok" : "bad"}" style="flex-wrap:wrap">${esc(res.ok ? (saved ? "Saved and connected." : "Connection works.") : res.data.error)}
-      ${item(c.tls, "Secure connection")} ${item(c.token, "Station token")} ${item(c.xai_key, "xAI key on the voice service")}
-      ${c.client_cert_expires ? `<span class="help">Certificate valid until ${esc(c.client_cert_expires)}</span>` : ""}</div>`;
+/* ---------------------------------------------------------------- voice relay + updates */
+const INSTALL_CMD = {
+  unix: "curl -fsSL https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.sh -o relay-install.sh && sh relay-install.sh",
+  win: "Invoke-WebRequest -Uri https://github.com/bwilliam79/grok-station/releases/latest/download/relay-install.ps1 -OutFile relay-install.ps1; powershell -File .\\relay-install.ps1"
+};
+const CANT_CHECK = "Can't check. Update info is out of date. Updates may be hidden.";
+const UPDATE_BOTH_COPY = "Relay first, then station after a 10-minute healthy soak. Updates come from the GitHub release and are checked by image digest.";
+const RELAY_DOWN_BANNER = "Can't reach the relay. Voice is off.";
+const FP_NOTE = "Compare with the installer and the station screen. Nothing pairs until both ends confirm.";
+const STATION_ONLY_WHY = "Station-only is off until the relay is already on this release.";
+const ROTATE_CMD = "grok-relay rotate-xai-key";
+function remainFrom(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  if (n > 86400) return Math.max(0, Math.floor(n - Date.now() / 1000));
+  return Math.max(0, Math.floor(n));
+}
+function formatCode(c) {
+  const raw = String(c || "").replace(/\s+/g, "");
+  if (!raw) return "";
+  if (raw.indexOf("-") >= 0) return raw;
+  if (raw.length === 8) return raw.slice(0, 4) + "-" + raw.slice(4);
+  return raw;
+}
+function calendarDate(v) {
+  if (v == null || v === "") return "";
+  let d = null;
+  if (typeof v === "number" || (typeof v === "string" && /^\d+(\.\d+)?$/.test(v))) {
+    let n = Number(v);
+    if (n > 1e12) n = n / 1000;
+    d = new Date(n * 1000);
+  } else if (typeof v === "string") {
+    const ms = Date.parse(v);
+    if (!Number.isNaN(ms)) d = new Date(ms);
+  }
+  if (!d || isNaN(d.getTime())) return "";
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return months[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear();
+}
+function renewDate(v) {
+  return calendarDate(v) || (typeof v === "string" && v ? v : "—");
+}
+function seenText(v) {
+  if (v == null || v === "") return "never";
+  if (typeof v === "number") return ago(v > 1e12 ? v / 1000 : v);
+  if (typeof v === "string" && /^\d+(\.\d+)?$/.test(v)) return ago(Number(v));
+  if (typeof v === "string") {
+    const ms = Date.parse(v);
+    if (!Number.isNaN(ms)) return ago(ms / 1000);
+    return v;
+  }
+  return String(v);
+}
+function seenLine(relay) {
+  const left = seenText(relay && relay.last_seen);
+  if (!relay || relay.latency_ms == null || relay.latency_ms === "") return left;
+  const ms = Number(relay.latency_ms);
+  return left + " · " + (Number.isFinite(ms) ? Math.round(ms) + " ms" : String(relay.latency_ms));
+}
+function plainVersion(v) {
+  if (v == null || v === false) return "";
+  if (typeof v === "string") return v.trim();
+  if (typeof v === "number") return String(v);
+  if (typeof v === "object") {
+    if (typeof v.version === "string") return v.version.trim();
+    if (typeof v.installed === "string") return v.installed.trim();
+    if (typeof v.tag === "string") return v.tag.trim();
+  }
+  return "";
+}
+function installedOf(obj) {
+  if (obj == null || obj === false) return "";
+  if (typeof obj !== "object") return plainVersion(obj);
+  if (obj.installed != null && typeof obj.installed !== "object") return plainVersion(obj.installed);
+  return plainVersion(obj.version || obj.installed);
+}
+function componentInstalled(d, name) {
+  if (!d || typeof d !== "object") return "";
+  const box = d.installed;
+  if (box && typeof box === "object" && Object.prototype.hasOwnProperty.call(box, name)) {
+    const v = box[name];
+    if (v && typeof v === "object") return installedOf(v);
+    return plainVersion(v);
+  }
+  if (d[name] && typeof d[name] === "object") return installedOf(d[name]);
+  return plainVersion(d[name]);
+}
+function updateCount(d) {
+  const avail = plainVersion(d && d.available);
+  if (!avail) return 0;
+  let n = 0;
+  if (componentInstalled(d, "station") !== avail) n++;
+  if (componentInstalled(d, "relay") !== avail) n++;
+  return n;
+}
+function pairCodeFrom(data) {
+  if (!data || typeof data !== "object") return "";
+  const pairing = data.pairing;
+  if (pairing && typeof pairing.code === "string" && pairing.code) return pairing.code;
+  return typeof data.code === "string" ? data.code : "";
+}
+function fpHex(value) {
+  const compact = String(value || "").replace(/[^0-9a-fA-F]/g, "");
+  return /^[0-9a-fA-F]{64}$/.test(compact) ? compact.toUpperCase() : "";
+}
+function installHTML() {
+  return `<div class="os" role="tablist" aria-label="Installer">
+    <button type="button" class="btn sm" data-os="unix" role="tab">macOS / Linux</button>
+    <button type="button" class="btn sm" data-os="win" role="tab">Windows</button></div>
+    <pre class="cmd" id="oscmd"></pre>
+    <div class="field"><button type="button" class="btn sm" id="copycmd">Copy</button></div>`;
+}
+function wireInstall(root) {
+  if (!root) return;
+  const pick = which => {
+    root._os = which === "win" ? "win" : "unix";
+    const pre = $("#oscmd", root);
+    if (pre) pre.textContent = INSTALL_CMD[root._os];
+    root.querySelectorAll("[data-os]").forEach(b => {
+      const on = b.dataset.os === root._os;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
   };
-  $("#rt", el).onclick = async () => { busyBtn($("#rt", el), true, "Testing…"); const res = await api("POST", "/api/secrets/relay_token/test", {}); busyBtn($("#rt", el), false, "Test"); show(res); };
-  $("#rs", el).onclick = async () => {
-    const body = {url: $("#ru", el).value.trim()};
-    if (tok.value) body.value = tok.value;
-    busyBtn($("#rs", el), true, "Testing…");
-    const res = await api("POST", "/api/secrets/relay_token", body);
-    tok.value = "";
-    busyBtn($("#rs", el), false, "Test and save");
-    show(res, res.ok);
-    if (res.ok) { opts.onOk && opts.onOk(); setTimeout(() => relayPanel(el, opts), 2500); }
+  root.querySelectorAll("[data-os]").forEach(b => { b.onclick = () => pick(b.dataset.os); });
+  const copy = $("#copycmd", root);
+  if (copy) copy.onclick = () => { const pre = $("#oscmd", root); copyText(pre ? pre.textContent : ""); };
+  pick(root._os || "unix");
+}
+function fpHTML(hex) {
+  const up = fpHex(hex);
+  if (!up) return `<p class="note">The fingerprint isn't ready to compare yet.</p>`;
+  let out = `<div class="fp">`;
+  for (let line = 0; line < 4; line++) {
+    out += `<div class="ln">`;
+    for (let g = 0; g < 4; g++) {
+      const idx = line * 4 + g;
+      const chunk = up.slice(idx * 4, idx * 4 + 4);
+      const end = idx === 0 || idx === 15;
+      out += end ? `<b class="g end">${chunk}</b>` : `<span class="g">${chunk}</span>`;
+    }
+    out += `</div>`;
+  }
+  return out + `</div>`;
+}
+function blurMatch(el) {
+  ["#badmatch", "#okmatch"].forEach(sel => {
+    const b = $(sel, el);
+    if (b) b.blur();
+  });
+}
+function showFingerprint(el, hex) {
+  const want = fpHex(hex).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(want)) return;
+  if (el._fp === want && $("#fpbox", el)) return;
+  el._fp = want;
+  const html = `<div id="fpbox"><p class="note">${esc(FP_NOTE)}</p>${fpHTML(want)}
+    <div class="field inline"><button type="button" class="btn g" id="badmatch">They don't match · cancel</button>
+    <button type="button" class="btn p" id="okmatch">They match</button></div></div>`;
+  const box = $("#fpbox", el);
+  if (box) box.outerHTML = html;
+  else {
+    const anchor = $("#waitrow", el) || $("#pairing", el);
+    if (anchor) anchor.insertAdjacentHTML("beforeend", html);
+  }
+  const bad = $("#badmatch", el), ok = $("#okmatch", el);
+  if (bad) bad.onclick = () => cancelPair(el);
+  if (ok) ok.onclick = () => confirmPair(el);
+  blurMatch(el);
+  requestAnimationFrame(() => blurMatch(el));
+}
+function hideFingerprint(el) {
+  if (el) el._fp = "";
+  const box = el && $("#fpbox", el);
+  if (box) box.remove();
+}
+function auditRow(row) {
+  if (typeof row === "string") {
+    const text = row.trim();
+    const parts = text.split(/\s+/);
+    const event = parts.length >= 4 ? parts[3] : "";
+    const detail = parts.length >= 5 ? parts.slice(4).join(" ") : "";
+    const extra = detail && detail !== "-" ? detail : "";
+    const line = event ? [parts[0], event, extra].filter(Boolean).join(" ") : text;
+    return {ts: parts[0] || "", side: parts.length >= 3 ? parts[2] : "", line};
+  }
+  if (row && typeof row === "object") {
+    return {
+      ts: row.ts == null ? "" : row.ts,
+      side: typeof row.side === "string" ? row.side : "",
+      line: typeof row.line === "string" ? row.line : ""
+    };
+  }
+  return {ts: "", side: "", line: ""};
+}
+function auditHTML(rows) {
+  const list = (Array.isArray(rows) ? rows : []).slice(-20);
+  if (!list.length) return `<p class="help">No activity yet.</p>`;
+  return list.map(raw => {
+    const a = auditRow(raw);
+    const relay = a.side === "relay";
+    const tag = relay ? "Relay" : "Station";
+    return `<div class="row"><span class="pill ${relay ? "busy" : "ok"}"><i></i>${tag}</span><span>${esc(a.line)}</span></div>`;
+  }).join("");
+}
+function checksHTML(checks) {
+  const list = Array.isArray(checks) ? checks : [];
+  if (!list.length) return `<p class="help">No checks reported.</p>`;
+  return `<div class="lbl" style="margin-top:16px">Checks</div><div id="checks">${list.map(c => `<div class="row"><span class="pill ${c && c.ok ? "ok" : "bad"}"><i></i>${c && c.ok ? "Passed" : "Failed"}</span><span>${esc(c && c.name || "Check")}</span></div>`).join("")}</div>`;
+}
+function bindUnpair(el) {
+  const b = $("#unpair", el);
+  if (!b) return;
+  b.onclick = () => askPassword("Unpair relay?", "This station will forget the relay. Voice stays off until you pair again.", "Unpair", async pw => {
+    const r = await api("POST", "/api/relay/unpair", {password: pw});
+    if (r.ok) { S.pairCode = ""; toast("Relay unpaired."); paintRelay(el); }
+    return r;
+  });
+}
+function relayFactsHTML(relay) {
+  relay = relay || {};
+  return `<div class="row"><span>Version</span><span class="right mono">${esc(relay.version || "—")}</span></div>
+    <div class="row"><span>Last seen</span><span class="right">${esc(seenLine(relay))}</span></div>
+    <div class="row"><span>Certificate</span><span class="right">mTLS · certificate renews ${esc(renewDate(relay.cert_expiry))}</span></div>`;
+}
+function xaiKeyHTML(relay) {
+  const last4 = (relay && relay.key_last4) || "";
+  return `<div class="card"><h2>xAI key</h2>
+    <p class="sub">Stored on the relay computer, not on this station. Only the last 4 are shown.</p>
+    <div class="secret"><span class="dots">•••• ${esc(last4)}</span></div>
+    <p class="note">On the relay computer, run:</p>
+    <div class="tokenbox" id="rotcmd">${esc(ROTATE_CMD)}</div>
+    <div class="field"><button type="button" class="btn sm" id="copyrot">Copy</button></div></div>`;
+}
+function bindRotate(el) {
+  const b = $("#copyrot", el);
+  if (b) b.onclick = () => copyText(ROTATE_CMD);
+}
+async function refreshStepup() {
+  const r = await api("GET", "/api/state");
+  if (r.ok) noteStepup(r.data);
+}
+function withPassword(title, text, label, send) {
+  const go = async pw => {
+    const r = await send(pw);
+    if (r && r.ok && pw) await refreshStepup();
+    return r;
+  };
+  if (stepupOpen()) go("").then(r => { if (r && r.status === 403) askPassword(title, text, label, go); });
+  else askPassword(title, text, label, go);
+}
+function cancelPair(el) {
+  const send = async pw => {
+    const body = {};
+    if (pw) body.password = pw;
+    const r = await api("POST", "/api/relay/pair/cancel", body);
+    if (r.ok) { S.pairCode = ""; paintRelay(el); }
+    else if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't cancel pairing.", "bad");
+    return r;
+  };
+  withPassword("Cancel pairing?", "Enter the admin password to close the pairing window.", "Cancel pairing", send);
+}
+function confirmPair(el) {
+  const send = async pw => {
+    const btn = $("#okmatch", el);
+    if (btn) busyBtn(btn, true, "They match");
+    const body = {};
+    if (pw) body.password = pw;
+    const r = await api("POST", "/api/relay/pair/confirm", body);
+    if (!r.ok) {
+      if (btn && btn.isConnected) busyBtn(btn, false, "They match");
+      if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't confirm.", "bad");
+      blurMatch(el);
+      return r;
+    }
+    S.pairCode = "";
+    paintRelay(el);
+    return r;
+  };
+  withPassword("Confirm the fingerprint?", "Enter the admin password to pair this relay.", "Confirm", send);
+}
+function newPairCode(el) {
+  const send = async pw => {
+    const btn = $("#newcode", el);
+    if (btn) busyBtn(btn, true, "New code");
+    const body = {};
+    if (pw) body.password = pw;
+    const r = await api("POST", "/api/relay/pair/new-code", body);
+    if (btn && btn.isConnected) busyBtn(btn, false, "New code");
+    if (!r.ok) {
+      if (r.status !== 403) toast((r.data && r.data.error) || "Couldn't make a new code.", "bad");
+      return r;
+    }
+    S.pairCode = pairCodeFrom(r.data);
+    const node = $("#paircode", el);
+    if (node) node.textContent = formatCode(S.pairCode);
+    const miss = $("#codemissing", el);
+    if (miss) miss.hidden = !!S.pairCode;
+    const p = (r.data && r.data.pairing) || {};
+    if (p.expires_in != null) el._remain = remainFrom(p.expires_in);
+    const tries = $("#tries", el);
+    if (tries && p.tries_left != null) tries.textContent = "Tries left " + p.tries_left + " of 5";
+    paintPairClock(el);
+    if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
+    else hideFingerprint(el);
+    const g = await api("GET", "/api/relay");
+    if (!(g.ok && g.data && $("#pairing", el))) return r;
+    if (g.data.state && g.data.state !== "pairing") { paintRelay(el); return r; }
+    const live = g.data.pairing || {};
+    if (live.expires_in != null) el._remain = remainFrom(live.expires_in);
+    const tries2 = $("#tries", el);
+    if (tries2) tries2.textContent = "Tries left " + (live.tries_left == null ? "—" : live.tries_left) + " of 5";
+    paintPairClock(el);
+    if (live.relay_fingerprint) showFingerprint(el, live.relay_fingerprint);
+    else hideFingerprint(el);
+    return r;
+  };
+  withPassword("New pairing code?", "Enter the admin password to replace the code. The previous one stops working.", "New code", send);
+}
+function paintPairClock(el) {
+  const exp = $("#expire", el), wait = $("#waiting", el);
+  if (exp) exp.textContent = "Expires in " + mss(el._remain);
+  if (wait) wait.textContent = "Waiting for relay… " + mss(el._remain);
+}
+function watchPairing(el, d) {
+  if (el._watch) return;
+  el._watch = true;
+  const seq = el._seq;
+  const p0 = (d && d.pairing) || {};
+  el._remain = remainFrom(p0.expires_in);
+  paintPairClock(el);
+  let ticks = 0;
+  every(1000, () => {
+    if (el._seq !== seq || !$("#pairing", el)) return;
+    if (ticks++ === 0) return;
+    el._remain = Math.max(0, (Number(el._remain) || 0) - 1);
+    paintPairClock(el);
+  });
+  every(2000, async () => {
+    if (el._seq !== seq || !$("#pairing", el)) return;
+    const r = await api("GET", "/api/relay");
+    if (el._seq !== seq || !$("#pairing", el) || !r.ok) return;
+    const data = r.data || {};
+    if (data.state !== "pairing") { paintRelay(el); return; }
+    const p = data.pairing || {};
+    if (p.expires_in != null) el._remain = remainFrom(p.expires_in);
+    const tries = $("#tries", el);
+    if (tries) tries.textContent = "Tries left " + (p.tries_left == null ? "—" : p.tries_left) + " of 5";
+    paintPairClock(el);
+    if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
+    else hideFingerprint(el);
+  });
+}
+function renderNotSetup(el) {
+  el.innerHTML = `<div class="card"><h2>Voice relay</h2>
+    <p class="sub">The voice relay is the computer that reaches the voice service for this station. Pairing keeps the key on that computer. This station only keeps a certificate.</p>
+    <p>Voice stays off until a relay is paired. You can do this now or come back to it later.</p>
+    <div class="field"><button type="button" class="btn p" id="setup">Set up relay</button></div></div>`;
+  $("#setup", el).onclick = () => askPassword("Set up the relay?", "Enter the admin password to start pairing.", "Continue", async pw => {
+    const r = await api("POST", "/api/relay/pair/start", {password: pw});
+    if (r.ok) { S.pairCode = pairCodeFrom(r.data); await refreshStepup(); paintRelay(el); }
+    return r;
+  });
+}
+function renderPairing(el, d) {
+  const p = (d && d.pairing) || {};
+  const tries = p.tries_left == null ? "—" : p.tries_left;
+  el._fp = "";
+  el.innerHTML = `<div class="card" id="pairing"><h2>Pair the relay</h2>
+    <p class="sub">On the relay computer, download the installer and run it. Enter this code when it asks. The code is not a key.</p>
+    ${installHTML()}
+    <div class="codebig" id="paircode" translate="no"></div>
+    <p class="note" id="codemissing"${S.pairCode ? " hidden" : ""}>Press New code to show a pairing code. The previous one stops working.</p>
+    <p class="lbl" id="expire">Expires in ${esc(mss(remainFrom(p.expires_in)))}</p>
+    <p class="help" id="tries">Tries left ${esc(tries)} of 5</p>
+    <div class="field inline"><button type="button" class="btn" id="newcode">New code</button><button type="button" class="btn g" id="cancelpair">Cancel</button></div>
+    <p class="note" id="waiting">Waiting for relay… ${esc(mss(remainFrom(p.expires_in)))}</p>
+    <div id="waitrow"></div></div>`;
+  const code = $("#paircode", el);
+  if (code) code.textContent = formatCode(S.pairCode);
+  wireInstall(el);
+  $("#newcode", el).onclick = () => newPairCode(el);
+  $("#cancelpair", el).onclick = () => cancelPair(el);
+  if (p.relay_fingerprint) showFingerprint(el, p.relay_fingerprint);
+  watchPairing(el, d);
+}
+function renderConnected(el, d, outdated) {
+  const relay = (d && d.relay) || {};
+  el.innerHTML = `${outdated ? `<div class="banner warn" style="flex-wrap:wrap">This relay is outdated.</div>
+    <div class="field"><button type="button" class="btn p" id="goup">Update relay</button></div>` : ""}
+    <div class="cols"><div class="card"><h2>Voice relay</h2><p class="sub">Paired. Voice can use this relay.</p>${relayFactsHTML(relay)}</div>
+    ${xaiKeyHTML(relay)}</div>
+    <div class="card"><h2>Recent activity</h2><p class="sub">Last 20 lines. Station and Relay.</p>${auditHTML(d && d.audit)}</div>
+    <div class="field"><button type="button" class="btn dg" id="unpair">Unpair relay…</button></div>`;
+  bindRotate(el);
+  bindUnpair(el);
+  const go = $("#goup", el);
+  if (go) go.onclick = () => {
+    if (document.querySelector(".wiz")) { toast("Finish setup first. Updates is in the sidebar after that."); return; }
+    location.hash = "updates";
   };
 }
-function xaiPanel(el) {
-  el.innerHTML = `<div class="card"><h2>xAI key</h2>
-    <div class="row"><div class="secret"><span class="lbl">🔒 xAI API key</span><span class="help">Stored on the voice service computer, never on the station.</span></div></div>
-    <p class="sub" style="margin-top:8px">The station never holds the key. Change it in the relay's secrets on the voice service computer, then use <b>Test</b> on the relay card: it confirms the key is present there.</p></div>`;
+function renderError(el, d) {
+  const checks = d && d.error && d.error.checks;
+  el.innerHTML = `<div class="banner bad" style="flex-wrap:wrap">${esc(RELAY_DOWN_BANNER)}</div>
+    <div class="card"><h2>Voice relay</h2>
+      <div class="field inline"><button type="button" class="btn" id="retry">Retry now</button>
+        <button type="button" class="btn g" id="showcmd">Show setup command</button></div>
+      <div id="setupcmd" hidden>${installHTML()}</div>
+      ${checksHTML(checks)}
+      <div class="field"><button type="button" class="btn dg" id="unpair">Unpair relay…</button></div></div>`;
+  $("#retry", el).onclick = () => paintRelay(el);
+  $("#showcmd", el).onclick = () => {
+    const box = $("#setupcmd", el);
+    if (!box) return;
+    box.hidden = !box.hidden;
+    if (!box.hidden) wireInstall(box);
+  };
+  bindUnpair(el);
+}
+function renderRelay(el, d) {
+  const state = (d && d.state) || "error";
+  if (state !== "pairing") el._watch = false;
+  if (state === "not-set-up") return renderNotSetup(el);
+  if (state === "pairing") return renderPairing(el, d);
+  if (state === "connected") return renderConnected(el, d, false);
+  if (state === "outdated") return renderConnected(el, d, true);
+  return renderError(el, d);
+}
+async function paintRelay(el) {
+  if (!el) return;
+  el._seq = (el._seq || 0) + 1;
+  const seq = el._seq;
+  el._watch = false;
+  clearTimers();
+  const r = await api("GET", "/api/relay");
+  if (!document.body.contains(el) || el._seq !== seq) return;
+  let d;
+  if (r.ok && r.data && r.data.state) d = r.data;
+  else {
+    const checks = r.data && r.data.error && r.data.error.checks;
+    d = {state: "error", error: {checks: Array.isArray(checks) ? checks : []}, relay: r.data && r.data.relay, audit: r.data && r.data.audit};
+  }
+  if (d.state !== "pairing") S.pairCode = "";
+  renderRelay(el, d);
+}
+function mentionsSig(text) {
+  return String(text || "").toLowerCase().indexOf("sign" + "ature") >= 0;
+}
+function stepLabel(step) {
+  if (typeof step === "string") {
+    if (step === "relay") return "Update the relay";
+    if (step === "station") return "Update the station";
+    if (step === "pause-voice") return "Pause voice";
+    if (step === "resume-voice") return "Resume voice";
+    const soak = /^soak:(\d+)$/.exec(step);
+    if (soak) return "Wait " + Math.max(1, Math.round(Number(soak[1]) / 60)) + " minutes while the relay stays healthy";
+    return step;
+  }
+  if (!step || typeof step !== "object") return "";
+  for (const k of ["label", "name", "text", "title"]) if (typeof step[k] === "string") return step[k];
+  return "";
+}
+function planList(plan) {
+  if (!Array.isArray(plan)) return "";
+  const items = [];
+  for (const step of plan) {
+    const text = stepLabel(step);
+    if (!text || mentionsSig(text)) continue;
+    items.push(`<li>${esc(text)}</li>`);
+  }
+  return items.length ? `<ol class="ol">${items.join("")}</ol>` : "";
+}
+function whenText(ts) {
+  if (typeof ts === "number" && Number.isFinite(ts)) return ago(ts > 1e12 ? ts / 1000 : ts);
+  if (typeof ts === "string" && /^\d+(\.\d+)?$/.test(ts)) return ago(Number(ts));
+  if (typeof ts === "string" && ts) {
+    const ms = Date.parse(ts);
+    if (!Number.isNaN(ms)) return ago(ms / 1000);
+    return ts;
+  }
+  return "";
+}
+function historyHTML(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return `<p class="help">No update history yet.</p>`;
+  return list.map(raw => {
+    const h = auditRow(raw);
+    const side = h.side === "relay" ? "Relay" : h.side === "station" ? "Station" : esc(h.side || "");
+    return `<div class="row"><span class="pill off"><i></i>${side}</span><span class="help">${esc(whenText(h.ts))}</span><span>${esc(h.line)}</span></div>`;
+  }).join("");
+}
+async function refreshUpdateBadge() {
+  const r = await api("GET", "/api/updates");
+  const nodes = document.querySelectorAll("[data-upbadge]");
+  if (!nodes.length) return;
+  const n = r.ok ? updateCount(r.data || {}) : 0;
+  nodes.forEach(b => {
+    if (n > 0) { b.hidden = false; b.textContent = String(n); }
+    else { b.hidden = true; b.textContent = ""; }
+  });
+}
+async function paintUpdates(el) {
+  const r = await api("GET", "/api/updates");
+  const d = r.ok && r.data ? r.data : {};
+  const avail = plainVersion(d.available);
+  const station = componentInstalled(d, "station") || "—";
+  const relay = componentInstalled(d, "relay") || "—";
+  const allowed = !!d.station_only_allowed;
+  const auto = !!d.autocheck;
+  const warn = typeof d.warning === "string" ? d.warning : "";
+  const showWarn = warn && warn !== CANT_CHECK && !mentionsSig(warn);
+  el.innerHTML = `${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">${esc(CANT_CHECK)}</div>` : ""}
+    ${showWarn ? `<div class="banner warn" style="flex-wrap:wrap">${esc(warn)}</div>` : ""}
+    ${!r.ok ? `<div class="banner bad" style="flex-wrap:wrap">${esc((r.data && r.data.error) || "Can't load updates.")}</div>` : ""}
+    <div class="cols">
+      <div class="card"><h2>Station</h2>
+        <div class="row"><span>Installed</span><span class="right mono">${esc(station)}</span></div>
+        <div class="row"><span>Available</span><span class="right mono">${esc(avail || "—")}</span></div></div>
+      <div class="card"><h2>Relay</h2>
+        <div class="row"><span>Installed</span><span class="right mono">${esc(relay)}</span></div>
+        <div class="row"><span>Available</span><span class="right mono">${esc(avail || "—")}</span></div></div></div>
+    <div class="card"><h2>Install</h2>
+      <p class="note">${esc(UPDATE_BOTH_COPY)}</p>
+      ${planList(d.plan)}
+      <div class="field inline"><button type="button" class="btn p" id="both"${avail ? "" : " disabled"}>Update both</button>
+        <button type="button" class="btn" id="stationonly"${allowed && avail ? "" : " disabled"}>Update station only</button>
+        <button type="button" class="btn" id="checknow">Check now</button></div>
+      <p class="note" id="stationwhy"${allowed ? " hidden" : ""}>${esc(STATION_ONLY_WHY)}</p>
+      <div id="ue"></div>
+      <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
+        <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a release. It does not install anything.</div></div></div></div>
+    <div class="card"><h2>History</h2>${historyHTML(d.history)}</div>`;
+  const apply = async (target, btn, label) => {
+    if (!avail) return;
+    if (target === "station" && !allowed) return;
+    const send = async pw => {
+      if (btn && btn.isConnected) busyBtn(btn, true, "Starting…");
+      const body = {version: avail};
+      if (pw) body.password = pw;
+      const res = await api("POST", "/api/updates/apply", body);
+      if (res.status === 403) {
+        if (btn && btn.isConnected) busyBtn(btn, false, label);
+        return res;
+      }
+      if (!res.ok) {
+        if (btn && btn.isConnected) busyBtn(btn, false, label);
+        errBox($("#ue", el), (res.data && res.data.error) || "Couldn't start the update.");
+        return res;
+      }
+      errBox($("#ue", el), "");
+      toast("Update started.");
+      await paintUpdates(el);
+      refreshUpdateBadge();
+      return res;
+    };
+    withPassword("Install this update?", "Enter the admin password to install " + avail + ". Relay goes first when it is behind.", "Install", send);
+  };
+  const both = $("#both", el), only = $("#stationonly", el);
+  if (both) both.onclick = () => apply("both", both, "Update both");
+  if (only) only.onclick = () => { if (!allowed) return; apply("station", only, "Update station only"); };
+  $("#checknow", el).onclick = () => {
+    const btn = $("#checknow", el);
+    const send = async pw => {
+      if (btn && btn.isConnected) busyBtn(btn, true, "Checking…");
+      const body = {};
+      if (pw) body.password = pw;
+      const res = await api("POST", "/api/updates/check", body);
+      if (res.status === 403) {
+        if (btn && btn.isConnected) busyBtn(btn, false, "Check now");
+        return res;
+      }
+      if (!res.ok) toast((res.data && res.data.error) || "Couldn't check.", "bad");
+      await paintUpdates(el);
+      refreshUpdateBadge();
+      return res;
+    };
+    withPassword("Check for updates?", "Enter the admin password to look for a release. Nothing is installed.", "Check", send);
+  };
+  $("#auto", el).onclick = () => {
+    const on = !$("#auto", el).classList.contains("on");
+    const send = async pw => {
+      const body = {on};
+      if (pw) body.password = pw;
+      const res = await api("PUT", "/api/updates/autocheck", body);
+      if (res.ok) {
+        const live = $("#auto", el);
+        if (live) { live.classList.toggle("on", on); live.setAttribute("aria-checked", on ? "true" : "false"); }
+        toast(on ? "Daily check on." : "Daily check off.");
+      } else if (res.status !== 403) toast((res.data && res.data.error) || "Couldn't save that.", "bad");
+      return res;
+    };
+    withPassword("Daily check", "Enter the admin password to change the daily check. A check does not install anything.", "Save", send);
+  };
+}
+async function pageUpdates(el) {
+  el.innerHTML = `<div id="updatesroot"><p class="help">Loading…</p></div>`;
+  await paintUpdates($("#updatesroot", el));
+  refreshUpdateBadge();
 }
 
 async function timePanel(el, opts = {}) {
@@ -538,43 +1102,47 @@ async function displayPanel(el) {
   };
 }
 
-/* ---------------------------------------------------------------- wizard (design.md §8.2 order) */
-const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Voice relay", "Time and location", "Wake words", "Audio test"];
+/* ---------------------------------------------------------------- wizard. Voice relay can be paired later. Backend steps still run 2..8. */
+const STEPS = ["Code and password", "Wi-Fi", "Voice relay", "Time and location", "Wake words", "Audio test"];
+const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 6: 5, 7: 6};
+const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 6, 6: 7, 7: 8};
+const WIZ_BACK = {3: 2, 4: 2, 5: 3, 6: 5, 7: 6};
 async function wizard(step) {
   clearTimers();
   step = Math.max(2, Math.min(8, step));
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
     root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
-      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
+      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="voice">Voice relay</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
       <div class="field"><button class="btn p" id="fin">Go to Home</button></div></div></div>`;
     const fin = async p => { await api("POST", "/api/wizard", {step: 8, done: true}); S.page = p; boot(); };
     $("#fin").onclick = () => fin("home");
     document.querySelectorAll("[data-p]").forEach(a => a.onclick = ev => { ev.preventDefault(); fin(a.dataset.p); });
     return;
   }
-  root().innerHTML = `<div class="wiz"><nav class="rail" aria-label="Setup steps">${STEPS.map((t, i) => `<div class="st${i + 1 < step ? " done" : ""}${i + 1 === step ? " on" : ""}"><b>${i + 1 < step ? "✓" : i + 1}</b>${t}</div>`).join("")}</nav>
-    <div class="pane"><div class="phonestep">Step ${step} of 7 · ${STEPS[step - 1]}</div><div class="meterbar phonestep" style="height:6px"><b style="width:${step / 7 * 100}%"></b></div>
-      <h1 style="font:600 28px var(--disp);margin-bottom:16px">${STEPS[step - 1]}</h1><div id="wp"></div>
-      <div class="inline" style="margin-top:20px">${step > 2 ? `<button class="btn g" id="back">Back</button>` : ""}
-        <span class="right inline">${step === 2 && !hotspot ? `<button class="btn g" id="skip">Skip (wired)</button>` : ""}${step === 6 ? `<button class="btn g" id="skip">Skip, record later</button>` : ""}
-        <button class="btn p" id="next">Next</button></span></div></div></div>`;
+  const view = WIZ_VIEW[step] || 2;
+  const skip = step === 2 && !hotspot ? `<button class="btn g" id="skip">Skip (wired)</button>`
+    : (step === 3 || step === 4) ? `<button class="btn g" id="skip">Set up later</button>`
+    : step === 6 ? `<button class="btn g" id="skip">Skip, record later</button>` : "";
+  root().innerHTML = `<div class="wiz"><nav class="rail" aria-label="Setup steps">${STEPS.map((t, i) => `<div class="st${i + 1 < view ? " done" : ""}${i + 1 === view ? " on" : ""}"><b>${i + 1 < view ? "✓" : i + 1}</b>${t}</div>`).join("")}</nav>
+    <div class="pane"><div class="phonestep">Step ${view} of 6 · ${STEPS[view - 1]}</div><div class="meterbar phonestep" style="height:6px"><b style="width:${view / 6 * 100}%"></b></div>
+      <h1 style="font:600 28px var(--disp);margin-bottom:16px">${STEPS[view - 1]}</h1><div id="wp"></div>
+      <div class="inline" style="margin-top:20px">${view > 2 ? `<button class="btn g" id="back">Back</button>` : ""}
+        <span class="right inline">${skip}<button class="btn p" id="next">Next</button></span></div></div></div>`;
   const wp = $("#wp"), next = $("#next");
   const go = async s => { await api("POST", "/api/wizard", {step: s, done: false}); wizard(s); };
-  if ($("#back")) $("#back").onclick = () => go(step - 1);
-  if ($("#skip")) $("#skip").onclick = () => go(step + 1);
-  next.onclick = () => go(step + 1);
+  if ($("#back")) $("#back").onclick = () => go(WIZ_BACK[step] || Math.max(2, step - 1));
+  if ($("#skip")) $("#skip").onclick = () => go(WIZ_NEXT[step] || step + 1);
+  next.onclick = () => go(WIZ_NEXT[step] || step + 1);
   if (step === 2) {
     const st = (await api("GET", "/api/network")).data || {};
     next.disabled = hotspot && !(st.wifi);
     await wifiPanel(wp, {hostname: true, onJoin: () => (next.disabled = false)});
     if (hotspot) wp.insertAdjacentHTML("afterbegin", `<div class="banner warn" style="margin-bottom:12px">The station is running its own setup hotspot. Join your home Wi-Fi to continue; the hotspot then turns off and this page moves to your network.</div>`);
-  } else if (step === 3) {
-    xaiPanel(wp);
-  } else if (step === 4) {
-    const s = (await api("GET", "/api/secrets")).data || {};
-    next.disabled = !(s.relay_token || {}).set;
-    await relayPanel(wp, {onOk: () => (next.disabled = false)});
+  } else if (step === 3 || step === 4) {
+    next.disabled = false;
+    wp.innerHTML = `<div id="relayroot"></div><p class="note">You can set the relay up later. Voice stays off until it is paired.</p>`;
+    await paintRelay($("#relayroot", wp));
   } else if (step === 5) {
     await timePanel(wp, {onOk: () => {}});
   } else if (step === 6) {
@@ -593,15 +1161,16 @@ const ICON = {
   audio: '<path d="M11 5L6 9H3v6h3l5 4zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>', display: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
   time: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', network: '<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
   system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  updates: '<path d="M21 12a9 9 0 1 1-2.6-6.3L21 8"/><path d="M21 3v5h-5"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
-const PAGES = {home: ["Home", pageHome], voice: ["xAI key and relay", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
+const PAGES = {home: ["Home", pageHome], voice: ["Voice relay", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
   privacy: ["Privacy", pagePrivacy],
   audio: ["Audio", el => audioPanel(el)], display: ["Display", el => displayPanel(el)], time: ["Time and location", el => timePanel(el)],
-  network: ["Network", el => wifiPanel(el)], system: ["System", pageSystem], more: ["More", pageMore]};
-const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "xAI key and relay"]]],
+  network: ["Network", el => wifiPanel(el)], updates: ["Updates", pageUpdates], system: ["System", pageSystem], more: ["More", pageMore]};
+const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "Voice relay"]]],
   ["Station", [["wake", "Wake words"], ["bots", "Bots"], ["privacy", "Privacy"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
-  ["", [["system", "System"]]]];
+  ["System", [["updates", "Updates"], ["system", "System"]]]];
 const TABS = [["home", "Home", "home"], ["wake", "Voice", "wake"], ["audio", "Station", "audio"], ["system", "System", "system"], ["more", "More", "more"]];
 
 function closeFloats() {
@@ -612,7 +1181,7 @@ function shell() {
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
   root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><img class="mk" src="/assets/mark.svg" alt=""><div><b>Grok Station</b><span>● ${esc(S.state.host)}</span></div></div>
-    ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span></a>`).join("")).join("")}
+    ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span>${k === "updates" ? `<b class="b count" id="upbadge" data-upbadge hidden></b>` : ""}</a>`).join("")).join("")}
     <div class="foot">Signed in as admin · <a href="#" id="out">Sign out</a><br>Version <span class="mono">${esc(S.state.version)}</span></div></aside>
     <main class="main"><header class="top"><h1>${PAGES[page][0]}</h1><div class="r" id="topr"></div></header><div class="body" id="pg"></div></main></div>
     <nav class="phonebar">${TABS.map(([k, t, i]) => `<button data-tab="${k}" class="${k === page ? "on" : ""}">${svg(i)}${t}</button>`).join("")}</nav>`;
@@ -620,6 +1189,7 @@ function shell() {
   document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => (location.hash = b.dataset.tab));
   clearTimers();
   PAGES[page][1]($("#pg"));
+  refreshUpdateBadge();
 }
 window.addEventListener("hashchange", () => { if (S.state && S.state.signed_in && !(S.state.wizard && !S.state.wizard.done)) shell(); });
 
@@ -643,7 +1213,7 @@ async function pageHome(el) {
     $("#rf", el).onclick = load;
     const n = h.network || {};
     $("#tiles", el).innerHTML = [
-      ["Voice relay", h.relay ? "Connected" : "Tap Test on the relay page", "voice"],
+      ["Voice relay", h.relay ? "Connected" : "Not set up", "voice"],
       ["Network", n.wifi ? `Wi-Fi ${esc(n.wifi.ssid)} · ${n.wifi.signal}%` : n.wired ? "Wired" : "Offline", "network"],
       ["Services", up ? "All running" : Object.entries(svc).filter(([, v]) => v !== "active").map(([k]) => esc(k.replace("grok-station-", ""))).join(", ") + " stopped", "system"],
       ["Wake words", `${(h.words || []).length} on`, "wake"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
@@ -652,8 +1222,8 @@ async function pageHome(el) {
   every(5000, () => { const p = $("#pv", el); if (p) { p.src = "/api/preview?t=" + Date.now(); $("#pva", el).textContent = "Updated " + new Date().toLocaleTimeString(); } });
 }
 async function pageVoice(el) {
-  el.innerHTML = `<div class="cols"><div id="x"></div><div id="r"></div></div>`;
-  xaiPanel($("#x", el)); relayPanel($("#r", el));
+  el.innerHTML = `<div id="relayroot"></div>`;
+  await paintRelay($("#relayroot", el));
 }
 function clockTime(ts) {
   if (!ts) return "";
@@ -712,7 +1282,7 @@ function avatar(slug, name, lg) {
   const v = S.avatarV ? "?v=" + S.avatarV : "";
   return `<span class="avwrap${lg ? " lg" : ""}" data-slug="${esc(slug)}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
 }
-function askPassword(title, text, label, send) {
+function askPassword(title, text, label, send, onCancel) {
   const d = document.createElement("div");
   d.className = "sheet";
   d.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(400px,100%)">
@@ -722,7 +1292,7 @@ function askPassword(title, text, label, send) {
     <div class="field inline"><button class="btn p" id="pwgo">${esc(label)}</button><button class="btn g" type="button" id="pwno">Cancel</button></div></form>`;
   document.body.appendChild(d);
   const close = () => d.remove();
-  $("#pwno", d).onclick = close;
+  $("#pwno", d).onclick = () => { close(); if (onCancel) onCancel(); };
   d.querySelector("form").onsubmit = async ev => {
     ev.preventDefault();
     const inp = $("#pwv", d);
@@ -747,10 +1317,12 @@ function paintBots(el, bots) {
     const info = voice[b.slug] || {};
     return `<div class="botrow">${avatar(b.slug, b.name)}
     <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div></div>
-    <button class="btn sm" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
-    <button class="btn sm" data-bot="${esc(b.slug)}">Configure</button></div>`;
+    <button class="btn sm" type="button" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
+    ${(b.webhook && b.webhook.configured) ? "" : `<button class="btn sm" type="button" data-hook="${esc(b.slug)}">Connect webhook</button>`}
+    <button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div>`;
   }).join("") || `<p class="help">No bots yet.</p>`;
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
+  list.querySelectorAll("[data-hook]").forEach(btn => btn.onclick = () => connectWebhookWizard(bots.find(b => b.slug === btn.dataset.hook), el));
   list.querySelectorAll("[data-voice]").forEach(btn => btn.onclick = () => {
     const bot = bots.find(b => b.slug === btn.dataset.voice);
     const info = voice[bot.slug] || {};
@@ -866,16 +1438,7 @@ function openBot(bot, el) {
     sync();
     const box = $("#tbox", d);
     if (!box) return;
-    if (res.state === "ok") {
-      const secs = res.answered_in_s == null ? "" : oneDecimal(res.answered_in_s) + " s";
-      box.innerHTML = `<div class="banner ok"><span class="pill ok"><i></i>Answered in ${esc(secs)}</span></div>`;
-      return;
-    }
-    if (res.state === "cancelled") { box.innerHTML = `<p class="note">Cancelled.</p>`; return; }
-    const err = res.error || "No answer after 2 min";
-    const hint = !res.error || res.error === "No answer after 2 min";
-    box.innerHTML = `<div class="banner bad"><span class="pill bad"><i></i>${esc(err)}</span></div>` +
-      (hint ? `<p class="note">Check both values are from this bot's routine panel, then test again.</p>` : "");
+    box.innerHTML = testResultHTML(res);
   };
   const startPoll = (id) => {
     testId = id;
@@ -1023,71 +1586,360 @@ function openBot(bot, el) {
     return r;
   });
 }
+const ADD_STEP_LABEL = "1 Bot · 2 Voice token · 3 Webhook · 4 Done";
+const HOOK_LATER = "Not connected yet - use Connect webhook on the Bots page";
+const TOKEN_WHAT = "This is the bot's own key to talk to the station's voice service.";
+const TOKEN_WHERE = "Paste it into the bot's Grok Bot routine settings as its voice token. The routine sends it as Authorization: Bearer <voice token> when it replies or uploads an avatar.";
+const TOKEN_ONCE = "It won't be shown again.";
+function addStepper(n) {
+  const parts = ADD_STEP_LABEL.split(" · ");
+  return `<p class="stepper" aria-label="${ADD_STEP_LABEL}">${parts.map((t, i) => {
+    const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
+    return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
+  }).join('<span class="sep"> · </span>')}</p>`;
+}
+function httpsWebhook(url) {
+  const v = String(url || "").trim();
+  if (!/^https:\/\//i.test(v)) return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === "https:" && !u.username && !u.password && !!u.hostname;
+  } catch (e) { return false; }
+}
+function shownLast4(v) {
+  return typeof v === "string" && /^[\x21-\x7e]{1,4}$/.test(v) ? v : "";
+}
+function dropToken(root) {
+  const node = root && $("#tok", root);
+  if (node) node.textContent = "";
+  try {
+    const sel = window.getSelection && window.getSelection();
+    if (sel && sel.removeAllRanges) sel.removeAllRanges();
+  } catch (e) { /* selection can throw while a document is closing */ }
+}
+function testResultHTML(res) {
+  if (res.state === "ok") {
+    const secs = res.answered_in_s == null ? "" : oneDecimal(res.answered_in_s) + " s";
+    return `<div class="banner ok"><span class="pill ok"><i></i>Answered in ${esc(secs)}</span></div>`;
+  }
+  if (res.state === "cancelled") return `<p class="note">Cancelled.</p>`;
+  const err = res.error || "No answer after 2 min";
+  const hint = !res.error || res.error === "No answer after 2 min";
+  return `<div class="banner bad"><span class="pill bad"><i></i>${esc(err)}</span></div>` +
+    (hint ? `<p class="note">Check both values are from this bot's routine panel, then test again.</p>` : "");
+}
+function mountWebhookStep(root, bot, el, onFinish) {
+  let connected = !!(bot.webhook && bot.webhook.configured);
+  let last4 = connected ? shownLast4(bot.webhook && bot.webhook.last4) : "";
+  let key = "";
+  let testTimer = null, testId = null, saving = false;
+  const stopPoll = () => { if (testTimer) { clearInterval(testTimer); testTimer = null; } };
+  const cancelTest = async () => {
+    stopPoll();
+    const id = testId;
+    testId = null;
+    if (id) await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`, {});
+  };
+  root.innerHTML = `<h2>Connect webhook</h2>
+    <ol class="ol">
+      <li>Open this bot's routine in Grok Bot.</li>
+      <li>Find its webhook panel.</li>
+      <li>Copy the webhook URL and its key.</li>
+    </ol>
+    <p class="note">The station sends the key as the <span class="mono">Authorization</span> header when it calls the webhook.</p>
+    <div id="hsaved" class="secret" hidden><span class="dots" id="hookdots"></span><span class="pill ok"><i></i>Saved</span></div>
+    <div id="hookfields">
+      <div class="field"><label for="hurl">Webhook URL</label><input class="inp" id="hurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://"></div>
+      <div class="field"><label for="hkey">Key</label><input class="inp" id="hkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+    </div>
+    <div id="herr"></div>
+    <div class="field inline">
+      <button class="btn p" id="hsave" type="button">Save</button>
+      <button class="btn" id="hping" type="button" disabled>Send test ping</button>
+      <button class="btn p" id="hnext" type="button" hidden>Continue</button>
+    </div>
+    <div id="hbox"></div>
+    <div class="field"><a href="#" class="skipnow" id="hskip">Skip for now</a></div>`;
+  const showSaved = () => {
+    const fields = $("#hookfields", root), saved = $("#hsaved", root);
+    if (fields) fields.hidden = true;
+    if (saved) saved.hidden = false;
+    const dots = $("#hookdots", root);
+    if (dots) dots.textContent = "•••• " + (last4 || "");
+    const urlEl = $("#hurl", root), keyEl = $("#hkey", root);
+    if (urlEl) urlEl.value = "";
+    if (keyEl) keyEl.value = "";
+    const ping = $("#hping", root);
+    if (ping && !testId) ping.disabled = false;
+    const next = $("#hnext", root);
+    if (next) next.hidden = false;
+    const saveBtn = $("#hsave", root);
+    if (saveBtn) saveBtn.hidden = true;
+  };
+  if (connected) showSaved();
+  const showResult = (res) => {
+    stopPoll();
+    testId = null;
+    const btn = $("#hping", root);
+    if (btn) { btn.disabled = !connected; btn.textContent = "Send test ping"; }
+    const box = $("#hbox", root);
+    if (box) box.innerHTML = testResultHTML(res);
+  };
+  const startPoll = (id) => {
+    testId = id;
+    let sec = 0, busy = false;
+    const btn = $("#hping", root);
+    if (btn) { btn.disabled = true; btn.textContent = "Send test ping"; }
+    const box = $("#hbox", root);
+    if (!box) return;
+    box.innerHTML = `<div class="twait"><div class="inline"><span class="spin"></span><b>Waiting for ${esc(bot.name)}… <span id="hclock">0:00</span></b></div>
+      <div class="tbar"><i id="hfill"></i></div>
+      <p class="note">Bots can take a while to answer. Gives up after 2 min.</p>
+      <a href="#" id="hcancel">Cancel</a></div>`;
+    const cancel = $("#hcancel", root);
+    if (cancel) cancel.onclick = async ev => { ev.preventDefault(); await cancelTest(); showResult({state: "cancelled"}); };
+    testTimer = setInterval(async () => {
+      if (!$("#hclock", root)) { stopPoll(); return; }
+      sec += 1;
+      const clock = $("#hclock", root), bar = $("#hfill", root);
+      if (clock) clock.textContent = mss(sec);
+      if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%";
+      if (busy) return;
+      busy = true;
+      try {
+        const r = await api("GET", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`);
+        if (testId !== id || !$("#hclock", root)) return;
+        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer after 2 min"}); return; }
+        if (typeof r.data.elapsed_s === "number") { sec = Math.max(sec, r.data.elapsed_s); if (clock) clock.textContent = mss(sec); if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%"; }
+        if (r.data.state === "waiting" && sec >= 125) { showResult({state: "failed", error: "No answer after 2 min"}); return; }
+        if (r.data.state !== "waiting") showResult(r.data);
+      } finally { busy = false; }
+    }, 1000);
+    S.timers.push(testTimer);
+  };
+  const finish = async () => {
+    key = "";
+    const urlEl = $("#hurl", root), keyEl = $("#hkey", root);
+    if (urlEl) urlEl.value = "";
+    if (keyEl) keyEl.value = "";
+    await cancelTest();
+    onFinish(connected, last4);
+  };
+  $("#hskip", root).onclick = ev => { ev.preventDefault(); finish(); };
+  const next = $("#hnext", root);
+  if (next) next.onclick = () => finish();
+  $("#hping", root).onclick = async () => {
+    if (testId || !connected) return;
+    const btn = $("#hping", root);
+    btn.disabled = true;
+    const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/test`, {});
+    if (!r.ok || !r.data || !r.data.test_id) {
+      if (btn) btn.disabled = !connected;
+      showResult({state: "failed", error: (r.data && r.data.error) || "Couldn't start the test."});
+      return;
+    }
+    startPoll(r.data.test_id);
+  };
+  $("#hsave", root).onclick = () => {
+    if (saving) return;
+    const urlEl = $("#hurl", root), keyEl = $("#hkey", root);
+    const url = urlEl ? urlEl.value.trim() : "";
+    const typed = keyEl ? keyEl.value.trim() : "";
+    if (!httpsWebhook(url)) {
+      key = "";
+      errBox($("#herr", root), "The webhook URL has to start with https://.");
+      if (urlEl) urlEl.focus();
+      return;
+    }
+    if (!typed) {
+      key = "";
+      errBox($("#herr", root), "Paste the webhook key.");
+      if (keyEl) keyEl.focus();
+      return;
+    }
+    key = typed;
+    errBox($("#herr", root), "");
+    const send = async pw => {
+      saving = true;
+      const btn = $("#hsave", root);
+      if (btn) busyBtn(btn, true, "Saving…");
+      if (keyEl) keyEl.value = "";
+      const body = {url, key};
+      if (pw) body.password = pw;
+      const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
+      body.key = "";
+      body.password = "";
+      saving = false;
+      if (btn) busyBtn(btn, false, "Save");
+      if (r && r.ok) {
+        key = "";
+        connected = true;
+        last4 = shownLast4(r.data && r.data.last4);
+        bot.webhook = {configured: true, last4: last4 || null, saved_at: Math.floor(Date.now() / 1000)};
+        showSaved();
+        errBox($("#herr", root), "");
+        toast("Saved.");
+        refreshBots(el);
+      }
+      return r;
+    };
+    const forgetKey = () => { key = ""; };
+    if (stepupOpen()) {
+      send("").then(r => {
+        if (r && r.status === 403) askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", send, forgetKey);
+        else if (r && !r.ok) { forgetKey(); errBox($("#herr", root), (r.data && r.data.error) || "Couldn't save."); }
+      });
+    } else askPassword("Save webhook?", "Enter the admin password to save this webhook.", "Save", send, forgetKey);
+  };
+  return {cancel: () => { key = ""; return cancelTest(); }};
+}
+function connectWebhookWizard(bot, el) {
+  if (!bot || !bot.slug) return;
+  closeFloats();
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Connect webhook"><div id="hookmount"></div></div>`;
+  document.body.appendChild(d);
+  const finish = () => {
+    if (d._cancel) d._cancel();
+    d._cancel = null;
+    d.remove();
+    refreshBots(el);
+  };
+  const ctl = mountWebhookStep($("#hookmount", d), bot, el, finish);
+  d._cancel = () => ctl.cancel();
+}
 function addBot(voices, el) {
   closeFloats();
   const d = document.createElement("div");
   d.className = "sheet";
-  const opts = (voices || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
-  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(440px,100%)">
-    <h2>Add bot</h2><p class="sub">A new teammate. You'll get a voice token to paste into its routine, once.</p>
-    <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
-    <div class="field"><label for="aslug">Bot ID <span class="tipwrap info" tabindex="0" role="note" aria-label="${esc(BOT_ID_HELP)}">i<span class="tip">${esc(BOT_ID_HELP)}</span></span></label>
-      <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
-      <p class="note">${esc(BOT_ID_HELP)}</p>
-      <p class="err" id="asluge" hidden></p></div>
-    <div class="field"><label for="avoice">Voice</label><select class="sel" id="avoice" required>${opts || `<option value="">No voices yet</option>`}</select></div>
-    ${stepupOpen() ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
-    <div id="ape"></div>
-    <div class="field inline"><button class="btn p" id="ago">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
+  d._cancel = () => {};
   document.body.appendChild(d);
-  let slugEdited = false;
-  const showId = () => {
-    const slug = $("#aslug", d).value.trim();
-    const problem = slug ? botIdProblem(slug) : "";
-    const e = $("#asluge", d);
-    if (e) { e.hidden = !problem; e.textContent = problem; }
-    return problem;
-  };
-  $("#aname", d).oninput = () => { if (!slugEdited) $("#aslug", d).value = botIdFromName($("#aname", d).value); showId(); };
-  $("#aslug", d).oninput = () => { slugEdited = true; showId(); };
-  $("#ano", d).onclick = () => d.remove();
-  d.querySelector("form").onsubmit = async ev => {
-    ev.preventDefault();
-    const name = $("#aname", d).value.trim();
-    const slug = $("#aslug", d).value.trim();
-    const problem = showId();
-    if (problem) return;
-    const voice = $("#avoice", d).value;
-    const pwEl = $("#apw", d);
-    const pw = pwEl ? pwEl.value : "";
-    if (pwEl) pwEl.value = "";
-    busyBtn($("#ago", d), true);
-    const body = {name, slug, voice};
-    if (pw) body.password = pw;
-    const r = await api("POST", "/api/bots", body);
-    if (!r.ok) {
-      busyBtn($("#ago", d), false, "Add bot");
-      if (r.status === 403 && !$("#apw", d)) {
-        const holder = document.createElement("div");
-        holder.className = "field";
-        holder.innerHTML = `<label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required>`;
-        $("#ape", d).before(holder);
+  const opts = (voices || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  const step4 = (bot, connected, last4) => {
+    d._cancel = () => {};
+    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Done">${addStepper(4)}
+      <h2>Done</h2><p id="donesum"></p><p class="note" id="donenote"></p>
+      <div class="field"><button class="btn p" id="adddone" type="button">Close</button></div></div>`;
+    const sum = $("#donesum", d);
+    if (connected) {
+      sum.textContent = "Webhook connected.";
+      if (last4) {
+        const mask = document.createElement("span");
+        mask.className = "dots";
+        mask.textContent = " •••• " + last4;
+        sum.appendChild(mask);
       }
-      return errBox($("#ape", d), r.data.error);
-    }
-    refreshBots(el);
-    const token = r.data.voice_token || "";
-    d.querySelector(".card").innerHTML = `<h2>Voice token</h2>
-      <p class="sub">Give this to ${esc(name)}'s routine as its voice token. It won't be shown again.</p>
-      <div class="tokenbox" id="tok">${esc(token)}</div>
-      <div class="field inline"><button class="btn sm" id="copy" type="button">Copy</button><button class="btn g sm" id="done" type="button">Close</button></div>`;
-    $("#copy", d).onclick = async () => {
-      const t = $("#tok", d).textContent;
-      try { await navigator.clipboard.writeText(t); toast("Copied."); }
-      catch (e) { toast("Select the token and copy it.", "warn"); }
-    };
-    $("#done", d).onclick = () => { d.remove(); refreshBots(el); };
+    } else sum.textContent = HOOK_LATER;
+    $("#donenote", d).textContent = (bot.name || "This bot") + " is on the station.";
+    $("#adddone", d).onclick = () => { d.remove(); refreshBots(el); };
   };
+  const step3 = (bot) => {
+    dropToken(d);
+    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Connect webhook">${addStepper(3)}<div id="hookmount"></div></div>`;
+    const ctl = mountWebhookStep($("#hookmount", d), bot, el, (connected, last4) => step4(bot, connected, last4));
+    d._cancel = () => ctl.cancel();
+  };
+  const step2 = (bot, token) => {
+    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Voice token">${addStepper(2)}
+      <h2>Voice token</h2>
+      <p id="tokwhat"></p>
+      <p id="tokwhere"></p>
+      <p class="note" id="tokonce"></p>
+      <div class="tokenbox" id="tok"></div>
+      <div class="field"><button class="btn sm" id="copytok" type="button">Copy</button></div>
+      <div class="field"><label class="inline" for="savedtok"><input type="checkbox" id="savedtok"> I've saved it</label></div>
+      <div class="field"><button class="btn p" id="toknext" type="button" disabled>Continue</button></div></div>`;
+    $("#tokwhat", d).textContent = TOKEN_WHAT;
+    $("#tokwhere", d).textContent = TOKEN_WHERE;
+    $("#tokonce", d).textContent = TOKEN_ONCE;
+    const node = $("#tok", d);
+    node.textContent = token;
+    token = "";
+    d._cancel = () => dropToken(d);
+    $("#copytok", d).onclick = () => {
+      const live = $("#tok", d);
+      const value = live ? live.textContent : "";
+      if (live && window.getSelection && document.createRange) {
+        const range = document.createRange();
+        range.selectNodeContents(live);
+        const sel = window.getSelection();
+        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+      }
+      copyText(value);
+    };
+    $("#savedtok", d).onchange = () => { $("#toknext", d).disabled = !$("#savedtok", d).checked; };
+    $("#toknext", d).onclick = () => {
+      if (!$("#savedtok", d).checked) return;
+      dropToken(d);
+      step3(bot);
+    };
+  };
+  const step1 = () => {
+    d._cancel = () => {};
+    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${addStepper(1)}
+      <h2>Add bot</h2><p class="sub">A new teammate. You'll get a voice token to paste into its routine, once.</p>
+      <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
+      <div class="field"><label for="aslug">Bot ID <span class="tipwrap info" tabindex="0" role="note" aria-label="${esc(BOT_ID_HELP)}">i<span class="tip">${esc(BOT_ID_HELP)}</span></span></label>
+        <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
+        <p class="note">${esc(BOT_ID_HELP)}</p>
+        <p class="err" id="asluge" hidden></p></div>
+      <div class="field"><label for="avoice">Voice</label><select class="sel" id="avoice" required>${opts || `<option value="">No voices yet</option>`}</select></div>
+      ${stepupOpen() ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
+      <div id="ape"></div>
+      <div class="field inline"><button class="btn p" id="ago" type="submit">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
+    let slugEdited = false;
+    const showId = () => {
+      const slug = $("#aslug", d).value.trim();
+      const problem = slug ? botIdProblem(slug) : "";
+      const e = $("#asluge", d);
+      if (e) { e.hidden = !problem; e.textContent = problem; }
+      return problem;
+    };
+    $("#aname", d).oninput = () => { if (!slugEdited) $("#aslug", d).value = botIdFromName($("#aname", d).value); showId(); };
+    $("#aslug", d).oninput = () => { slugEdited = true; showId(); };
+    $("#ano", d).onclick = () => d.remove();
+    d.querySelector("form").onsubmit = async ev => {
+      ev.preventDefault();
+      const name = $("#aname", d).value.trim();
+      const slug = $("#aslug", d).value.trim();
+      const problem = showId();
+      if (problem) return;
+      const voice = $("#avoice", d).value;
+      const pwEl = $("#apw", d);
+      let pw = pwEl ? pwEl.value : "";
+      if (pwEl) pwEl.value = "";
+      busyBtn($("#ago", d), true);
+      const body = {name, slug, voice};
+      if (pw) body.password = pw;
+      pw = "";
+      const r = await api("POST", "/api/bots", body);
+      body.password = "";
+      if (!r.ok) {
+        if ($("#ago", d)) busyBtn($("#ago", d), false, "Add bot");
+        if (r.status === 403 && !$("#apw", d)) {
+          const holder = document.createElement("div");
+          holder.className = "field";
+          holder.innerHTML = `<label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required>`;
+          $("#ape", d).before(holder);
+        }
+        return errBox($("#ape", d), (r.data && r.data.error) || "Couldn't add that bot.");
+      }
+      await refreshBots(el);
+      const bot = {slug, name, voice, webhook: {configured: false, last4: null}};
+      let token = String((r.data && r.data.voice_token) || "");
+      if (r.data) r.data.voice_token = "";
+      if (!token) {
+        if ($("#ago", d)) busyBtn($("#ago", d), false, "Add bot");
+        errBox($("#ape", d), "The voice service didn't return a voice token.");
+        return;
+      }
+      if (!document.body.contains(d)) { token = ""; return; }
+      step2(bot, token);
+      token = "";
+    };
+  };
+  step1();
 }
 async function pageBots(el) {
   const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
@@ -1150,7 +2002,7 @@ async function pagePrivacy(el) {
   };
 }
 async function pageSystem(el) {
-  el.innerHTML = `<div class="cols"><div class="card" id="ver"><h2>Updates</h2><p class="help">Checking…</p></div><div class="card" id="hl"><h2>Health</h2></div></div>
+  el.innerHTML = `<div class="card" id="hl"><h2>Health</h2></div>
     <div class="card" id="tls"><h2>Security certificate</h2></div>
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
@@ -1177,17 +2029,6 @@ async function pageSystem(el) {
     <div class="row"><span>Disk free</span><span class="right mono">${hh.disk_free_gb != null ? hh.disk_free_gb + " GB" : "n/a"}</span></div>
     ${Object.entries(s.services || {}).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><span class="right pill ${v === "active" ? "ok" : "bad"}"><i></i>${esc(v)}</span></div>`).join("")}
     <div class="row"><span>Network</span><span class="right help">${s.network && s.network.wifi ? "Wi-Fi " + esc(s.network.wifi.ssid) + " · " + s.network.wifi.signal + "%" : s.network && s.network.wired ? "Wired" : "Offline"}</span></div>`;
-  const u = await api("GET", "/api/system/update");
-  $("#ver", el).innerHTML = `<h2>Updates</h2><div class="row"><span>Installed</span><span class="right mono">${esc(s.version)}</span></div>` + (u.ok ? `
-    <div class="row"><span>Latest</span><span class="right mono">${esc(u.data.latest.sha.slice(0, 7))}</span></div><p class="note">What's new: ${esc(u.data.latest.message)}</p>
-    <div class="inline" style="margin-top:10px">${u.data.update_ready ? `<span class="pill warn"><i></i>Update ready</span><button class="btn p sm" id="inst">Install</button>` : `<span class="pill ok"><i></i>Up to date</span>`}</div>` : `<p class="help">${esc(u.data.error)}</p>`);
-  if ($("#inst", el)) $("#inst", el).onclick = async () => {
-    if (!confirm("Install the update? Voice restarts for a few seconds.")) return;
-    busyBtn($("#inst", el), true, "Installing…");
-    const r = await api("POST", "/api/system/update", {sha: u.data.latest.sha});
-    r.ok ? toast("Installed. The page reloads in a moment.") : (busyBtn($("#inst", el), false, "Install"), toast(r.data.error, "bad"));
-    if (r.ok) setTimeout(() => location.reload(), 8000);
-  };
   const logs = async () => {
     const q = `part=${$("#lp", el).value}&since=${$("#ls", el).value}`;
     $("#ld", el).href = "/api/system/logs?download=1&" + q;
@@ -1211,11 +2052,12 @@ async function pageSystem(el) {
   };
 }
 function pageMore(el) {
-  el.innerHTML = `<div class="card">${[["voice", "xAI key and relay"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]].map(([k, t]) =>
-    `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${t}<span class="right help">›</span></a>`).join("")}
+  const items = [["voice", "Voice relay"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
+  el.innerHTML = `<div class="card">${items.map(([k, t]) => `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${esc(t)}<span class="right inline">${k === "updates" ? `<b class="count" data-upbadge hidden></b>` : ""}<span class="help">›</span></span></a>`).join("")}
     <div class="row"><button class="btn g" id="again">Run setup again</button></div><div class="row"><button class="btn g" id="out2">Sign out</button></div></div>`;
   $("#again", el).onclick = async () => { await api("POST", "/api/wizard", {step: 2, done: false}); boot(); };
   $("#out2", el).onclick = async () => { await api("POST", "/api/logout", {}); boot(); };
+  refreshUpdateBadge();
 }
 
 boot();
