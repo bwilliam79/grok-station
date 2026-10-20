@@ -2,7 +2,7 @@
 
 A Raspberry Pi voice station. Everything runs on the Pi: the display, the "Hey Grok" wake listener, the admin page (HTTPS) and the voice relay (loopback only).
 
-These are the installer instructions for the single-device build.
+This README covers installation.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ Write the card, boot the Pi, and SSH in: `ssh <user>@<hostname>.local`.
 
 ```bash
 sudo apt-get install -y git   # if git isn't installed yet
-git clone https://github.com/bwilliam79/grok-station && cd grok-station && git checkout grok/single-device-20261020-115607 && sudo ./install.sh
+git clone https://github.com/bwilliam79/grok-station && cd grok-station && sudo ./install.sh
 ```
 
 `sudo ./install.sh --dry-run` prints every step without changing anything.

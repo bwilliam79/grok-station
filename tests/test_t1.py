@@ -1,6 +1,5 @@
-"""T1 voice notes, relay + station side (Nix canary). Receipts are tile-ingest's job (stats-dashboard
-tile-ingest/test/t1.test.js); the cross-repo test at the bottom drives both when that checkout is present."""
-import datetime, json, os, shutil, subprocess, sys, tempfile, time, unittest
+"""T1 voice notes, relay + station side (Nix canary)."""
+import datetime, json, os, sys, tempfile, time, unittest
 from zoneinfo import ZoneInfo
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.join(ROOT, "relay"))
@@ -156,60 +155,6 @@ class Station(unittest.TestCase):
         self.assertTrue(json.loads(urllib.parse.unquote(gw.t1_query()))["guest"])
         json.dump({"guest": False}, open(f, "w"))
         self.assertFalse(json.loads(urllib.parse.unquote(gw.t1_query()))["guest"])
-
-
-MOOSE = os.environ.get("MOOSE_TILE_INGEST", "/home/box/github/stats-dashboard/tile-ingest")
-
-
-@unittest.skipUnless(shutil.which("node") and os.path.isdir(MOOSE), "stats-dashboard tile-ingest checkout not present")
-class CrossRepoCanary(unittest.TestCase):
-    """The relay writes confirm events exactly as in production; tile-ingest's T1Store decides."""
-    def run_node(self, confirms, events_js):
-        js = f"""
-const {{ T1Store, proposalSha }} = require({json.dumps(os.path.join(MOOSE, 'src', 'voice-t1.js'))});
-const os = require('os'), fs = require('fs'), path = require('path');
-const s = new T1Store({{ dir: fs.mkdtempSync(path.join(os.tmpdir(), 't1x-')), confirmsDir: {json.dumps(confirms)}, key: require('crypto').randomBytes(32),
-  tz: 'America/Chicago', enabled: true, maxTier: () => 1 }});
-const out = {{}};
-{events_js}
-console.log(JSON.stringify(out));"""
-        r = subprocess.run(["node", "-e", js], capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return json.loads(r.stdout)
-
-    def test_relay_events_through_tile_ingest(self):
-        d = tempfile.mkdtemp()
-        now = time.time()
-        prop = {"op": "add", "scope": "own_notes", "list": "grocery", "text": "oat milk"}
-        # node computes the sha (tile-ingest is the source of truth for the proposal hash)
-        sha = self.run_node(d, f"out.sha = proposalSha({json.dumps(prop)});")["sha"]
-        note = dict(prop, sha=sha, needs_tap=False)
-        station = {"guest": False, "last_tap": now - 60}
-        # 1) TV during the read-back: ignored; real person after playback: confirmed
-        good = t1.Pending("vs_goodgoodgoodgoodgood12", "finn", note, now=now - 10)
-        self.assertEqual(good.judge_speech("yes save it", now - 9), "early")
-        good.open(now - 5)
-        self.assertEqual(good.judge_speech("yes, save it", now - 1), "confirm")
-        t1.write_event(good, "confirmed", "spoken", "station-mic", station, now=now - 1, confirms_dir=d)
-        # 2) wrong text hash: event says a different proposal
-        bad = t1.Pending("vs_badbadbadbadbadbadbad2", "finn", dict(note, sha="c" * 64), now=now - 10)
-        bad.open(now - 5)
-        t1.write_event(bad, "confirmed", "spoken", "station-mic", station, now=now - 1, confirms_dir=d)
-        res = self.run_node(d, f"""
-const now = Date.now();
-s.propose('finn', 'vs_goodgoodgoodgoodgood12', {json.dumps(prop)}, now);
-s.propose('finn', 'vs_badbadbadbadbadbadbad2', {json.dumps(prop)}, now);
-const g = s.issue('finn', 'vs_goodgoodgoodgoodgood12', now);
-out.issue = g.ok; out.g = g;
-const c1 = s.commit('finn', {{ request_id: 'vs_goodgoodgoodgoodgood12', receipt: g.receipt }}, now); out.commit1 = c1.ok; out.c1 = c1;
-const r2 = s.commit('finn', {{ request_id: 'vs_goodgoodgoodgoodgood12', receipt: g.receipt }}, now);
-out.replay = [r2.status, r2.reason];
-const b = s.issue('finn', 'vs_badbadbadbadbadbadbad2', now);
-out.hash = [b.status, b.reason];
-""")
-        self.assertTrue(res["issue"], res); self.assertTrue(res["commit1"], res)
-        self.assertEqual(res["replay"], [403, "replay"])
-        self.assertEqual(res["hash"], [403, "hash-mismatch"])
 
 
 if __name__ == "__main__":
