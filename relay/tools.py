@@ -9,7 +9,7 @@ run() returns (tool output, message for the Pi). A successful time, weather or u
 display card ({"type":"card",...}); timers still send timer_set / timer_cancel. A failed tool sends nothing.
 The weather card has no place name and no coordinates — those stay in the tool output for the spoken answer only.
 """
-import datetime, json, os, re, secrets, urllib.parse
+import datetime, json, os, re, secrets, sys, urllib.parse
 from zoneinfo import ZoneInfo, available_timezones
 
 E = os.environ.get
@@ -19,7 +19,7 @@ UNITS = E("WEATHER_UNITS", "fahrenheit")
 # Single device: the admin page saves the location in the station env file (GROK_STATION_LAT/LON/UNITS).
 # Read it on every weather call (cached by mtime), so a save takes effect without a relay restart.
 STATION_ENV = E("STATION_ENV_FILE", "/etc/grok-station/env")
-_station_env = {"mtime": None, "vals": {}}
+_station_env = {"mtime": None, "vals": {}, "warned": False}
 
 
 def _env_vals(path):
@@ -38,6 +38,12 @@ def location():
         mt = os.stat(STATION_ENV).st_mtime_ns
         if mt != _station_env["mtime"]:
             _station_env.update(mtime=mt, vals=_env_vals(STATION_ENV))
+    except PermissionError:
+        if not _station_env["warned"]:
+            print(f"warning: can't read {STATION_ENV} (permission denied); weather has no location. "
+                  "Expected root:grok 0640.", file=sys.stderr, flush=True)
+            _station_env["warned"] = True
+        _station_env.update(mtime=None, vals={})
     except OSError:
         _station_env.update(mtime=None, vals={})
     v = _station_env["vals"]

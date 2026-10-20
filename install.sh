@@ -105,6 +105,8 @@ st_users() {
   gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
   gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
   sh_ "[ -s /etc/grok-station/env ] || { umask 077; printf 'GROK_STATION_TOKEN=%s\nGROK_RELAY_URL=ws://127.0.0.1:8790/ws\n' \$(openssl rand -hex 24) > /etc/grok-station/env; chown root:grok /etc/grok-station/env; chmod 0640 /etc/grok-station/env; }"
+  run chown root:grok /etc/grok-station/env   # every run: an older admin save left it root:root 0600 (relay can't read the location)
+  run chmod 0640 /etc/grok-station/env
   sh_ "[ -e /etc/grok-station/wake.env ] || { install -m 0640 -o root -g grok /dev/null /etc/grok-station/wake.env; }"
   for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/audit $V/personas \
            $V/portraits $V/alerts $V/wakewords; do
