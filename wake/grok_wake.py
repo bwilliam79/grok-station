@@ -417,7 +417,7 @@ def setup_mode():
     try:
         with open(SETUP_FILE) as f:
             m = json.load(f).get("mode")
-        return m if m in ("setup", "reset", "hotspot") else None
+        return m if m in ("setup", "reset", "hotspot", "key") else None
     except (OSError, ValueError, AttributeError):
         return None
 PHRASE_RE = re.compile(r"^[a-z]+(?:_[a-z]+){1,3}$")  # 2–4 words; every shipped hey_<name> still matches

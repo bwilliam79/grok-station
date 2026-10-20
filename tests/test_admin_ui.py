@@ -34,8 +34,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn('["Voice service", [["voice", "Voice relay"]]]', js)
         self.assertIn('["System", [["updates", "Updates"], ["system", "System"]]]', js)
         self.assertNotIn("xAI key and relay", js)
-        self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "Voice relay", "Time and location", "Wake words", "Audio test"]', js)
-        self.assertNotIn("xAI key", js.split("const STEPS = ", 1)[1].split("];", 1)[0])
+        self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"]', js)
+        self.assertIn("xAI key", js.split("const STEPS = ", 1)[1].split("];", 1)[0])
 
     def test_old_relay_and_update_endpoints_are_gone(self):
         self.assertNotIn("relay_token", self.js)

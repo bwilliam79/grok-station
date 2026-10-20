@@ -29,7 +29,9 @@ json.dump({"models_dir": os.path.join(TMP, "models"), "words": [{"name": "hey_fi
 os.environ.update(ADMIN_STATE_DIR=os.path.join(TMP, "state"), ADMIN_RUN_DIR=os.path.join(TMP, "run"), ADMIN_HELPER=f"{sys.executable} {HELPER}",
                   ADMIN_WAKE_CTL="http://127.0.0.1:9", WAKE_CONFIG=WAKE_CFG, WAKE_ENROLLED_DIR=os.path.join(TMP, "enrolled"),
                   ADMIN_PERSONAS=os.path.join(TMP, "personas.json"), FAKE_LOG=os.path.join(TMP, "helper.log"),
-                  ADMIN_RELAY_ENV=os.path.join(TMP, "missing-admin-relay.env"))
+                  ADMIN_RELAY_ENV=os.path.join(TMP, "missing-admin-relay.env"),
+                  ADMIN_XAI_KEY_FILE=os.path.join(TMP, "xai_api_key"))
+open(os.environ["ADMIN_XAI_KEY_FILE"], "w").write("set\n")  # most tests: key already set
 os.makedirs(os.environ["ADMIN_STATE_DIR"]); os.makedirs(os.environ["ADMIN_RUN_DIR"])
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 import grok_admin as ga  # noqa: E402
@@ -372,7 +374,7 @@ class SystemAndSettings(unittest.TestCase):
 
     def test_wizard_state(self):
         c = signed_in()
-        self.assertEqual(c.req("GET", "/api/state")[1]["wizard"], {"step": 2, "done": False})
+        self.assertEqual(c.req("GET", "/api/state")[1]["wizard"], {"step": 3, "done": False})
         self.assertEqual(c.req("POST", "/api/wizard", {"step": 9})[0], 400)
         c.req("POST", "/api/wizard", {"step": 5})
         self.assertEqual(c.req("GET", "/api/state")[1]["wizard"]["step"], 5)  # resume at the same step
@@ -1376,3 +1378,41 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FirstRunKey(unittest.TestCase):
+    """First run: code, password, then the write-only xAI key. The screen asks for the key until it is saved."""
+    KEY = "xai-" + "A" * 40
+
+    def setUp(self):
+        os.unlink(ga.XAI_KEY_FILE)
+        open(os.environ["FAKE_LOG"], "w").close()
+
+    def tearDown(self):
+        open(ga.XAI_KEY_FILE, "w").write("set\n")
+
+    def test_key_step_after_password_then_screen_normal(self):
+        c = signed_in()
+        d = setup_doc()
+        self.assertEqual(d["mode"], "key")
+        self.assertNotIn("code", d)
+        self.assertIn("fingerprint", d)
+        st, j = c.req("GET", "/api/state")
+        self.assertFalse(j["xai_key_set"])
+        self.assertEqual(j["wizard"]["step"], 3)  # the key step comes right after the password
+        self.assertEqual(c.req("POST", "/api/xai-key", {"key": "short"})[0], 400)
+        st, j = c.req("POST", "/api/xai-key", {"key": self.KEY})
+        self.assertEqual(st, 200)
+        self.assertNotIn(self.KEY, json.dumps(j))
+        calls = [json.loads(l) for l in open(os.environ["FAKE_LOG"]) if l.strip()]
+        self.assertEqual([x for x in calls if x["argv"] == ["xai-key-set"]][0]["stdin"], json.dumps({"key": self.KEY}))
+        open(ga.XAI_KEY_FILE, "w").write("set\n")  # the fake helper doesn't write; the real one does
+        ga.AUTH.publish()
+        self.assertFalse(os.path.exists(os.path.join(os.environ["ADMIN_RUN_DIR"], "setup.json")))
+        st, j = c.req("GET", "/api/xai-key")
+        self.assertEqual(j, {"set": True})
+
+    def test_key_api_needs_sign_in(self):
+        reset_state()
+        self.assertEqual(C().req("POST", "/api/xai-key", {"key": self.KEY})[0], 401)
+        self.assertEqual(C().req("GET", "/api/xai-key")[0], 401)

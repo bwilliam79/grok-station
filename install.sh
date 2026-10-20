@@ -3,7 +3,7 @@
 #   sudo ./install.sh            install or update (safe to re-run)
 #   sudo ./install.sh --dry-run  print what would run, change nothing
 # Everything runs on this Pi: display, wake listener, admin page (HTTPS) and the voice relay (loopback only).
-# Secrets are generated here and never printed. Set the xAI key afterwards with: sudo grok-station set-key
+# Secrets are generated here and never printed. The xAI key is entered on the admin page during first-run setup.
 set -eu
 cd "$(dirname "$0")"
 DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
@@ -81,9 +81,10 @@ run sh tools/install-files.sh "$PWD" "$VER"
 run usermod -aG grok-admin grok-admin   # admin page reads admin_token (group grok-admin)
 run systemctl daemon-reload
 run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
-run systemctl restart grok-station-relay grok-station-wake
+run systemctl restart grok-station-relay grok-station-wake grok-station-admin grok-station
 echo
-echo "Done ($VER). Next:"
-echo "  1. sudo grok-station set-key      (paste the xAI API key; it is not shown)"
-echo "  2. open https://$(hostname).local and enter the setup code shown on the screen"
-echo "  3. sudo reboot   (first install only, for the splash and kiosk settings)"
+echo "Done ($VER). The display and the admin page are running."
+echo "Open https://$(hostname).local on a phone or laptop and follow the station screen:"
+echo "setup code, admin password, then your xAI API key. Voice starts once the key is saved."
+echo "Reboot once after the first install (boot splash and kiosk settings): sudo reboot"
+echo "(Fallback without a browser: sudo grok-station set-key)"

@@ -137,6 +137,12 @@ class Auth:
         f = os.path.join(RUN_DIR, "setup.json")
         if not self.setup_required():
             self.code = None
+            if not xai_key_set():  # password done, key still missing: first-run screen asks for the key, voice off
+                doc = {"mode": "key", "host": hostname() + ".local", "url": admin_url(),
+                       "fingerprint": tls_info()["fingerprint"]}
+                if doc != read_json(f, {}):
+                    write_json(f, doc, 0o640)
+                return
             try:
                 os.unlink(f)
             except OSError:
@@ -1130,6 +1136,18 @@ def _env_file(p):
         k, v = line.split("=", 1)
         vals[k.strip()] = v.strip().strip('"').strip("'")
     return vals
+
+
+XAI_KEY_FILE = E("ADMIN_XAI_KEY_FILE", "/etc/grok-station/secrets/xai_api_key")
+XAI_KEY_RE = re.compile(r"[A-Za-z0-9._-]{20,200}")
+
+
+def xai_key_set():
+    """True when the relay's key file exists. The admin page can't read it (0400 for the relay) and never tries."""
+    try:
+        return os.stat(XAI_KEY_FILE).st_size > 0
+    except OSError:
+        return False
 
 
 LOCAL_RELAY_TOKEN = E("ADMIN_LOCAL_RELAY_TOKEN_FILE", "/etc/grok-station/secrets/admin_token")
@@ -2248,7 +2266,23 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"setup_required": AUTH.setup_required(), "mode": AUTH.mode(), "signed_in": signed,
                                "locked_s": AUTH.locked(), "host": hostname() + ".local", "version": version(),
                                "stepup_until": AUTH.stepup_until(self.cookie("gs_session")) if signed else None,
+                               "xai_key_set": xai_key_set(),
                                "wizard": read_json(path("wizard.json"), {"step": 2, "done": False}) if signed else None})
+
+    # -- xAI key: write-only. The value is passed to the root helper on stdin and never stored, logged or echoed here.
+    def api_get_xai_key(self, p, q, j):
+        return self.send(200, {"set": xai_key_set()})
+
+    def api_post_xai_key(self, p, q, j):
+        key = str(j.get("key", "")).strip()
+        if not XAI_KEY_RE.fullmatch(key):
+            return self.send(400, {"error": "That doesn't look like an xAI API key."})
+        ok, out = helper("xai-key-set", stdin={"key": key})
+        key = None
+        if not ok:
+            return self.send(503, {"error": "Couldn't save the key. Try again."})
+        AUTH.publish()
+        return self.send(200, {"ok": True, "set": True})
 
     def api_post_setup(self, p, q, j):
         if AUTH.locked():
@@ -2266,7 +2300,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": why})
             wz = read_json(path("wizard.json"), {})
             if not (was_reset and wz.get("done")):  # a password reset keeps every other setting, including a finished wizard
-                write_json(path("wizard.json"), {"step": 2, "done": False})
+                # first run: code, password, then the xAI key (Wi-Fi first only on the setup hotspot)
+                write_json(path("wizard.json"), {"step": 2 if AUTH.mode() == "hotspot" else 3, "done": False})
             s = AUTH.new_session()
             return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL),
                                                           self.set_cookie("gs_setup", "", 0)])

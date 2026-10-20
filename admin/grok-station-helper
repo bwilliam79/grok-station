@@ -372,8 +372,35 @@ def set_hostname(h):
     out({"ok": True})
 
 
+XAI_KEY_FILE = "/etc/grok-station/secrets/xai_api_key"
+
+
+def xai_key_set():
+    """stdin {"key"}: write the relay's xAI key (0400, grok-relay only), then restart the relay. Never echoed."""
+    j = stdin_json()
+    k = str(j.get("key", "")).strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{20,200}", k):
+        fail("bad key")
+    import pwd, grp, tempfile
+    d = os.path.dirname(XAI_KEY_FILE)
+    os.makedirs(d, mode=0o711, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".k.", dir=d)
+    try:
+        os.write(fd, (k + "\n").encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    k = None
+    os.chown(tmp, pwd.getpwnam("grok-relay").pw_uid, grp.getgrnam("grok-admin").gr_gid)
+    os.chmod(tmp, 0o400)
+    os.replace(tmp, XAI_KEY_FILE)
+    run("systemctl", "restart", "grok-station-relay")
+    out({"ok": True})
+
+
 def restart(what):
-    unit = {"display": "grok-station", "wake": "grok-station-wake", "admin": "grok-station-admin"}.get(what)
+    unit = {"display": "grok-station", "wake": "grok-station-wake", "admin": "grok-station-admin",
+            "relay": "grok-station-relay"}.get(what)
     if not unit:
         fail("unknown service")
     run("systemctl", "restart", unit)
@@ -445,6 +472,8 @@ def main():
         hotspot_stop()
     if cmd == "hostname" and len(a) == 2:
         set_hostname(a[1])
+    if cmd == "xai-key-set" and len(a) == 1:
+        xai_key_set()
     if cmd == "restart" and len(a) == 2:
         restart(a[1])
     if cmd == "reboot":

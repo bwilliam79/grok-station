@@ -318,6 +318,7 @@ class EnrollScreens(unittest.TestCase):
             self.assertGreater(self._count(surf, gs.LAST_PORTRAIT_RECT, (63, 211, 182)), 8, size)
             gs.draw_setup(surf, L, now, sd)
             gs.draw_setup(surf, L, now, dict(sd, mode="reset", code="R4M9TW"))
+            gs.draw_setup(surf, L, now, {k: v for k, v in sd.items() if k != "code"} | {"mode": "key"})  # xAI key step
             gs.draw_hotspot(surf, L, now, dict(sd, mode="hotspot", ssid="station-7F3A", password="hearth-4821",
                                                 url="https://10.42.0.1"))
 

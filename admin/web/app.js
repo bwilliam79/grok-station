@@ -1103,10 +1103,32 @@ async function displayPanel(el) {
 }
 
 /* ---------------------------------------------------------------- wizard. Voice relay can be paired later. Backend steps still run 2..8. */
-const STEPS = ["Code and password", "Wi-Fi", "Voice relay", "Time and location", "Wake words", "Audio test"];
+const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"];
 const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 6: 5, 7: 6};
 const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 6, 6: 7, 7: 8};
 const WIZ_BACK = {3: 2, 4: 2, 5: 3, 6: 5, 7: 6};
+/* xAI key: write-only. The page never receives the key back, only whether one is set. */
+async function xaiKeyPanel(el, onSaved) {
+  const st = (await api("GET", "/api/xai-key")).data || {};
+  el.innerHTML = `<form id="xk" autocomplete="off"><div class="field"><label for="xkv">xAI API key <span class="help">${st.set ? "A key is set. Paste a new one to replace it." : "Not set yet."}</span></label>
+    <input type="password" id="xkv" autocomplete="off" spellcheck="false" placeholder="xai-..."></div>
+    <div id="xke"></div><button class="btn p" id="xks">Save key</button></form>
+    <p class="note">The key is saved on this station for the voice relay only. It is never shown again. Voice starts once it is saved.</p>`;
+  $("#xk", el).onsubmit = async ev => {
+    ev.preventDefault();
+    const inp = $("#xkv", el), btn = $("#xks", el);
+    busyBtn(btn, true, "Saving…");
+    const r = await api("POST", "/api/xai-key", {key: inp.value.trim()});
+    inp.value = "";
+    busyBtn(btn, false, "Save key");
+    if (!r.ok) return errBox($("#xke", el), r.data.error || "Couldn't save the key.");
+    errBox($("#xke", el), "");
+    $("#xke", el).innerHTML = `<div class="banner ok">Key saved. Voice is on.</div>`;
+    if (S.state) S.state.xai_key_set = true;
+    if (onSaved) onSaved();
+  };
+}
+
 async function wizard(step) {
   clearTimers();
   step = Math.max(2, Math.min(8, step));
@@ -1141,8 +1163,8 @@ async function wizard(step) {
     if (hotspot) wp.insertAdjacentHTML("afterbegin", `<div class="banner warn" style="margin-bottom:12px">The station is running its own setup hotspot. Join your home Wi-Fi to continue; the hotspot then turns off and this page moves to your network.</div>`);
   } else if (step === 3 || step === 4) {
     next.disabled = false;
-    wp.innerHTML = `<div id="relayroot"></div><p class="note">You can set the relay up later. Voice stays off until it is paired.</p>`;
-    await paintRelay($("#relayroot", wp));
+    await xaiKeyPanel(wp, () => (next.disabled = false));
+    next.disabled = !(S.state && S.state.xai_key_set);
   } else if (step === 5) {
     await timePanel(wp, {onOk: () => {}});
   } else if (step === 6) {

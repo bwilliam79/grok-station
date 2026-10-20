@@ -2018,6 +2018,8 @@ def read_setup():
     try:
         with open(SETUP_FILE) as f:
             d = json.load(f)
+        if d.get("mode") == "key":  # password set, xAI key still missing: no code to show
+            return d
         return d if d.get("mode") in ("setup", "reset", "hotspot") and re.fullmatch(r"[2-9A-HJ-NP-Z]{6}", str(d.get("code", ""))) else None
     except (OSError, ValueError, AttributeError):
         return None
@@ -2079,16 +2081,18 @@ def draw_setup(surf, L, now, d):
     se = min(w, h)
     m = round(0.075 * se)
     reset = d.get("mode") == "reset"
+    key = d.get("mode") == "key"
     topbar(surf, se, "Admin password reset" if reset else "Setup needed", now)
     host = str(d.get("host") or "grok-station.local")[:40]
     host = str(d.get("url") or "https://" + host)[:48]
-    lines = [("display", 0.0938, "Password reset" if reset else "Setup needed", TEXT, 0),
+    lines = [("display", 0.0938, "Almost done" if key else "Password reset" if reset else "Setup needed", TEXT, 0),
              ("body", 0.0498, "On your phone or laptop, open", hexc("E6DCCF"), 0.0164),
              ("display", 0.0627, host, LISTENING, 0.0059),
-             ("body", 0.0498, "and enter the new code:" if reset else "and enter this code:", hexc("E6DCCF"), 0.0164)]
+             ("body", 0.0498, "and add your xAI API key" if key else "and enter the new code:" if reset else "and enter this code:",
+              hexc("E6DCCF"), 0.0164)]
     rend = [(font(k, round(px * se)).render(t, True, c), round(gap * se)) for k, px, t, c, gap in lines]
     ring_d, ring_w, gap = round(0.2345 * se), max(3, round(0.0111 * se)), round(0.0703 * se)
-    code_h = round(0.0328 * se * 1.25 + 0.0938 * se * 1.2 + 0.0082 * se + 2 * 0.0164 * se)
+    code_h = 0 if key else round(0.0328 * se * 1.25 + 0.0938 * se * 1.2 + 0.0082 * se + 2 * 0.0164 * se)
     text_w = max(r.get_width() for r, _ in rend)
     text_h = sum(r.get_height() + g for r, g in rend) + round(0.0141 * se) + code_h
     top, bottom = round(0.1524 * se), h - round(0.1172 * se)
@@ -2109,7 +2113,8 @@ def draw_setup(surf, L, now, d):
         y += g
         surf.blit(r, (x if align == "left" else x - r.get_width() // 2, y))
         y += r.get_height()
-    code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
+    if not key:
+        code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
     foot = font("body", round(0.0328 * se)).render("Voice stays off until a new password is set" if reset
                                                     else "Voice stays off until setup is done", True, MUTED)
     fy = h - round(0.0657 * se) - foot.get_height()
