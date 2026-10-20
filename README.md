@@ -604,6 +604,16 @@ The station mark is Echo: a teal speech bubble with a waveform, in `assets/brand
 
 The Plymouth theme is `echo` (`splash/echo.plymouth`, `splash/echo.script`). It shows `splash-1920x1080.png` scaled to fit, or `splash-800x480.png` on a small screen, centered on `#0D0B09`. `install.sh` installs it through `tools/install-splash.sh` and runs `plymouth-set-default-theme -R echo`. The splash script is safe to re-run. If the echo theme files are missing, Plymouth falls back to the text theme, and an older theme directory on the Pi is left in place.
 
+## Updates
+
+Release checks live in `relay/release.py`. Nothing in that module opens a network connection. A release is a JSON manifest plus a minisign signature (Ed25519, verified with the `cryptography` library). The manifest names a `vX.Y.Z` version, the station tarball and relay image digests, a station/relay compatibility pair, and an expiry at most 30 days after it was issued.
+
+Trust is a primary key, a backup key, and a revoked key-id list. Either key can sign a release. Replacing the keys takes a rotation manifest signed by the current backup key; a signature from the primary alone is rejected. After rotation, a release signed by the old primary does not verify.
+
+Automatic checking is off until it is turned on. A manual check runs either way. If the manifest is expired the check says "Can't check" and "Update info is out of date. Updates may be hidden." An update request may only be `{"version":"vX.Y.Z"}` for the version in the manifest, and only when that version is newer than what is installed and at least the floor.
+
+The relay updates first. When it still runs with the installed station, it soaks for 10 minutes and then the station updates. When it does not, voice pauses for both switches. A station-only update is allowed only when the relay is already new enough. Apply stages, switches, and waits for a health check before marking the slot good. One previous slot is kept. A digest mismatch aborts and leaves that previous slot untouched. If the relay step fails, the station is not updated.
+
 ## pii-guard (personal info check)
 
 This repo must not contain personal info: names, emails, home addresses or locations, LAN addresses, MACs or personal hostnames. `tools/pii-guard` enforces that. It reads extended regexes, one per line, from a local file that is **never committed**, because the list is itself personal: `~/.config/pii-guard/patterns` (mode 600), or the path in `$PII_GUARD_PATTERNS`. When it finds a match, it reports the file and line but never the matched text.
