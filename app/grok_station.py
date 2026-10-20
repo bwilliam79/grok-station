@@ -669,7 +669,7 @@ def draw_status_icons(surf, L, status=None, right=None, cy=None):
     if right is None:
         right = L.w - max(6, int(round(16 * L.s)))
     if cy is None:
-        cy = L(34) + L(72) // 2
+        cy = max(4, int(round(8 * L.s))) + px // 2  # flush with the top edge
     y = int(cy) - px // 2
     x = int(right)
     rects = []
@@ -1576,7 +1576,7 @@ def draw_topbar_clock(surf, L, now):
     global LAST_TOPBAR_RECT
     hhmm, ampm = clock_parts(now)
     y = L(34) + L(72) // 2
-    icons = draw_status_icons(surf, L, cy=y)
+    icons = draw_status_icons(surf, L)
     r = text_at(surf, "display", L(56), f"{hhmm} {ampm}", TEXT, (icons.left - L(24), y), "midright")
     LAST_TOPBAR_RECT = r
     return r
@@ -1956,7 +1956,7 @@ def topbar(surf, se, label, now):
     surf.blit(lab, (m, y + (hgt - lab.get_height()) // 2))
     clk_y = y + (hgt - clk.get_height()) // 2
     lay = Layout(surf.get_width(), surf.get_height())
-    icons = draw_status_icons(surf, lay, cy=clk_y + clk.get_height() / 2)
+    icons = draw_status_icons(surf, lay)
     clk_x = icons.left - max(1, int(round(24 * lay.s))) - clk.get_width()
     surf.blit(clk, (clk_x, clk_y))
 
