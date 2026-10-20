@@ -1,8 +1,0 @@
-[Plymouth Theme]
-Name=Grok
-Description=Centered Grok mark, slow pulse on black
-ModuleName=script
-
-[script]
-ImageDir=/usr/share/plymouth/themes/grok
-ScriptFile=/usr/share/plymouth/themes/grok/grok.script

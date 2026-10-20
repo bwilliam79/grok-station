@@ -427,11 +427,47 @@ class Reset(unittest.TestCase):
 
 class Static(unittest.TestCase):
     def test_spa_files_and_traversal(self):
-        for p, t in (("/", "text/html"), ("/app.js", "text/javascript"), ("/admin.css", "text/css"), ("/assets/grok.png", "image/png")):
+        for p, t in (("/", "text/html"), ("/app.js", "text/javascript"), ("/admin.css", "text/css"),
+                     ("/assets/mark.svg", "image/svg+xml"), ("/favicon.ico", "image/x-icon"),
+                     ("/assets/favicon.ico", "image/x-icon")):
             c = C(); st, body = c.req("GET", p, raw=True)
-            self.assertEqual(st, 200, p); self.assertTrue(c.last.getheader("Content-Type").startswith(t))
+            self.assertEqual(st, 200, p); self.assertTrue(c.last.getheader("Content-Type").startswith(t), (p, c.last.getheader("Content-Type")))
+            self.assertGreater(len(body), 16, p)
         for p in ("/assets/../grok_admin.py", "/assets/..%2Fgrok_admin.py", "/grok_admin.py", "/etc/passwd"):
             self.assertEqual(C().req("GET", p, raw=True)[0], 404, p)
+
+    def test_brand_title_and_icons(self):
+        st, body = C().req("GET", "/", raw=True)
+        self.assertEqual(st, 200)
+        self.assertIn(b"<title>Grok Station - Admin</title>", body)
+        self.assertIn(b'name="theme-color" content="#0D0B09"', body)
+        for needle in (b"favicon.svg", b"favicon-32.png", b"favicon-16.png", b"favicon-180.png", b"apple-touch-icon"):
+            self.assertIn(needle, body)
+        for p, t in (("/assets/favicon.svg", "image/svg+xml"), ("/assets/favicon-32.png", "image/png"),
+                     ("/assets/favicon-16.png", "image/png"), ("/assets/favicon-180.png", "image/png")):
+            c = C(); st, raw = c.req("GET", p, raw=True)
+            self.assertEqual(st, 200, p)
+            self.assertTrue(c.last.getheader("Content-Type").startswith(t), (p, c.last.getheader("Content-Type")))
+            self.assertGreater(len(raw), 16, p)
+        js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
+        css = open(os.path.join(ROOT, "admin", "web", "admin.css")).read()
+        self.assertIn("Grok Station", js)
+        self.assertIn('/assets/mark.svg', js)
+        self.assertNotIn("grok.png", js)
+        self.assertNotIn("grok.png", css)
+        self.assertIn("mark.svg", css)
+
+    def test_old_mark_files_are_gone(self):
+        """*grok*.png, *orbit*, and the old Grok mark names must not be in the tree."""
+        old = {"grok.png", "grok-mark.svg", "grok-src.svg", "grok.plymouth", "grok.script"}
+        bad = []
+        for dirpath, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__", ".worktrees")]
+            for name in filenames:
+                low = name.lower()
+                if (low.endswith(".png") and "grok" in low) or "orbit" in low or low in old:
+                    bad.append(os.path.join(dirpath, name))
+        self.assertEqual(bad, [])
 
     def test_spa_keeps_secrets_out_of_storage(self):
         js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()

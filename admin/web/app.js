@@ -57,7 +57,7 @@ function lockMsg(sec) { return `Too many tries. Sign-in is locked for ${Math.cei
 function codeScreen() {  // 01a: first run / reset
   const reset = S.state.mode === "reset";
   root().innerHTML = `<div class="center"><form class="card auth amber" id="f" autocomplete="off">
-    <div class="mk"></div>
+    <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div>
     <h2 style="font-size:24px">${reset ? "Set a new password" : "Set up this station"}</h2>
     <p class="sub">Enter the 6-character setup code shown on the station screen. It isn't case-sensitive and works once.</p>
     <div class="field"><label for="code">Setup code</label><input class="inp code" id="code" maxlength="7" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required></div>
@@ -114,7 +114,7 @@ function passwordScreen() {  // wizard step 1 (forced)
 }
 function loginScreen() {  // 01b + 01c
   root().innerHTML = `<div class="center"><form class="card auth" id="f">
-    <div class="mk"></div><h2 style="font-size:24px">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
+    <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 style="font-size:24px">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
     <div class="field"><label for="u">Username</label><input class="inp" id="u" value="admin" autocomplete="username" autocapitalize="none" required></div>
     <div class="field"><label for="p">Password</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" type="password" id="p" autocomplete="current-password" required>
       <button type="button" class="btn g sm" id="show">Show</button></div></div>
@@ -467,7 +467,7 @@ function shell() {
   closeFloats();
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
-  root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><span class="mk"></span><div><b>grok-station</b><span>● ${esc(S.state.host)}</span></div></div>
+  root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><img class="mk" src="/assets/mark.svg" alt=""><div><b>Grok Station</b><span>● ${esc(S.state.host)}</span></div></div>
     ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span></a>`).join("")).join("")}
     <div class="foot">Signed in as admin · <a href="#" id="out">Sign out</a><br>Version <span class="mono">${esc(S.state.version)}</span></div></aside>
     <main class="main"><header class="top"><h1>${PAGES[page][0]}</h1></header><div class="body" id="pg"></div></main></div>

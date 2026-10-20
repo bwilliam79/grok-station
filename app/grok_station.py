@@ -554,7 +554,9 @@ def ring_saved(c, cx, cy, r, ring_w, glow, t):
 RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle,
          "success": ring_success, "enroll_ready": ring_ready, "enroll_saved": ring_saved}
 
-_photo_cache = {}  # (path, mtime, d, k, initial, photo_ok) -> circle-cropped surface
+_photo_cache = {}  # (path, mtime, d, k, initial, photo_ok, kind) -> circle-cropped surface
+_MARK_CACHE = {}
+_MARK_PX = (64, 128, 256, 512, 1024)  # assets/brand/mark-<px>.png, rendered from mark.svg by tools/render_brand.py
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
@@ -566,15 +568,48 @@ _CARD_ICON = ("sun", "partly", "cloud", "fog", "rain", "snow", "storm")
 _CARD_MAX = 640     # bytes of JSON; anything larger is dropped
 
 
+def _no_persona(name):
+    """The built-in assistant (persona slug grok) has no photo. Its avatar is the Echo mark."""
+    hit = persona_names().get(name_key(name))
+    return bool(hit) and hit[1] == "grok"
+
+
+def _echo_mark(px):
+    """Echo mark at px (the nearest shipped PNG, smoothscaled). None if assets/brand has no mark PNG."""
+    px = max(8, int(px))
+    hit = _MARK_CACHE.get(px)
+    if hit is not None:
+        return hit
+    pick = next((s for s in _MARK_PX if s >= px), _MARK_PX[-1])
+    path = os.path.join(ASSETS, "brand", f"mark-{pick}.png")
+    if not os.path.isfile(path):
+        path = next((os.path.join(ASSETS, "brand", f"mark-{s}.png") for s in reversed(_MARK_PX)
+                     if os.path.isfile(os.path.join(ASSETS, "brand", f"mark-{s}.png"))), "")
+    if not path:
+        return None
+    img = pygame.image.load(path)
+    if not (img.get_flags() & pygame.SRCALPHA):
+        img = img.convert_alpha()
+    if img.get_size() != (px, px):
+        img = pygame.transform.smoothscale(img, (px, px))
+    if len(_MARK_CACHE) > 12:
+        _MARK_CACHE.pop(next(iter(_MARK_CACHE)))
+    _MARK_CACHE[px] = img
+    return img
+
+
 def _circle_photo(name, d, k, photo_ok):
-    """Circle-cropped photo or monogram. image.load + smoothscale run once per key (at most 8 kept)."""
-    path = find_portrait(name) if photo_ok else None  # /show messages never get a photo, only the monogram
+    """Circle-cropped photo, the Echo mark on surface-2, or a monogram.
+    image.load + smoothscale run once per key (at most 8 kept). /show messages (photo_ok false) stay a monogram.
+    A wake word with no persona gets the Echo mark on a surface-2 circle, not a portrait file."""
+    use_mark = bool(photo_ok) and _no_persona(name)
+    path = None if use_mark or not photo_ok else find_portrait(name)
     try:
         mt = os.stat(path).st_mtime if path else None
     except OSError:
         path, mt = None, None
     initial = (name[:1] or "?").upper()
-    key = (path, mt, d, k, initial, bool(photo_ok))
+    key = (path, mt, d, k, initial, bool(photo_ok), "mark" if use_mark else "photo")
     hit = _photo_cache.get(key)
     if hit is not None:
         return hit
@@ -588,8 +623,12 @@ def _circle_photo(name, d, k, photo_ok):
         photo.blit(img, ((2 * r - img.get_width()) // 2, int((2 * r - img.get_height()) * 0.3)))
     else:
         photo.fill(SURFACE2)
-        mono = font("display", d * k * 0.42).render(initial, True, TEXT)
-        photo.blit(mono, mono.get_rect(center=(r, r)))
+        mark = _echo_mark(max(8, int(2 * r * 0.78))) if use_mark else None
+        if mark is not None:
+            photo.blit(mark, mark.get_rect(center=(r, r)))
+        else:
+            mono = font("display", d * k * 0.42).render(initial, True, TEXT)
+            photo.blit(mono, mono.get_rect(center=(r, r)))
     mask = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
     pygame.draw.circle(mask, (255, 255, 255, 255), (r, r), r)
     photo.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
@@ -600,7 +639,7 @@ def _circle_photo(name, d, k, photo_ok):
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
-    """Circle-cropped photo (or monogram) with the state ring, supersampled. Returns (surface, offset)."""
+    """Circle-cropped photo (Echo mark on surface-2, or monogram) with the state ring. Returns (surface, offset)."""
     k = 2
     glow = int(ring_w * 2.2)
     pad = int(ring_w + glow + 4)
@@ -1217,7 +1256,7 @@ def draw_meter(surf, L, cx, cy, kind):
 def draw_enroll(surf, L, now, msg, t=1.0):
     """Enrollment screens 01-10 (docs/design.md, mockups): avatar with the stage ring at the left, headline, sub-line,
     "Clip N of M" status and progress bar at the right; muted "Wake word setup · <name>" top bar. The persona's
-    portrait, or the Grok mark for a wake word without a persona."""
+    portrait, or the Echo mark on a surface-2 circle for a wake word without a persona."""
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     surf.fill(BG)
     draw_topbar_clock(surf, L, now)

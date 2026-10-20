@@ -13,6 +13,11 @@ fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 install -m644 "$S"/admin/web/index.html "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/
 install -m644 "$S"/admin/web/assets/* /opt/grok-station/admin/web/assets/
+install -d /opt/grok-station/assets/brand
+if [ -d "$S/assets/brand" ]; then
+  install -m644 "$S"/assets/brand/*.png "$S"/assets/brand/*.svg /opt/grok-station/assets/brand/
+fi
+rm -f /opt/grok-station/assets/portraits/grok.png /opt/grok-station/admin/web/assets/grok.png
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/tools/grok-station" /usr/local/bin/grok-station
 /usr/local/bin/grok-station tls-cert >/dev/null  # per-station admin page cert (kept if still valid for this hostname)

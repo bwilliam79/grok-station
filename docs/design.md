@@ -109,7 +109,7 @@ The floor is 56 px for anything, and 85 px for anything that matters. Auto-fit m
 |---|---|---|
 | Size | 667 px circle (500 × s), left edge x 213, centered at y ≈ 853 | 24 to 32 px in lists, 52 to 64 px on cards, 200 px on recording screens |
 
-Photo treatment: v5 photo portrait, cover crop biased 30% from the top. Without a photo, a monogram on surface-2. A wake word with no persona uses the Grok mark (`assets/portraits/grok.png`) as its avatar.
+Photo treatment: v5 photo portrait, cover crop biased 30% from the top. Without a photo, a monogram on surface-2. A wake word with no persona uses the Echo mark (`assets/brand/mark.svg`, drawn on a surface-2 circle) as its avatar. The boot splash is the Echo Plymouth theme (`splash/echo.plymouth`, installed by `tools/install-splash.sh`).
 
 | State | Ring color | Width (display / admin 200 px) | Motion |
 |---|---|---|---|

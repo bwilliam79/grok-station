@@ -386,7 +386,8 @@ RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
 BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/admin.css": ("admin.css", "text/css; charset=utf-8")}
+          "/admin.css": ("admin.css", "text/css; charset=utf-8"), "/favicon.ico": ("assets/favicon.ico", "image/x-icon")}
+ASSET_TYPE = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf", "ico": "image/x-icon"}
 
 
 def slug_ok(slug):
@@ -794,10 +795,10 @@ class Handler(BaseHTTPRequestHandler):
     def static(self, p):
         if p.startswith("/assets/"):
             name = p[8:]
-            if not re.fullmatch(r"[a-z0-9_-]{1,32}\.(png|svg|ttf)", name):
+            if not re.fullmatch(r"[a-z0-9_-]{1,40}\.(png|svg|ttf|ico)", name):
                 return self.send(404, {"error": "not found"})
             f = os.path.join(WEB, "assets", name)
-            ctype = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf"}[name.rsplit(".", 1)[1]]
+            ctype = ASSET_TYPE[name.rsplit(".", 1)[1]]
         else:
             name, ctype = STATIC[p]
             f = os.path.join(WEB, name)

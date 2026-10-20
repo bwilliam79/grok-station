@@ -27,6 +27,8 @@ the station load the new model and its threshold/patience automatically. Never s
    between sessions; enrolled entries override the repo config for the same phrase.
 ```
 
+On the station screen, a wake word with no persona shows the Echo mark on a surface-2 circle (not a portrait file). The boot splash is the same Echo brand; `tools/install-splash.sh` installs it.
+
 Privacy: clips stay on the LAN (Pi local copy + training host inbox). No speaker names: sessions are timestamps.
 Tokens stay in the existing secret files (`/etc/grok-station/env`, `/etc/grok-station/wake.env`, relay secrets).
 Phrases accepted: `^hey_[a-z]{2,16}$` and listed in `wakewords.json` (`words` or `enroll`). Limits: 40 clips per

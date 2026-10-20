@@ -2,7 +2,7 @@
 
 Raspberry Pi 5 (Pi OS Lite 64-bit, Trixie, no desktop) kiosk display:
 
-1. **Boot splash**: Plymouth `script` theme, a centered Grok mark on black with a slow opacity pulse.
+1. **Boot splash**: Plymouth `script` theme `echo`, the Echo splash scaled to fit and centered on `#0D0B09`.
 2. **Station UI**: one Python process (`grok-station.service`) that runs a small stdlib HTTP listener on `:8787`
    and draws the screen by rendering with pygame off-screen into a 16bpp surface written straight to `/dev/fb0`
    (no X/Wayland/browser; SDL KMS/DRM frames never reached the screen on the Pi 5).
@@ -29,7 +29,8 @@ Tests: `SDL_VIDEODRIVER=dummy python3 -m unittest discover tests`. Weather is fr
 last good reading cached in `/var/cache/grok-station/weather.json`.
 
 Portraits: `assets/portraits/<name>.png` (lowercased `from`), then `/opt/grok-station/portraits/` for
-local-only images. Missing portrait = initial monogram. `grok.png` ships in the repo.
+local-only images. Missing portrait = initial monogram. A wake word with no persona (the built-in
+assistant) uses the Echo mark on a surface-2 circle (`assets/brand/mark.svg`), not a portrait file.
 
 The session ring is drawn by a painter looked up in `RINGS` by state (only `speaking` exists today), so
 listening/thinking states can be added later as new painters without touching the layout.
@@ -68,9 +69,9 @@ crosses the side margins or the bottom safe area, and they cover the letterbox a
 
 | Path | Installed to |
 | --- | --- |
-| `splash/grok.plymouth`, `grok.script`, `grok.png` | `/usr/share/plymouth/themes/grok/` |
+| `splash/echo.plymouth`, `echo.script`, `assets/brand/splash-*.png` | `/usr/share/plymouth/themes/echo/` |
 | `app/grok_station.py` | `/opt/grok-station/grok_station.py` |
-| `assets/fonts/*`, `assets/portraits/*` | `/opt/grok-station/assets/` |
+| `assets/fonts/*`, `assets/brand/*`, `assets/portraits/*` | `/opt/grok-station/assets/` |
 | `systemd/grok-station.service` | `/etc/systemd/system/` |
 | (token, not in repo) | `/etc/grok-station/env` (root:root 600): `GROK_STATION_TOKEN=...` |
 | `tools/make_fonts.py` | (dev only) rebuilds the static, subset fonts from the Inter variable fonts |
@@ -78,7 +79,7 @@ crosses the side margins or the bottom safe area, and they cover the letterbox a
 `install.sh` (run as root on the Pi) installs packages (plymouth, python3-pygame, Mesa EGL/GBM), copies files,
 appends `quiet splash loglevel=3 vt.global_cursor_default=0 logo.nologo consoleblank=0 plymouth.ignore-serial-consoles`
 to `/boot/firmware/cmdline.txt` (single line), adds `disable_splash=1` to `config.txt`, runs
-`plymouth-set-default-theme -R grok` (rebuilds initramfs), masks `getty@tty1` (kiosk; use SSH), and enables the service.
+`plymouth-set-default-theme -R echo` (rebuilds initramfs; `tools/install-splash.sh` copies and checks the theme first, and falls back to the text theme if the echo files are missing). It does not remove an older theme directory. It masks `getty@tty1` (kiosk; use SSH) and enables the service.
 
 The service starts before `plymouth-quit`, runs `plymouth quit --retain-splash`, then takes the display.
 It runs as `grok` (groups video/render/input).
@@ -131,7 +132,7 @@ shared. A wake opens the session as that persona: the Pi connects to `/ws?person
 the session with that persona's voice and instructions (unknown slugs fall back to Grok) and sends the `persona`
 event so the display shows them from the first "listening" frame. The persona event keeps the current phase
 (listening stays listening; the violet ring spins only once a response has started), so a teammate's listening
-screen matches Grok's: same solid pulsing ring, with their portrait (Grok's is the logo). Without a config file the old single
+screen matches Grok's: same solid pulsing ring, with their portrait (no persona: the Echo mark on a surface-2 circle). Without a config file the old single
 `WAKE_MODEL` / `WAKE_THRESHOLD` behaviour applies. Wake detection is fully local; audio leaves the Pi only after a wake, and only to
 the voice relay below (when configured).
 
@@ -353,7 +354,7 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"phrase":"hey_finn","topup":true}' h
 - **Timing per clip:** a 0.9 s get-ready pause (the warm ring fills over it), the chime, 2.4 s of recording, and
   a short "Got it" pulse. A rejected clip holds its message for 1.5 s, then retries.
 
-**What the screen shows** (`docs/design.md`, screens 01–10): the persona's portrait (or the Grok mark for a wake
+**What the screen shows** (`docs/design.md`, screens 01–10): the persona's portrait (or the Echo mark on a surface-2 circle for a wake
 word without a persona) with a state ring and label, plus:
 - a headline and sub-line;
 - "Clip N of M" with a progress bar.
@@ -493,10 +494,12 @@ admin Bots page). Router mode is retired (routine runs can't SendToAgent). Waits
 
 When it's turned on, a teammate can ask to save a short note. The station shows it and reads it back. You say "yes, save it" within 15 seconds, or press the speaker's call button. Notes are off from 10 PM to 7 AM, in guest mode (admin page → Personas), and unless a station button was pressed in the last 30 minutes. See [docs/handoff.md](docs/handoff.md#t1-as-built-2026-10-19-ships-off).
 
-## Logo
+## Brand
 
-Grok mark extracted from Wikimedia Commons `File:Grok-feb-2025-logo.svg` (X.AI Corp., PD-textlogo; trademark of xAI),
-rendered white-on-transparent at 300 px. Source in `splash/grok-src.svg`, mark-only in `splash/grok-mark.svg`.
+The station mark is Echo: a teal speech bubble with a waveform, in `assets/brand/mark.svg`.
+`tools/render_brand.py` renders that SVG to `mark-64.png` … `mark-1024.png` (cairosvg, or librsvg if cairosvg is not installed) and builds `admin/web/assets/favicon.ico` from the 16 and 32 px favicons with Pillow. Favicons and the boot-splash art (`splash-800x480.png`, `splash-1920x1080.png`) live in the same directory.
+
+The Plymouth theme is `echo` (`splash/echo.plymouth`, `splash/echo.script`). It shows `splash-1920x1080.png` scaled to fit, or `splash-800x480.png` on a small screen, centered on `#0D0B09`. `install.sh` installs it through `tools/install-splash.sh` and runs `plymouth-set-default-theme -R echo`. The splash script is safe to re-run. If the echo theme files are missing, Plymouth falls back to the text theme, and an older theme directory on the Pi is left in place.
 
 ## pii-guard (personal info check)
 

@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Echo
+Description=Echo splash scaled to fit, centered on #0D0B09
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/echo
+ScriptFile=/usr/share/plymouth/themes/echo/echo.script

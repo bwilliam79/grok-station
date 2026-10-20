@@ -5,3 +5,11 @@ __pycache__/
 .env
 relay/no-alerts/
 relay/no-personas/
+# Retired Grok / orbit mark art. The Echo mark lives in assets/brand/.
+*grok*.png
+*orbit*
+splash/grok-mark.svg
+splash/grok-src.svg
+splash/grok.plymouth
+splash/grok.script
+splash/grok.png

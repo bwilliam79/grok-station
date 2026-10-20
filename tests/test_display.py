@@ -117,6 +117,7 @@ class RingTests(unittest.TestCase):
         pygame.image.load = wrapped
         try:
             gs._photo_cache.clear()
+            gs._MARK_CACHE.clear()
             gs.portrait("Grok", 100, 8, "speaking", 1.0, photo_ok=True)
             gs.portrait("Grok", 100, 8, "thinking", 0.4, photo_ok=True)
             self.assertEqual(len(calls), 1)
@@ -272,11 +273,41 @@ class EnrollScreens(unittest.TestCase):
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "passed", "")[0], "“Hey Finn” is ready")
         self.assertEqual(gs.enroll_parse({"heard": "3/25|Recording… speak now"})[2], "custom")  # old wake build
 
-    def test_no_persona_uses_grok_mark(self):
+    def test_no_persona_uses_echo_mark(self):
         L = gs.Layout(1920, 1080)
         surf = pygame.Surface((1920, 1080))
+        gs._photo_cache.clear()
+        gs._MARK_CACHE.clear()
         gs.draw_enroll(surf, L, time.localtime(), enroll_msg("prompt", 1, "", who=gs.VOICE_NAME, phrase="Hey Nova"))
         self.assertEqual(gs.LAST_PORTRAIT_ARGS[0], gs.VOICE_NAME)
+        self.assertGreater(self._count(surf, gs.LAST_PORTRAIT_RECT, (63, 211, 182)), 20)  # Echo teal
+        self.assertGreater(self._count(surf, gs.LAST_PORTRAIT_RECT, gs.SURFACE2), 10)     # surface-2 circle
+
+    def _count(self, surf, rect, rgb, tol=28):
+        n = 0
+        rect = pygame.Rect(rect).clip(surf.get_rect())
+        for y in range(rect.top, rect.bottom, 2):
+            for x in range(rect.left, rect.right, 2):
+                c = surf.get_at((x, y))
+                if all(abs(c[i] - rgb[i]) <= tol for i in range(3)):
+                    n += 1
+        return n
+
+    def test_no_persona_and_setup_render(self):
+        """No-persona wake screen and setup screen, headless, at the small panel and at 1080p."""
+        now = time.strptime("2026-10-19 19:42", "%Y-%m-%d %H:%M")
+        sd = {"mode": "setup", "code": "K7P4QX", "host": "station.local", "url": "https://station.local",
+              "fingerprint": ":".join(f"{(i * 37) % 256:02X}" for i in range(32))}
+        for size in ((800, 480), (1920, 1080)):
+            surf = pygame.Surface(size)
+            L = gs.Layout(*size)
+            gs.draw_enroll(surf, L, now, enroll_msg("prompt", 1, "", who=gs.VOICE_NAME, phrase="Hey Nova"))
+            self.assertIsNotNone(gs.LAST_PORTRAIT_RECT)
+            self.assertGreater(self._count(surf, gs.LAST_PORTRAIT_RECT, (63, 211, 182)), 8, size)
+            gs.draw_setup(surf, L, now, sd)
+            gs.draw_setup(surf, L, now, dict(sd, mode="reset", code="R4M9TW"))
+            gs.draw_hotspot(surf, L, now, dict(sd, mode="hotspot", ssid="station-7F3A", password="hearth-4821",
+                                                url="https://10.42.0.1"))
 
     def test_anim_specs(self):
         self.assertEqual(gs.anim_of(enroll_msg("ready", 1, ""))[1:], (0.9, False))

@@ -1,0 +1,45 @@
+# Echo boot splash. splash-1920x1080.png scaled to fit, or splash-800x480.png on a small
+# framebuffer, centered on #0D0B09 (13, 11, 9). If these images are not in the theme
+# directory the script fails to load and Plymouth uses the text theme.
+Window.SetBackgroundTopColor(0.05098, 0.04314, 0.03529);
+Window.SetBackgroundBottomColor(0.05098, 0.04314, 0.03529);
+
+sprite = Sprite(Image("splash-1920x1080.png"));
+done = 0;
+
+fun place() {
+  # The framebuffer size is 0 until Plymouth has a window. Scale once it is real, then stop.
+  if (done == 0) {
+    sw = Window.GetWidth();
+    sh = Window.GetHeight();
+    if (sw >= 2) {
+      if (sh >= 2) {
+        # 800x480-class panels use the small art; wider screens use the 1080p art. Either way it is scaled to fit.
+        img = Image("splash-1920x1080.png");
+        if (sw <= 1024) {
+          if (sh <= 600) img = Image("splash-800x480.png");
+        }
+        iw = img.GetWidth();
+        ih = img.GetHeight();
+        if (iw >= 1) {
+          if (ih >= 1) {
+            s = sw / iw;
+            if (sh / ih < s) s = sh / ih;
+            tw = Math.Int(iw * s);
+            th = Math.Int(ih * s);
+            if (tw < 1) tw = 1;
+            if (th < 1) th = 1;
+            fitted = img.Scale(tw, th);
+            sprite.SetImage(fitted);
+            sprite.SetX(Window.GetX() + (sw - fitted.GetWidth()) / 2);
+            sprite.SetY(Window.GetY() + (sh - fitted.GetHeight()) / 2);
+            done = 1;
+          }
+        }
+      }
+    }
+  }
+}
+
+place();
+Plymouth.SetRefreshFunction(place);
