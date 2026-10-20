@@ -441,6 +441,19 @@ class Static(unittest.TestCase):
         for p in ("/assets/../grok_admin.py", "/assets/..%2Fgrok_admin.py", "/grok_admin.py", "/etc/passwd"):
             self.assertEqual(C().req("GET", p, raw=True)[0], 404, p)
 
+    def test_default_avatar_route_is_read_only_and_strict(self):
+        for n in (1, 9, 18):
+            p = "/avatars/default-%02d.svg" % n
+            c = C(); st, body = c.req("GET", p, raw=True)
+            self.assertEqual(st, 200, p)
+            self.assertTrue(c.last.getheader("Content-Type").startswith("image/svg+xml"), c.last.getheader("Content-Type"))
+            self.assertIn(b"<svg", body)
+        for p in ("/avatars/default-00.svg", "/avatars/default-19.svg", "/avatars/default-1.svg",
+                  "/avatars/default-01.png", "/avatars/default-01.SVG", "/avatars/default-01.svg/",
+                  "/avatars/../default-01.svg", "/avatars/%2e%2e/default-01.svg", "/avatars/default-01.svg%00",
+                  "/avatars/", "/avatars", "/avatars/default-01.svg/../../etc/passwd"):
+            self.assertEqual(C().req("GET", p, raw=True)[0], 404, p)
+
     def test_brand_title_and_icons(self):
         st, body = C().req("GET", "/", raw=True)
         self.assertEqual(st, 200)
@@ -564,6 +577,18 @@ class Bots(unittest.TestCase):
         self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane"})[0], 200)
         self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {})[0], 403)
         self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {"password": GOOD})[0], 200)
+
+    def test_voice_patch_forwards_with_the_rename_stepup(self):
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})[0], 400)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {})[0], 400)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})[0], 403)
+        self.assertFalse(any(c[0] == "PATCH" for c in self.calls))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve", "password": GOOD})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "eve", "actor": "admin"}))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"name": "Kay", "voice": "rex"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"name": "Kay", "voice": "rex", "actor": "admin"}))
 
     def test_test_needs_no_password_and_unconfigured_message(self):
         st, j = self.c.req("POST", "/api/bots/kai/test", {})

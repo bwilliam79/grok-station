@@ -1277,10 +1277,106 @@ function noteStepup(data) {
   n.hidden = !t;
 }
 function stepupOpen() { return !!stepupText(); }
+/* sha256 of UTF-8 bytes, hex. Same formula as app/avatars.py: int(sha256(slug.encode()).hexdigest(), 16) % 18 + 1. */
+function sha256Hex(bytes) {
+  const K = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]);
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const len = bytes.length;
+  const bitHi = Math.floor(len / 0x20000000);
+  const bitLo = (len << 3) >>> 0;
+  let n = len + 9;
+  if (n % 64) n += 64 - (n % 64);
+  const buf = new Uint8Array(n);
+  buf.set(bytes);
+  buf[len] = 0x80;
+  const view = new DataView(buf.buffer);
+  view.setUint32(n - 8, bitHi, false);
+  view.setUint32(n - 4, bitLo, false);
+  const w = new Uint32Array(64);
+  const rotr = (x, r) => (x >>> r) | (x << (32 - r));
+  for (let off = 0; off < n; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const x = w[i - 15], y = w[i - 2];
+      const s0 = rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3);
+      const s1 = rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+  return [h0, h1, h2, h3, h4, h5, h6, h7].map(x => x.toString(16).padStart(8, "0")).join("");
+}
+function utf8Bytes(s) {
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    let c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const c2 = s.charCodeAt(++i);
+      c = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+    }
+    if (c < 0x80) out.push(c);
+    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    else if (c < 0x10000) out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+    else out.push(0xf0 | (c >> 18), 0x80 | ((c >> 12) & 0x3f), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+  }
+  return new Uint8Array(out);
+}
+function defaultAvatarIndex(slug) {
+  const hex = sha256Hex(utf8Bytes(String(slug)));
+  let n = 0;
+  for (let i = 0; i < hex.length; i++) n = (n * 16 + parseInt(hex[i], 16)) % 18;
+  return n + 1;
+}
+function defaultAvatarSrc(slug) {
+  return "/avatars/default-" + String(defaultAvatarIndex(slug)).padStart(2, "0") + ".svg";
+}
+function avatarOnError(img) {
+  const wrap = img && img.parentNode;
+  const fb = wrap && wrap.getAttribute("data-fallback");
+  if (fb && img.dataset.fb !== "1") {
+    img.dataset.fb = "1";
+    img.src = fb;
+    return;
+  }
+  img.remove();
+}
+function bindAvatars(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll("img.av").forEach(img => { img.onerror = () => avatarOnError(img); });
+}
+function voiceOptions(voices, current, id) {
+  const list = Array.isArray(voices) ? voices.slice() : [];
+  if (current && list.indexOf(current) < 0) list.unshift(current);
+  const opts = list.map(v => `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`).join("");
+  const required = id === "avoice" ? " required" : "";
+  return `<select class="sel" id="${id}"${required}>${opts || `<option value="">No voices yet</option>`}</select>`;
+}
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
   const v = S.avatarV ? "?v=" + S.avatarV : "";
-  return `<span class="avwrap${lg ? " lg" : ""}" data-slug="${esc(slug)}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="this.remove()"><span class="monoav">${letter}</span></span>`;
+  const fb = esc(defaultAvatarSrc(slug));
+  return `<span class="avwrap${lg ? " lg" : ""}" data-slug="${esc(slug)}" data-fallback="${fb}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
 }
 function askPassword(title, text, label, send, onCancel) {
   const d = document.createElement("div");
@@ -1321,6 +1417,7 @@ function paintBots(el, bots) {
     ${(b.webhook && b.webhook.configured) ? "" : `<button class="btn sm" type="button" data-hook="${esc(b.slug)}">Connect webhook</button>`}
     <button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div>`;
   }).join("") || `<p class="help">No bots yet.</p>`;
+  bindAvatars(list);
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
   list.querySelectorAll("[data-hook]").forEach(btn => btn.onclick = () => connectWebhookWizard(bots.find(b => b.slug === btn.dataset.hook), el));
   list.querySelectorAll("[data-voice]").forEach(btn => btn.onclick = () => {
@@ -1334,6 +1431,7 @@ async function refreshBots(el) {
   const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
   if (!r.ok || !$("#blist", el)) return null;
   noteStepup(r.data);
+  el._voices = (r.data && r.data.voices) || [];
   el._voice = (s.data && s.data.buttons) || {};
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
@@ -1348,9 +1446,10 @@ function bustPortraits(el) {
     if (!img) {
       img = document.createElement("img");
       img.className = "av"; img.alt = "";
-      img.onerror = () => img.remove();
       w.prepend(img);
     }
+    delete img.dataset.fb;
+    img.onerror = () => avatarOnError(img);
     img.src = "/api/portrait/" + encodeURIComponent(w.dataset.slug) + "?v=" + S.avatarV;
   });
   return refreshBots(el);
@@ -1374,9 +1473,10 @@ function openBot(bot, el) {
   d._cancel = cancelTest;
   const saved = !!(bot.webhook && bot.webhook.configured);
   d.innerHTML = `<div class="inline">${avatar(bot.slug, bot.name, true)}
-      <div style="min-width:0"><div class="lbl">${esc(bot.name)}</div><div style="margin-top:4px">${botPill(bot)}</div>
-        ${bot.voice ? `<div class="help">Voice: ${esc(bot.voice)}</div>` : ""}</div>
+      <div style="min-width:0"><div class="lbl">${esc(bot.name)}</div><div style="margin-top:4px">${botPill(bot)}</div></div>
       <button class="btn g sm right" id="dx">Close</button></div>
+    <div class="field"><label for="bvoice">Voice</label>
+      <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<button class="btn sm" id="vsave" type="button">Save</button></div></div>
     <div class="field inline">
       <label class="btn sm" for="photo">Upload photo</label>
       <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
@@ -1396,6 +1496,7 @@ function openBot(bot, el) {
     ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
     <div class="botfoot"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
   document.body.appendChild(d);
+  bindAvatars(d);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
   const sync = () => {
     const url = $("#burl", d).value.trim(), key = $("#bkey", d).value, dirty = url.length + key.length > 0;
@@ -1407,6 +1508,26 @@ function openBot(bot, el) {
   $("#burl", d).oninput = $("#bkey", d).oninput = sync;
   sync();
   $("#dx", d).onclick = async () => { await cancelTest(); d.remove(); };
+  $("#vsave", d).onclick = () => {
+    const voice = ($("#bvoice", d) && $("#bvoice", d).value) || "";
+    if (!voice) return toast("Pick a voice.", "bad");
+    const send = async pw => {
+      const body = {voice};
+      if (pw) body.password = pw;
+      const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
+      if (r.ok) {
+        bot.voice = voice;
+        toast("Voice saved.");
+        refreshBots(el);
+      }
+      return r;
+    };
+    if (stepupOpen()) send("").then(r => {
+      if (r && r.status === 403) askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send);
+      else if (r && !r.ok) toast((r.data && r.data.error) || "Couldn't save the voice.", "bad");
+    });
+    else askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send);
+  };
   $("#photo", d).onchange = () => {
     const file = $("#photo", d).files && $("#photo", d).files[0];
     $("#photo", d).value = "";
@@ -1815,7 +1936,6 @@ function addBot(voices, el) {
   d.className = "sheet";
   d._cancel = () => {};
   document.body.appendChild(d);
-  const opts = (voices || []).map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
   const step4 = (bot, connected, last4) => {
     d._cancel = () => {};
     d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Done">${addStepper(4)}
@@ -1884,7 +2004,7 @@ function addBot(voices, el) {
         <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
         <p class="note">${esc(BOT_ID_HELP)}</p>
         <p class="err" id="asluge" hidden></p></div>
-      <div class="field"><label for="avoice">Voice</label><select class="sel" id="avoice" required>${opts || `<option value="">No voices yet</option>`}</select></div>
+      <div class="field"><label for="avoice">Voice</label>${voiceOptions(voices, "", "avoice")}</div>
       ${stepupOpen() ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
       <div id="ape"></div>
       <div class="field inline"><button class="btn p" id="ago" type="submit">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
@@ -1949,6 +2069,7 @@ async function pageBots(el) {
   const slot = $("#topr");
   if (slot) slot.innerHTML = `<button class="btn sm" id="avatars" type="button">Refresh avatars</button>`;
   el._voice = (s.data && s.data.buttons) || {};
+  el._voices = data.voices || [];
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
       <span class="stepup" id="sulock" hidden></span>

@@ -299,7 +299,7 @@ def overlay_path():
 
 def load_overlay_doc():
     """Raw overlay. Shape-checked so a bad file can't grow; voice membership is enforced later, at read."""
-    base = {"added": {}, "renamed": {}, "hidden": []}
+    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}}
     try:
         with open(overlay_path()) as f:
             doc = json.load(f)
@@ -319,7 +319,11 @@ def load_overlay_doc():
     for slug in (doc.get("hidden") if isinstance(doc.get("hidden"), list) else []):
         if handoff.bot_slug_ok(slug) and slug not in hidden:
             hidden.append(slug)
-    return {"added": added, "renamed": renamed, "hidden": hidden}
+    voices = {}
+    for slug, voice in (doc.get("voices") if isinstance(doc.get("voices"), dict) else {}).items():
+        if handoff.bot_slug_ok(slug) and isinstance(voice, str) and voice:
+            voices[slug] = voice
+    return {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices}
 
 
 def save_overlay(doc):
@@ -330,8 +334,8 @@ def save_overlay(doc):
 def persona_list():
     """On-voice personas: the read-only registry, with the overlay merged over it.
 
-    Renamed names replace the registry name. Hidden slugs are removed. Added personas get a generic prompt and no
-    facts. Re-read when the registry or the overlay changes. Bad entries are skipped. Without xAI's voice list,
+    Renamed names replace the registry name. A voices entry replaces that persona's voice. Hidden slugs are removed.
+    Added personas get a generic prompt and no facts. Re-read when the registry or the overlay changes. Bad entries are skipped. Without xAI's voice list,
     nothing goes on voice.
     """
     if not VOICES:  # fail closed: without xAI's voice list no persona can be checked, so none go on voice
@@ -414,6 +418,9 @@ def persona_list():
             continue
         out[slug] = {"slug": slug, "name": name, "voice": ent["voice"].lower(), "aliases": [], "facts": [],
                      "prompt": f"You are {name}, one of the household's assistant team."}
+    for slug, voice in ov["voices"].items():
+        if slug in out and voice.lower() in VOICES:
+            out[slug] = dict(out[slug], voice=voice.lower())
     _personas.update(mtime=key, map=out, voices=True)
     log(f"personas: {len(out)} on voice: {' '.join(out)}")
     return out
@@ -1526,7 +1533,7 @@ def _last4(token):
 
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
-_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test"}
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice"}
 
 
 def actor_ok(s):
@@ -1953,6 +1960,7 @@ async def admin_bots_post(req):
 
 
 async def admin_bots_patch(req):
+    """Name, voice, or both. Voice is checked the same way as POST /admin/bots. At least one is required."""
     bad = await admin_gate(req)
     if bad:
         return bad
@@ -1962,17 +1970,33 @@ async def admin_bots_patch(req):
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
-    if not _name_ok(body.get("name")):
+    has_name, has_voice = "name" in body, "voice" in body
+    if not has_name and not has_voice:
+        return web.json_response({"error": "bad request"}, status=400)
+    if has_name and not _name_ok(body.get("name")):
         return web.json_response({"error": "bad name"}, status=400)
+    voice = body.get("voice")
+    if has_voice and (not isinstance(voice, str) or voice.lower() not in VOICES):
+        return web.json_response({"error": "bad voice"}, status=400)
     ov = load_overlay_doc()
-    ov["renamed"][slug] = body["name"]
-    if slug in ov["added"]:
-        ov["added"][slug]["name"] = body["name"]
+    if has_name:
+        ov["renamed"][slug] = body["name"]
+        if slug in ov["added"]:
+            ov["added"][slug]["name"] = body["name"]
+    if has_voice:
+        voice = voice.lower()
+        ov["voices"][slug] = voice
+        if slug in ov["added"]:
+            ov["added"][slug]["voice"] = voice
     try:
         save_overlay(ov)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
-    audit(body["actor"], slug, "rename", _last4((current_webhooks().get(slug) or {}).get("token")))
+    tail = _last4((current_webhooks().get(slug) or {}).get("token"))
+    if has_name:
+        audit(body["actor"], slug, "rename", tail)
+    if has_voice:
+        audit(body["actor"], slug, "voice", "-")
     return web.json_response({"ok": True})
 
 
@@ -1996,6 +2020,7 @@ async def admin_bots_delete(req):
     if slug in reg and slug not in ov["hidden"]:
         ov["hidden"].append(slug)
     ov["renamed"].pop(slug, None)
+    ov["voices"].pop(slug, None)
     try:
         save_overlay(ov)
         if slug in hooks:

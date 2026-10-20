@@ -14,6 +14,14 @@ Small status icons (network, relay, mic) sit in the top-right corner. A daemon t
 import hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+try:
+    from avatars import default_avatar_index
+except ImportError:  # installed next to this file once the helper is shipped; the formula stays the same
+    import hashlib
+
+    def default_avatar_index(slug):
+        return int(hashlib.sha256(slug.encode()).hexdigest(), 16) % 18 + 1
+
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
@@ -26,6 +34,8 @@ SNAP = E("GROK_STATION_SNAPSHOT", "/run/grok-station/last.png")
 FB = E("GROK_STATION_FB", "/dev/fb0")
 ASSETS = E("GROK_STATION_ASSETS") or next((p for p in (os.path.join(HERE, "assets"), os.path.join(HERE, "..", "assets")) if os.path.isdir(p)), "assets")
 PORTRAIT_DIRS = [os.path.join(ASSETS, "portraits"), E("GROK_STATION_PORTRAITS", "/opt/grok-station/portraits")]
+AVATAR_DIR = os.path.join(ASSETS, "avatars")
+PORTRAIT_MAX = 2 << 20  # same cap the relay will serve; a larger file is not a usable photo
 HOLD = float(E("GROK_STATION_HOLD", "60"))            # seconds a message stays up after the last one
 NIGHT = E("GROK_STATION_NIGHT", "22-6")               # night clock hours, start-end (24h), "" disables
 LAT, LON = E("GROK_STATION_LAT", ""), E("GROK_STATION_LON", "")  # no default: weather is off until both are set
@@ -651,6 +661,24 @@ def _fallback_status_icon(name, px):
     return surf
 
 
+def _load_svg(path, px):
+    """SVG via pygame.image.load, smoothscaled to px. None when missing, unreadable, or empty."""
+    px = max(1, int(px))
+    try:
+        if not path or not os.path.isfile(path):
+            return None
+        img = pygame.image.load(path)
+        if not (img.get_flags() & pygame.SRCALPHA):
+            img = img.convert_alpha()
+        if img.get_width() <= 0 or img.get_height() <= 0:
+            return None
+        if img.get_size() != (px, px):
+            img = pygame.transform.smoothscale(img, (px, px))
+        return img
+    except Exception:
+        return None
+
+
 def load_status_icon(name, px, directory=None):
     """SVG from assets/status/<name>.svg, smoothscaled. A missing or unreadable file uses the vector fallback."""
     px = max(1, int(px))
@@ -659,17 +687,7 @@ def load_status_icon(name, px, directory=None):
     hit = _STATUS_ICON_CACHE.get(key)
     if hit is not None:
         return hit
-    surf = None
-    path = os.path.join(directory, f"{name}.svg")
-    if os.path.isfile(path):
-        try:
-            img = pygame.image.load(path)
-            if not (img.get_flags() & pygame.SRCALPHA):
-                img = img.convert_alpha()
-            if img.get_width() > 0 and img.get_height() > 0:
-                surf = img if img.get_size() == (px, px) else pygame.transform.smoothscale(img, (px, px))
-        except Exception:
-            surf = None
+    surf = _load_svg(os.path.join(directory, f"{name}.svg"), px)
     if surf is None:
         surf = _fallback_status_icon(name, px)
     if len(_STATUS_ICON_CACHE) > 48:
@@ -903,7 +921,7 @@ def offline_icon(px, stroke_px):
 
 # ---------------------------------------------------------------- portrait + state ring
 def find_portrait(name):
-    """Portrait for a voice persona (Grok or a registry name) only; anything else gets the monogram."""
+    """Portrait for a voice persona (the station voice or a registry name) only; anything else gets the monogram."""
     hit = persona_names().get(name_key(name))
     if not hit:
         return None
@@ -914,6 +932,27 @@ def find_portrait(name):
             if slug and os.path.isfile(p):
                 return p
     return None
+
+
+def _persona_slug(name):
+    hit = persona_names().get(name_key(name))
+    return hit[1] if hit else None
+
+
+def default_avatar_path(slug):
+    """assets/avatars/default-NN.svg for this slug, or None."""
+    n = default_avatar_index(slug)
+    if not isinstance(n, int) or n < 1 or n > 18:
+        return None
+    return os.path.join(AVATAR_DIR, "default-%02d.svg" % n)
+
+
+def _portrait_ok(path):
+    """Present and not over the 2 MB the relay will serve."""
+    try:
+        return bool(path) and os.path.isfile(path) and 0 < os.path.getsize(path) <= PORTRAIT_MAX
+    except OSError:
+        return False
 
 
 def ring_speaking(c, cx, cy, r, ring_w, glow, t):
@@ -990,7 +1029,7 @@ def ring_saved(c, cx, cy, r, ring_w, glow, t):
 RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle,
          "success": ring_success, "enroll_ready": ring_ready, "enroll_saved": ring_saved}
 
-_photo_cache = {}  # (path, mtime, d, k, initial, photo_ok, kind) -> circle-cropped surface
+_photo_cache = {}  # (path, mtime, svg, svg_mtime, d, k, initial, photo_ok, kind) -> circle-cropped surface
 _MARK_CACHE = {}
 _MARK_PX = (64, 128, 256, 512, 1024)  # assets/brand/mark-<px>.png, rendered from mark.svg by tools/render_brand.py
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
@@ -1034,30 +1073,63 @@ def _echo_mark(px):
     return img
 
 
+def _blit_cover(photo, img, r):
+    """Cover-crop img onto the circle's square, biased slightly upward, the same way a photo is cropped."""
+    iw, ih = img.get_size()
+    if iw <= 0 or ih <= 0:
+        return False
+    side = 2 * r
+    sc = side / min(iw, ih)
+    img = pygame.transform.smoothscale(img, (max(side, int(iw * sc)), max(side, int(ih * sc))))
+    photo.blit(img, ((side - img.get_width()) // 2, int((side - img.get_height()) * 0.3)))
+    return True
+
+
 def _circle_photo(name, d, k, photo_ok):
-    """Circle-cropped photo, the Echo mark on surface-2, or a monogram.
-    image.load + smoothscale run once per key (at most 8 kept). /show messages (photo_ok false) stay a monogram.
-    A wake word with no persona gets the Echo mark on a surface-2 circle, not a portrait file."""
-    use_mark = bool(photo_ok) and _no_persona(name)
-    path = None if use_mark or not photo_ok else find_portrait(name)
+    """Circle-cropped photo, the Echo mark on surface-2, a default avatar, or a monogram.
+
+    A known bot with no usable photo (missing, unreadable, over 2 MB, or photo_ok false) gets
+    assets/avatars/default-NN.svg, loaded like the status icons and circle-cropped like a photo.
+    The station persona keeps the Echo mark. The monogram is only the last fallback, when that SVG
+    cannot be loaded. image.load runs once per key (at most 8 kept). A wake word with no persona
+    gets the Echo mark on a surface-2 circle, not a portrait file."""
+    slug = _persona_slug(name)
+    use_mark = bool(photo_ok) and slug == "grok"
+    known_bot = bool(slug) and slug != "grok"
+    path = None
+    if photo_ok and not use_mark:
+        candidate = find_portrait(name)
+        if _portrait_ok(candidate):
+            path = candidate
+    svg = default_avatar_path(slug) if known_bot else None
     try:
         mt = os.stat(path).st_mtime if path else None
     except OSError:
         path, mt = None, None
+    try:
+        svg_mt = os.stat(svg).st_mtime if svg else None
+    except OSError:
+        svg_mt = None
     initial = (name[:1] or "?").upper()
-    key = (path, mt, d, k, initial, bool(photo_ok), "mark" if use_mark else "photo")
+    kind = "mark" if use_mark else ("default" if known_bot and not path else "photo")
+    key = (path, mt, svg if kind == "default" else None, svg_mt if kind == "default" else None, d, k, initial, bool(photo_ok), kind)
     hit = _photo_cache.get(key)
     if hit is not None:
         return hit
     r = d * k // 2
     photo = pygame.Surface((2 * r, 2 * r), pygame.SRCALPHA)
+    drawn = False
     if path:
-        img = pygame.image.load(path)
-        iw, ih = img.get_size()
-        sc = 2 * r / min(iw, ih)
-        img = pygame.transform.smoothscale(img, (max(2 * r, int(iw * sc)), max(2 * r, int(ih * sc))))
-        photo.blit(img, ((2 * r - img.get_width()) // 2, int((2 * r - img.get_height()) * 0.3)))
-    else:
+        try:
+            drawn = _blit_cover(photo, pygame.image.load(path), r)
+        except Exception:
+            drawn = False
+    if not drawn and known_bot and svg:
+        img = _load_svg(svg, 2 * r)
+        if img is not None:
+            photo.blit(img, (0, 0))
+            drawn = True
+    if not drawn:
         photo.fill(SURFACE2)
         mark = _echo_mark(max(8, int(2 * r * 0.78))) if use_mark else None
         if mark is not None:
@@ -1075,7 +1147,7 @@ def _circle_photo(name, d, k, photo_ok):
 
 
 def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
-    """Circle-cropped photo (Echo mark on surface-2, or monogram) with the state ring. Returns (surface, offset)."""
+    """Circle-cropped photo (Echo mark, default avatar, or monogram) with the state ring. Returns (surface, offset)."""
     k = 2
     glow = int(ring_w * 2.2)
     pad = int(ring_w + glow + 4)

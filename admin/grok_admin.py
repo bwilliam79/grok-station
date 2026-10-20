@@ -5,8 +5,8 @@ No default password: until an admin password is set, the station shows a one-tim
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a
-10-minute step-up window on that session for saving a webhook, adding or renaming a bot, uploading a portrait, and
-changing the privacy toggle; removing a bot or webhook always asks again. Speaker names stay on this Pi. Stdlib only.
+10-minute step-up window on that session for saving a webhook, adding or renaming a bot, changing a bot's voice,
+uploading a portrait, and changing the privacy toggle; removing a bot or webhook always asks again. Speaker names stay on this Pi. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl, sys
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -21,6 +21,8 @@ TLS_DIR = E("ADMIN_TLS_DIR", "/var/lib/grok-station/tls")  # made on the station
 STATE_DIR = E("ADMIN_STATE_DIR", "/var/lib/grok-station/admin")
 RUN_DIR = E("ADMIN_RUN_DIR", "/run/grok-station-admin")  # setup.json lives here (dir 0750, group grok)
 WEB = E("ADMIN_WEB_DIR", os.path.join(HERE, "web"))
+AVATAR_DIR = E("ADMIN_AVATAR_DIR", os.path.join(os.path.dirname(HERE), "assets", "avatars"))
+AVATAR_NAME = re.compile(r"default-(0[1-9]|1[0-8])\.svg")
 HELPER = E("ADMIN_HELPER", "sudo -n /usr/local/lib/grok-station/grok-station-helper").split()
 _RELAY_SRC = os.path.join(os.path.dirname(HERE), "relay")
 if os.path.isdir(_RELAY_SRC) and _RELAY_SRC not in sys.path:
@@ -2171,7 +2173,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard(method != "GET"):
             return
         try:
-            if method == "GET" and (p in STATIC or p.startswith("/assets/")):
+            if method == "GET" and (p in STATIC or p.startswith("/assets/") or p.startswith("/avatars/")):
                 return self.static(p)
             if not p.startswith("/api/"):
                 return self.send(404, {"error": "not found"})
@@ -2197,7 +2199,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, {"error": "Something went wrong on the station."})
 
     def static(self, p):
-        if p.startswith("/assets/"):
+        if p.startswith("/avatars/"):
+            name = p[len("/avatars/"):]
+            if not AVATAR_NAME.fullmatch(name):
+                return self.send(404, {"error": "not found"})
+            root = os.path.realpath(AVATAR_DIR)
+            f = os.path.realpath(os.path.join(root, name))
+            if not (f.startswith(root + os.sep) and os.path.isfile(f)):
+                return self.send(404, {"error": "not found"})
+            ctype = "image/svg+xml"
+        elif p.startswith("/assets/"):
             name = p[8:]
             if not re.fullmatch(r"[a-z0-9_-]{1,40}\.(png|svg|ttf|ico)", name):
                 return self.send(404, {"error": "not found"})
@@ -2781,18 +2792,35 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
 
     def bots_rename(self, slug, j):
-        name = clean_name(j.get("name"))
-        if not name:
+        """Rename, change voice, or both. Voice is optional when a name is sent, and the name is optional when a voice is."""
+        if not isinstance(j, dict):
             return self.send(400, {"error": "Type a name."})
+        has_name, has_voice = "name" in j, "voice" in j
+        if not has_name and not has_voice:
+            return self.send(400, {"error": "Type a name."})
+        name = clean_name(j.get("name")) if has_name else None
+        if has_name and not name:
+            return self.send(400, {"error": "Type a name."})
+        voice = j.get("voice") if has_voice else None
+        if has_voice and not voice_ok(voice):
+            return self.send(400, {"error": "Pick a voice."})
         if not self.need_password(j):
             return
-        got = relay_call("PATCH", "/admin/bots/" + slug, {"name": name, "actor": RELAY_ACTOR})
+        body = {"actor": RELAY_ACTOR}
+        if has_name:
+            body["name"] = name
+        if has_voice:
+            body["voice"] = voice
+        got = relay_call("PATCH", "/admin/bots/" + slug, body)
         if got is None:
             return self.bots_unconfigured()
         status, data = got
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
-        audit(slug, "rename")
+        if has_name:
+            audit(slug, "rename")
+        if has_voice:
+            audit(slug, "voice")
         return self.send(200, {"ok": True})
 
     def bots_remove(self, slug, j):

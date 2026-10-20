@@ -259,6 +259,52 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(token, audit)
         self.assertNotIn("api2.cursor.sh", audit)
 
+    def _audit(self):
+        p = self.relay.audit_path()
+        return open(p).read() if os.path.exists(p) else ""
+
+    async def test_patch_voice_validates_persists_and_audits(self):
+        h = self.headers()
+        reg = open(self.relay.PERSONAS_FILE).read()
+        bad = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "nope", "actor": "admin"})
+        self.assertEqual(bad.status, 400)
+        self.assertEqual(await bad.json(), {"error": "bad voice"})
+        self.assertEqual(self.relay.persona_list()["jules"]["voice"], "ara")
+        empty = await self.client.patch("/admin/bots/jules", headers=h, json={"actor": "admin"})
+        self.assertEqual(empty.status, 400)
+        self.assertNotIn("voice", self._audit())
+        missing = await self.client.patch("/admin/bots/nobody", headers=h, json={"voice": "rex", "actor": "admin"})
+        self.assertEqual(missing.status, 404)
+        ok = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "REX", "actor": "admin"})
+        self.assertEqual(ok.status, 200)
+        self.assertEqual(self.relay.persona_list()["jules"]["voice"], "rex")
+        self.assertEqual(self.relay.persona_list()["jules"]["name"], "Jules")
+        self.assertEqual(self.relay.load_overlay_doc()["voices"]["jules"], "rex")
+        self.assertEqual(open(self.relay.PERSONAS_FILE).read(), reg)
+        before = self._audit()
+        named = await self.client.patch("/admin/bots/jules", headers=h, json={"name": "Julie", "actor": "admin"})
+        self.assertEqual(named.status, 200)
+        added = self._audit()[len(before):]
+        self.assertIn("rename", added)
+        self.assertNotIn("voice", added)
+        both = await self.client.patch("/admin/bots/jules", headers=h, json={"name": "Jules", "voice": "luna", "actor": "admin"})
+        self.assertEqual(both.status, 200)
+        self.assertEqual(self.relay.persona_list()["jules"]["name"], "Jules")
+        self.assertEqual(self.relay.persona_list()["jules"]["voice"], "luna")
+        made = await self.client.post("/admin/bots", headers=h, json={"slug": "nova", "name": "Nova", "voice": "ara", "actor": "admin"})
+        self.assertEqual(made.status, 201)
+        changed = await self.client.patch("/admin/bots/nova", headers=h, json={"voice": "rex", "actor": "admin"})
+        self.assertEqual(changed.status, 200)
+        self.assertEqual(self.relay.persona_list()["nova"]["voice"], "rex")
+        self.assertEqual(self.relay.persona_list()["nova"]["name"], "Nova")
+        ov = self.relay.load_overlay_doc()
+        self.assertEqual(ov["added"]["nova"]["voice"], "rex")
+        self.assertEqual(ov["voices"]["nova"], "rex")
+        audit = self._audit()
+        self.assertRegex(audit, r"admin jules voice -")
+        self.assertRegex(audit, r"admin nova voice -")
+        self.assertNotIn("nope", audit)
+
     async def _fake(self, mode):
         seen = {"bodies": [], "auths": []}
 

@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame python3-qrcode libegl1 libegl-mesa0 libgles2 libgbm1 libgl1-mesa-dri
 install -d /opt/grok-station
 install -m755 app/grok_station.py /opt/grok-station/
+install -m644 app/avatars.py /opt/grok-station/
 install -d /opt/grok-station/assets/fonts /opt/grok-station/assets/portraits /opt/grok-station/assets/brand
 install -m644 assets/fonts/* /opt/grok-station/assets/fonts/
 if [ -n "$(find assets/portraits -name '*.png' -print -quit)" ]; then
@@ -12,6 +13,9 @@ if [ -n "$(find assets/portraits -name '*.png' -print -quit)" ]; then
 fi
 rm -f /opt/grok-station/assets/portraits/grok.png
 install -m644 assets/brand/*.png assets/brand/*.svg /opt/grok-station/assets/brand/
+install -d /opt/grok-station/assets/avatars /opt/grok-station/assets/status
+install -m644 assets/avatars/default-*.svg /opt/grok-station/assets/avatars/
+install -m644 assets/status/*.svg /opt/grok-station/assets/status/
 install -m644 systemd/grok-station.service /etc/systemd/system/
 C=/boot/firmware/cmdline.txt
 for o in quiet splash loglevel=3 vt.global_cursor_default=0 logo.nologo consoleblank=0 plymouth.ignore-serial-consoles; do

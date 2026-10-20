@@ -155,6 +155,19 @@ class AdminUI(unittest.TestCase):
         self.assertIn("/webhook", hook)
         self.assertIn("/test", hook)
 
+    def test_configure_drawer_can_change_voice(self):
+        fn = _fn(self.js, "openBot")
+        self.assertIn('<label for="bvoice">Voice</label>', fn)
+        self.assertIn('id="vsave"', fn)
+        self.assertIn(">Save<", fn)
+        self.assertIn('voiceOptions(el._voices, bot.voice, "bvoice")', fn)
+        self.assertIn("Voice saved.", fn)
+        self.assertIn("refreshBots(el)", fn)
+        self.assertIn('api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body)', fn)
+        add = _fn(self.js, "addBot")
+        self.assertIn('voiceOptions(voices, "", "avoice")', add)
+        self.assertIn("function voiceOptions", self.js)
+
     def test_no_secret_is_logged(self):
         js = self.js
         self.assertNotIn("console.log", js)
