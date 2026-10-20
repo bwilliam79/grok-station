@@ -211,10 +211,23 @@ END_RE = re.compile(r"^((ok(ay)?|alright|all right|great|cool|perfect)[ ,]+)*"
                         "{k}", r"grok|that'?s (all|it)|(good)?bye|for now|thanks?( you)?"), re.I)
 
 
+# Any utterance that ends with a goodbye ("Alright, thanks, goodbye.", "goodbye Rhea") ends the session.
+BYE_TAIL_RE = re.compile(r"(^|[\s,.;!?-])((good)?[ -]?bye( ?bye)?|see (you|ya)( later)?)"
+                         r"([ ,]+(for now|now|then|grok|[a-z]+))?[\s.!,]*$", re.I)
+
+
+def ends_with_goodbye(text):
+    return bool(BYE_TAIL_RE.search(" ".join(str(text).replace("’", "'").split())))
+
+
 def is_end_phrase(text):
     """A short closing phrase ("thanks", "that's all") that ends a multi-turn session."""
     t = " ".join(str(text).replace("’", "'").split()).strip(" .!,")
-    return bool(t) and len(t.split()) <= 6 and bool(END_RE.match(t))
+    if not t:
+        return False
+    if len(t.split()) <= 6 and END_RE.match(t):
+        return True
+    return bool(BYE_TAIL_RE.search(t))
 
 
 def latest_utterance(prior, heard):
@@ -1228,7 +1241,7 @@ async def session(req):
                         if not st.get("utt"):
                             st["utt"] = 1
                         await pi.send_json({"type": "heard", "text": heard})
-                        if st["turn"] > 1 and is_end_phrase(heard):
+                        if (st["turn"] > 1 or ends_with_goodbye(heard)) and is_end_phrase(heard):
                             st["buf"] = []
                             if st["responding"]:
                                 await cancel_response()

@@ -199,8 +199,6 @@ class FooterFit(unittest.TestCase):
                 gs.draw_session(surf, L, time.localtime(), {"from": who, "heard": LONG_HEARD, "text": "Okay.", "state": "speaking"})
                 self.check_margins(surf, L)
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestListeningPulse(unittest.TestCase):
@@ -606,3 +604,24 @@ class ThinkingBodyTest(unittest.TestCase):
         surf = pygame.Surface((1024, 600))
         msg = {"from": "Grok", "voice": True, "heard": "Hi", "text": "Thinking\u2026", "state": "thinking"}
         gs.draw_session(surf, gs.Layout(1024, 600), time.localtime(), msg, "thinking", 0.0)
+
+
+class ChatLayoutTest(unittest.TestCase):
+    def test_no_clock_and_centered_group(self):
+        import datetime
+        for size in ((1280, 800), (1920, 1080), (1024, 700)):
+            surf = pygame.Surface(size)
+            L = gs.Layout(*size) if hasattr(gs, "Layout") else None
+            if L is None:
+                self.skipTest("no Layout helper")
+            for state in ("listening", "thinking", "speaking"):
+                gs.draw_session(surf, L, datetime.datetime(2026, 10, 20, 11, 0),
+                                {"from": "Hank", "heard": "what time is it", "text": "It is eleven.", "state": state}, state)
+                self.assertIsNone(gs.LAST_TOPBAR_RECT, (size, state))
+                r = gs.LAST_PORTRAIT_RECT
+                self.assertLess(abs(r.centery - size[1] // 2), size[1] // 6, (size, state))
+                self.assertGreaterEqual(r.left, 0, (size, state))
+
+
+if __name__ == "__main__":
+    unittest.main()

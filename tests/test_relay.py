@@ -166,6 +166,15 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
                   "goodbye what is the weather tomorrow", "thanks for checking the garage door"):
             self.assertFalse(relay.is_end_phrase(t), t)
 
+    def test_utterance_ending_in_goodbye_ends(self):
+        for t in ("Alright, thanks, goodbye.", "ok bye", "goodbye Rhea", "That was really helpful, thanks so much, bye!",
+                  "Great, I'll check it later. Goodbye Hank.", "okay see you later", "thanks bye bye"):
+            self.assertTrue(relay.is_end_phrase(t), t)
+            self.assertTrue(relay.ends_with_goodbye(t), t)
+        for t in ("goodbye what is the weather tomorrow", "what does goodbye mean in french please",
+                  "is the bypass road open", "thanks for checking the garage door"):
+            self.assertFalse(relay.is_end_phrase(t), t)
+
     def test_latest_utterance_strips_earlier_turns(self):
         q1 = "What is on my calendar today?"
         self.assertEqual(relay.latest_utterance([q1], q1 + " Goodbye Hank."), "Goodbye Hank.")

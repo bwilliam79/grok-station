@@ -1865,6 +1865,19 @@ def thinking_body(text):
     return "" if t.lower() in ("", "thinking") else text
 
 
+def _voice_text_width(L, who, heard, text, max_w):
+    """Natural width of the side column (name, heard, reply) at most max_w, so the group can be centered."""
+    fn = font("display", L(120))
+    w = fn.size(who)[0]
+    if heard:
+        fh, lh, _ = fit_text("italic", f"“{heard}”", max_w, L(130), L(48), L(40), lh=1.02, max_lines=2)
+        w = max([w] + [fh.size(x)[0] for x in lh])
+    if text:
+        f, lines, _ = fit_text("body", text, max_w, max(L(40), L.h - L(400)), L(76), L(40), lh=1.06)
+        w = max([w] + [f.size(x)[0] for x in lines])
+    return max(L(200), min(max_w, w + L(8)))
+
+
 def _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, photo_top, d, card, stack):
     """Name, heard quote, reply and (when present) the tool card. Returns the y under the block."""
     global LAST_CARD_RECT
@@ -1925,7 +1938,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
     if state == "confirm":
         return draw_confirm(surf, L, now, msg)
     surf.fill(BG)
-    draw_topbar_clock(surf, L, now)
+    draw_status_icons(surf, L)  # no clock while a chat is up
     who, heard, text = msg.get("from", ""), msg.get("heard", ""), msg["text"]
     card = clean_card(msg.get("card")) if isinstance(msg.get("card"), dict) else None
     top_row = L(34) + L(72)
@@ -1967,10 +1980,13 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
         x = (L.w - width) // 2
         photo_top = top_row + L(8)
     else:
-        left = L(160)
+        # avatar + text block centered as one group, both ways
+        max_w = L.w - L.m - L(160) - d - gap_col
+        width = min(max_w, _voice_text_width(L, who, heard, thinking_body(text) if state == "thinking" else text, max_w)) if not card else max_w
+        left = max(L(160), (L.w - (d + gap_col + width)) // 2)
         x = left + d + gap_col
-        width = L.w - L.m - x
-        photo_top = top_row + max(L(60), (L.h - top_row - d) // 2 - L(20))
+        label_room = L(150) + L(36) if state in ("listening", "thinking") else 0
+        photo_top = max(top_row, (L.h - d - label_room) // 2)
     bottom = L.h - L(96)
     if card or TIMER_CHIPS:
         bottom = min(bottom, content_limit(L))
