@@ -9,8 +9,9 @@ repaints once a second, and the wake listener pushes the list only when it chang
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
+Small status icons (network, relay, mic) sit in the top-right corner. A daemon thread polls them; --demo does not.
 """
-import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.request
+import hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
@@ -33,13 +34,15 @@ WX_CACHE = E("GROK_STATION_WEATHER_CACHE", "/var/cache/grok-station/weather.json
 WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after failure, offline after
 FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
-SHOW, WEATHER, STATE = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3
+SHOW, WEATHER, STATE, STATUS_EV = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3, pygame.USEREVENT + 4
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
 CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
 VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 10, "enroll": 30, "confirm": 30}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
+STATUS_DIR = os.path.join(ASSETS, "status")
+WAKE_ENV_PATH = "/etc/grok-station/wake.env"  # relay URL lives here when the display env does not set it
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
 PULSE_PERIOD = 1.0                                        # seconds per listening-ring pulse (~1 Hz)
@@ -177,7 +180,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        self._reply(200, {"ok": True}) if self.path == "/health" else self._reply(404, {"error": "not found"})
+        if self.path == "/health":
+            return self._reply(200, {"ok": True})
+        if self.path == "/status":
+            return self._status()
+        return self._reply(404, {"error": "not found"})
 
     def do_POST(self):
         if self.path == "/state":
@@ -239,7 +246,7 @@ class Handler(BaseHTTPRequestHandler):
         payloads are validated; a bad attachment is ignored rather than wiping a good one.
         The log line is the state and the attachment kinds, never the values.
         """
-        if self.client_address[0].removeprefix("::ffff:") not in ("127.0.0.1", "::1"):
+        if not _localhost_client(self.client_address[0]):
             return self._reply(403, {"error": "localhost only"})
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -262,8 +269,419 @@ class Handler(BaseHTTPRequestHandler):
         print(f"state {' '.join(bits)} who={ev['who']}", flush=True)
         self._reply(200, {"ok": True})
 
+    def _status(self):
+        """Localhost-only snapshot of the status icons. No relay URL, host, or address."""
+        if not _localhost_client(self.client_address[0]):
+            return self._reply(403, {"error": "localhost only"})
+        self._reply(200, status_snapshot())
+
     def log_message(self, *a):
         pass
+
+
+def _localhost_client(addr):
+    return addr.removeprefix("::ffff:") in ("127.0.0.1", "::1")
+
+
+# ---------------------------------------------------------------- status (network, relay, mic)
+# Polled off the UI thread. Every check takes its inputs as arguments so tests need no hardware.
+_STATUS_LOCK = threading.Lock()
+STATUS = {
+    "net": {"kind": "none", "up": False},
+    "relay": {"ok": None, "detail": ""},
+    "mic": {"ok": None, "detail": ""},
+    "at": 0,
+}
+_STATUS_ICON_CACHE = {}
+
+
+def status_snapshot():
+    with _STATUS_LOCK:
+        st = STATUS
+        return {"net": dict(st["net"]), "relay": dict(st["relay"]), "mic": dict(st["mic"]), "at": st["at"]}
+
+
+def _status_visible(st):
+    return (st["net"].get("kind"), bool(st["net"].get("up")), st["relay"].get("ok"), st["relay"].get("detail"),
+            st["mic"].get("ok"), st["mic"].get("detail"))
+
+
+def store_status(nxt):
+    """Replace STATUS. True when the icons would change (the timestamp alone does not)."""
+    global STATUS
+    with _STATUS_LOCK:
+        changed = _status_visible(STATUS) != _status_visible(nxt)
+        STATUS = nxt
+        return changed
+
+
+def status_poll_s():
+    try:
+        v = float(E("GROK_STATION_STATUS_POLL", "12"))
+    except (TypeError, ValueError):
+        return 12.0
+    return v if v > 0 else 12.0
+
+
+def iface_kind(name, wireless):
+    """wifi if the iface has a wireless dir or a wl* name; ethernet for eth*/en*; lo is ignored."""
+    if name == "lo":
+        return None
+    if wireless or name.startswith("wl"):
+        return "wifi"
+    if name.startswith("eth") or name.startswith("en"):
+        return "ethernet"
+    return "other"
+
+
+def has_default_route(route_text):
+    """True when /proc/net/route has a non-lo default route (destination 00000000)."""
+    for line in (route_text or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] not in ("Iface", "lo") and parts[1] == "00000000":
+            return True
+    return False
+
+
+def net_status(ifaces, route_text):
+    """ifaces: (name, operstate, has_wireless). up = any non-lo iface is up AND a default route exists."""
+    up_kinds = []
+    any_up = False
+    for name, state, wireless in ifaces:
+        kind = iface_kind(name, wireless)
+        if kind is None:
+            continue
+        if str(state).strip() == "up":
+            any_up = True
+            up_kinds.append(kind)
+    if "wifi" in up_kinds:
+        kind = "wifi"
+    elif "ethernet" in up_kinds:
+        kind = "ethernet"
+    else:
+        kind = "none"
+    return {"kind": kind, "up": any_up and has_default_route(route_text)}
+
+
+def read_net(net_root="/sys/class/net", route_path="/proc/net/route"):
+    ifaces = []
+    try:
+        names = os.listdir(net_root)
+    except OSError:
+        names = []
+    for name in names:
+        base = os.path.join(net_root, name)
+        try:
+            with open(os.path.join(base, "operstate")) as f:
+                state = f.read().strip()
+        except OSError:
+            state = ""
+        ifaces.append((name, state, os.path.isdir(os.path.join(base, "wireless"))))
+    try:
+        with open(route_path) as f:
+            route = f.read()
+    except OSError:
+        route = ""
+    return net_status(ifaces, route)
+
+
+def env_value(text, key):
+    """Value of one KEY=VALUE assignment. Other keys are ignored; the value is never logged."""
+    found = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k.strip() != key:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        elif " #" in v:
+            v = v.split(" #", 1)[0].rstrip()
+        found = v
+    return found or ""
+
+
+def parse_relay_target(url):
+    """(host, port) for a ws/wss URL. Default port is 443 for wss and 80 for ws. None if it does not parse."""
+    try:
+        parts = urllib.parse.urlsplit((url or "").strip())
+    except ValueError:
+        return None
+    if parts.scheme not in ("ws", "wss") or not parts.hostname:
+        return None
+    port = parts.port or (443 if parts.scheme == "wss" else 80)
+    return parts.hostname, port
+
+
+def relay_url(environ, wake_text):
+    """Display env GROK_RELAY_URL, else the same key in the wake env file text. Empty if neither sets it."""
+    url = str((environ or {}).get("GROK_RELAY_URL") or "").strip()
+    return url or env_value(wake_text, "GROK_RELAY_URL").strip()
+
+
+def check_relay(environ, wake_text, connect):
+    """ok is None when no relay is configured. connect(host, port, timeout) -> bool. Detail never names the host."""
+    url = relay_url(environ, wake_text)
+    if not url:
+        return {"ok": None, "detail": ""}
+    target = parse_relay_target(url)
+    if not target:
+        return {"ok": False, "detail": "down"}
+    host, port = target
+    try:
+        ok = bool(connect(host, port, 3))
+    except Exception:
+        ok = False
+    return {"ok": ok, "detail": "ok" if ok else "down"}
+
+
+def tcp_connect(host, port, timeout):
+    with socket.create_connection((host, port), timeout=timeout):
+        return True
+
+
+def read_wake_text(path=WAKE_ENV_PATH):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def read_relay():
+    configured = (os.environ.get("GROK_RELAY_URL") or "").strip()
+    return check_relay(os.environ, "" if configured else read_wake_text(), tcp_connect)
+
+
+def speakerphone_present(cards_text, match="emeet"):
+    """True if any /proc/asound/cards line contains the match (default emeet, also M0 for that default)."""
+    needles = []
+    for part in re.split(r"[\s,]+", str(match or "")):
+        p = part.casefold()
+        if p and p not in needles:
+            needles.append(p)
+    if not needles:
+        needles = ["emeet"]
+    if "emeet" in needles and "m0" not in needles:
+        needles.append("m0")
+    for line in str(cards_text or "").splitlines():
+        low = line.casefold()
+        if any(n in low for n in needles):
+            return True
+    return False
+
+
+def check_mic(now, fetch, cards_text, stale_s=30, match="emeet"):
+    """fetch() -> wake /status JSON or None. ok when the speakerphone is present and level_at is within stale_s."""
+    if not speakerphone_present(cards_text, match):
+        return {"ok": False, "detail": "speakerphone missing"}
+    try:
+        payload = fetch()
+    except Exception:
+        payload = None
+    if not isinstance(payload, dict):
+        return {"ok": False, "detail": "wake listener down"}
+    try:
+        level_at = float(payload.get("level_at"))
+    except (TypeError, ValueError):
+        return {"ok": False, "detail": "capture stalled"}
+    try:
+        window = float(stale_s)
+    except (TypeError, ValueError):
+        window = 30.0
+    if now - level_at > window:
+        return {"ok": False, "detail": "capture stalled"}
+    return {"ok": True, "detail": "ok"}
+
+
+def mic_stale_s():
+    try:
+        return float(E("GROK_STATION_MIC_STALE", "30"))
+    except (TypeError, ValueError):
+        return 30.0
+
+
+def mic_match():
+    return E("GROK_STATION_MIC_MATCH", "emeet") or "emeet"
+
+
+def wake_status_url(control=None):
+    """Host and port come from WAKE_CONTROL; the path is the wake listener's /status."""
+    raw = WAKE_CONTROL if control is None else control
+    parts = urllib.parse.urlsplit(raw)
+    host = parts.hostname or "127.0.0.1"
+    if parts.port:
+        port = parts.port
+    else:
+        port = 443 if parts.scheme == "https" else 80
+    scheme = "https" if parts.scheme == "https" else "http"
+    return f"{scheme}://{host}:{port}/status"
+
+
+def fetch_wake_status(url=None, timeout=2):
+    target = wake_status_url() if url is None else url
+    try:
+        with urllib.request.urlopen(urllib.request.Request(target), timeout=timeout) as r:
+            payload = json.loads(r.read(8192))
+    except Exception:
+        return None
+    return payload
+
+
+def read_cards(path="/proc/asound/cards"):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def read_mic(now):
+    return check_mic(now, fetch_wake_status, read_cards(), stale_s=mic_stale_s(), match=mic_match())
+
+
+def collect_status(now=None):
+    now = time.time() if now is None else now
+    return {"net": read_net(), "relay": read_relay(), "mic": read_mic(now), "at": now}
+
+
+def status_loop():
+    """Daemon poll. Posts STATUS_EV only when an icon would change. Never logs a URL or host."""
+    while True:
+        started = time.time()
+        try:
+            if store_status(collect_status(now=started)):
+                pygame.event.post(pygame.event.Event(STATUS_EV))
+        except Exception as e:
+            print(f"status poll failed: {type(e).__name__}", flush=True)
+        delay = status_poll_s() - (time.time() - started)
+        if delay > 0:
+            time.sleep(delay)
+
+
+def net_icon_name(net):
+    up = bool(net.get("up"))
+    if net.get("kind") == "ethernet":
+        return "ethernet-connected" if up else "ethernet-disconnected"
+    return "wifi-connected" if up else "wifi-disconnected"
+
+
+def status_icon_names(st):
+    """Right to left: network, relay (hidden when unconfigured), mic (hidden until the first reading)."""
+    names = [net_icon_name(st.get("net") or {})]
+    relay = st.get("relay") or {}
+    if relay.get("ok") is not None:
+        names.append("relay-connected" if relay.get("ok") else "relay-disconnected")
+    mic = st.get("mic") or {}
+    if mic.get("ok") is not None:
+        names.append("mic-ok" if mic.get("ok") else "mic-problem")
+    return names
+
+
+def status_icon_px(scale):
+    """22 px at 1080p, clamped to the 20–24 px spec, then multiplied by the display scale."""
+    spec = min(24, max(20, 22))
+    return max(1, int(round(spec * scale)))
+
+
+def _fallback_status_icon(name, px):
+    """Teal glyph when the state is good; muted glyph plus an amber slash when it is not. Never red."""
+    px = max(1, int(px))
+    surf = pygame.Surface((px, px), pygame.SRCALPHA)
+    bad = name.endswith("disconnected") or name.endswith("problem")
+    color = MUTED if bad else LISTENING
+    sw = max(1, px // 10)
+    pad = max(1, px // 6)
+
+    def stroke(width, limit):
+        return max(1, min(width, limit))
+
+    if name.startswith("wifi"):
+        cx, cy = px // 2, px - pad
+        pygame.draw.circle(surf, color, (cx, max(0, cy)), stroke(sw, max(1, px // 3)))
+        for frac in (0.45, 0.75, 1.05):
+            r = max(2, int((px - 2 * pad) * frac / 2))
+            rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+            if rect.w > 2 and rect.h > 2:
+                pygame.draw.arc(surf, color, rect, math.radians(45), math.radians(135), stroke(sw, rect.w // 2))
+    elif name.startswith("ethernet"):
+        body = pygame.Rect(pad, pad, max(1, px - 2 * pad), max(1, px // 2 - pad // 2))
+        rad = min(body.w, body.h) // 2
+        pygame.draw.rect(surf, color, body, stroke(sw, max(1, min(body.w, body.h) // 2)), border_radius=max(0, rad))
+        pygame.draw.line(surf, color, (px // 2, body.bottom), (px // 2, max(body.bottom, px - pad)), sw)
+    elif name.startswith("relay"):
+        r = max(2, px // 6)
+        pygame.draw.circle(surf, color, (pad + r, px // 2), r, stroke(sw, r))
+        pygame.draw.circle(surf, color, (max(pad + r, px - pad - r), px // 2), r, stroke(sw, r))
+        pygame.draw.line(surf, color, (pad + 2 * r, px // 2), (max(pad + 2 * r, px - pad - 2 * r), px // 2), sw)
+    else:
+        w, h = max(2, px // 3), max(2, px // 2)
+        body = pygame.Rect((px - w) // 2, pad, w, h)
+        rad = min(w, h) // 2
+        pygame.draw.rect(surf, color, body, stroke(sw, min(w, h) // 2), border_radius=rad)
+        pygame.draw.line(surf, color, (px // 2, body.bottom), (px // 2, max(body.bottom, px - pad)), sw)
+    if bad and px >= 4:
+        a, b = (pad, pad), (px - pad - 1, px - pad - 1)
+        pygame.draw.line(surf, hexc("0D0B09"), a, b, sw + 2)
+        pygame.draw.line(surf, AMBER, a, b, sw)
+    return surf
+
+
+def load_status_icon(name, px, directory=None):
+    """SVG from assets/status/<name>.svg, smoothscaled. A missing or unreadable file uses the vector fallback."""
+    px = max(1, int(px))
+    directory = STATUS_DIR if directory is None else directory
+    key = (directory, name, px)
+    hit = _STATUS_ICON_CACHE.get(key)
+    if hit is not None:
+        return hit
+    surf = None
+    path = os.path.join(directory, f"{name}.svg")
+    if os.path.isfile(path):
+        try:
+            img = pygame.image.load(path)
+            if not (img.get_flags() & pygame.SRCALPHA):
+                img = img.convert_alpha()
+            if img.get_width() > 0 and img.get_height() > 0:
+                surf = img if img.get_size() == (px, px) else pygame.transform.smoothscale(img, (px, px))
+        except Exception:
+            surf = None
+    if surf is None:
+        surf = _fallback_status_icon(name, px)
+    if len(_STATUS_ICON_CACHE) > 48:
+        _STATUS_ICON_CACHE.pop(next(iter(_STATUS_ICON_CACHE)))
+    _STATUS_ICON_CACHE[key] = surf
+    return surf
+
+
+def draw_status_icons(surf, L, status=None, right=None, cy=None):
+    """Right to left in the top corner. `right`/`cy` move the row left of a top-bar clock. Returns the row rect."""
+    global LAST_STATUS_RECT
+    names = status_icon_names(status_snapshot() if status is None else status)
+    px = status_icon_px(L.s)
+    gap = max(1, int(round(8 * L.s)))
+    if right is None:
+        right = L.w - L.m
+    if cy is None:
+        cy = L(34) + L(72) // 2
+    y = int(cy) - px // 2
+    x = int(right)
+    rects = []
+    for name in names:
+        x -= px
+        rect = pygame.Rect(x, y, px, px)
+        surf.blit(load_status_icon(name, px), rect.topleft)
+        rects.append(rect)
+        x -= gap
+    LAST_STATUS_RECT = rects[0].unionall(rects[1:]) if len(rects) > 1 else rects[0]
+    return LAST_STATUS_RECT
 
 
 # ---------------------------------------------------------------- drawing helpers
@@ -562,7 +980,7 @@ LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
 LAST_CLOCK_RECT = LAST_DATE_RECT = LAST_WEATHER_RECT = LAST_OFFLINE_RECT = None
-LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_TIMER_RECT = None
+LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_TIMER_RECT = LAST_STATUS_RECT = None
 TIMER_CHIPS = []    # validated timers: {id, label, ends_at_epoch, ringing}; the display counts down locally
 TIMER_EPOCH = None  # pin the countdown (render script); None uses time.time()
 _CARD_ICON = ("sun", "partly", "cloud", "fog", "rain", "snow", "storm")
@@ -1098,6 +1516,7 @@ def draw_idle(surf, L, now, wx, colon_on=True):
         draw_weather(surf, L, wx.data, base)
     draw_next_up(surf, L, now)
     draw_timer_strip(surf, L)
+    draw_status_icons(surf, L)
 
 
 def draw_weather(surf, L, d, clock_base):
@@ -1151,6 +1570,7 @@ def draw_night(surf, L, now, colon_on=True):
     base = L.h // 2 + int(f.get_ascent() * 0.36) + dy
     draw_clock(surf, "night", L(340), hhmm, NIGHT_TEXT, x, base, colon_on)
     baseline_text(surf, "night", L(90), ampm, NIGHT_DIM, x + wc + L(20), base)
+    draw_status_icons(surf, L)
 
 
 def draw_topbar_clock(surf, L, now):
@@ -1159,6 +1579,7 @@ def draw_topbar_clock(surf, L, now):
     y = L(34) + L(72) // 2
     r = text_at(surf, "display", L(56), f"{hhmm} {ampm}", TEXT, (L.w - L.m, y), "midright")
     LAST_TOPBAR_RECT = r
+    draw_status_icons(surf, L, right=r.left - max(1, int(round(8 * L.s))), cy=r.centery)
     return r
 
 
@@ -1534,7 +1955,11 @@ def topbar(surf, se, label, now):
     clk = font("display", round(0.0563 * se)).render(f"{hhmm} {ampm}", True, hexc("D9CFC2"))
     hgt = max(lab.get_height(), clk.get_height())
     surf.blit(lab, (m, y + (hgt - lab.get_height()) // 2))
-    surf.blit(clk, (surf.get_width() - m - clk.get_width(), y + (hgt - clk.get_height()) // 2))
+    clk_x = surf.get_width() - m - clk.get_width()
+    clk_y = y + (hgt - clk.get_height()) // 2
+    surf.blit(clk, (clk_x, clk_y))
+    lay = Layout(surf.get_width(), surf.get_height())
+    draw_status_icons(surf, lay, right=clk_x - max(1, int(round(8 * lay.s))), cy=clk_y + clk.get_height() / 2)
 
 
 def draw_setup(surf, L, now, d):
@@ -1886,6 +2311,7 @@ def main():
 
     paint()
     threading.Thread(target=wx.loop, daemon=True).start()
+    threading.Thread(target=status_loop, name="status", daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"listening on :{PORT}", flush=True)
@@ -1970,6 +2396,8 @@ def main():
         elif ev.type == WEATHER:
             if not msg and not is_night(time.localtime()):
                 paint(snapshot=False)
+        elif ev.type == STATUS_EV:
+            paint(snapshot=False)
         elif ev.type == pygame.QUIT:
             break
         elif ev.type == pygame.NOEVENT:

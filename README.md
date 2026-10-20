@@ -92,6 +92,7 @@ It runs as `grok` (groups video/render/input).
   message can't appear as the assistant.
   200 ok · 400 missing text/bad JSON · 401 bad token · 403 non-private client IP · 413 body > 8 KB.
 - `GET /health`: 200.
+- `GET /status` (**localhost only**, no token): the status-icon snapshot (network, relay, mic, and the time it was read). No relay URL, host, or address. 403 from any other address.
 - `POST /state` (**localhost only**, no token): `{"state": "...", "heard": "...", "text": "...", "done": false}`.
   Used by the wake listener on the same Pi. States: `listening` (solid pulsing teal ring, `GROK_STATION_LISTEN_HOLD` s,
   default 12), `thinking` (violet arc, question shown), `speaking` (warm ring, question + reply text; with
@@ -107,6 +108,18 @@ curl -H "Authorization: Bearer $TOKEN" -d '{"text":"hello"}' http://grok-station
 curl -H "Authorization: Bearer $TOKEN" -d '{"from":"Grok","heard":"what is the weather","text":"Mild and clear."}' \
   http://grok-station.local:8787/show
 ```
+
+## Status icons
+
+Three small icons sit in the top-right corner of every screen (idle, night, session, setup). On a screen whose clock is already in that corner, the icons sit just to its left. They do not move the rest of the layout. A background thread, started with the display and not with `--demo`, refreshes them every 12 seconds (`GROK_STATION_STATUS_POLL`).
+
+| Icon | Good | Otherwise |
+| --- | --- | --- |
+| Network | Wi-Fi or Ethernet link is up and a default route exists | Link down, or no default route. No link at all uses the disconnected Wi-Fi icon |
+| Relay | TCP connect to the voice relay succeeded | Unreachable. The icon is hidden when `GROK_RELAY_URL` is unset (display env, else `/etc/grok-station/wake.env`) |
+| Mic | The USB speakerphone is present and the wake listener saw a level within the last 30 seconds (`GROK_STATION_MIC_STALE`) | "speakerphone missing", "wake listener down", or "capture stalled". The match is `GROK_STATION_MIC_MATCH` (default `emeet`, which also accepts `M0`) |
+
+The artwork is 24×24 SVG in `assets/status/` (loaded from the same assets directory as the fonts): `wifi-connected`, `wifi-disconnected`, `ethernet-connected`, `ethernet-disconnected`, `relay-connected`, `relay-disconnected`, `mic-ok`, `mic-problem`. To swap an icon, replace that file and keep the name. A missing or unreadable file is drawn as a simple teal glyph, or the same glyph with an amber slash when the state is bad.
 
 ## Wake word (proof of concept)
 
