@@ -1786,8 +1786,14 @@ def run_update_check():
         write_json(path("update-check.json"), {"available": None, "sha": None, "error": True, "checked_at": int(now())})
         _audit_update("update-check-failed", "network")
         return
+    prev = _update_cache().get("known")
+    known = dict(prev) if isinstance(prev, dict) else {}
+    if info["version"]:
+        known[info["sha"][:7]] = info["version"]
+    known = dict(list(known.items())[-30:])
     write_json(path("update-check.json"), {
         "available": info["version"] or None, "sha": info["sha"], "error": False, "checked_at": int(now()),
+        "known": known,
     })
     _audit_update("update-check", info["version"] or info["sha"][:7])
 
@@ -1803,16 +1809,61 @@ def _short_error(text):
     return s
 
 
-def update_job():
-    """State of the update unit. A failure is one line; the log stays in the journal."""
+def update_job(installed=None):
+    """State of the update unit. A failure is one line; the log stays in the journal.
+
+    The unit's Result is sticky (it describes the last run, forever), and install.sh can fail its post-install
+    health check after the new version is already in place. So a "failed" unit only counts as a failed update
+    when the installed VERSION is not the one that run was installing (update-target.json, written at start).
+    """
     ok, out = helper("update-status", timeout=10)
     if not ok or not isinstance(out, dict):
         return {"state": "unknown"}
     state = out.get("state") if out.get("state") in ("running", "succeeded", "failed", "idle") else "unknown"
+    if state in ("failed", "succeeded"):
+        target = read_json(path("update-target.json"), {})
+        target = target.get("to") if isinstance(target, dict) and isinstance(target.get("to"), str) else ""
+        inst = version() if installed is None else installed
+        if not target:
+            return {"state": "idle"}  # no update started from this page since 0.1.1: nothing to report
+        if state == "failed" and semver_tuple(target) and version_order(inst, target) in ("same", "older"):
+            return {"state": "succeeded", "warning": True}
+        if state == "succeeded" and version_order(inst, target) == "newer":
+            return {"state": "failed"}
     job = {"state": state}
     if state == "failed":
-        job["error"] = _short_error(out.get("error"))
+        job["error"] = "The update didn't finish. Details are in the station's logs."
     return job
+
+
+_HEX = re.compile(r"[0-9a-f]{7,40}")
+
+
+def update_history(rows, known=None):
+    """Audit lines -> [{at, event, version}] with versions instead of commit ids where they are known.
+
+    known maps a short commit id to its VERSION (kept in update-check.json). An unknown commit id is
+    shown as an earlier build, never as a hash.
+    """
+    known = known if isinstance(known, dict) else {}
+    out = []
+    for raw in rows or []:
+        parts = str(raw or "").split()
+        if len(parts) < 4:
+            continue
+        detail = " ".join(parts[4:]) if len(parts) > 4 else ""
+        ver = ""
+        for tok in detail.replace("→", " ").split():
+            if semver_tuple(tok):
+                ver = (ver + " → " + tok) if ver else tok
+            elif _HEX.fullmatch(tok.lower()):
+                v = known.get(tok.lower()[:7], "")
+                tok_out = v if semver_tuple(v) else "earlier build"
+                ver = (ver + " → " + tok_out) if ver else tok_out
+        if not ver and detail not in ("", "-"):
+            ver = detail if not _HEX.search(detail.lower()) else ""
+        out.append({"at": parts[0], "event": parts[3], "version": ver})
+    return out
 
 
 def _update_cache():
@@ -1824,8 +1875,9 @@ def updates_view():
     cache = _update_cache()
     installed = version()
     sha = cache.get("sha") if isinstance(cache.get("sha"), str) and re.fullmatch(r"[0-9a-f]{40}", cache.get("sha") or "") else None
-    avail = cache.get("available") if isinstance(cache.get("available"), str) and cache.get("available") else None
-    checked = bool(sha) and not cache.get("error")
+    # Only a MAJOR.MINOR.PATCH counts. A cache from before 0.1.0 holds a full commit id here: treat it as not checked.
+    avail = cache.get("available") if isinstance(cache.get("available"), str) and semver_tuple(cache.get("available")) else None
+    checked = bool(sha) and not cache.get("error")  # an old cache (commit id in "available") has no "sha": unchecked
     order = version_order(installed, avail) if checked else None
     blocked = update_block(installed, avail, True) if checked and order in ("older", "unknown") else None
     return {
@@ -1833,13 +1885,14 @@ def updates_view():
         "available": avail,
         "available_sha": sha[:7] if sha else None,
         "update_available": order == "newer",
+        "up_to_date": order == "same",
         "update_blocked": blocked,
         "cant_check": bool(cache.get("error")),
         "checked_at": cache.get("checked_at") if isinstance(cache.get("checked_at"), int) else None,
         "autocheck": load_update_settings()["autocheck"],
-        "job": update_job(),
+        "job": update_job(installed),
         "reboot_required": os.path.exists(REBOOT_FLAG),
-        "history": recent_audit(20, "update"),
+        "history": update_history(recent_audit(20, "update"), cache.get("known")),
     }
 
 
@@ -1860,7 +1913,8 @@ def start_update():
     if not ok:
         _audit_update("update-failed", "start")
         return 500, {"error": "The update didn't start."}
-    _audit_update("update-start", version())
+    write_json(path("update-target.json"), {"from": version(), "to": avail, "at": int(now())})
+    _audit_update("update-start", f"{version()} -> {avail}")
     return 202, {"ok": True}
 
 
@@ -2603,17 +2657,22 @@ class Handler(BaseHTTPRequestHandler):
         if got is None:
             return self.send(200, {"bots": local_bots(), "voices": [], "default_voice": "",
                                    "message": RELAY_UNCONFIGURED,
-                                   "stepup_until": self._stepup(), "station_pub": "", "killed": False,
+                                   "stepup_until": self._stepup(), "station_pub": "", "station_pub_error": True,
+                                   "killed": False,
                                    "stats": stats_view(None)})
         status, data = got
         if status != 200:
             return self.relay_fail(status, data)
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
         pub = data.get("station_pub")
+        pub_ok = box_pub_ok(pub)
+        if not pub_ok:
+            print("admin: relay returned no usable station public key (see the relay log)", flush=True)
         return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")),
                                "default_voice": data.get("default_voice") if voice_ok(data.get("default_voice")) else "",
                                "stepup_until": self._stepup(),
-                               "station_pub": "".join(pub.split()) if box_pub_ok(pub) else "",
+                               "station_pub": "".join(pub.split()) if pub_ok else "",
+                               "station_pub_error": not pub_ok,
                                "killed": data.get("killed") is True, "stats": stats_view(data.get("stats"))})
 
     def bots_refresh_avatars(self):

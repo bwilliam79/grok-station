@@ -193,3 +193,20 @@ b.count,.nav .b.count{font-size:11.5px;padding:1px 8px;border-radius:99px;backgr
 /* A button placed directly in a form (not inside a .field) gets the same 14px gap as a .field; notes under a form sit 12px below it. */
 form>.btn{margin-top:14px}
 form+.note{margin-top:12px}
+
+/* Updates page */
+.updbtns{margin-bottom:16px}
+.card.hist{margin-top:20px}
+.disclose{all:unset;cursor:pointer;display:flex;align-items:center;gap:8px;width:100%;font:inherit}
+.disclose:focus-visible{outline:2px solid var(--gs-teal);outline-offset:4px;border-radius:4px}
+.disclose .chev{transition:transform .15s;margin-left:auto}
+.disclose[aria-expanded="true"] .chev{transform:rotate(90deg)}
+
+/* Read-only values: text plus a copy icon, never an input */
+.static{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.static-val{font-family:var(--mono,ui-monospace,monospace);font-size:13px;word-break:break-all;user-select:all;background:none;padding:0}
+.static-missing{color:var(--gs-amber)}
+.iconbtn{all:unset;cursor:pointer;display:inline-flex;padding:6px;border-radius:6px;color:var(--gs-muted)}
+.iconbtn:hover{color:var(--gs-text);background:var(--gs-rule)}
+.iconbtn:focus-visible{outline:2px solid var(--gs-teal)}
+.copied{font-size:12.5px;color:var(--gs-teal)}

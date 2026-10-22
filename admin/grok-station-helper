@@ -259,8 +259,17 @@ def update_remote():
     if not src or "\n" in src or "\x00" in src or not os.path.isdir(os.path.join(src, ".git")):
         fail("no source")
 
+    # Run git as the clone's owner. A root fetch leaves root-owned files in .git (FETCH_HEAD, objects), and the
+    # owner's own git pull during the update then fails with a permission error.
+    try:
+        import pwd
+        owner = pwd.getpwuid(os.stat(src).st_uid).pw_name
+    except (OSError, KeyError):
+        fail("no source")
+    who = [] if owner == "root" else ["runuser", "-u", owner, "--"]
+
     def g(*args, timeout=30):
-        return run("git", "-c", "safe.directory=" + src, "-C", src, *args, timeout=timeout)
+        return run(*who, "git", "-c", "safe.directory=" + src, "-C", src, *args, timeout=timeout)
 
     try:
         rc, _ = g("fetch", "--quiet", "origin", "main", timeout=25)

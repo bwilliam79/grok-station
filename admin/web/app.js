@@ -35,13 +35,46 @@ function toast(msg, kind = "ok") {
   t.innerHTML = `<div class="banner ${kind}" role="status">${esc(msg)}</div>`;
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.innerHTML = ""), 4000);
 }
-async function copyText(text) {
+function legacyCopy(value) {
+  // Works on plain HTTP and on a self-signed cert, where navigator.clipboard is missing or refuses.
+  const ta = document.createElement("textarea");
+  ta.value = value; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+async function copyText(text, btn) {
   let value = String(text || "");
   text = "";
-  try { await navigator.clipboard.writeText(value); toast("Copied."); }
-  catch (e) { toast("Select it and copy it.", "warn"); }
+  let ok = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(value); ok = true; } catch (e) { ok = false; }
+  }
+  if (!ok) ok = legacyCopy(value);
   value = "";
+  if (btn) {
+    const tip = btn.parentElement && btn.parentElement.querySelector(".copied");
+    if (tip) { tip.textContent = ok ? "Copied" : "Select it and copy it"; tip.hidden = false; clearTimeout(tip._t); tip._t = setTimeout(() => (tip.hidden = true), 1500); }
+  } else if (ok) toast("Copied."); else toast("Select it and copy it.", "warn");
+  return ok;
 }
+const COPY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></g></svg>';
+// A read-only value: plain monospace text, never an input. A copy icon button sits beside it.
+function staticValue(id, value, label, missing) {
+  if (!value) return `<div class="static"><span class="static-missing" id="${id}">${esc(missing || "Not available")}</span></div>`;
+  return `<div class="static"><code class="static-val mono" id="${id}">${esc(value)}</code>
+    <button type="button" class="iconbtn" data-copy="${id}" title="Copy ${esc(label)}" aria-label="Copy ${esc(label)}">${COPY_ICON}</button>
+    <span class="copied" role="status" hidden></span></div>`;
+}
+document.addEventListener("click", ev => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest("[data-copy]") : null;
+  if (!btn) return;
+  const src = document.getElementById(btn.getAttribute("data-copy"));
+  if (src) copyText(src.textContent, btn);
+});
+const STATION_KEY_MISSING = "Station key unavailable, see logs";
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function every(ms, fn) { fn(); S.timers.push(setInterval(fn, ms)); }
 function ago(ts) {
@@ -251,14 +284,18 @@ function localTime(ts) {
 const UPDATE_EVENTS = {"update-check": "Checked", "update-check-failed": "Check failed", "update-start": "Update started",
   "update-failed": "Update failed", "update-autocheck": "Daily check"};
 function historyHTML(rows) {
+  // Rows come from the server as {at, event, version}: versions where known, never commit ids.
   const list = Array.isArray(rows) ? rows : [];
   if (!list.length) return `<p class="help">No update history yet.</p>`;
-  return list.slice().reverse().map(raw => {
-    const parts = String(raw || "").trim().split(/\s+/);
-    const ev = parts[3] || "", detail = parts.slice(4).join(" ");
-    const what = (UPDATE_EVENTS[ev] || ev) + (detail && detail !== "-" ? " · " + detail : "");
-    return `<div class="row"><span class="help">${esc(localTime(parts[0]))}</span><span>${esc(what)}</span></div>`;
+  return list.slice().reverse().map(r => {
+    const row = r && typeof r === "object" ? r : {};
+    const what = (UPDATE_EVENTS[row.event] || row.event || "") + (row.version ? " · " + row.version : "");
+    return `<div class="row"><span class="help">${esc(localTime(row.at))}</span><span>${esc(what)}</span></div>`;
   }).join("");
+}
+function historyCard(rows, open) {
+  return `<div class="card hist"><h2><button type="button" class="disclose" id="histtog" aria-expanded="${open ? "true" : "false"}" aria-controls="histbody">History<svg class="chev" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button></h2>
+    <div id="histbody"${open ? "" : " hidden"}>${historyHTML(rows)}</div></div>`;
 }
 async function refreshUpdateBadge() {
   const nodes = document.querySelectorAll("[data-upbadge]");
@@ -268,11 +305,17 @@ async function refreshUpdateBadge() {
   nodes.forEach(b => { b.hidden = !n; b.textContent = n ? "1" : ""; });
 }
 const JOB_TEXT = {running: "Updating… The admin page restarts during the update and comes back by itself.",
-  succeeded: "The last update finished.", failed: "The update failed."};
+  succeeded: "The last update finished.", failed: "The update didn't finish. Details are in the station's logs."};
+const PAGE_INSTALLED = {v: null};  // version this page was loaded against; a change means the admin was updated
 async function paintUpdates(el) {
   const r = await api("GET", "/api/updates");
   if (!document.body.contains(el)) return;
   if (r.ok && r.data) el._snap = r.data;
+  if (r.ok && r.data && r.data.installed) {
+    // The update replaced this page's own code. Reload so the new page (not the old script) draws the result.
+    if (PAGE_INSTALLED.v && PAGE_INSTALLED.v !== r.data.installed) { location.reload(); return; }
+    PAGE_INSTALLED.v = r.data.installed;
+  }
   const offline = !!(el._applying && r.status === 0);
   const d = r.ok && r.data ? r.data : (offline && el._snap ? el._snap : {});
   const job = d.job || {};
@@ -284,7 +327,6 @@ async function paintUpdates(el) {
   const stuck = !!el._applyStuck;
   el._applyStuck = false;
   const auto = !!d.autocheck;
-  const sha = d.available_sha ? `<span class="sha">${esc(d.available_sha)}</span>` : "";
   const failLine = job.state === "failed" ? (job.error || JOB_TEXT.failed) : "";
   const noteLine = offline ? "Reconnecting…" : (job.state === "succeeded" ? JOB_TEXT.succeeded : (spinning ? JOB_TEXT.running : ""));
   el.innerHTML = `${d.reboot_required ? `<div class="banner warn" style="flex-wrap:wrap">The last update changed boot options. Reboot the station (System, Reboot) to finish.</div>` : ""}
@@ -293,21 +335,27 @@ async function paintUpdates(el) {
     <div class="card"><h2>Station</h2>
       ${d.update_available ? `<div class="banner up">Update available: ${esc(d.installed || "—")} → <span class="ver-new">${esc(d.available)}</span></div>` : ""}
       ${d.update_blocked ? `<div class="banner bad">${esc(d.update_blocked)}</div>` : ""}
-      ${d.available && !d.update_available && !d.update_blocked && !d.cant_check ? `<div class="uptodate">Up to date</div>` : ""}
+      ${d.up_to_date && !d.cant_check ? `<div class="uptodate">Up to date</div>` : ""}
       <div class="row"><span>Installed</span><span class="right mono">${esc(d.installed || "—")}</span></div>
-      <div class="row"><span>Available</span><span class="right">${d.update_available ? `<span class="ver-new">${esc(d.available)}</span>` : `<span class="mono">${esc(d.available || "—")}</span>`}${sha}</span></div>
+      <div class="row"><span>Available</span><span class="right">${d.update_available ? `<span class="ver-new">${esc(d.available)}</span>` : `<span class="mono">${esc(d.available || "—")}</span>`}</span></div>
       ${d.checked_at ? `<p class="note">Checked ${esc(localTime(d.checked_at))}. Updates come from the main branch on GitHub.</p>` : ""}
       ${noteLine ? `<p class="note">${esc(noteLine)}</p>` : ""}
       ${failLine ? `<p class="err" role="alert">${esc(failLine)}</p>` : ""}
       ${stuck ? `<p class="err" role="alert">The update didn't start.</p>` : ""}
-      <div class="field inline">${spinning
+      <div class="field inline updbtns">${spinning
         ? `<span class="spin" role="status" aria-label="Updating"></span>`
-        : `<button type="button" class="btn p" id="upd"${d.update_available ? "" : " disabled"}>Update</button>`}
+        : (d.update_available ? `<button type="button" class="btn p" id="upd">Update</button>` : "")}
         <button type="button" class="btn" id="checknow"${spinning ? " disabled" : ""}>Check now</button></div>
       <div id="ue"></div>
       <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
         <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div></div>
-    <div class="card"><h2>History</h2>${historyHTML(d.history)}</div>`;
+    ${historyCard(d.history, !!el._histOpen)}`;
+  const tog = $("#histtog", el);
+  if (tog) tog.onclick = () => {  // a <button>: Enter and Space work, and it is in the tab order
+    el._histOpen = !el._histOpen;
+    tog.setAttribute("aria-expanded", el._histOpen ? "true" : "false");
+    $("#histbody", el).hidden = !el._histOpen;
+  };
   el._paintGen = (el._paintGen || 0) + 1;
   const gen = el._paintGen;
   if (spinning) setTimeout(() => { if (document.body.contains(el) && el._paintGen === gen) paintUpdates(el); }, 2000);
@@ -887,9 +935,8 @@ function applyBotMeta(el, data) {
   if (overall) overall.textContent = "Overall · " + rttLine(el._stats);
 }
 function pairFields(stationPub, paired) {
-  return `<div class="field"><label for="spub">Station public key</label>
-      <div class="inline"><input class="inp mono" id="spub" readonly value="${esc(stationPub || "")}">
-      <button class="btn sm" id="spubcopy" type="button">Copy</button></div>
+  return `<div class="field"><label>Station public key</label>
+      ${staticValue("spub", stationPub, "station public key", STATION_KEY_MISSING)}
       <p class="note">The bot seals replies to this key. Never port-forward the admin port.</p></div>
     <div class="field"><label for="bpub">Bot public key</label>
       <input class="inp mono" id="bpub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes">
@@ -899,11 +946,6 @@ function pairFields(stationPub, paired) {
       ${paired ? `<button class="btn dg" id="revoke" type="button">Revoke</button>` : ""}</div>`;
 }
 function wirePair(root, bot, el) {
-  const copy = $("#spubcopy", root);
-  if (copy) copy.onclick = () => {
-    const box = $("#spub", root);
-    copyText(box ? box.value : "");
-  };
   const revokeOne = () => askPassword(`Revoke ${bot.name}?`, "This drops the pinned key. Replies from this bot are rejected until you pair it again.", "Revoke", async pw => {
     const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/key`, {password: pw});
     if (r && r.ok) {
@@ -1903,9 +1945,8 @@ function addBot(voices, el) {
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Pair keys">${dialogX()}${addStepper(2)}
       <h2>Pair keys</h2>
       <p class="sub">On the bot's machine, run grok-station-reply keygen. Paste the public line here.</p>
-      <div class="field"><label for="astapub">Station public key</label>
-        <div class="inline"><input class="inp mono" id="astapub" readonly value="${esc(el._stationPub || "")}">
-        <button class="btn sm" id="astacopy" type="button">Copy</button></div>
+      <div class="field"><label>Station public key</label>
+        ${staticValue("astapub", el._stationPub, "station public key", STATION_KEY_MISSING)}
         <p class="note">The bot seals replies to this key. Never port-forward the admin port.</p></div>
       <div class="field"><label for="apub">Bot public key</label>
         <input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120">
@@ -1914,8 +1955,6 @@ function addBot(voices, el) {
       <div class="field"><button class="btn p" id="apairnext" type="submit">Next</button></div>
       <div class="field"><a href="#" class="skipnow" id="apairskip">Skip for now</a></div></form>`;
     bindSheet(d, shut);
-    const copy = $("#astacopy", d);
-    if (copy) copy.onclick = () => { const box = $("#astapub", d); copyText(box ? box.value : ""); };
     const skip = $("#apairskip", d);
     if (skip) skip.onclick = ev => { ev.preventDefault(); draft.pub = ""; step3(); };
     d.querySelector("form").onsubmit = ev => {
@@ -2088,7 +2127,7 @@ async function pageSystem(el) {
   const hh = s.health || {};
   const t = s.tls || {};
   $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station made its own certificate for ${esc(t.url || "this page")}. If your browser warns about it, check that the browser's SHA-256 fingerprint matches this one exactly (it's also shown on the station screen for 10 minutes after a new certificate is made), then trust it.</p>
-    <div class="row"><span>SHA-256</span><span class="right mono" style="word-break:break-all;max-width:70%;text-align:right">${t.fingerprint ? esc(t.fingerprint) : "n/a"}</span></div>`;
+    <div class="row"><span>SHA-256</span><span class="right" style="max-width:70%">${staticValue("tlsfp", t.fingerprint || "", "certificate fingerprint", "n/a")}</span></div>`;
   $("#hl", el).innerHTML = `<h2>Health</h2>
     <div class="row"><span>CPU temperature</span><span class="right mono">${hh.cpu_c != null ? hh.cpu_c + " °C" : "n/a"}</span></div>
     <div class="row"><span>Uptime</span><span class="right mono">${hh.uptime_s != null ? Math.floor(hh.uptime_s / 86400) + "d " + Math.floor(hh.uptime_s % 86400 / 3600) + "h" : "n/a"}</span></div>

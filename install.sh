@@ -59,6 +59,15 @@ fail() {  # fail <stage>
   echo "${C_R}${C_B}Install failed:${C_0} $1"
   if [ "$VERBOSE" = 0 ]; then echo "Last lines of $LOG:"; tail -n 20 "$LOG" | sed 's/^/  /'; fi
   echo "Full log: $LOG   (re-run with --verbose to see everything)"
+  # An update that fails partway must not leave the station half-restarted (admin on new code, relay stopped or on
+  # old code). Restart every service from whatever is installed now, so the page and voice keep answering.
+  if [ "$MODE" = update ] && [ "$DRY" != 1 ]; then
+    echo "Restarting the station services after the failed update" | tee -a "$LOG"
+    for u in grok-station-relay grok-station-wake grok-station grok-station-admin; do
+      systemctl reset-failed "$u" >/dev/null 2>&1 || true
+      systemctl restart "$u" >> "$LOG" 2>&1 || echo "!!   couldn't restart $u" >> "$LOG"
+    done
+  fi
   exit 1
 }
 
@@ -111,6 +120,12 @@ st_users() {
   run install -d -o root -g root -m 0711 /etc/grok-station $S
   gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
   gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
+  # Station X25519 key (bots seal replies to it). The relay runs with ProtectSystem=strict, so /etc is read-only to
+  # it and it can't create this file itself: make it here, and re-assert owner and mode on every run. A file that
+  # is not exactly 32 bytes is unusable and is replaced (any pairing made with it could never have worked).
+  sh_ "k=$S/station_box_key; if [ ! -f \$k ] || [ \$(stat -c %s \$k) != 32 ]; then umask 077; t=\$(mktemp $S/.k.XXXXXX); head -c 32 /dev/urandom > \$t; mv -f \$t \$k; echo 'station key created'; fi"
+  run chown grok-relay:grok-admin $S/station_box_key
+  run chmod 0600 $S/station_box_key
   sh_ "[ -s /etc/grok-station/env ] || { umask 077; printf 'GROK_STATION_TOKEN=%s\nGROK_RELAY_URL=ws://127.0.0.1:8790/ws\n' \$(openssl rand -hex 24) > /etc/grok-station/env; chown root:grok /etc/grok-station/env; chmod 0640 /etc/grok-station/env; }"
   run chown root:grok /etc/grok-station/env   # every run: an older admin save left it root:root 0600 (relay can't read the location)
   run chmod 0640 /etc/grok-station/env
@@ -215,6 +230,10 @@ st_health() {
       if systemctl is-active -q $u; then echo "ok   $u running"; else
         echo "!!   $u is not running. Last log lines:"; journalctl -u $u -n 25 --no-pager; bad=1; fi
     done
+    # The admin page talks to the relay on loopback. A running unit that doesn't answer is still a failure.
+    i=0; until curl -s -o /dev/null --max-time 3 http://127.0.0.1:8790/healthz || [ $i -ge 15 ]; do sleep 2; i=$((i+1)); done
+    if curl -s -o /dev/null --max-time 3 http://127.0.0.1:8790/healthz; then echo "ok   relay answers on loopback"; else
+      echo "!!   relay does not answer on 127.0.0.1:8790. Last log lines:"; journalctl -u grok-station-relay -n 25 --no-pager; bad=1; fi
     i=0; until curl -ks -o /dev/null --max-time 5 https://127.0.0.1/ || [ $i -ge 10 ]; do sleep 2; i=$((i+1)); done
     if curl -ks -o /dev/null --max-time 5 https://127.0.0.1/; then echo "ok   admin page answers on https://127.0.0.1"; else
       echo "!!   admin page does not answer on https://127.0.0.1. Last log lines:"; journalctl -u grok-station-admin -n 25 --no-pager; bad=1; fi

@@ -23,8 +23,14 @@ JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 """
 import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata
 from zoneinfo import ZoneInfo
-from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
-import botreply
+try:
+    from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
+    import botreply
+except ModuleNotFoundError as _e:  # a venv from an older install: say which package, not a bare traceback
+    import sys as _sys
+    print(f"relay: missing Python package '{_e.name}' in the relay venv. Re-run the installer "
+          "(it installs relay/requirements.txt on every run).", file=_sys.stderr, flush=True)
+    raise SystemExit(1)
 import handoff
 import tools as station_tools
 import t1
@@ -2019,6 +2025,16 @@ def _known(slug):
     return bool(handoff.bot_slug_ok(slug) and slug in persona_list())
 
 
+_STATION_KEY_WARNED = set()
+
+
+def _station_key_warn(msg):
+    """Once per message per process. Never includes key bytes or paths beyond the fixed file name."""
+    if msg not in _STATION_KEY_WARNED:
+        _STATION_KEY_WARNED.add(msg)
+        print(f"relay: {msg}", flush=True)
+
+
 async def admin_bots_get(req):
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -2029,10 +2045,17 @@ async def admin_bots_get(req):
     keys = botreply.load_keys(bot_keys_path())
     killed = keys.get("killed") is True
     stats = rtt_stats()
+    station_pub, station_err = "", False
     try:
         station_pub = botreply.station_pub_b64(botreply.load_or_create_station(SECRETS_DIR))
-    except (botreply.StationKeyError, OSError):
-        station_pub = ""
+    except botreply.StationKeyError:
+        station_err = True
+        _station_key_warn("station key file is not 32 bytes; re-run the installer to recreate it")
+    except OSError as e:
+        station_err = True
+        # Under ProtectSystem=strict /etc is read-only for this service: install.sh must create the key.
+        _station_key_warn(f"station key unreadable ({type(e).__name__}, errno {getattr(e, 'errno', '?')}); "
+                          "re-run the installer to create it")
     bots = []
     for slug in sorted(roster):
         p = roster[slug]
@@ -2045,7 +2068,7 @@ async def admin_bots_get(req):
     if not VOICES:
         kick_voice_fetch()
     return web.json_response({"bots": bots, "voices": sorted(offered_voices()), "default_voice": VOICE,
-                              "station_pub": station_pub, "killed": killed, "stats": stats.overall_view()})
+                              "station_pub": station_pub, "station_pub_error": station_err, "killed": killed, "stats": stats.overall_view()})
 
 
 async def admin_bots_post(req):

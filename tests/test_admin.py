@@ -1605,7 +1605,7 @@ class Updates(unittest.TestCase):
         self.assertFalse(v["cant_check"])
         self.assertIsNone(v["update_blocked"])
         self.assertNotIn("log", v["job"])
-        self.assertTrue(any(" update-check 0.1.1" in h for h in v["history"]))
+        self.assertTrue(any(h["event"] == "update-check" and h["version"] == "0.1.1" for h in v["history"]))
         self.assertNotIn("relay", v["installed"] if isinstance(v["installed"], dict) else {})
 
     def test_check_failure_is_reported_not_raised(self):
@@ -1617,7 +1617,7 @@ class Updates(unittest.TestCase):
         self.assertTrue(v["cant_check"])
         self.assertIsNone(v["available"])
         self.assertNotIn("log", v["job"])
-        self.assertTrue(any("update-check-failed network" in h for h in v["history"]))
+        self.assertTrue(any(h["event"] == "update-check-failed" and h["version"] == "network" for h in v["history"]))
 
     def test_apply_starts_only_the_fixed_unit(self):
         c = signed_in()

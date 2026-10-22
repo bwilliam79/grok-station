@@ -33,9 +33,12 @@ INSTALLED=
 if [ -f /opt/grok-station/VERSION ]; then
   INSTALLED=$(tr -d '[:space:]' < /opt/grok-station/VERSION)
 fi
-git -c safe.directory="$SRC" -C "$SRC" fetch --quiet origin main \
+# git runs as the clone's owner: a root fetch leaves root-owned files in .git and the owner's pull then fails.
+OWNER=$(stat -c %U "$SRC")
+g() { if [ "$OWNER" != root ]; then runuser -u "$OWNER" -- git -c safe.directory="$SRC" -C "$SRC" "$@"; else git -c safe.directory="$SRC" -C "$SRC" "$@"; fi; }
+g fetch --quiet origin main \
   || { echo "Couldn't fetch the main branch." >&2; exit 1; }
-REMOTE=$(git -c safe.directory="$SRC" -C "$SRC" show origin/main:VERSION 2>/dev/null || true)
+REMOTE=$(g show origin/main:VERSION 2>/dev/null || true)
 REMOTE=$(printf '%s' "$REMOTE" | tr -d '[:space:]')
 order=$(semver_order "$INSTALLED" "$REMOTE")
 if [ "$order" = "same" ]; then

@@ -84,7 +84,7 @@ class NetParse(unittest.TestCase):
 class RelayParse(unittest.TestCase):
     def test_icon_follows_handoff_not_a_lan_probe(self):
         """Green when a bot is paired and the last request did not fail. Red on timeout or POST failure.
-        No paired bot stays hidden. The poll does not open a socket to a relay host."""
+        No paired bot shows the dim unpaired icon. The poll does not open a socket to a relay host."""
         self.assertEqual(gs.relay_icon(None), {"ok": None, "detail": ""})
         self.assertEqual(gs.relay_icon({"ok": True}), {"ok": None, "detail": ""})  # unauthenticated health
         idle = {"ok": True, "bots": {"paired": True, "ok": True}}
@@ -112,8 +112,10 @@ class RelayParse(unittest.TestCase):
         self.assertNotIn("relay-connected", names)
         green = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(idle), "mic": {}})
         self.assertIn("relay-connected", green)
-        hidden = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(bare), "mic": {}})
-        self.assertFalse(any(n.startswith("relay") for n in hidden))
+        unpaired = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(bare), "mic": {}})
+        self.assertEqual([n for n in unpaired if n.startswith("relay")], ["relay-unpaired"])
+        boot = gs.status_icon_names({"net": {}, "relay": gs.check_relay(lambda: None), "mic": {}})
+        self.assertIn("relay-unpaired", boot)  # station just came up, no relay answer yet
         with open(gs.__file__) as fh:
             src = fh.read()
         self.assertNotIn("create_connection", src)
@@ -214,12 +216,12 @@ class IconDraw(unittest.TestCase):
         self.assertGreaterEqual(miny, region.top)
         self.assertLess(maxx, region.right)
         self.assertLess(maxy, region.bottom)
-        # an unconfigured relay is not drawn, so the row is narrower
-        hidden = dict(st, relay={"ok": None, "detail": ""})
+        # an unpaired relay is still drawn (dim), so the row keeps its width
+        unpaired = dict(st, relay={"ok": None, "detail": ""})
         surf2 = pygame.Surface((w, h))
         surf2.fill(gs.BG)
-        rect2 = gs.draw_status_icons(surf2, L, status=hidden)
-        self.assertLess(rect2.width, rect.width)
+        rect2 = gs.draw_status_icons(surf2, L, status=unpaired)
+        self.assertEqual(rect2.width, rect.width)
         self.assertEqual(rect2.right, rect.right)
 
     def test_clock_sits_left_of_the_icons(self):
@@ -265,11 +267,24 @@ class RelayIconPairedTests(__import__("unittest").TestCase):
         st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": False}})}
         self.assertIn("relay-disconnected", self.g.status_icon_names(st))
 
-    def test_zero_paired_hidden(self):
+    def test_zero_paired_shows_unpaired(self):
         st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": False, "ok": None}})}
         names = self.g.status_icon_names(st)
+        self.assertIn("relay-unpaired", names)
         self.assertNotIn("relay-connected", names)
         self.assertNotIn("relay-disconnected", names)
+
+    def test_empty_status_shows_unpaired(self):
+        self.assertIn("relay-unpaired", self.g.status_icon_names({}))
+
+    def test_unpaired_icon_is_dim_not_red(self):
+        import os
+        svg = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "status", "relay-unpaired.svg")).read()
+        self.assertNotIn("#FF5A52", svg)
+        self.assertNotIn("#3FD3B6", svg)
+        self.assertIn("#A89B8C", svg)
+        empty = os.path.join(os.path.dirname(os.path.abspath(__file__)), "no-such-dir")
+        self.assertIsNotNone(self.g.load_status_icon("relay-unpaired", 22, directory=empty))
 
     def test_failed_poll_keeps_paired_state(self):
         prev = {"ok": True, "detail": "ok"}

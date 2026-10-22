@@ -425,7 +425,7 @@ def relay_health_url():
 
 
 def relay_icon(body):
-    """Authorized /health JSON -> icon. No paired bot, or a body with no bots field, stays unconfigured.
+    """Authorized /health JSON -> icon. No paired bot, or a body with no bots field, is unpaired (dim icon).
 
     ok True is green (paired, and the last request did not fail, including before any request).
     ok False is red (last request timed out or its webhook POST failed). Detail never names a host.
@@ -434,7 +434,7 @@ def relay_icon(body):
         return {"ok": None, "detail": ""}
     bots = body.get("bots")
     if bots is None and "key" not in body:
-        _warn_once("relay: /health returned no details (token unreadable or unauthorized); relay icon hidden")
+        _warn_once("relay: /health returned no details (token unreadable or unauthorized); relay icon shows unpaired")
     if not isinstance(bots, dict) or bots.get("paired") is not True:
         return {"ok": None, "detail": ""}
     if bots.get("ok") is False:
@@ -459,7 +459,7 @@ def fetch_relay_health(timeout=2):
     """GET loopback /health with the local bearer. None on any failure. The token is not logged."""
     token = relay_token()
     if not token:
-        _warn_once("relay: no local token readable by the display; relay icon hidden")
+        _warn_once("relay: no local token readable by the display; relay icon shows unpaired")
         return None
     req = urllib.request.Request(relay_health_url(), headers={"Authorization": "Bearer " + token})
     try:
@@ -590,10 +590,12 @@ def net_icon_name(net):
 
 
 def status_icon_names(st):
-    """Right to left: network, relay (hidden when unconfigured), mic (hidden until the first reading)."""
+    """Right to left: network, relay (always shown; dim broken link until a bot is paired), mic (hidden until the first reading)."""
     names = [net_icon_name(st.get("net") or {})]
     relay = st.get("relay") or {}
-    if relay.get("ok") is not None:
+    if relay.get("ok") is None:
+        names.append("relay-unpaired")
+    else:
         names.append("relay-connected" if relay.get("ok") else "relay-disconnected")
     mic = st.get("mic") or {}
     if mic.get("ok") is not None:
@@ -631,6 +633,15 @@ def _fallback_status_icon(name, px):
         rad = min(body.w, body.h) // 2
         pygame.draw.rect(surf, color, body, stroke(sw, max(1, min(body.w, body.h) // 2)), border_radius=max(0, rad))
         pygame.draw.line(surf, color, (px // 2, body.bottom), (px // 2, max(body.bottom, px - pad)), sw)
+    elif name == "relay-unpaired":
+        r = max(2, px // 6)
+        dim = tuple(int(c * 0.5) for c in MUTED[:3])
+        pygame.draw.circle(surf, dim, (pad + r, px // 2), r, stroke(sw, r))
+        pygame.draw.circle(surf, dim, (max(pad + r, px - pad - r), px // 2), r, stroke(sw, r))
+        a, b = pad + 2 * r, max(pad + 2 * r, px - pad - 2 * r)
+        gap = max(1, (b - a) // 3)
+        pygame.draw.line(surf, dim, (a, px // 2), (a + gap, px // 2), sw)
+        pygame.draw.line(surf, dim, (b - gap, px // 2), (b, px // 2), sw)
     elif name.startswith("relay"):
         r = max(2, px // 6)
         pygame.draw.circle(surf, color, (pad + r, px // 2), r, stroke(sw, r))

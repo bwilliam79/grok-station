@@ -58,7 +58,7 @@ class Flow(unittest.TestCase):
         self.assertTrue(view["update_available"])
         self.assertIsNone(view["update_blocked"])
         self.assertNotIn("log", view["job"])
-        self.assertTrue(any(" update-check 0.1.1" in line for line in view["history"]))
+        self.assertTrue(any(line["event"] == "update-check" and line["version"] == "0.1.1" for line in view["history"]))
         code, body = ga.start_update()
         self.assertEqual(code, 202, body)
         self.assertIn(("update-start",), self.calls)
@@ -95,7 +95,7 @@ class Flow(unittest.TestCase):
         view = ga.updates_view()
         self.assertTrue(view["cant_check"])
         self.assertIsNone(view["available"])
-        self.assertTrue(any("update-check-failed network" in line for line in view["history"]))
+        self.assertTrue(any(line["event"] == "update-check-failed" and line["version"] == "network" for line in view["history"]))
 
         with open(ga.VERSION_FILE, "w") as fh:
             fh.write("4915427\n")
