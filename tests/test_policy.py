@@ -255,10 +255,11 @@ class TestFlag(unittest.IsolatedAsyncioTestCase):
             text, verdict = await r.ask_teammate(http, "jules", "what is for dinner?", test=True)
         self.assertEqual((text, verdict), ("write ada@example.com please", "ok"))
         body, pend = self.seen[0]
-        self.assertEqual(set(body), {"source", "v", "request_id", "persona", "test"})
+        self.assertEqual(set(body), {"v", "request_id", "persona", "question", "reply_by", "test"})
         self.assertIs(body["test"], True)
-        self.assertEqual(body["v"], 2)
-        for dropped in ("question", "pii_mode", "reply_by", "tier_max"):
+        self.assertEqual(body["v"], 1)
+        self.assertEqual(body["question"], "what is for dinner?")
+        for dropped in ("source", "pii_mode", "tier_max", "include_avatar"):
             self.assertNotIn(dropped, body)
         self.assertNotEqual(body["request_id"], self.real)
         self.assertEqual(pend["question"], "what is for dinner?")

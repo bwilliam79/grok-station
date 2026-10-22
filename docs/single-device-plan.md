@@ -21,8 +21,8 @@ Status: approved Oct 20 with changes: no training on the Pi (prebuilt Hey Grok m
 ```
 - Display and wake listener talk to the relay over loopback WebSocket with no TLS, pairing or client certs. Access is
   controlled by unix-user and file perms plus one local token in a 0600 file.
-- The bot webhook ingress (`/voice/request`, `/voice/reply` routed through tile-ingest today) moves into the admin
-  HTTPS server on the Pi. It stays LAN-only, with no inbound internet exposure.
+- Done: bot replies are `POST /voice/reply` on the admin HTTPS port (LAN only; never port-forward it), forwarded to the
+  loopback relay. The question rides on the webhook, so the old request route is gone. See docs/bots.md.
 - Enroll clips go straight to `/var/lib/grok-station/enroll/inbox`. Training runs locally. Published models go to
   `wake/models/enrolled/`. The `sync_wakewords` HTTP pull is removed and replaced with an inotify/poll reload.
 - Updates: one `tools/grok-station update` on the Pi fetches the release tag, verifies it, installs it, restarts the

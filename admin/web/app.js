@@ -291,26 +291,21 @@ async function paintUpdates(el) {
         <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div></div>
     <div class="card"><h2>History</h2>${historyHTML(d.history)}</div>`;
   if (running) setTimeout(() => { if (document.body.contains(el)) paintUpdates(el); }, 4000);
-  const post = (btn, label, busy, path, title, text, okMsg) => {
-    const send = async pw => {
-      if (btn && btn.isConnected) busyBtn(btn, true, busy);
-      const body = {};
-      if (pw) body.password = pw;
-      const res = await api("POST", path, body);
-      if (res.status === 403) { if (btn && btn.isConnected) busyBtn(btn, false, label); return res; }
-      if (!res.ok) errBox($("#ue", el), (res.data && res.data.error) || "That didn't work.");
-      else if (okMsg) toast(okMsg);
-      await paintUpdates(el);
-      refreshUpdateBadge();
-      return res;
-    };
-    withPassword(title, text, label, send);
+  // Check and apply do not ask for the password again. The signed-in session is enough.
+  const run = async (btn, label, busy, path, okMsg) => {
+    if (btn && btn.isConnected) busyBtn(btn, true, busy);
+    const res = await api("POST", path, {});
+    if (!document.body.contains(el)) return res;
+    if (!res.ok) errBox($("#ue", el), (res.data && res.data.error) || "That didn't work.");
+    else if (okMsg) toast(okMsg);
+    await paintUpdates(el);
+    refreshUpdateBadge();
+    return res;
   };
   const up = $("#upd", el);
-  if (up) up.onclick = () => post(up, "Update", "Starting…", "/api/updates/apply", "Install the update?",
-    "Enter the admin password. The station pulls the latest version and re-runs the installer; voice pauses for a few minutes.", "Update started.");
-  $("#checknow", el).onclick = () => post($("#checknow", el), "Check now", "Checking…", "/api/updates/check", "Check for updates?",
-    "Enter the admin password to look for a newer version. Nothing is installed.", "");
+  if (up) up.onclick = () => run(up, "Update", "Starting…", "/api/updates/apply", "Update started.");
+  const check = $("#checknow", el);
+  if (check) check.onclick = () => run(check, "Check now", "Checking…", "/api/updates/check", "");
   $("#auto", el).onclick = () => {
     const on = !$("#auto", el).classList.contains("on");
     const send = async pw => {
@@ -364,9 +359,29 @@ async function timePanel(el, opts = {}) {
   };
 }
 
+function soundLabel(id) {
+  if (id === "none") return "None";
+  if (id === "chime") return "Chime";
+  const m = /^([a-z]+)-(\d+)$/.exec(id);
+  if (m) {
+    const name = {alarm: "Alarm", notify: "Notify", end: "End"}[m[1]];
+    if (name) return name + " " + String(+m[2]);
+  }
+  return id;
+}
+function soundSelect(id, opts, cur) {
+  return `<select class="sel" id="${id}" style="width:auto;flex:1;min-width:160px">${(opts || []).map(x =>
+    `<option value="${esc(x)}"${x === cur ? " selected" : ""}>${esc(soundLabel(x))}</option>`).join("")}</select>`;
+}
+
 async function audioPanel(el) {
   const [a, s] = await Promise.all([api("GET", "/api/audio"), api("GET", "/api/settings/audio")]);
   const v = (s.data || {}).values || {}, d = a.data || {};
+  const sounds = (s.data || {}).sounds || {}, defs = sounds.defaults || {};
+  const alarmOpts = sounds.alarm || [], listenOpts = sounds.listen || ["none"], endOpts = sounds.end || ["none"];
+  const alarmCur = alarmOpts.includes(v.ALARM_SOUND) ? v.ALARM_SOUND : (defs.alarm != null ? defs.alarm : (alarmOpts[0] || ""));
+  const listenCur = listenOpts.includes(v.LISTEN_TONE) ? v.LISTEN_TONE : (defs.listen || "none");
+  const endCur = endOpts.includes(v.END_TONE) ? v.END_TONE : (defs.end || "none");
   const devs = [...new Set([...(d.inputs || []), ...(d.outputs || []), v.WAKE_DEVICE_NAME].filter(Boolean))];
   // no saved choice yet: the listener's default matches "EMEET" in the card name
   const cur = v.WAKE_DEVICE_NAME || devs.find(x => /emeet/i.test(x)) || "";
@@ -377,16 +392,32 @@ async function audioPanel(el) {
     <div class="field"><label for="rate">Recording rate</label><select class="sel" id="rate"><option value="16000">16 kHz</option><option value="48000"${v.WAKE_CAPTURE_RATE === "48000" ? " selected" : ""}>48 kHz (device only does 48k)</option></select></div>
     <div class="field"><label for="wg">Wake-word mic boost <span class="help" id="wgv"></span></label><input type="range" id="wg" min="1" max="9" step="0.5" value="${esc(v.WAKE_GAIN || "1")}"></div>
     <div class="field"><label for="vg">Voice mic boost <span class="help" id="vgv"></span></label><input type="range" id="vg" min="1" max="9" step="0.5" value="${esc(v.VOICE_GAIN || "1")}"></div>
+    <div class="field"><label for="alm">Alarm sound</label><div class="inline">${soundSelect("alm", alarmOpts, alarmCur)}<button class="btn" id="aprev">Preview</button></div>
+      <p class="note">Plays on the station when a timer finishes.</p></div>
+    <div class="field"><label for="ltn">Listen tone</label><div class="inline">${soundSelect("ltn", listenOpts, listenCur)}<button class="btn" id="lprev">Preview</button></div>
+      <p class="note">Plays when the station wakes.</p></div>
+    <div class="field"><label for="etn">End tone</label><div class="inline">${soundSelect("etn", endOpts, endCur)}<button class="btn" id="eprev">Preview</button></div>
+      <p class="note">Plays when a conversation ends.</p></div>
     <div id="ae"></div>
     <div class="field inline"><button class="btn p" id="asave">Save</button><button class="btn" id="atest">Play test sound</button></div>
     <p class="note">Saving restarts the voice listener (after any conversation or enrollment that's running).</p></div>`;
   const lab = () => { $("#wgv", el).textContent = "×" + $("#wg", el).value; $("#vgv", el).textContent = "×" + $("#vg", el).value; };
   $("#wg", el).oninput = $("#vg", el).oninput = lab; lab();
   every(1500, async () => { if (!document.body.contains(el)) return; const r = await api("GET", "/api/audio"); if (r.ok && $("#lvl", el)) $("#lvl", el).innerHTML = meter(r.data.level_dbfs); });
+  const preview = async (sel) => {
+    const id = $(sel, el).value;
+    if (!id || id === "none") return toast("Nothing to play.");
+    const r = await api("POST", "/api/audio/test", {id});
+    r.ok ? toast("Playing on the station.") : toast(r.data.error || "Couldn't play that.", "warn");
+  };
+  $("#aprev", el).onclick = () => preview("#alm");
+  $("#lprev", el).onclick = () => preview("#ltn");
+  $("#eprev", el).onclick = () => preview("#etn");
   $("#atest", el).onclick = async () => { const r = await api("POST", "/api/audio/test", {}); r.ok ? toast("Playing on the station.") : toast(r.data.error, "warn"); };
   $("#asave", el).onclick = async () => {
     const r = await api("PUT", "/api/settings/audio", {WAKE_DEVICE_NAME: $("#dev", el).value, WAKE_CAPTURE_RATE: $("#rate", el).value,
-      WAKE_GAIN: (+$("#wg", el).value).toFixed(1), VOICE_GAIN: (+$("#vg", el).value).toFixed(1)});
+      WAKE_GAIN: (+$("#wg", el).value).toFixed(1), VOICE_GAIN: (+$("#vg", el).value).toFixed(1),
+      ALARM_SOUND: $("#alm", el).value, LISTEN_TONE: $("#ltn", el).value, END_TONE: $("#etn", el).value});
     if (!r.ok) return errBox($("#ae", el), r.data.error);
     errBox($("#ae", el), ""); toast(r.data.pending || "Saved.");
   };
@@ -804,6 +835,101 @@ function botPill(b) {
   }
   return `<span class="pill off"><i></i>Paste its webhook to connect</span>`;
 }
+function pubKeyOk(text) {
+  const s = String(text || "").replace(/\s+/g, "");
+  if (!s || s.length > 80 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return false;
+  try { return atob(s).length === 32; } catch (e) { return false; }
+}
+function rttLine(stats) {
+  const s = stats || {};
+  const avg = typeof s.avg_rtt_ms === "number" ? s.avg_rtt_ms : null;
+  const n = typeof s.timeouts === "number" ? s.timeouts : 0;
+  if (avg == null && n === 0) return "No round trips yet";
+  const secs = avg == null ? "—" : oneDecimal(avg / 1000);
+  return `Avg round trip ${secs} s (last 10) · ${n} ${n === 1 ? "timeout" : "timeouts"}`;
+}
+function applyBotMeta(el, data) {
+  if (!el || !data) return;
+  el._stationPub = typeof data.station_pub === "string" ? data.station_pub : "";
+  el._killed = data.killed === true;
+  el._stats = data.stats || {avg_rtt_ms: null, timeouts: 0};
+  const killed = $("#bkilled", el);
+  if (killed) killed.hidden = !el._killed;
+  const overall = $("#rttall", el);
+  if (overall) overall.textContent = "Overall · " + rttLine(el._stats);
+}
+function pairFields(stationPub, paired) {
+  return `<div class="field"><label for="spub">Station public key</label>
+      <div class="inline"><input class="inp mono" id="spub" readonly value="${esc(stationPub || "")}">
+      <button class="btn sm" id="spubcopy" type="button">Copy</button></div>
+      <p class="note">The bot seals replies to this key. Never port-forward the admin port.</p></div>
+    <div class="field"><label for="bpub">Bot public key</label>
+      <input class="inp mono" id="bpub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes">
+      <p class="note">From grok-station-reply keygen. The private key stays on the bot.</p></div>
+    <div id="perr"></div>
+    <div class="field inline"><button class="btn" id="pair" type="button">Pair key</button>
+      ${paired ? `<button class="btn dg" id="revoke" type="button">Revoke</button>` : ""}</div>`;
+}
+function wirePair(root, bot, el) {
+  const copy = $("#spubcopy", root);
+  if (copy) copy.onclick = () => {
+    const box = $("#spub", root);
+    copyText(box ? box.value : "");
+  };
+  const revokeOne = () => askPassword(`Revoke ${bot.name}?`, "This drops the pinned key. Replies from this bot are rejected until you pair it again.", "Revoke", async pw => {
+    const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/key`, {password: pw});
+    if (r && r.ok) {
+      bot.paired = false;
+      toast("Revoked.");
+      const btn = $("#revoke", root);
+      if (btn) btn.remove();
+      refreshBots(el);
+    }
+    return r;
+  });
+  const pair = $("#pair", root);
+  if (pair) pair.onclick = () => {
+    const inp = $("#bpub", root);
+    const pub = inp ? inp.value.trim() : "";
+    if (!pubKeyOk(pub)) {
+      errBox($("#perr", root), "Paste the bot's public key: base64 of 32 bytes.");
+      if (inp) inp.focus();
+      return;
+    }
+    errBox($("#perr", root), "");
+    const send = async pw => {
+      if (inp) inp.value = "";
+      const body = {public_key: pub};
+      if (pw) body.password = pw;
+      const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/key`, body);
+      body.public_key = "";
+      body.password = "";
+      if (r && r.ok) {
+        bot.paired = true;
+        toast("Paired.");
+        const holder = pair.parentElement;
+        if (holder && !$("#revoke", root)) {
+          const b = document.createElement("button");
+          b.className = "btn dg";
+          b.id = "revoke";
+          b.type = "button";
+          b.textContent = "Revoke";
+          holder.appendChild(b);
+          b.onclick = revokeOne;
+        }
+        refreshBots(el);
+      }
+      return r;
+    };
+    if (stepupOpen()) send("").then(r => {
+      if (r && r.status === 403) askPassword("Pair key?", "Enter the admin password to pin this key.", "Pair key", send);
+      else if (r && !r.ok) errBox($("#perr", root), (r && r.data && r.data.error) || "Couldn't pair.");
+    });
+    else askPassword("Pair key?", "Enter the admin password to pin this key.", "Pair key", send);
+  };
+  const rev = $("#revoke", root);
+  if (rev) rev.onclick = revokeOne;
+}
 function stepupText() {
   const left = Number(S.stepupUntil) - Date.now() / 1000;
   if (!(left > 0)) return "";
@@ -953,7 +1079,8 @@ function paintBots(el, bots) {
   list.innerHTML = bots.map(b => {
     const info = voice[b.slug] || {};
     return `<div class="botrow">${avatar(b.slug, b.name)}
-    <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div></div>
+    <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
+    <div class="help">${esc(rttLine(b.stats))}</div></div>
     <button class="btn sm" type="button" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
     ${(b.webhook && b.webhook.configured) ? "" : `<button class="btn sm" type="button" data-hook="${esc(b.slug)}">Connect webhook</button>`}
     <button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div>`;
@@ -974,6 +1101,7 @@ async function refreshBots(el) {
   noteStepup(r.data);
   el._voices = (r.data && r.data.voices) || [];
   el._voice = (s.data && s.data.buttons) || {};
+  applyBotMeta(el, r.data);
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, r.data.bots || []);
@@ -1032,12 +1160,14 @@ function openBot(bot, el) {
       <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
       <p class="note" id="pasted" hidden>Pasted · not saved</p>
     </div>
-    <div class="field inline"><button class="btn" id="test" type="button">Test</button><button class="btn p" id="save" type="button">Save</button></div>
+    <div class="field inline"><button class="btn" id="test" type="button">Test relay</button><button class="btn p" id="save" type="button">Save</button></div>
     <div id="tbox"></div>
     ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
+    ${pairFields(el._stationPub, bot.paired)}
     <div class="botfoot"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
   document.body.appendChild(d);
   bindAvatars(d);
+  wirePair(d, bot, el);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
   const sync = () => {
     const url = $("#burl", d).value.trim(), key = $("#bkey", d).value, dirty = url.length + key.length > 0;
@@ -1096,7 +1226,7 @@ function openBot(bot, el) {
     stopPoll();
     testId = null;
     const btn = $("#test", d);
-    if (btn) { btn.textContent = "Test"; btn.disabled = false; }
+    if (btn) { btn.textContent = "Test relay"; btn.disabled = false; }
     sync();
     const box = $("#tbox", d);
     if (!box) return;
@@ -1108,11 +1238,11 @@ function openBot(bot, el) {
     const paint = () => {
       const clock = $("#tclock", d), bar = $("#tfill", d);
       if (clock) clock.textContent = mss(sec);
-      if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%";
+      if (bar) bar.style.width = Math.min(100, sec / 30 * 100) + "%";
     };
     $("#tbox", d).innerHTML = `<div class="twait"><div class="inline"><span class="spin"></span><b>Waiting for ${esc(bot.name)}… <span id="tclock">0:00</span></b></div>
       <div class="tbar"><i id="tfill"></i></div>
-      <p class="note">Bots can take a while to answer. Gives up after 2 min.</p>
+      <p class="note">Gives up after 30 seconds.</p>
       <a href="#" id="tcancel">Cancel</a></div>`;
     $("#tcancel", d).onclick = async ev => { ev.preventDefault(); await cancelTest(); showResult({state: "cancelled"}); };
     testTimer = setInterval(async () => {
@@ -1124,9 +1254,9 @@ function openBot(bot, el) {
       try {
         const r = await api("GET", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`);
         if (!$("#tclock", d)) return;
-        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer after 2 min"}); return; }
+        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer"}); return; }
         if (typeof r.data.elapsed_s === "number") { sec = Math.max(sec, r.data.elapsed_s); paint(); }
-        if (r.data.state === "waiting" && sec >= 125) { showResult({state: "failed", error: "No answer after 2 min"}); return; }
+        if (r.data.state === "waiting" && sec >= 35) { showResult({state: "failed", error: "No answer"}); return; }
         if (r.data.state !== "waiting") showResult(r.data);
       } finally { busy = false; }
     }, 1000);
@@ -1143,7 +1273,7 @@ function openBot(bot, el) {
     btn.textContent = "Testing…";
     const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/test`, body);
     if (!r.ok || !r.data.test_id) {
-      btn.textContent = "Test";
+      btn.textContent = "Test relay";
       sync();
       showResult({state: "failed", error: (r.data && r.data.error) || "Couldn't start the test."});
       return;
@@ -1175,7 +1305,6 @@ function openBot(bot, el) {
       const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
       if (r.ok) {
         bot.webhook = {configured: true, last4: r.data.last4, saved_at: Math.floor(Date.now() / 1000)};
-        showRoutine(bot, r.data.routine);
         $("#burl", d).value = "";
         const dots = $(".dots", d);
         if (dots) dots.textContent = "•••• " + (r.data.last4 || "");
@@ -1249,37 +1378,8 @@ function openBot(bot, el) {
     return r;
   });
 }
-const ADD_STEP_LABEL = "1 Bot · 2 Voice token · 3 Webhook · 4 Done";
-// Values the bot's routine needs, shown once after a webhook save. The reply token is not shown again.
-function routineText(bot, v) {
-  return [
-    `Station: ${v.station_url}` + ((v.station_urls || []).length > 1 ? ` (or ${v.station_urls.slice(1).join(", ")})` : ""),
-    `Cert SHA-256: ${v.fingerprint || "see the admin page"}`,
-    `Reply token (Authorization: Bearer ...): ${v.reply_token}`,
-    `1. When the webhook fires, read request_id from the body.`,
-    `2. GET ${v.station_url}/voice/request/<request_id> with the reply token. The JSON has "question".`,
-    `3. POST ${v.reply_url} with the reply token and JSON {"request_id":"<request_id>","text":"<answer, max 400 chars>","tier":0,"action_class":"answer"}.`,
-    `Answer within 2 minutes. Persona: ${bot.slug}.`,
-  ].join("\n");
-}
-function showRoutine(bot, v) {
-  if (!v || !v.reply_token) return;
-  const d = document.createElement("div");
-  d.className = "modal";
-  d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Routine values"><h2>Paste this into ${esc(bot.name || bot.slug)}'s routine</h2>
-    <p class="note">The reply token is shown only now. Saving the webhook again makes a new one.</p>
-    <p class="note">The station is reachable on your home network only. A routine running in the cloud can't reach it unless you give it a way in (see the README, "Connecting a bot").</p>
-    <textarea class="inp mono" id="rtext" rows="9" readonly>${esc(routineText(bot, v))}</textarea>
-    <div class="row"><button class="btn" id="rcopy" type="button">Copy</button><button class="btn" id="rdone" type="button">Done</button></div></div>`;
-  document.body.appendChild(d);
-  $("#rcopy", d).onclick = () => { navigator.clipboard && navigator.clipboard.writeText($("#rtext", d).value); toast("Copied."); };
-  $("#rdone", d).onclick = () => d.remove();
-}
-
+const ADD_STEP_LABEL = "1 Bot · 2 Pair keys · 3 Webhook · 4 Done";
 const HOOK_LATER = "Not connected yet - use Connect webhook on the Bots page";
-const TOKEN_WHAT = "This is the bot's own key to talk to the station's voice service.";
-const TOKEN_WHERE = "Paste it into the bot's Grok Bot routine settings as its voice token. The routine sends it as Authorization: Bearer <voice token> when it replies or uploads an avatar.";
-const TOKEN_ONCE = "It won't be shown again.";
 function addStepper(n) {
   const parts = ADD_STEP_LABEL.split(" · ");
   return `<p class="stepper" aria-label="${ADD_STEP_LABEL}">${parts.map((t, i) => {
@@ -1298,22 +1398,14 @@ function httpsWebhook(url) {
 function shownLast4(v) {
   return typeof v === "string" && /^[\x21-\x7e]{1,4}$/.test(v) ? v : "";
 }
-function dropToken(root) {
-  const node = root && $("#tok", root);
-  if (node) node.textContent = "";
-  try {
-    const sel = window.getSelection && window.getSelection();
-    if (sel && sel.removeAllRanges) sel.removeAllRanges();
-  } catch (e) { /* selection can throw while a document is closing */ }
-}
 function testResultHTML(res) {
   if (res.state === "ok") {
     const secs = res.answered_in_s == null ? "" : oneDecimal(res.answered_in_s) + " s";
     return `<div class="banner ok"><span class="pill ok"><i></i>Answered in ${esc(secs)}</span></div>`;
   }
   if (res.state === "cancelled") return `<p class="note">Cancelled.</p>`;
-  const err = res.error || "No answer after 2 min";
-  const hint = !res.error || res.error === "No answer after 2 min";
+  const err = res.error || "No answer";
+  const hint = !res.error || res.error === "No answer";
   return `<div class="banner bad"><span class="pill bad"><i></i>${esc(err)}</span></div>` +
     (hint ? `<p class="note">Check both values are from this bot's routine panel, then test again.</p>` : "");
 }
@@ -1383,7 +1475,7 @@ function mountWebhookStep(root, bot, el, onFinish) {
     if (!box) return;
     box.innerHTML = `<div class="twait"><div class="inline"><span class="spin"></span><b>Waiting for ${esc(bot.name)}… <span id="hclock">0:00</span></b></div>
       <div class="tbar"><i id="hfill"></i></div>
-      <p class="note">Bots can take a while to answer. Gives up after 2 min.</p>
+      <p class="note">Gives up after 30 seconds.</p>
       <a href="#" id="hcancel">Cancel</a></div>`;
     const cancel = $("#hcancel", root);
     if (cancel) cancel.onclick = async ev => { ev.preventDefault(); await cancelTest(); showResult({state: "cancelled"}); };
@@ -1392,15 +1484,15 @@ function mountWebhookStep(root, bot, el, onFinish) {
       sec += 1;
       const clock = $("#hclock", root), bar = $("#hfill", root);
       if (clock) clock.textContent = mss(sec);
-      if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%";
+      if (bar) bar.style.width = Math.min(100, sec / 30 * 100) + "%";
       if (busy) return;
       busy = true;
       try {
         const r = await api("GET", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`);
         if (testId !== id || !$("#hclock", root)) return;
-        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer after 2 min"}); return; }
-        if (typeof r.data.elapsed_s === "number") { sec = Math.max(sec, r.data.elapsed_s); if (clock) clock.textContent = mss(sec); if (bar) bar.style.width = Math.min(100, sec / 120 * 100) + "%"; }
-        if (r.data.state === "waiting" && sec >= 125) { showResult({state: "failed", error: "No answer after 2 min"}); return; }
+        if (!r.ok) { showResult({state: "failed", error: (r.data && r.data.error) || "No answer"}); return; }
+        if (typeof r.data.elapsed_s === "number") { sec = Math.max(sec, r.data.elapsed_s); if (clock) clock.textContent = mss(sec); if (bar) bar.style.width = Math.min(100, sec / 30 * 100) + "%"; }
+        if (r.data.state === "waiting" && sec >= 35) { showResult({state: "failed", error: "No answer"}); return; }
         if (r.data.state !== "waiting") showResult(r.data);
       } finally { busy = false; }
     }, 1000);
@@ -1466,7 +1558,6 @@ function mountWebhookStep(root, bot, el, onFinish) {
         last4 = shownLast4(r.data && r.data.last4);
         bot.webhook = {configured: true, last4: last4 || null, saved_at: Math.floor(Date.now() / 1000)};
         showSaved();
-        showRoutine(bot, r.data && r.data.routine);
         errBox($("#herr", root), "");
         toast("Saved.");
         refreshBots(el);
@@ -1524,50 +1615,26 @@ function addBot(voices, el) {
     $("#adddone", d).onclick = () => { d.remove(); refreshBots(el); };
   };
   const step3 = (bot) => {
-    dropToken(d);
     d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Connect webhook">${addStepper(3)}<div id="hookmount"></div></div>`;
     const ctl = mountWebhookStep($("#hookmount", d), bot, el, (connected, last4) => step4(bot, connected, last4));
     d._cancel = () => ctl.cancel();
   };
-  const step2 = (bot, token) => {
-    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Voice token">${addStepper(2)}
-      <h2>Voice token</h2>
-      <p id="tokwhat"></p>
-      <p id="tokwhere"></p>
-      <p class="note" id="tokonce"></p>
-      <div class="tokenbox" id="tok"></div>
-      <div class="field"><button class="btn sm" id="copytok" type="button">Copy</button></div>
-      <div class="field"><label class="inline" for="savedtok"><input type="checkbox" id="savedtok"> I've saved it</label></div>
-      <div class="field"><button class="btn p" id="toknext" type="button" disabled>Continue</button></div></div>`;
-    $("#tokwhat", d).textContent = TOKEN_WHAT;
-    $("#tokwhere", d).textContent = TOKEN_WHERE;
-    $("#tokonce", d).textContent = TOKEN_ONCE;
-    const node = $("#tok", d);
-    node.textContent = token;
-    token = "";
-    d._cancel = () => dropToken(d);
-    $("#copytok", d).onclick = () => {
-      const live = $("#tok", d);
-      const value = live ? live.textContent : "";
-      if (live && window.getSelection && document.createRange) {
-        const range = document.createRange();
-        range.selectNodeContents(live);
-        const sel = window.getSelection();
-        if (sel) { sel.removeAllRanges(); sel.addRange(range); }
-      }
-      copyText(value);
-    };
-    $("#savedtok", d).onchange = () => { $("#toknext", d).disabled = !$("#savedtok", d).checked; };
-    $("#toknext", d).onclick = () => {
-      if (!$("#savedtok", d).checked) return;
-      dropToken(d);
-      step3(bot);
-    };
+  const step2 = (bot) => {
+    d._cancel = () => {};
+    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Pair keys">${addStepper(2)}
+      <h2>Pair keys</h2>
+      <p class="sub">On the bot's machine, run grok-station-reply keygen. Paste the public line here.</p>
+      ${pairFields(el._stationPub, bot.paired)}
+      <div class="field"><button class="btn p" id="pairnext" type="button">Continue</button></div>
+      <div class="field"><a href="#" class="skipnow" id="pairskip">Skip for now</a></div></div>`;
+    wirePair(d, bot, el);
+    $("#pairnext", d).onclick = () => step3(bot);
+    $("#pairskip", d).onclick = ev => { ev.preventDefault(); step3(bot); };
   };
   const step1 = () => {
     d._cancel = () => {};
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${addStepper(1)}
-      <h2>Add bot</h2><p class="sub">A new teammate. You'll get a voice token to paste into its routine, once.</p>
+      <h2>Add bot</h2><p class="sub">A new teammate. Next you'll pair its key, then connect its webhook.</p>
       <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
       <div class="field"><label for="aslug">Bot ID <span class="tipwrap info" tabindex="0" role="note" aria-label="${esc(BOT_ID_HELP)}">i<span class="tip">${esc(BOT_ID_HELP)}</span></span></label>
         <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
@@ -1615,17 +1682,10 @@ function addBot(voices, el) {
         return errBox($("#ape", d), (r.data && r.data.error) || "Couldn't add that bot.");
       }
       await refreshBots(el);
-      const bot = {slug, name, voice, webhook: {configured: false, last4: null}};
-      let token = String((r.data && r.data.voice_token) || "");
+      const bot = {slug, name, voice, webhook: {configured: false, last4: null}, paired: false};
       if (r.data) r.data.voice_token = "";
-      if (!token) {
-        if ($("#ago", d)) busyBtn($("#ago", d), false, "Add bot");
-        errBox($("#ape", d), "The voice service didn't return a voice token.");
-        return;
-      }
-      if (!document.body.contains(d)) { token = ""; return; }
-      step2(bot, token);
-      token = "";
+      if (!document.body.contains(d)) return;
+      step2(bot);
     };
   };
   step1();
@@ -1640,10 +1700,14 @@ async function pageBots(el) {
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
+    <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
       <span class="stepup" id="sulock" hidden></span>
+      <button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button>
       <button class="btn p sm right" id="add">Add bot</button></div>
+      <p class="note" id="rttall"></p>
       <div id="blist"></div></div>`;
+  applyBotMeta(el, data);
   paintBots(el, bots);
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
@@ -1658,7 +1722,13 @@ async function pageBots(el) {
     setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 2000);
   };
   every(3000, () => { if (document.body.contains(el) && $("#blist", el)) refreshBots(el); });
-  $("#add", el).onclick = () => addBot(data.voices || [], el);
+  $("#add", el).onclick = () => addBot(el._voices || data.voices || [], el);
+  const kill = $("#revokeall", el);
+  if (kill) kill.onclick = () => askPassword("Revoke all bots?", "This drops every pinned key. Replies are rejected until a key is paired again.", "Revoke all bots", async pw => {
+    const r = await api("POST", "/api/bots/revoke-all", {password: pw});
+    if (r && r.ok) { toast("All bots revoked."); refreshBots(el); }
+    return r;
+  });
 }
 const PII_TEXT = "Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. When this is on, replies also block personal info: household names, emails, phones, addresses, IPs, MACs, and host names.";
 async function pagePrivacy(el) {

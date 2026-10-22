@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Teammate handoff (real-bot pilot): B4, B6, B10, B13, B14 and tier scope, against a fake bot webhook."""
-import asyncio, json, os, sys, tempfile, time, unittest
+import asyncio, base64, json, os, sys, tempfile, time, unittest
 
 from aiohttp import web, ClientSession
 from aiohttp.test_utils import TestServer
@@ -10,29 +10,31 @@ os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", ALERT_DIR=os
                   HANDOFF_PENDING=os.path.join(TMP, "pending"), HANDOFF_REPLIES=os.path.join(TMP, "replies"),
                   HANDOFF_STATE=os.path.join(TMP, "handoff.json"), REPLY_WAIT="3")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))
+import botreply  # noqa: E402
 import handoff  # noqa: E402
 import relay  # noqa: E402
 
 
 class Units(unittest.TestCase):
-    def test_question_cleaned_capped_and_not_on_the_webhook(self):
-        """The question is cleaned to 500 chars. The webhook does not carry it, pii_mode, reply_by or tier_max."""
+    def test_question_cleaned_capped_and_sent_on_the_webhook(self):
+        """The question is cleaned to 500 chars and sent with reply_by. pii_mode and tier_max stay off the wire."""
         q = handoff.clean("what\u200b's for \u202edinner\x07 " + "x" * 800, handoff.Q_MAX)
         self.assertEqual(handoff.Q_MAX, 500)
         self.assertEqual(len(q), 500)
         self.assertFalse(any(c in q for c in "\u200b\u202e\x07"))
         rid = handoff.new_request_id()
-        p = handoff.payload(rid, "jules", q, "2026-10-19T21:00:00+00:00")
-        self.assertEqual((p["source"], p["v"], p["tier_max"]), ("grok-station", 2, 0))
+        reply_by = "2026-10-19T21:00:00Z"
+        p = handoff.payload(rid, "jules", q, reply_by)
+        self.assertEqual((p["v"], p["tier_max"], p["question"], p["reply_by"]), (1, 0, q, reply_by))
         wire = json.loads(json.dumps(p))
-        self.assertEqual(set(wire), {"source", "v", "request_id", "persona"})
-        for dropped in ("question", "pii_mode", "reply_by", "tier_max", "test"):
+        self.assertEqual(set(wire), {"v", "request_id", "persona", "question", "reply_by"})
+        for dropped in ("source", "pii_mode", "tier_max", "test", "include_avatar"):
             self.assertNotIn(dropped, wire)
         self.assertRegex(p["request_id"], handoff.REQUEST_ID)
-        flagged = json.loads(json.dumps(handoff.payload(rid, "jules", q, "t", test=True, include_avatar=True)))
-        self.assertEqual(set(flagged), {"source", "v", "request_id", "persona", "test", "include_avatar"})
+        flagged = json.loads(json.dumps(handoff.payload(rid, "jules", q, reply_by, test=True, include_avatar=True)))
+        self.assertEqual(set(flagged), {"v", "request_id", "persona", "question", "reply_by", "test"})
         self.assertIs(flagged["test"], True)
-        self.assertIs(flagged["include_avatar"], True)
+        self.assertNotIn("include_avatar", flagged)
 
     def test_lint_always_blocked_and_pii_only_when_on(self):
         """Secrets, SSNs and cards are blocked with pii off. Email and the rest of PII are not.
@@ -241,7 +243,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.pendings.append(json.load(open(pend_path)))
             if self.mode == "fail":
                 return web.Response(status=500)
-            pend = json.load(open(os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")))  # tile-ingest's bind check
+            pend = json.load(open(os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")))
             if self.mode == "reply":
                 async def later():
                     await asyncio.sleep(0.3)
@@ -254,6 +256,10 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         app = web.Application(); app.router.add_post("/hook", hook); app.router.add_post("/bot", hook)
         self.srv = TestServer(app); await self.srv.start_server()
         relay.WEBHOOKS_FILE = os.path.join(TMP, "webhooks.json")
+        try:
+            os.remove(botreply.keys_path(TMP))
+        except OSError:
+            pass
         with open(relay.WEBHOOKS_FILE, "w") as f:
             json.dump({"jules": {"url": str(self.srv.make_url("/hook")), "token": "t"}}, f)
         relay._hooks["mtime"] = None
@@ -294,24 +300,23 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await relay.ask_teammate(http, "jules", "q"), (None, "timeout"))
         self.assertLess(time.monotonic() - t0, 4.5)
 
-    async def test_timeout_alerts_and_says_still_once_with_honest_error(self):
+    async def test_timeout_alerts_and_does_not_say_still(self):
         self.mode = "silent"
         alerts, stills = [], []
         self._alert = relay.alert
         relay.alert = lambda kind, title, msg, *a: alerts.append((kind, msg))
-        relay.STILL_AFTER = 0.5
         async def on_still(): stills.append(1)
         try:
             async with ClientSession() as http:
                 self.assertEqual(await relay.ask_teammate(http, "jules", "secret question", None, on_still), (None, "timeout"))
         finally:
-            relay.alert, relay.STILL_AFTER = self._alert, 20.0
-        self.assertEqual(stills, [1])                                    # spoken once, not on every poll
+            relay.alert = self._alert
+        self.assertEqual(stills, [])                                     # no "still asking" line
         self.assertEqual(alerts[0][0], "handoff-timeout"); self.assertIn("verdict=timeout", alerts[0][1])
         self.assertTrue(any("verdict=timeout wait_ms=" in l for l in self.lines))
         self.assertFalse(any("secret question" in l for l in self.lines))
         self.assertEqual(relay.handoff_error("Jules", "timeout"),
-                         'Say exactly: "Jules didn\'t answer in time; try again or ask in the app." Don\'t guess the answer.')
+                         'Say exactly: "I couldn\'t reach Jules." Don\'t guess the answer.')
 
     async def test_per_bot_path_logs_http_status_and_latency(self):
         self.assertNotIn("_router", relay.webhooks())                  # router retired: per-bot entry is used
@@ -324,7 +329,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
 
     def test_defaults(self):
         src = open(relay.__file__).read()
-        self.assertIn('E("REPLY_WAIT", "120")', src); self.assertIn('E("STILL_AFTER", "20")', src)
+        self.assertIn('E("REPLY_WAIT", "30")', src); self.assertNotIn("STILL_AFTER", src)
         self.assertNotIn("can't reach your \"\n", src); self.assertNotIn("full notes from the station yet", src)
 
     def test_hot_reload(self):
@@ -338,8 +343,10 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(l.startswith("handoff: ") and "bot webhook" in l for l in self.lines))
         self.assertFalse(any("router" in l for l in self.lines))
 
-    def test_tool_only_for_bots_with_a_webhook(self):
+    def test_tool_only_for_bots_with_a_webhook_and_a_pinned_key(self):
         roster = {"jules": {"slug": "jules", "name": "Jules"}, "hank": {"slug": "hank", "name": "Hank"}}
+        self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "jules")])  # webhook alone
+        botreply.pin_key(botreply.keys_path(TMP), "jules", base64.b64encode(b"\x11" * 32).decode())
         self.assertIn("check_notes", [t["name"] for t in relay.tools_for(roster, "jules")])
         self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "hank")])
         relay.HANDOFF = False
@@ -360,6 +367,9 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         with open(relay.WEBHOOKS_FILE, "w") as f:
             json.dump({"jules": {"url": "https://j.example.invalid/h", "token": "jt"}}, f)
         relay._hooks["mtime"] = None
+        # A webhook alone is not a route. The bot's pinned verify key is what replaced the reply token.
+        botreply.pin_key(botreply.keys_path(os.path.dirname(relay.WEBHOOKS_FILE)), "jules",
+                         base64.b64encode(b"\x11" * 32).decode())
         self.lines.clear()
         self.assertIn("check_notes", [t["name"] for t in relay.tools_for(roster, "jules")])
         self.assertNotIn("check_notes", [t["name"] for t in relay.tools_for(roster, "hank")])
@@ -390,12 +400,13 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(router_token, " ".join(self.auths))
         self.assertEqual([c["persona"] for c in self.calls], ["jules"])
         body = self.calls[0]
-        self.assertEqual(set(body), {"source", "v", "request_id", "persona"})
-        self.assertEqual((body["source"], body["v"], body["persona"]), ("grok-station", 2, "jules"))
-        for dropped in ("question", "pii_mode", "reply_by", "tier_max", "test"):
+        self.assertEqual(set(body), {"v", "request_id", "persona", "question", "reply_by"})
+        self.assertEqual((body["v"], body["persona"], body["question"]), (1, "jules", q))
+        for dropped in ("source", "pii_mode", "tier_max", "test", "include_avatar"):
             self.assertNotIn(dropped, body)
         self.assertRegex(body["request_id"], handoff.REQUEST_ID)
         pend = self.pendings[0]
+        self.assertGreater(pend["expires_ms"], time.time() * 1000 + 90000)  # 2 min skew window, not the 30 s wait
         self.assertEqual(pend["question"], q)
         self.assertIs(pend["pii_mode"], True)
         self.assertEqual(pend["tier_max"], 0)

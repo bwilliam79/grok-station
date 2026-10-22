@@ -3,7 +3,7 @@
 
 Imported inside the tests so collecting this module does not initialize relay before the other suites set their env.
 """
-import asyncio, hashlib, json, os, stat, tempfile, time, unittest
+import asyncio, base64, hashlib, importlib.machinery, importlib.util, json, os, stat, tempfile, time, unittest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -23,6 +23,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.mkdtemp()
         self.snap = {
             "WEBHOOKS_FILE": r.WEBHOOKS_FILE, "MINTED_FILE": r.MINTED_FILE, "PENDING_DIR": r.PENDING_DIR,
+            "SECRETS_DIR": r.SECRETS_DIR,
             "REPLIES_DIR": r.REPLIES_DIR, "PERSONAS_FILE": r.PERSONAS_FILE, "REPLY_WAIT": r.REPLY_WAIT,
             "ADMIN_TOKEN": r.ADMIN_TOKEN, "HANDOFF": r.HANDOFF, "_limits": r._limits, "log": r.log,
             "voices": set(r.VOICES),
@@ -30,6 +31,12 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             "hooks": {"mtime": r._hooks.get("mtime"), "map": dict(r._hooks.get("map") or {})},
             "fails": dict(r.fails), "locked": dict(r.locked),
         }
+        r.SECRETS_DIR = os.path.join(self.tmp, "secrets")
+        os.makedirs(r.SECRETS_DIR, exist_ok=True)
+        r._reply_seen.clear()
+        r._reply_rate = None
+        r._rtt = None
+        r._rtt_dir = None
         r.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
         r.MINTED_FILE = os.path.join(self.tmp, "minted", "voice-tokens.json")
         r.PENDING_DIR = os.path.join(self.tmp, "pending")
@@ -86,6 +93,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             return
         s = self.snap
         r.WEBHOOKS_FILE, r.MINTED_FILE = s["WEBHOOKS_FILE"], s["MINTED_FILE"]
+        r.SECRETS_DIR = s["SECRETS_DIR"]
         r.PENDING_DIR, r.REPLIES_DIR = s["PENDING_DIR"], s["REPLIES_DIR"]
         r.PERSONAS_FILE, r.REPLY_WAIT = s["PERSONAS_FILE"], s["REPLY_WAIT"]
         r.ADMIN_TOKEN, r.HANDOFF, r._limits, r.log = s["ADMIN_TOKEN"], s["HANDOFF"], s["_limits"], s["log"]
@@ -142,14 +150,16 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         r = await self.client.put("/admin/bots/jules/webhook", headers=h, json={"url": GOOD, "key": KEY1, "actor": "admin"})
         text = await r.text()
         self.assertEqual(r.status, 200)
-        got = json.loads(text); self.assertTrue(got.pop("reply_token").startswith("gsr_"))
+        got = json.loads(text)
         self.assertEqual(got, {"ok": True, "last4": "aaaa"})
+        self.assertNotIn("reply_token", text)
         self.assertNotIn(KEY1, text)
         self.assertNotIn(GOOD, text)
         r = await self.client.put("/admin/bots/jules/webhook", headers=h, json={"url": GOOD_443, "key": KEY2, "actor": "admin"})
         text = await r.text()
-        got = json.loads(text); got.pop("reply_token")
+        got = json.loads(text)
         self.assertEqual(got, {"ok": True, "last4": "bbbb"})
+        self.assertNotIn("reply_token", text)
         self.assertNotIn(KEY2, text)
         self.assertNotIn(GOOD_443, text)
         listed = await (await self.client.get("/admin/bots", headers=h)).json()
@@ -347,47 +357,159 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         return body
 
-    async def test_reply_ingress_on_the_station(self):
-        """Webhook save mints a reply token; the bot reads its question and its reply lands for take_reply."""
-        r = self.relay
-        resp = await self.client.put("/admin/bots/jules/webhook", headers=self.headers(),
-                                     json={"url": GOOD, "key": KEY1, "actor": "admin"})
-        self.assertEqual(resp.status, 200)
-        tok = (await resp.json())["reply_token"]
-        self.assertTrue(tok.startswith("gsr_"))
-        self.assertNotIn(tok, open(os.path.join(self.tmp, "reply_tokens.json")).read())  # hash only
-        self.assertEqual(self.mode(os.path.join(self.tmp, "reply_tokens.json")), 0o600)
-        rid = self.handoff.new_request_id()
-        self.handoff.write_pending(r.PENDING_DIR, rid, "jules", "n0nce", time.time() * 1000 + 60000, question="Is it raining?")
-        bot = {"Authorization": "Bearer " + tok}
-        self.assertEqual((await self.client.get("/voice/request/" + rid)).status, 401)
-        self.assertEqual((await self.client.get("/voice/request/" + rid, headers={"Authorization": "Bearer nope"})).status, 401)
-        g = await self.client.get("/voice/request/" + rid, headers=bot)
-        self.assertEqual(g.status, 200)
-        self.assertEqual((await g.json())["question"], "Is it raining?")
-        self.assertEqual((await self.client.post("/voice/reply", headers=bot, json={
-            "request_id": rid, "text": "x", "tier": 1, "action_class": "note"})).status, 403)
-        p = await self.client.post("/voice/reply", headers=bot, json={
-            "request_id": rid, "text": "No rain today.", "tier": 0, "action_class": "answer"})
-        self.assertEqual(p.status, 200)
-        self.assertEqual(self.handoff.take_reply(r.REPLIES_DIR, rid, "jules", "n0nce"), ("No rain today.", None))
-        # another bot's pending request is not visible with this token
-        rid2 = self.handoff.new_request_id()
-        self.handoff.write_pending(r.PENDING_DIR, rid2, "hank", "n2", time.time() * 1000 + 60000, question="q")
-        self.assertEqual((await self.client.get("/voice/request/" + rid2, headers=bot)).status, 404)
-        # removing the webhook revokes the token
-        await self.client.delete("/admin/bots/jules/webhook", headers=self.headers(), json={"actor": "admin"})
-        self.assertEqual((await self.client.get("/voice/request/" + rid, headers=bot)).status, 401)
+    def _helper(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        path = os.path.join(root, "tools", "grok-station-reply")
+        loader = importlib.machinery.SourceFileLoader("grok_station_reply", path)
+        spec = importlib.util.spec_from_loader("grok_station_reply", loader)
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        return mod
 
-    def test_admin_forwards_only_the_two_voice_paths(self):
+    async def test_sealed_reply_lands_and_the_request_route_is_gone(self):
+        """A pinned key unseals one reply. GET /voice/request is not a route. Revoke and the kill switch reject."""
+        import botreply
+        from nacl.signing import SigningKey
+        r = self.relay
+        helper = self._helper()
+        signer = SigningKey.generate()
+        pub = base64.b64encode(bytes(signer.verify_key)).decode()
+        seed = base64.b64encode(bytes(signer)).decode()
+        put = await self.client.put("/admin/bots/jules/key", headers=self.headers(),
+                                    json={"public_key": pub, "actor": "admin"})
+        self.assertEqual(put.status, 200, await put.text())
+        listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
+        self.assertTrue(listed["bots"][0]["paired"])
+        self.assertEqual(len(base64.b64decode(listed["station_pub"])), 32)
+        self.assertFalse(listed["killed"])
+        station = botreply.load_or_create_station(r.SECRETS_DIR)
+        rid = self.handoff.new_request_id()
+        self.handoff.write_pending(r.PENDING_DIR, rid, "jules", "n0nce", int(time.time() * 1000) + 60000,
+                                   question="Is it raining?")
+        self.assertEqual((await self.client.get("/voice/request/" + rid)).status, 404)
+        raw = helper.build_outer("jules", rid, "No rain today.", seed, botreply.station_pub_b64(station))
+        bad = await self.client.post("/voice/reply", data=raw[:-8] + b"xxxxxxxx", headers={"Content-Type": "application/json"})
+        self.assertIn(bad.status, (400, 403))
+        self.assertNotIn("No rain today.", await bad.text())
+        p = await self.client.post("/voice/reply", data=raw, headers={"Content-Type": "application/json"})
+        self.assertEqual(p.status, 200, await p.text())
+        self.assertEqual(self.handoff.take_reply(r.REPLIES_DIR, rid, "jules", "n0nce"), ("No rain today.", None))
+        again = await self.client.post("/voice/reply", data=raw, headers={"Content-Type": "application/json"})
+        self.assertEqual(again.status, 409)
+        audit = open(r.audit_path()).read()
+        self.assertIn(" ok ", audit)
+        self.assertNotIn("No rain today.", audit)
+        self.assertNotIn(seed, audit)
+        self.assertNotIn("Is it raining?", audit)
+        gone = await self.client.delete("/admin/bots/jules/key", headers=self.headers(), json={"actor": "admin"})
+        self.assertEqual(gone.status, 200)
+        rid2 = self.handoff.new_request_id()
+        self.handoff.write_pending(r.PENDING_DIR, rid2, "jules", "n2", int(time.time() * 1000) + 60000, question="q")
+        raw2 = helper.build_outer("jules", rid2, "Later.", seed, botreply.station_pub_b64(station))
+        blocked = await self.client.post("/voice/reply", data=raw2, headers={"Content-Type": "application/json"})
+        self.assertEqual(blocked.status, 403)
+        killed = await self.client.post("/admin/bots/revoke-all", headers=self.headers(), json={"actor": "admin"})
+        self.assertEqual(killed.status, 200)
+        listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
+        self.assertTrue(listed["killed"])
+        self.assertFalse(listed["bots"][0]["paired"])
+
+    def test_admin_forwards_only_the_reply_path(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "grok_admin.py")).read()
         self.assertIn('if p.startswith("/voice/"):\n            return self.voice_ingress(method, p)', src)
         self.assertIn('method == "POST" and p == "/voice/reply"', src)
+        self.assertNotIn("/voice/request", src)
         self.assertIn('if not lan_ok(self.client_address[0]):\n            return self.send(403', src)
+        self.assertIn("never be port-forwarded", src)
 
     def test_handoff_on_by_default(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "relay", "relay.py")).read()
         self.assertIn('E("HANDOFF_ENABLED", "1")', src)
+
+    def test_icon_orders_the_newest_request_across_bots(self):
+        r = self.relay
+        self.assertEqual(r.icon_from_status([], {}), {"paired": False, "ok": None})
+        self.assertEqual(r.icon_from_status(["jules"], {}), {"paired": True, "ok": True})  # paired, no request yet
+        doc = {"jules": {"icon": "timeout", "icon_at": 10}, "nova": {"icon": "ok", "icon_at": 20}}
+        self.assertEqual(r.icon_from_status(["jules", "nova"], doc), {"paired": True, "ok": True})
+        self.assertEqual(r.icon_from_status(["jules"], doc)["ok"], False)
+        later = {"jules": {"icon": "ok", "icon_at": 20}, "nova": {"icon": "post-failed", "icon_at": 30}}
+        self.assertEqual(r.icon_from_status(["jules", "nova"], later)["ok"], False)
+        self.assertEqual(r.icon_view(), {"paired": False, "ok": None})  # nothing pinned in this tmp
+
+    async def test_icon_tracks_post_failure_timeout_and_a_test_reply(self):
+        """Paired idle is green. A webhook POST failure is red immediately. A verified reply (the Test
+        relay ping) is green again and records RTT. A later timeout is red."""
+        import botreply
+        from nacl.signing import SigningKey
+        r = self.relay
+        signer = SigningKey.generate()
+        pub = base64.b64encode(bytes(signer.verify_key)).decode()
+        put = await self.client.put("/admin/bots/jules/key", headers=self.headers(),
+                                    json={"public_key": pub, "actor": "admin"})
+        self.assertEqual(put.status, 200, await put.text())
+        self.assertEqual(r.icon_view(), {"paired": True, "ok": True})
+        old_tokens = list(r.TOKENS)
+        r.TOKENS = [b"station-token"]
+
+        class Req:
+            def __init__(self, token):
+                self.headers = {"Authorization": token}
+
+        try:
+            bare = await r.health(Req(""))
+            self.assertEqual(json.loads(bare.body), {"ok": True})
+            authed = json.loads((await r.health(Req("Bearer station-token"))).body)
+            self.assertEqual(authed["bots"], {"paired": True, "ok": True})
+            self.assertNotIn("jules", json.dumps(authed["bots"]))
+        finally:
+            r.TOKENS = old_tokens
+
+        h = self.headers()
+        old_wait = r.REPLY_WAIT
+        try:
+            r.REPLY_WAIT = 2
+            srv, _seen = await self._fake("deny")
+            self._seed_hook(str(srv.make_url("/hook")), "denied-key-zzzz")
+            r._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-icon-401.json"), r.today)
+            t0 = time.monotonic()
+            resp = await self.client.post("/admin/bots/jules/test", headers=h, json={})
+            tid = (await resp.json())["test_id"]
+            body = await self._poll(tid, timeout=3)
+            self.assertEqual(body["state"], "failed")
+            self.assertLess(time.monotonic() - t0, 2.0)  # red on POST failure, not after REPLY_WAIT
+            self.assertEqual(r.icon_view(), {"paired": True, "ok": False})
+            await srv.close()
+
+            srv, _seen = await self._fake("reply")
+            self._seed_hook(str(srv.make_url("/hook")))
+            r._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-icon-ok.json"), r.today)
+            resp = await self.client.post("/admin/bots/jules/test", headers=h, json={})
+            tid = (await resp.json())["test_id"]
+            body = await self._poll(tid)
+            self.assertEqual(body["state"], "ok")
+            self.assertIsInstance(body["answered_in_s"], float)
+            self.assertEqual(r.icon_view()["ok"], True)
+            listed = await (await self.client.get("/admin/bots", headers=h)).json()
+            self.assertIsInstance(listed["bots"][0]["stats"]["avg_rtt_ms"], int)
+            self.assertGreater(listed["bots"][0]["stats"]["avg_rtt_ms"], 0)
+            self.assertIsInstance(listed["stats"]["avg_rtt_ms"], int)
+            await srv.close()
+
+            srv, _seen = await self._fake("silent")
+            self._seed_hook(str(srv.make_url("/hook")))
+            r._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-icon-wait.json"), r.today)
+            r.REPLY_WAIT = 0.4
+            resp = await self.client.post("/admin/bots/jules/test", headers=h, json={})
+            tid = (await resp.json())["test_id"]
+            body = await self._poll(tid, timeout=3)
+            self.assertEqual(body["error"], "No answer")
+            self.assertEqual(r.icon_view(), {"paired": True, "ok": False})
+            listed = await (await self.client.get("/admin/bots", headers=h)).json()
+            self.assertGreaterEqual(listed["bots"][0]["stats"]["timeouts"], 1)
+            await srv.close()
+        finally:
+            r.REPLY_WAIT = old_wait
 
     async def test_webhook_round_trip_401_silence_cancel_and_caps(self):
         h = self.headers()
@@ -406,10 +528,11 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(body["error"])
             self.assertEqual(len(seen["bodies"]), 1)
             body0 = seen["bodies"][0]
-            self.assertEqual(set(body0), {"source", "v", "request_id", "persona", "test"})
-            self.assertEqual(body0["v"], 2)
+            self.assertEqual(set(body0), {"v", "request_id", "persona", "question", "reply_by", "test"})
+            self.assertEqual(body0["v"], 1)
             self.assertIs(body0["test"], True)
-            for dropped in ("question", "pii_mode", "reply_by", "tier_max"):
+            self.assertEqual(body0["question"], self.relay.TEST_QUESTION)
+            for dropped in ("source", "pii_mode", "tier_max", "include_avatar"):
                 self.assertNotIn(dropped, body0)
             pend = seen["pending"][0]
             self.assertEqual(pend["question"], self.relay.TEST_QUESTION)
@@ -425,6 +548,9 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             listed = await (await self.client.get("/admin/bots", headers=h)).json()
             self.assertEqual(listed["bots"][0]["status"]["state"], "connected")
             self.assertIsInstance(listed["bots"][0]["status"]["last_answered_at"], int)
+            self.assertIsInstance(listed["bots"][0]["stats"]["avg_rtt_ms"], int)
+            self.assertEqual(listed["bots"][0]["stats"]["timeouts"], 0)
+            self.assertIsInstance(listed["stats"]["avg_rtt_ms"], int)
             await srv.close()
 
             srv, seen = await self._fake("deny")
@@ -448,7 +574,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             t0 = time.monotonic()
             body = await self._poll(tid, timeout=3)
             self.assertEqual(body["state"], "failed")
-            self.assertEqual(body["error"], "No answer after 2 min")
+            self.assertEqual(body["error"], "No answer")
             self.assertLess(time.monotonic() - t0, 2.5)
             await srv.close()
 

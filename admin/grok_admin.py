@@ -336,6 +336,35 @@ def admin_url(host=None):
     return f"https://{host or hostname()}.local"
 
 
+def station_sounds():
+    """Catalog module. Next to this checkout, else the installed copy. None if it isn't there."""
+    import importlib.util
+    cached = getattr(station_sounds, "_mod", None)
+    if cached:
+        return cached
+    cands = []
+    if os.environ.get("GROK_STATION_SOUNDS_PY"):
+        cands.append(os.environ["GROK_STATION_SOUNDS_PY"])
+    here = globals().get("__file__")
+    if here:
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "sounds.py"))
+    cands.append("/opt/grok-station/sounds.py")
+    for p in cands:
+        if not p or not os.path.isfile(p):
+            continue
+        spec = importlib.util.spec_from_file_location("grok_station_sounds", p)
+        if not spec or not spec.loader:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        station_sounds._mod = mod
+        return mod
+    return None
+
+
 def wake(method, p, body=None, timeout=3):
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
@@ -537,7 +566,7 @@ UPDATE_REPO = "https://github.com/bwilliam79/grok-station"
 REBOOT_FLAG = E("ADMIN_REBOOT_FLAG", "/run/grok-station-reboot-required")  # install.sh: boot options changed
 RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
-BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
+BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test|key)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/admin.css": ("admin.css", "text/css; charset=utf-8"), "/favicon.ico": ("assets/favicon.ico", "image/x-icon")}
 ASSET_TYPE = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf", "ico": "image/x-icon"}
@@ -1157,7 +1186,6 @@ def xai_key_set():
 
 LOCAL_RELAY_TOKEN = E("ADMIN_LOCAL_RELAY_TOKEN_FILE", "/etc/grok-station/secrets/admin_token")
 LOCAL_RELAY_ORIGIN = "http://127.0.0.1:" + E("RELAY_PORT", "8790")
-VOICE_REQ = re.compile(r"^/voice/request/[A-Za-z0-9_-]{8,80}$")
 
 
 def station_urls():
@@ -1305,6 +1333,33 @@ class _RelayHTTPS(urllib.request.HTTPSHandler):
         return self.do_open(self._conn_cls, req, context=self._context)
 
 
+def box_pub_ok(text):
+    """Standard base64 of 32 bytes (an X25519 or Ed25519 public key). Whitespace around a paste is ignored."""
+    if not isinstance(text, str):
+        return False
+    s = "".join(text.split())
+    if not s or len(s) > 80:
+        return False
+    try:
+        raw = base64.b64decode(s, validate=True)
+    except Exception:
+        return False
+    return len(raw) == 32
+
+
+def stats_view(raw):
+    """avg_rtt_ms of answered asks and how many of the last 10 timed out. Nothing else."""
+    if not isinstance(raw, dict):
+        raw = {}
+    avg = raw.get("avg_rtt_ms")
+    if type(avg) is not int or avg < 0 or avg > 600000:
+        avg = None
+    n = raw.get("timeouts")
+    if type(n) is not int or n < 0 or n > 10:
+        n = 0
+    return {"avg_rtt_ms": avg, "timeouts": n}
+
+
 def safe_bot(b):
     """The fields the browser may see. Anything else from the relay (tokens, urls, keys) is dropped."""
     if not isinstance(b, dict) or not slug_ok(b.get("slug")):
@@ -1330,6 +1385,8 @@ def safe_bot(b):
             "last_error": scrub_note(st.get("last_error")),
             "last_error_at": _epoch(st.get("last_error_at")),
         },
+        "paired": b.get("paired") is True,
+        "stats": stats_view(b.get("stats")),
     }
 
 
@@ -1356,6 +1413,7 @@ def local_bots():
                 "source": "registry",
                 "webhook": {"configured": False, "last4": None, "saved_at": None},
                 "status": {"state": "not_configured", "last_answered_at": None, "last_error": None, "last_error_at": None},
+                "paired": False, "stats": stats_view(None),
             })
     return out
 
@@ -1737,20 +1795,21 @@ class Handler(BaseHTTPRequestHandler):
         self.route("PATCH")
 
     def voice_ingress(self, method, p):
-        """Bot reply contract on this HTTPS port: GET /voice/request/<rid>, POST /voice/reply. LAN only.
-        No admin session; the bot's own reply token goes through to the loopback relay, which checks it."""
+        """POST /voice/reply on this HTTPS port, forwarded to the loopback relay. LAN only. No admin session.
+
+        The body is a sealed box. There is no reply token. The question rides on the webhook, so this port
+        has no request route. This port must never be port-forwarded.
+        """
         if not lan_ok(self.client_address[0]):
             return self.send(403, {"error": "LAN only"})
-        ok = (method == "GET" and VOICE_REQ.fullmatch(p)) or (method == "POST" and p == "/voice/reply")
+        ok = method == "POST" and p == "/voice/reply"
         if not ok:
             return self.send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
         if n > 8192:
             return self.send(413, {"error": "too large"})
-        data = self.rfile.read(n) if method == "POST" else None
-        headers = {"Authorization": self.headers.get("Authorization", "")[:200], "Accept": "application/json"}
-        if data is not None:
-            headers["Content-Type"] = "application/json"
+        data = self.rfile.read(n) if n else b""
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
         req = urllib.request.Request(LOCAL_RELAY_ORIGIN + p, data=data, headers=headers, method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         try:
@@ -2025,8 +2084,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_post_audio(self, p, q, j):
         if p == "/api/audio/test":
-            code, out = wake("POST", "/test-sound", {})
-            return self.send(200 if code == 202 else 409, {"ok": code == 202, "error": None if code == 202 else "The station is busy. Try again in a moment."})
+            # Empty body plays today's chime. An id is allowlisted here; the wake listener resolves it again.
+            body = {}
+            if j.get("id") not in (None, ""):
+                sid = j.get("id") if isinstance(j.get("id"), str) else ""
+                mod = station_sounds()
+                if not sid or mod is None or not mod.file_for(sid):
+                    return self.send(400, {"error": "That sound isn't available."})
+                body = {"id": sid}
+            code, out = wake("POST", "/test-sound", body)
+            if code == 202:
+                return self.send(200, {"ok": True, "error": None})
+            if code == 400:
+                return self.send(400, {"error": "That sound isn't available."})
+            return self.send(409, {"ok": False, "error": "The station is busy. Try again in a moment."})
         return self.send(404, {"error": "not found"})
 
     # secrets: relay token, relay URL and the xAI key are not stored from this page
@@ -2294,6 +2365,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_post_bots(self, p, q, j):
         if p == "/api/bots/refresh-avatars":
             return self.bots_refresh_avatars()
+        if p == "/api/bots/revoke-all":
+            return self.bots_revoke_all(j)
         am = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/avatar-request", p)
         if am and slug_ok(am.group(1)):
             return self.bots_avatar_request(am.group(1))
@@ -2323,6 +2396,8 @@ class Handler(BaseHTTPRequestHandler):
         slug, kind, tid = m.groups()
         if slug and kind == "webhook" and not tid and slug_ok(slug):
             return self.bots_webhook_put(slug, j)
+        if slug and kind == "key" and not tid and slug_ok(slug):
+            return self.bots_key_put(slug, j)
         return self.send(404, {"error": "not found"})
 
     def api_delete_bots(self, p, q, j):
@@ -2336,6 +2411,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_remove(slug, j)
         if kind == "webhook" and not tid:
             return self.bots_webhook_delete(slug, j)
+        if kind == "key" and not tid:
+            return self.bots_key_delete(slug, j)
         if kind == "test" and tid:
             return self.bots_test_delete(slug, tid)
         return self.send(404, {"error": "not found"})
@@ -2348,12 +2425,16 @@ class Handler(BaseHTTPRequestHandler):
         got = relay_call("GET", "/admin/bots")
         if got is None:
             return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED,
-                                   "stepup_until": self._stepup()})
+                                   "stepup_until": self._stepup(), "station_pub": "", "killed": False,
+                                   "stats": stats_view(None)})
         status, data = got
         if status != 200:
             return self.relay_fail(status, data)
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
-        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")), "stepup_until": self._stepup()})
+        pub = data.get("station_pub")
+        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")), "stepup_until": self._stepup(),
+                               "station_pub": "".join(pub.split()) if box_pub_ok(pub) else "",
+                               "killed": data.get("killed") is True, "stats": stats_view(data.get("stats"))})
 
     def bots_refresh_avatars(self):
         """Ask the wake listener to re-sync personas and portraits. No password."""
@@ -2488,11 +2569,50 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data, (key, url, j.get("password")))
         last4 = key[-4:]
         audit(slug, "webhook-save", last4)
-        base = station_urls()
-        return self.send(200, {"ok": True, "last4": last4, "routine": {
-            "reply_token": data.get("reply_token"), "station_url": base[0], "station_urls": base,
-            "request_url": base[0] + "/voice/request/<request_id>", "reply_url": base[0] + "/voice/reply",
-            "fingerprint": tls_info()["fingerprint"]}})
+        return self.send(200, {"ok": True, "last4": last4})
+
+    def bots_key_put(self, slug, j):
+        """Pin the bot's Ed25519 verify key. The private key is never sent here."""
+        key = j.get("public_key") if isinstance(j, dict) else None
+        if not box_pub_ok(key):
+            return self.send(400, {"error": "That public key isn't valid."})
+        if not self.need_password(j):
+            return
+        got = relay_call("PUT", "/admin/bots/" + slug + "/key",
+                         {"public_key": "".join(key.split()), "actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"), key))
+        audit(slug, "pair")
+        return self.send(200, {"ok": True})
+
+    def bots_key_delete(self, slug, j):
+        """Drop one pinned key. Replies from this bot are rejected until it is paired again."""
+        if not self.need_password(j, always=True):
+            return
+        got = relay_call("DELETE", "/admin/bots/" + slug + "/key", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit(slug, "revoke")
+        return self.send(200, {"ok": True})
+
+    def bots_revoke_all(self, j):
+        """Drop every pinned key and reject every reply until a key is paired again."""
+        if not self.need_password(j, always=True):
+            return
+        got = relay_call("POST", "/admin/bots/revoke-all", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or data.get("ok") is False:
+            return self.relay_fail(status, data, (j.get("password"),))
+        audit("-", "revoke-all")
+        return self.send(200, {"ok": True})
 
     def bots_webhook_delete(self, slug, j):
         if not self.need_password(j, always=True):
@@ -2611,14 +2731,12 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, updates_view())
 
     def api_post_updates(self, p, q, j):
+        # Check and apply use the signed-in session and the CSRF header only. No second password,
+        # and no URL or ref from the caller: the unit always updates the fixed GitHub main path.
         if p == "/api/updates/check":
-            if not self.need_password(j, always=False):
-                return
             run_update_check()
             return self.send(200, updates_view())
         if p == "/api/updates/apply":
-            if not self.need_password(j, always=False):
-                return
             if busy() and not (isinstance(j, dict) and j.get("force")):
                 return self.send(409, {"error": "A conversation or enrollment is running.", "can_force": True})
             if update_job()["state"] == "running":

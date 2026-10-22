@@ -253,7 +253,7 @@ def route(hooks, bot):
 
 class _Wire(dict):
     """JSON object is the real keys. payload()["tier_max"] still returns the tier argument (callers and tests
-    read it) without putting tier_max, the question, pii_mode or reply_by on the wire."""
+    read it) without putting tier_max or pii_mode on the wire."""
 
     def __init__(self, body, tier_max):
         super().__init__(body)
@@ -266,18 +266,16 @@ class _Wire(dict):
 
 
 def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False):
-    """Webhook body: source, v, request_id, persona. test and include_avatar only when asked.
+    """Webhook body v1: v, request_id, persona, the cleaned question, reply_by. test only when asked.
 
-    question, reply_by and tier_max are accepted so existing positional callers keep working. None of them is
-    serialized, and pii_mode is never a field. The pending file carries the question and pii_mode. ["tier_max"]
-    returns the tier argument (default 0) for callers that still read it.
+    include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
+    ["tier_max"] returns the tier argument (default 0) and is not on the wire.
     """
-    del question, reply_by_iso
-    body = {"source": "grok-station", "v": 2, "request_id": rid, "persona": bot}
+    del include_avatar
+    body = {"v": 1, "request_id": rid, "persona": bot, "question": clean(question, Q_MAX),
+            "reply_by": str(reply_by_iso or "")}
     if test:
         body["test"] = True
-    if include_avatar:
-        body["include_avatar"] = True
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 
@@ -334,7 +332,10 @@ class Limits:
 
 
 def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True, test=False, reply_by=""):
-    """Relay → tile-ingest file. The question and pii_mode live here, not on the webhook. tier_max is always 0."""
+    """Pending request the reply must match. tier_max is always 0.
+
+    expires_ms is the accept-until time (clock-skew window), which may be later than reply_by.
+    """
     os.makedirs(pdir, exist_ok=True)
     doc = {"v": 1, "request_id": rid, "persona": bot, "nonce": nonce, "expires_ms": int(expires_ms),
            "question": clean(question, Q_MAX), "pii_mode": True if pii_mode is None else bool(pii_mode),

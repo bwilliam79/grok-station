@@ -19,6 +19,11 @@ install -d /opt/grok-station/assets/brand
 if [ -d "$S/assets/brand" ]; then
   install -m644 "$S"/assets/brand/*.png "$S"/assets/brand/*.svg /opt/grok-station/assets/brand/
 fi
+install -d /opt/grok-station/assets/sounds
+if [ -d "$S/assets/sounds" ]; then
+  install -m644 "$S"/assets/sounds/* /opt/grok-station/assets/sounds/
+fi
+install -m644 "$S/sounds.py" /opt/grok-station/sounds.py
 rm -f /opt/grok-station/assets/portraits/grok.png /opt/grok-station/admin/web/assets/grok.png
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/tools/grok-station" /usr/local/bin/grok-station

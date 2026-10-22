@@ -114,6 +114,12 @@ st_users() {
   done
   run chmod 0755 $V
   run install -d -o grok -g grok -m 0750 $V/enroll $V/enroll/inbox
+  # Wi-Fi powersave off when NetworkManager is installed (2 = disabled). Journal cap. Both overwrite the same bytes.
+  if [ -d /etc/NetworkManager/conf.d ]; then
+    sh_ "printf '%s\n' '[connection]' 'wifi.powersave = 2' > /etc/NetworkManager/conf.d/wifi-powersave-off.conf"
+  fi
+  run install -d /var/log/journal /etc/systemd/journald.conf.d
+  sh_ "printf '%s\n' '[Journal]' 'SystemMaxUse=200M' > /etc/systemd/journald.conf.d/size.conf"
 }
 gen() {  # gen <file> <owner:group> <mode>: create once with a random token
   sh_ "[ -s $1 ] || { umask 077; t=\$(mktemp $S/.t.XXXXXX); openssl rand -hex 32 > \$t; chown $2 \$t; chmod $3 \$t; mv -f \$t $1; }"
@@ -132,7 +138,7 @@ st_display() {
 
 st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
-for f in relay.py handoff.py tools.py t1.py; do run install -m644 relay/$f $O/relay/; done
+for f in relay.py handoff.py tools.py t1.py botreply.py; do run install -m644 relay/$f $O/relay/; done
   sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
   run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt
   run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
@@ -189,7 +195,7 @@ st_health() {
     if [ -s "$f" ]; then echo "ok   $f"; else echo "!!   missing $f"; bad=1; fi
   done
   chk() { if "$@" >/dev/null 2>&1; then echo "ok   $*"; else echo "!!   failed: $*"; "$@" 2>&1 | tail -n 5; bad=1; fi; }
-  chk $O/relay/venv/bin/python -c 'import aiohttp'
+  chk $O/relay/venv/bin/python -c 'import aiohttp, nacl'
   chk $O/relay/venv/bin/python -m py_compile $O/relay/relay.py
   chk $O/wake/venv/bin/python -c 'import openwakeword, onnxruntime, numpy, websockets'
   chk python3 -c 'import pygame, qrcode, cryptography'

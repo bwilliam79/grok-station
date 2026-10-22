@@ -24,6 +24,7 @@ JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata
 from zoneinfo import ZoneInfo
 from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
+import botreply
 import handoff
 import tools as station_tools
 import t1
@@ -186,10 +187,13 @@ def webhooks():
     return _hooks["map"]
 PENDING_DIR = E("HANDOFF_PENDING", os.path.join(STATE_DIR, "voice", "pending"))
 REPLIES_DIR = E("HANDOFF_REPLIES", os.path.join(STATE_DIR, "voice", "replies"))
-REPLY_WAIT = float(E("REPLY_WAIT", "120"))          # seconds the station waits for a teammate's answer
-STILL_AFTER = float(E("STILL_AFTER", "20"))         # then says "Still asking <bot>" once, wait screen stays up
+REPLY_WAIT = float(E("REPLY_WAIT", "30"))           # seconds the station waits for a teammate's answer
 _limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "handoff.json")), lambda: today())
 _seen_rids = set()
+_reply_seen = set()       # request ids that already took a sealed reply; not the take_reply set
+_reply_rate = None
+_rtt = None
+_rtt_dir = None
 
 
 def lint(text, hosts):
@@ -486,9 +490,39 @@ NOTES_TOOL = {"type": "function", "name": "check_notes",
                   "required": ["question"]}}
 
 
+def bot_keys_path():
+    return botreply.keys_path(bots_dir())
+
+
+def bot_paired(bot):
+    """A pinned verify key, and the kill switch off. A webhook alone is not enough."""
+    doc = botreply.load_keys(bot_keys_path())
+    if doc.get("killed"):
+        return False
+    return botreply.pinned_bytes(doc, bot) is not None
+
+
 def has_route(bot):
-    """True when this persona has its own webhook to POST. There is no router fallback."""
-    return handoff.route(webhooks(), bot) is not None
+    """True when this persona has its own webhook and a pinned key. There is no router fallback."""
+    return handoff.route(webhooks(), bot) is not None and bot_paired(bot)
+
+
+def reply_limiter():
+    """Per-bot and global token buckets. Created on first use so tests can swap the env first."""
+    global _reply_rate
+    if _reply_rate is None:
+        _reply_rate = botreply.Limiter(botreply.env_rate("REPLY_RATE_BOT", 6), botreply.env_rate("REPLY_RATE_GLOBAL", 30))
+    return _reply_rate
+
+
+def rtt_stats():
+    """Last-10 round trips. A new object when the bots directory changes (tests swap WEBHOOKS_FILE)."""
+    global _rtt, _rtt_dir
+    directory = bots_dir()
+    if _rtt is None or _rtt_dir != directory:
+        _rtt = botreply.Stats(os.path.join(directory, "rtt.json"))
+        _rtt_dir = directory
+    return _rtt
 
 
 def persona_routed(slug):
@@ -544,12 +578,16 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
         _note_status(bot, error=limit_error(why))
         return None, "limit"
     nonce = secrets.token_urlsafe(24)
-    deadline = time.time() + REPLY_WAIT
+    now = time.time()
+    reply_at = now + botreply.REPLY_BY_S
+    deadline = now + REPLY_WAIT
     try:
         if cancel is not None and cancel.is_set():
             return None, "cancelled"
-        reply_by = datetime.datetime.fromtimestamp(deadline, datetime.timezone.utc).isoformat(timespec="seconds")
-        handoff.write_pending(PENDING_DIR, rid, bot, nonce, deadline * 1000, question=q, pii_mode=pii,
+        reply_by = datetime.datetime.fromtimestamp(reply_at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # reply_by on the wire is 60 s. The pending file stays valid for SKEW_S (2 min) so a skewed clock
+        # does not fail a reply the station is still waiting for. The spoken wait is REPLY_WAIT, not 2 min.
+        handoff.write_pending(PENDING_DIR, rid, bot, nonce, int((now + botreply.SKEW_S) * 1000), question=q, pii_mode=pii,
                               test=bool(test), reply_by=reply_by)
         if hook is None:
             hook = handoff.route(webhooks(), bot)
@@ -558,8 +596,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
             return None, "no-webhook"
         body = handoff.payload(rid, bot, q, reply_by, 1 if t1.ENABLED else 0, test=bool(test),
                                include_avatar=bool(include_avatar))
-        # Wire is source, v, request_id, persona, plus test / include_avatar when set.
-        # The question, pii_mode, reply_by and tier_max stay on the pending file.
+        # Wire is v, request_id, persona, question, reply_by, plus test when set.
         posted = dict(body)
         t_post, status = time.monotonic(), "error"
         try:
@@ -576,19 +613,14 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
             log(f"handoff {rid} agent={bot} length={len(q)} verdict=post-failed")
             alert("handoff", "grok-station relay: handoff POST failed", f"request_id={rid} agent={bot} verdict=post-failed")
             _note_status(bot, error="Key was refused (401)" if status == 401 else "Couldn't reach the bot")
+            _note_icon(bot, "post-failed")  # red now; do not wait out REPLY_WAIT
             return None, "post-failed"
         if on_wait:
             await on_wait()
-        t_wait, stilled = time.monotonic(), False
+        t_wait = time.monotonic()
         while time.time() < deadline:
             if cancel is not None and cancel.is_set():
                 return None, "cancelled"
-            if on_still and not stilled and time.monotonic() - t_wait >= STILL_AFTER:
-                stilled = True
-                try:
-                    await on_still()
-                except Exception as e:
-                    log(f"handoff {rid} agent={bot} still-line failed ({type(e).__name__})")
             text, bad = handoff.take_reply(REPLIES_DIR, rid, bot, nonce, _personas["hosts"], _seen_rids,
                                            note_ok=t1.ENABLED, names=_personas.get("names") or (), pii=pii)
             if bad:
@@ -600,22 +632,34 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                 log(f"handoff {rid} agent={bot} length={len(text['text'])} verdict=proposal")
                 return dict(text, request_id=rid), "note"
             if text:
+                _record_rtt(bot, rtt_ms=max(0, int((time.monotonic() - t_post) * 1000)))
                 log(f"handoff {rid} agent={bot} length={len(text)} verdict=spoken wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
                 _note_status(bot, answered=True)
+                _note_icon(bot, "ok")
                 return text, "ok"
             await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
+        _record_rtt(bot, timeout=True)
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=timeout wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
         alert("handoff-timeout", "grok-station relay: handoff timed out", f"request_id={rid} agent={bot} verdict=timeout")
-        _note_status(bot, error="No answer after 2 min")
+        _note_status(bot, error="No answer")
+        _note_icon(bot, "timeout")
         return None, "timeout"
     finally:
         handoff.remove_pending(PENDING_DIR, rid)
         _limits.release(bot)
 
 
+def _record_rtt(bot, rtt_ms=None, timeout=False):
+    """Remember one answered round trip or one timeout. A stats-file error must not drop the answer."""
+    try:
+        rtt_stats().record(bot, rtt_ms=rtt_ms, timeout=timeout)
+    except OSError as e:
+        log("rtt write failed", type(e).__name__)
+
+
 def handoff_line(name, verdict):
     """The fixed sentence the station speaks. The model does not word it."""
-    return {"timeout": f"{name} didn't answer in time; try again or ask in the app.",
+    return {"timeout": f"I couldn't reach {name}.",
             "limit": f"{name} has had a lot of questions from the station today; ask in the app.",
             "post-failed": f"Couldn't reach {name} just now; try again or ask in the app.",
             "reject": f"{name}'s answer couldn't be read out here; ask in the app."}.get(
@@ -776,9 +820,11 @@ async def fetch_voices():
 async def health(req):
     if not authorized(req):
         return web.json_response({"ok": True})
+    link = icon_view()
     return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"],
                               "since_start": {"sessions": stats["sessions"], "seconds": round(stats["seconds"], 1)},
-                              "caps": {"turn_s": MAX_SESSION, "session_s": MAX_TOTAL, "no_speech_s": NO_SPEECH}})
+                              "caps": {"turn_s": MAX_SESSION, "session_s": MAX_TOTAL, "no_speech_s": NO_SPEECH},
+                              "bots": {"paired": link["paired"], "ok": link["ok"]}})
 
 
 def _mark_busy(n):
@@ -921,8 +967,8 @@ async def session(req):
                 await pi.send_json({"type": "done"})
                 return "response done" + who
 
-            async def routed_turn(bot, question):
-                """Relay-owned handoff. Filler, the bot's linted reply, or a fixed error. No response.create."""
+            async def routed_turn(bot, question, cue=False):
+                """Relay-owned handoff. The thinking ring always; the spoken cue only for a name route from Grok."""
                 if st.get("answered_utt") == st.get("utt"):
                     return None
                 st["answered_utt"] = st.get("utt")
@@ -932,23 +978,15 @@ async def session(req):
                 st.update(hold=True, responding=True)
                 h0 = time.monotonic()
 
-                # Woken as this bot ("Hey Ash"): no "Asking Ash" filler; only a bot-to-bot handoff says it.
-                direct = st.get("woke") == bot
-
                 async def waiting():
-                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct})
-                    if not direct:
+                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": not cue})
+                    if cue:
                         await play_fixed(asking_line(name), voice)
                         # the filler line flips the Pi to "speaking"; put it back on the spinning wait ring
-                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct})
+                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": False})
 
-                async def still():
-                    pcm = await tts_pcm(http, "Still working on it." if direct else f"Still asking {name}.", voice)
-                    if pcm:
-                        await pi.send_json({"type": "handoff_still", "name": name,
-                                            "audio": base64.b64encode(pcm).decode()})
                 try:
-                    text, verdict = await ask_teammate(http, bot, question, waiting, still)
+                    text, verdict = await ask_teammate(http, bot, question, waiting)
                 finally:
                     st.update(hold=False, turn_t0=time.monotonic(), held=st.get("held", 0) + time.monotonic() - h0)
                 await pi.send_json({"type": "handoff_done", "slug": bot})
@@ -964,6 +1002,8 @@ async def session(req):
                                             "needs_tap": text["needs_tap"]})
                         await play_fixed(t1.readback(name, text), voice, TTS_REPLY_S)
                     return await end_routed_turn()
+                if not text and verdict in ("timeout", "post-failed"):
+                    await pi.send_json({"type": "comms_fail"})  # wake plays the fixed fail tone, then the line
                 await play_fixed(text if text else handoff_line(name, verdict), voice, TTS_REPLY_S if text else TTS_SHORT_S)
                 return await end_routed_turn()
 
@@ -1032,7 +1072,7 @@ async def session(req):
                             note_model_output(st)
                     st["buf"] = []
 
-                async def route_to(slug, question, heard):
+                async def route_to(slug, question, heard, cue=False):
                     saw = st.get("saw_response")
                     count_buf()
                     st["responding"] = True  # hold the no-speech cap across the handoff
@@ -1042,7 +1082,7 @@ async def session(req):
                     if slug != st["persona"]:
                         await switch(slug)
                         st["drop_model"] = True
-                    return await routed_turn(slug, (question or "").strip() or heard)
+                    return await routed_turn(slug, (question or "").strip() or heard, cue=cue)
 
                 async for m in up:
                     if m.type != WSMsgType.TEXT:
@@ -1129,7 +1169,8 @@ async def session(req):
                             continue
                         if addr and addr != st["persona"] and persona_routed(addr):
                             log(f"persona route -> {addr}")  # slug only; the question is not logged
-                            end = await route_to(addr, rest, heard)
+                            # Spoken cue only when Grok was asked by name ("ask <bot>"). A direct session stays quiet.
+                            end = await route_to(addr, rest, heard, cue=(st["persona"] == "grok"))
                             if end:
                                 return end
                             continue
@@ -1149,7 +1190,7 @@ async def session(req):
                         target = backup_target(heard, roster) if not st["switched"] else None
                         if target and target != st["persona"] and persona_routed(target):
                             log(f"persona route -> {target}")
-                            end = await route_to(target, "", heard)
+                            end = await route_to(target, "", heard, cue=(st["persona"] == "grok"))
                             if end:
                                 return end
                             continue
@@ -1382,6 +1423,33 @@ def write_webhooks(doc):
     return True
 
 
+def _status_item(ent):
+    """One bot's saved status. Icon fields survive a later error note. No question or reply text."""
+    item = {}
+    if isinstance(ent.get("last_answered_at"), int):
+        item["last_answered_at"] = ent["last_answered_at"]
+    if isinstance(ent.get("last_error"), str):
+        item["last_error"] = ent["last_error"][:200]
+    if isinstance(ent.get("last_error_at"), int):
+        item["last_error_at"] = ent["last_error_at"]
+    if ent.get("icon") in ("ok", "timeout", "post-failed"):
+        item["icon"] = ent["icon"]
+    if isinstance(ent.get("icon_at"), int):
+        item["icon_at"] = ent["icon_at"]
+    return item
+
+
+def _write_status(doc):
+    out = {}
+    for s, e in doc.items():
+        if not handoff.bot_slug_ok(s) or not isinstance(e, dict):
+            continue
+        item = _status_item(e)
+        if item:
+            out[s] = item
+    atomic_write(status_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
+
+
 def _note_status(slug, answered=False, error=None):
     """bot-status.json: timestamps and a short error. Never the question or the reply."""
     try:
@@ -1396,22 +1464,62 @@ def _note_status(slug, answered=False, error=None):
             ent["last_error"] = str(error)[:200]
             ent["last_error_at"] = now
         doc[slug] = ent
-        out = {}
-        for s, e in doc.items():
-            if not handoff.bot_slug_ok(s) or not isinstance(e, dict):
-                continue
-            item = {}
-            if isinstance(e.get("last_answered_at"), int):
-                item["last_answered_at"] = e["last_answered_at"]
-            if isinstance(e.get("last_error"), str):
-                item["last_error"] = e["last_error"][:200]
-            if isinstance(e.get("last_error_at"), int):
-                item["last_error_at"] = e["last_error_at"]
-            if item:
-                out[s] = item
-        atomic_write(status_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
+        _write_status(doc)
     except OSError as e:
         log("bot-status write failed", type(e).__name__)
+
+
+def _note_icon(slug, outcome, at=None):
+    """Last handoff the status icon cares about: ok, timeout, or post-failed. Other errors do not move it."""
+    if outcome not in ("ok", "timeout", "post-failed") or not handoff.bot_slug_ok(slug):
+        return
+    try:
+        doc = read_json_file(status_path())
+        if not isinstance(doc, dict):
+            doc = {}
+        ent = dict(doc.get(slug)) if isinstance(doc.get(slug), dict) else {}
+        ent["icon"] = outcome
+        ent["icon_at"] = int(time.time() * 1000) if at is None else int(at)
+        doc[slug] = ent
+        _write_status(doc)
+    except OSError as e:
+        log("bot-status write failed", type(e).__name__)
+
+
+def icon_from_status(paired, doc):
+    """Overall icon. paired is the slugs with a pinned key.
+
+    Nothing paired -> not configured. Paired and no recorded request, or the newest request
+    across those bots was answered -> ok. The newest timeout or webhook POST failure -> not ok.
+    """
+    slugs = [s for s in (paired or []) if handoff.bot_slug_ok(s)]
+    if not slugs:
+        return {"paired": False, "ok": None}
+    best_at, best = None, None
+    if isinstance(doc, dict):
+        for slug in slugs:
+            ent = doc.get(slug)
+            if not isinstance(ent, dict):
+                continue
+            outcome, at = ent.get("icon"), ent.get("icon_at")
+            if outcome not in ("ok", "timeout", "post-failed") or not isinstance(at, int):
+                continue
+            if best_at is None or at >= best_at:
+                best_at, best = at, outcome
+    return {"paired": True, "ok": best not in ("timeout", "post-failed")}
+
+
+def icon_view():
+    """What the display polls. No slug, question, reply, or key."""
+    doc = botreply.load_keys(bot_keys_path())
+    paired = []
+    if not (isinstance(doc, dict) and doc.get("killed") is True):
+        keys = doc.get("keys") if isinstance(doc, dict) else None
+        if isinstance(keys, dict):
+            for slug in keys:
+                if botreply.pinned_bytes(doc, slug) is not None:
+                    paired.append(slug)
+    return icon_from_status(paired, read_json_file(status_path()))
 
 
 def status_view(slug, configured):
@@ -1442,7 +1550,9 @@ def _last4(token):
 
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
-_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice"}
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke"}
+_REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
+_REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 429: "too many"}
 
 
 def actor_ok(s):
@@ -1516,6 +1626,20 @@ def audit_policy(actor, on):
     """`<ts> <actor> - pii-mode on|off -`. No other text."""
     who = actor if actor_ok(actor) else "-"
     _write_audit_line(f"{_audit_stamp()} {who} - pii-mode {'on' if on else 'off'} -\n")
+
+
+def audit_reply(bot, rid, verdict, nbytes):
+    """One reply attempt: time, bot, request id, verdict, byte count. No body and no key."""
+    who = bot if handoff.bot_slug_ok(bot) else "-"
+    req = rid if isinstance(rid, str) and handoff.REQUEST_ID.fullmatch(rid) else "-"
+    why = verdict if isinstance(verdict, str) and _REPLY_VERDICT.fullmatch(verdict) else "error"
+    try:
+        n = int(nbytes)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 0:
+        n = 0
+    _write_audit_line(f"{_audit_stamp()} {who} {req} {why} {n}\n")
 
 
 def audit_avatar(actor, slug, sha8):
@@ -1718,6 +1842,11 @@ def _avatar_result(slug, raw, actor):
     return web.json_response({"ok": True, "sha8": sha8})
 
 
+def _is_response(resp):
+    """aiohttp's Response is falsy (__len__ is an empty state dict), so `if resp` drops a 401."""
+    return resp is not None
+
+
 async def voice_avatar(req):
     """POST /voice/avatar. Voice-token bearer + X-Grok-Persona. No admin token, no client certificate."""
     slug = req.headers.get("X-Grok-Persona", "")
@@ -1730,7 +1859,7 @@ async def voice_avatar(req):
     if not _avatar_allow(slug):
         return web.json_response({"error": "too many"}, status=429)
     raw, err = await _avatar_raw(req)
-    if err:
+    if _is_response(err):
         return err
     return _avatar_result(slug, raw, "bot")
 
@@ -1819,24 +1948,34 @@ def _known(slug):
 
 async def admin_bots_get(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     roster = persona_list()
     added = load_overlay_doc()["added"]
     hooks = current_webhooks()
+    keys = botreply.load_keys(bot_keys_path())
+    killed = keys.get("killed") is True
+    stats = rtt_stats()
+    try:
+        station_pub = botreply.station_pub_b64(botreply.load_or_create_station(SECRETS_DIR))
+    except (botreply.StationKeyError, OSError):
+        station_pub = ""
     bots = []
     for slug in sorted(roster):
         p = roster[slug]
         ent = hooks.get(slug)
         bots.append({"slug": slug, "name": p["name"], "voice": p["voice"],
                      "source": "added" if slug in added else "registry",
-                     "webhook": webhook_view(ent), "status": status_view(slug, bool(ent))})
-    return web.json_response({"bots": bots, "voices": sorted(VOICES)})
+                     "webhook": webhook_view(ent), "status": status_view(slug, bool(ent)),
+                     "paired": (not killed) and botreply.pinned_bytes(keys, slug) is not None,
+                     "stats": stats.bot_view(slug)})
+    return web.json_response({"bots": bots, "voices": sorted(VOICES), "station_pub": station_pub,
+                              "killed": killed, "stats": stats.overall_view()})
 
 
 async def admin_bots_post(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")):
@@ -1868,7 +2007,7 @@ async def admin_bots_post(req):
 async def admin_bots_patch(req):
     """Name, voice, or both. Voice is checked the same way as POST /admin/bots. At least one is required."""
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -1909,7 +2048,7 @@ async def admin_bots_patch(req):
 async def admin_bots_delete(req):
     """Added persona: removed. Registry persona: hidden. Webhook and minted voice token go either way."""
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     body = await admin_json(req)
@@ -1934,6 +2073,7 @@ async def admin_bots_delete(req):
             if not write_webhooks(hooks):
                 return web.json_response({"error": "bad webhook"}, status=400)
         drop_minted(slug)
+        botreply.revoke_one(bot_keys_path(), slug)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
     audit(body["actor"], slug, "remove", tail)
@@ -1942,7 +2082,7 @@ async def admin_bots_delete(req):
 
 async def admin_webhook_put(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -1962,16 +2102,12 @@ async def admin_webhook_put(req):
     if not ok:
         return web.json_response({"error": "bad webhook"}, status=400)
     audit(body["actor"], slug, "webhook-save", key[-4:])
-    try:
-        tok = set_reply_token(slug)  # new reply token on every save; the old one stops working
-    except OSError:
-        return web.json_response({"error": "unavailable"}, status=500)
-    return web.json_response({"ok": True, "last4": key[-4:], "reply_token": tok})
+    return web.json_response({"ok": True, "last4": key[-4:]})
 
 
 async def admin_webhook_delete(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -1987,10 +2123,6 @@ async def admin_webhook_delete(req):
             return web.json_response({"error": "bad webhook"}, status=400)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
-    try:
-        drop_reply_token(slug)
-    except OSError:
-        pass
     audit(body["actor"], slug, "webhook-remove", tail)
     return web.json_response({"ok": True})
 
@@ -2002,7 +2134,7 @@ def _test_error(verdict, detail):
     if verdict == "limit":
         return limit_error(detail.get("limit"))
     if verdict == "timeout":
-        return "No answer after 2 min"
+        return "No answer"
     if verdict == "post-failed" and detail.get("status") == 401:
         return "Key was refused (401)"
     if verdict == "reject":
@@ -2057,7 +2189,7 @@ def _run_for(slug, tid):
 
 async def admin_test_post(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -2092,7 +2224,7 @@ async def admin_test_post(req):
 
 async def admin_test_get(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     rec = _run_for(req.match_info.get("slug", ""), req.match_info.get("test_id", ""))
     if not rec:
@@ -2102,7 +2234,7 @@ async def admin_test_get(req):
 
 async def admin_test_delete(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -2124,7 +2256,7 @@ async def admin_test_delete(req):
 
 async def admin_policy_get(req):
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     return web.json_response({"pii_mode": pii_mode()})
 
@@ -2132,7 +2264,7 @@ async def admin_policy_get(req):
 async def admin_policy_put(req):
     """Step-up is the Pi admin's job, before it calls this. actor is recorded; the bool is written to both files."""
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")) or not isinstance(body.get("pii_mode"), bool):
@@ -2148,7 +2280,7 @@ async def admin_policy_put(req):
 async def admin_avatar_post(req):
     """Owner upload. Same transcode as POST /voice/avatar. Not counted against the bot's 6/hour."""
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -2172,7 +2304,7 @@ async def admin_avatar_post(req):
         if not actor_ok(actor):
             return web.json_response({"error": "bad request"}, status=400)
         raw, err = await _avatar_raw(req)
-        if err:
+        if _is_response(err):
             return err
     else:
         return web.json_response({"error": "unsupported media type"}, status=415)
@@ -2182,7 +2314,7 @@ async def admin_avatar_post(req):
 async def admin_avatar_request(req):
     """Test-flagged webhook with include_avatar. Own request id, same caps, cannot bind some other request."""
     bad = await admin_gate(req)
-    if bad:
+    if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
     if not _known(slug):
@@ -2212,115 +2344,150 @@ async def healthz(_req):
     return web.json_response({"ok": True})
 
 
-# ---------------------------------------------------------------- bot reply ingress (single device; was tile-ingest)
-# The admin HTTPS server forwards GET /voice/request/<rid> and POST /voice/reply here with the bot's own bearer.
-# Each bot has a reply token, generated when its webhook is saved; only its sha256 is kept (bots/reply_tokens.json).
-_RID = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+# ---------------------------------------------------------------- bot reply ingress
+# The admin HTTPS server forwards POST /voice/reply here. The body is a sealed box; there is no reply token.
+# GET /voice/request is gone: the question rides on the webhook.
 
 
-def reply_tokens_path():
-    return os.path.join(bots_dir(), "reply_tokens.json")
+def known_bot_slugs():
+    """Registry and added personas, minus ones the admin has hidden. Does not depend on the voice list."""
+    ov = load_overlay_doc()
+    return (set(registry_index()) | set(ov["added"])) - set(ov["hidden"])
 
 
-def reply_tokens():
-    try:
-        with open(reply_tokens_path()) as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def set_reply_token(slug):
-    """New reply token for slug. Returns the plaintext (shown once); stores the hash only."""
-    tok = "gsr_" + secrets.token_urlsafe(32)
-    d = reply_tokens()
-    d[slug] = hashlib.sha256(tok.encode()).hexdigest()
-    atomic_write(reply_tokens_path(), json.dumps(d).encode())
-    return tok
-
-
-def drop_reply_token(slug):
-    d = reply_tokens()
-    if d.pop(slug, None) is not None:
-        atomic_write(reply_tokens_path(), json.dumps(d).encode())
-
-
-def reply_bot(req):
-    """The bot slug whose reply token is on this request, or None."""
-    h = req.headers.get("Authorization", "")
-    if not h.startswith("Bearer ") or len(h) > 200:
-        return None
-    digest = hashlib.sha256(h[7:].strip().encode()).hexdigest()
-    for slug, want in reply_tokens().items():
-        if isinstance(want, str) and hmac.compare_digest(want, digest):
-            return slug
-    return None
-
-
-def _pending_for(rid, bot):
-    if not _RID.fullmatch(rid or ""):
+def _pending_doc(rid):
+    if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
         return None
     try:
         with open(os.path.join(PENDING_DIR, rid + ".json")) as f:
             doc = json.load(f)
     except (OSError, ValueError):
         return None
-    if not isinstance(doc, dict) or doc.get("persona") != bot or doc.get("request_id") != rid:
-        return None
-    if int(doc.get("expires_ms", 0)) < time.time() * 1000:
-        return None
-    return doc
+    return doc if isinstance(doc, dict) else None
 
 
-async def voice_request(req):
-    bot = reply_bot(req)
-    if not bot:
-        return web.json_response({"error": "unauthorized"}, status=401)
-    doc = _pending_for(req.match_info.get("rid", ""), bot)
-    if not doc:
+def _reply_error(status):
+    return web.json_response({"error": _REPLY_HTTP.get(status, "bad request")}, status=status)
+
+
+async def admin_key_put(req):
+    """Pin a bot's Ed25519 verify key. The private key never comes here. Pairing clears the kill switch."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
         return web.json_response({"error": "not found"}, status=404)
-    return web.json_response({"request_id": doc["request_id"], "persona": bot, "question": doc.get("question", ""),
-                              "reply_by": doc.get("reply_by", ""), "tier_max": 0, "test": bool(doc.get("test"))})
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    if botreply.parse_pub(body.get("public_key")) is None:
+        return web.json_response({"error": "bad request"}, status=400)
+    try:
+        ok = botreply.pin_key(bot_keys_path(), slug, body.get("public_key"))
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    if not ok:
+        return web.json_response({"error": "bad request"}, status=400)
+    audit(body["actor"], slug, "pair", "-")
+    return web.json_response({"ok": True})
+
+
+async def admin_key_delete(req):
+    """Drop one pinned key. Replies from this bot are rejected until it is paired again."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    try:
+        botreply.revoke_one(bot_keys_path(), slug)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit(body["actor"], slug, "revoke", "-")
+    return web.json_response({"ok": True})
+
+
+async def admin_revoke_all(req):
+    """Drop every pinned key and reject every reply until a key is paired again."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    before = botreply.load_keys(bot_keys_path())
+    try:
+        botreply.revoke_all(bot_keys_path())
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    who = body["actor"]
+    _write_audit_line(f"{_audit_stamp()} {who} - revoke-all -\n")
+    for slug in sorted((before.get("keys") or {})):
+        audit(who, slug, "revoke", "-")
+    return web.json_response({"ok": True})
 
 
 async def voice_reply(req):
-    bot = reply_bot(req)
-    if not bot:
-        return web.json_response({"error": "unauthorized"}, status=401)
+    """Verify a sealed reply and hand the text to the waiting ask. Generic errors; the body is not echoed."""
+    n_hdr = req.content_length if isinstance(req.content_length, int) else 0
+    if n_hdr > botreply.OUTER_MAX:
+        audit_reply("-", "-", "shape", n_hdr)
+        return _reply_error(400)
     try:
-        body = await req.json()
+        raw = await req.read()
     except Exception:
-        return web.json_response({"error": "bad request"}, status=400)
-    if not isinstance(body, dict):
-        return web.json_response({"error": "bad request"}, status=400)
-    rid = str(body.get("request_id", ""))
-    doc = _pending_for(rid, bot)
-    if not doc:
-        return web.json_response({"error": "not found"}, status=404)
-    tier, ac, text = body.get("tier", 0), body.get("action_class", "answer"), body.get("text")
-    if not isinstance(tier, int) or tier > 0 or ac != "answer":
-        return web.json_response({"error": "above scope"}, status=403)
-    if not isinstance(text, str) or not text.strip() or len(text) > handoff.REPLY_MAX:
-        return web.json_response({"error": "bad text"}, status=400)
-    out = {"request_id": rid, "agent": bot, "nonce": doc.get("nonce", ""), "tier": 0, "action_class": "answer",
-           "text": text}
-    os.makedirs(REPLIES_DIR, exist_ok=True)
-    atomic_write(os.path.join(REPLIES_DIR, rid + ".json"), json.dumps(out).encode())
+        audit_reply("-", "-", "shape", n_hdr)
+        return _reply_error(400)
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = b""
+    try:
+        station = botreply.load_or_create_station(SECRETS_DIR)
+    except botreply.StationKeyError:
+        audit_reply("-", "-", "error", len(raw))
+        return web.json_response({"error": "unavailable"}, status=500)
+    except OSError:
+        audit_reply("-", "-", "error", len(raw))
+        return web.json_response({"error": "unavailable"}, status=500)
+    try:
+        reply = botreply.ingest(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+                                _pending_doc, _reply_seen, reply_limiter(), hosts=_personas.get("hosts") or (),
+                                names=_personas.get("names") or ())
+    except botreply.Reject as rej:
+        audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
+        return _reply_error(rej.status)
+    rid, bot = reply["request_id"], reply["bot"]
+    _reply_seen.add(rid)
+    handoff.remove_pending(PENDING_DIR, rid)
+    out = {"request_id": rid, "agent": bot, "nonce": reply.get("nonce") or "", "tier": 0,
+           "action_class": "answer", "text": reply["text"]}
+    try:
+        os.makedirs(REPLIES_DIR, exist_ok=True)
+        atomic_write(os.path.join(REPLIES_DIR, rid + ".json"), json.dumps(out).encode())
+    except OSError:
+        audit_reply(bot, rid, "error", len(raw))
+        return web.json_response({"error": "unavailable"}, status=500)
+    audit_reply(bot, rid, "ok", len(raw))
     return web.json_response({"ok": True})
 
 
 ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
+    web.post("/admin/bots/revoke-all", admin_revoke_all),
     web.patch("/admin/bots/{slug}", admin_bots_patch), web.delete("/admin/bots/{slug}", admin_bots_delete),
     web.put("/admin/bots/{slug}/webhook", admin_webhook_put), web.delete("/admin/bots/{slug}/webhook", admin_webhook_delete),
+    web.put("/admin/bots/{slug}/key", admin_key_put), web.delete("/admin/bots/{slug}/key", admin_key_delete),
     web.post("/admin/bots/{slug}/test", admin_test_post),
     web.get("/admin/bots/{slug}/test/{test_id}", admin_test_get),
     web.delete("/admin/bots/{slug}/test/{test_id}", admin_test_delete),
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
-    web.get("/voice/request/{rid}", voice_request), web.post("/voice/reply", voice_reply),
+    web.post("/voice/reply", voice_reply),
 ]
 
 

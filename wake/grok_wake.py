@@ -2,7 +2,7 @@
 """grok-station wake listener + voice client (proof of concept).
 
 Captures the USB headset mic at 48 kHz via `arecord`, decimates to 16 kHz for openWakeWord (ONNX).
-On a wake it plays a chime, shows "listening", and opens one session to the voice relay on
+On a wake it plays the listen tone, shows "listening", and opens one session to the voice relay on
 127.0.0.1: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
 `aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
 A tool card (`{"type":"card",...}`) is forwarded on that same POST. Timers post their full list
@@ -24,7 +24,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds]` times the loaded models on noise.
 """
-import base64, shlex, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -317,12 +317,97 @@ def _expire_rings(now):
         post_timers()
 
 
+def station_sounds():
+    """Catalog module. Next to this checkout, else the installed copy. None if it isn't there."""
+    import importlib.util
+    cached = getattr(station_sounds, "_mod", None)
+    if cached:
+        return cached
+    cands = []
+    if os.environ.get("GROK_STATION_SOUNDS_PY"):
+        cands.append(os.environ["GROK_STATION_SOUNDS_PY"])
+    here = globals().get("__file__")
+    if here:
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "sounds.py"))
+    cands.append("/opt/grok-station/sounds.py")
+    for p in cands:
+        if not p or not os.path.isfile(p):
+            continue
+        spec = importlib.util.spec_from_file_location("grok_station_sounds", p)
+        if not spec or not spec.loader:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        station_sounds._mod = mod
+        return mod
+    return None
+
+
+def play_file(dev, path, block=False):
+    """aplay one wav the catalog already resolved. No-op without a device or a file."""
+    if not dev or not path:
+        return
+    cmd = ["aplay", "-q", "-D", dev, path]
+    try:
+        if block:
+            subprocess.run(cmd, stderr=subprocess.DEVNULL, timeout=10)
+        else:
+            subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def play_seq(dev, paths):
+    """aplay files in order, off the capture thread. Skips missing ones."""
+    files = [p for p in paths if p]
+    if not dev or not files:
+        return
+
+    def go():
+        for p in files:
+            play_file(dev, p, block=True)
+
+    threading.Thread(target=go, daemon=True).start()
+
+
+def configured_wav(key):
+    """Wav for ALARM_SOUND / LISTEN_TONE / END_TONE, or None for none / unknown."""
+    mod = station_sounds()
+    if mod is None:
+        if key == "LISTEN_TONE" and os.path.isfile(CHIME):
+            return CHIME
+        return None
+    raw = os.environ.get(key, "")
+    if not mod.allowed(key, raw):
+        raw = mod.default_value(key)
+    return mod.file_for(raw)
+
+
+def preview_wav(sid):
+    """Allowlisted preview file, or None. The id is not joined onto a directory by the caller."""
+    mod = station_sounds()
+    if mod is None or not isinstance(sid, str) or not sid:
+        return None
+    return mod.file_for(sid)
+
+
+def on_comms_fail(dev):
+    """Fixed fail tone, before the relay speaks its failure line. The file is not chosen by the event."""
+    print("relay: comms fail", flush=True)
+    mod = station_sounds()
+    play_file(dev, mod.fail_file() if mod else None, block=True)
+
+
 def _notice_and_chime(label):
     post_state("speaking", who="grok", text=("Your timer is done." if label == "timer" else f"Your {label} timer is done."), done=True)
     dev = LIVE.get("play")
+    wav = configured_wav("ALARM_SOUND")
     for _ in range(3):
-        if dev:
-            subprocess.run(["aplay", "-q", "-D", dev, CHIME], stderr=subprocess.DEVNULL, timeout=10)
+        if dev and wav:
+            play_file(dev, wav, block=True)
         time.sleep(0.4)
 
 
@@ -369,7 +454,7 @@ def timers_tick():
 
 
 def timers_loop():
-    """Ring due timers: three chimes and a notice. Waits for a conversation to end so it doesn't talk over it."""
+    """Ring due timers: the alarm sound three times and a notice. Waits out a conversation so it doesn't talk over it."""
     while True:
         time.sleep(0.5)
         timers_tick()
@@ -585,7 +670,30 @@ def control_server():
             if self.path == "/test-sound":
                 if LIVE["session"] or ENROLL_STATE["busy"] or not LIVE["play"]:
                     return self._r(409, {"error": "busy"})
-                subprocess.Popen(["aplay", "-q", "-D", LIVE["play"], CHIME], stderr=subprocess.DEVNULL)
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                except ValueError:
+                    n = 0
+                raw = self.rfile.read(n) if n else b""
+                sid = ""
+                if raw.strip():
+                    try:
+                        body = json.loads(raw)
+                    except ValueError:
+                        return self._r(400, {"error": "bad json"})
+                    if not isinstance(body, dict):
+                        return self._r(400, {"error": "bad json"})
+                    if body.get("id") not in (None, ""):
+                        sid = body.get("id") if isinstance(body.get("id"), str) else ""
+                        if not sid:
+                            return self._r(400, {"error": "unknown sound"})
+                if sid:
+                    path = preview_wav(sid)
+                    if not path:
+                        return self._r(400, {"error": "unknown sound"})
+                else:
+                    path = CHIME
+                play_file(LIVE["play"], path)
                 return self._r(202, {"ok": True})
             if self.path != "/enroll":
                 return self._r(404, {"error": "not found"})
@@ -1052,6 +1160,7 @@ class Session:
         self.who = persona_name(self.persona)  # the persona speaking; the relay's persona event changes it
         self.card = None  # last tool card; attached to later state posts until the session ends
         self.ws, self.t1_card = None, None
+        self._connected, self._end_played = False, False
         CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
 
@@ -1063,6 +1172,13 @@ class Session:
             post_state("confirm", who=c["name"], text=c["text"], heard=f"{c['op']}|{c['list']}|{1 if c['needs_tap'] else 0}")
             return
         post_state(state, who=self.who, **kw)
+
+    def play_end_tone(self):
+        """One end tone after the reply has finished. Default is silence."""
+        if self._end_played or not self._connected:
+            return
+        self._end_played = True
+        play_file(self.play_dev, configured_wav("END_TONE"), block=True)
 
     def start_handoff_keepalive(self):
         """The display drops a "thinking" screen after VOICE_HOLDS["thinking"] (20 s) without a new post,
@@ -1126,6 +1242,7 @@ class Session:
                 return
             print(f"relay connected in {time.time() - t0:.2f}s", flush=True)
             with ws:
+                self._connected = True
                 self.ws = ws
                 threading.Thread(target=self._sender, args=(ws,), daemon=True).start()
                 for m in ws:
@@ -1252,6 +1369,8 @@ class Session:
                         self.responding, self.feeding = False, True
                         self.state("listening")
                         ws.send(json.dumps({"type": "listening"}))
+                    elif t == "comms_fail":
+                        on_comms_fail(self.play_dev)
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
                         if t != "error" and self.turns and not self.t_first_audio:
@@ -1279,6 +1398,19 @@ class Session:
             if self.save is not None and out:
                 with wave.open(self.save, "wb") as w:
                     w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(b"".join(out))
+            if player is not None and player.poll() is None:
+                try:
+                    player.stdin.close()
+                except OSError:
+                    pass
+                try:
+                    player.wait(timeout=90)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            try:
+                self.play_end_tone()
+            except Exception:
+                pass
             self.active = False
             SESSION_OPEN.clear()
 
@@ -1396,14 +1528,12 @@ def main():
                 print(f"WAKE {hit} score={sc.get(hit, 0.0):.3f} persona={slug}", flush=True)
                 det.reset()
                 mode = setup_mode()
-                if mode:  # not set up (or password reset / no network): chime + spoken line, no relay session
+                if mode:  # not set up (or password reset / no network): listen tone + spoken line, no relay session
                     print(f"wake ignored: {mode} pending", flush=True)
                     line = os.path.join(SETUP_LINES, mode + ".wav")
-                    subprocess.Popen(f"aplay -q -D {shlex.quote(play)} {shlex.quote(CHIME)}" +
-                                     (f"; aplay -q -D {shlex.quote(play)} {shlex.quote(line)}" if os.path.isfile(line) else ""),
-                                     shell=True, stderr=subprocess.DEVNULL)
+                    play_seq(play, [configured_wav("LISTEN_TONE"), line if os.path.isfile(line) else None])
                     continue
-                subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
+                play_file(play, configured_wav("LISTEN_TONE"))
                 threading.Thread(target=post_state, args=("listening",), kwargs={"who": persona_name(slug)}, daemon=True).start()
                 if RELAY_URL:
                     sess = Session(play, persona=slug)

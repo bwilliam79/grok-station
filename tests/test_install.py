@@ -117,6 +117,18 @@ class Install(unittest.TestCase):
         self.assertIn('if [ "${GROK_STATION_NO_RESTART:-0}" != 1 ]', files)
         self.assertIn("GROK_STATION_NONINTERACTIVE=1", open(os.path.join(ROOT, "tools", "grok-station-update")).read())
 
+    def test_wifi_powersave_journal_cap_and_nacl(self):
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        self.assertIn("[ -d /etc/NetworkManager/conf.d ]", sh)
+        self.assertIn("/etc/NetworkManager/conf.d/wifi-powersave-off.conf", sh)
+        self.assertIn("[connection]", sh)
+        self.assertIn("wifi.powersave = 2", sh)
+        self.assertIn("/var/log/journal", sh)
+        self.assertIn("/etc/systemd/journald.conf.d/size.conf", sh)
+        self.assertIn("[Journal]", sh)
+        self.assertIn("SystemMaxUse=200M", sh)
+        self.assertIn("import aiohttp, nacl", sh)
+
     def test_relay_unit_is_loopback(self):
         unit = open(os.path.join(ROOT, "systemd", "grok-station-relay.service")).read()
         self.assertIn("RELAY_BIND=127.0.0.1", unit)

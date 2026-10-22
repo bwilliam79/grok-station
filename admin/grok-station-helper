@@ -21,8 +21,38 @@ SETTINGS = {  # section -> {key: (env file, validator)}
     "time": {"GROK_STATION_LAT": ("display", r"^-?\d{1,2}(\.\d{1,4})?$"), "GROK_STATION_LON": ("display", r"^-?\d{1,3}(\.\d{1,4})?$"),
              "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$")},
     "audio": {"WAKE_DEVICE_NAME": ("wake", r"^[A-Za-z0-9 _.-]{1,40}$"), "WAKE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"),
-              "VOICE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"), "WAKE_CAPTURE_RATE": ("wake", r"^(16000|48000)$")},
+              "VOICE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"), "WAKE_CAPTURE_RATE": ("wake", r"^(16000|48000)$"),
+              "ALARM_SOUND": ("wake", None), "LISTEN_TONE": ("wake", None), "END_TONE": ("wake", None)},
 }
+
+
+def station_sounds():
+    """Catalog module. Next to this checkout, else the installed copy. None if it isn't there."""
+    import importlib.util
+    cached = getattr(station_sounds, "_mod", None)
+    if cached:
+        return cached
+    cands = []
+    if os.environ.get("GROK_STATION_SOUNDS_PY"):
+        cands.append(os.environ["GROK_STATION_SOUNDS_PY"])
+    here = globals().get("__file__")
+    if here:
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "sounds.py"))
+    cands.append("/opt/grok-station/sounds.py")
+    for p in cands:
+        if not p or not os.path.isfile(p):
+            continue
+        spec = importlib.util.spec_from_file_location("grok_station_sounds", p)
+        if not spec or not spec.loader:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        station_sounds._mod = mod
+        return mod
+    return None
 
 
 def out(obj, code=0):
@@ -100,10 +130,26 @@ def settings_get(sec):
     vals = {}
     for k, (fname, _) in SETTINGS[sec].items():
         vals[k] = env_read(fname).get(k)
+    body = {"values": vals}
     if sec == "time":
         _, tz = run("timedatectl", "show", "-p", "Timezone", "--value")
         vals["timezone"] = tz.strip()
-    out({"values": vals})
+    if sec == "audio":
+        mod = station_sounds()
+        if mod is not None:
+            cat = mod.choices()
+            body["sounds"] = cat
+            for key, slot in (("ALARM_SOUND", "alarm"), ("LISTEN_TONE", "listen"), ("END_TONE", "end")):
+                cur = vals.get(key)
+                if not mod.allowed(key, cur if isinstance(cur, str) else ""):
+                    vals[key] = cat["defaults"][slot]
+        else:
+            body["sounds"] = {"alarm": [], "listen": ["none"], "end": ["none"],
+                              "defaults": {"alarm": "", "listen": "none", "end": "none"}}
+            for key, default in (("ALARM_SOUND", ""), ("LISTEN_TONE", "none"), ("END_TONE", "none")):
+                if not isinstance(vals.get(key), str):
+                    vals[key] = default
+    out(body)
 
 
 def settings_set(sec):
@@ -117,7 +163,12 @@ def settings_set(sec):
         if k not in SETTINGS[sec]:
             fail(f"unknown setting {k}")
         v = str(v)
-        if not re.fullmatch(SETTINGS[sec][k][1], v):
+        rule = SETTINGS[sec][k][1]
+        if rule is None:  # sound id: manifest allowlist, not a path-shaped regex
+            mod = station_sounds()
+            if mod is None or not mod.allowed(k, v):
+                fail(f"bad value for {k}")
+        elif not re.fullmatch(rule, v):
             fail(f"bad value for {k}")
         upd.setdefault(SETTINGS[sec][k][0], {})[k] = v
     if sec == "time" and "timezone" in j:

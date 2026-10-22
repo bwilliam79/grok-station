@@ -1468,10 +1468,28 @@ class Updates(unittest.TestCase):
 
     def test_apply_starts_only_the_fixed_unit(self):
         c = signed_in()
-        st, j = c.req("POST", "/api/updates/apply", {"password": GOOD})
+        st, j = c.req("POST", "/api/updates/apply", {})
         self.assertEqual(st, 202, j)
         self.assertIn(("update-start",), self.calls)
         self.assertFalse(any(a[0] == "update-start" and len(a) > 1 for a in self.calls))
+
+    def test_check_and_apply_need_session_and_csrf_not_a_password(self):
+        """A signed-in session plus the CSRF header is enough. No password, and no caller-supplied URL."""
+        c = signed_in()
+        ga.LS_REMOTE = lambda: self.SHA + "\trefs/heads/main\n"
+        st, j = c.req("POST", "/api/updates/check", {})
+        self.assertEqual(st, 200, j)
+        self.assertNotIn("password", j)
+        st, j = c.req("POST", "/api/updates/apply", {"url": "https://example.invalid/evil", "ref": "heads/evil"})
+        self.assertEqual(st, 202, j)
+        self.assertFalse(any(len(a) > 1 and "evil" in str(a) for a in self.calls))
+        anon = C()
+        self.assertEqual(anon.req("POST", "/api/updates/check", {})[0], 401)
+        self.assertEqual(anon.req("POST", "/api/updates/apply", {})[0], 401)
+        self.assertEqual(c.req("POST", "/api/updates/check", {}, csrf=False)[0], 403)
+        self.assertEqual(c.req("POST", "/api/updates/apply", {}, csrf=False)[0], 403)
+        # the daily toggle is a different action and still asks for the password
+        self.assertEqual(c.req("PUT", "/api/updates/autocheck", {"on": True})[0], 403)
 
     def test_voice_status_is_local(self):
         c = signed_in()

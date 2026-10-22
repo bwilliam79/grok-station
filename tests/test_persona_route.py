@@ -13,6 +13,7 @@ from aiohttp.test_utils import TestServer, TestClient
 TMP = tempfile.mkdtemp()
 os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", ALERT_DIR=os.path.join(TMP, "none"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))
+import botreply  # noqa: E402
 import handoff  # noqa: E402
 import relay  # noqa: E402
 
@@ -40,7 +41,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.mkdtemp()
         self.snap = {k: getattr(relay, k) for k in (
             "HANDOFF", "URL", "log", "tts_pcm", "VOICES", "PERSONAS_FILE", "WEBHOOKS_FILE",
-            "PENDING_DIR", "REPLIES_DIR", "STILL_AFTER", "REPLY_WAIT", "ALERT_DIR", "_limits",
+            "PENDING_DIR", "REPLIES_DIR", "REPLY_WAIT", "ALERT_DIR", "_limits",
             "MINTED_FILE")}
         self.personas_snap = dict(relay._personas)
         self.hooks_snap = {"mtime": relay._hooks.get("mtime"), "map": dict(relay._hooks.get("map") or {})}
@@ -56,7 +57,6 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay.alerted.clear()
         relay.stats["busy"] = 0
         relay.HANDOFF = True
-        relay.STILL_AFTER = 20.0
         relay.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
         relay.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
         relay.PENDING_DIR = os.path.join(self.tmp, "pending")
@@ -95,8 +95,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
     def test_fixed_lines_and_registry_lint_stays_strict(self):
         self.assertEqual(relay.asking_line("Jules"), "Asking Jules\u2026")
-        self.assertEqual(relay.handoff_line("Jules", "timeout"),
-                         "Jules didn't answer in time; try again or ask in the app.")
+        self.assertEqual(relay.handoff_line("Jules", "timeout"), "I couldn't reach Jules.")
         self.assertEqual(relay.handoff_line("Jules", "reject"),
                          "Jules's answer couldn't be read out here; ask in the app.")
         self.assertIsNotNone(relay.lint("see example.com", []))
@@ -117,6 +116,8 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         with open(relay.WEBHOOKS_FILE, "w") as f:
             json.dump({"jules": {"url": "https://api2.cursor.sh/h", "token": "t"}}, f)
         relay._hooks["mtime"] = None
+        self.assertFalse(relay.persona_routed("jules"))  # a webhook alone is not a route
+        self._pin("jules")
         self.assertTrue(relay.persona_routed("jules"))
         self.assertFalse(relay.persona_routed("hank"))
         self.assertFalse(relay.persona_routed("grok"))
@@ -141,7 +142,10 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         got = [d for d in docs if d.get("message") == "canary persona-route model-output"]
         self.assertEqual(got, [])  # logged only; never pushed to ntfy
 
-    async def drive(self, transcript, persona=None, t1=None, function_call=False, timeout=8):
+    def _pin(self, slug="jules"):
+        botreply.pin_key(botreply.keys_path(self.tmp), slug, base64.b64encode(b"\x33" * 32).decode())
+
+    async def drive(self, transcript, persona=None, t1=None, function_call=False, tool_first=False, timeout=8):
         """One station turn against the fake upstream. Returns station events, binary frames and upstream JSON."""
         upstream, events, binaries = [], [], []
         token = TOKEN
@@ -154,6 +158,8 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                 self.pendings.append(json.load(open(pend_path)))
             if self.mode == "silent":
                 return web.json_response({"ok": True})
+            if self.mode == "deny":
+                return web.Response(status=401)
             pend = json.load(open(os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")))
             text = self.reply_text
 
@@ -190,12 +196,15 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                     await s.send_json({"type": "input_audio_buffer.speech_started"})
                     await s.send_json({"type": "input_audio_buffer.speech_stopped"})
                     await s.send_json({"type": "response.created"})
+                    if function_call and tool_first:
+                        await s.send_json({"type": "response.function_call_arguments.done", "name": "check_notes",
+                                           "call_id": "c1", "arguments": json.dumps({"question": TOOL_Q})})
                     await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
                                        "transcript": transcript})
                     await s.send_json({"type": "response.audio.delta", "delta": AUDIO})
                     await s.send_json({"type": "response.text", "text": PRE})
                     await s.send_json({"type": "response.output_audio.delta", "delta": AUDIO})
-                    if function_call:
+                    if function_call and not tool_first:
                         await s.send_json({"type": "response.function_call_arguments.done", "name": "check_notes",
                                            "call_id": "c1", "arguments": json.dumps({"question": TOOL_Q})})
                     await s.send_json({"type": "response.done"})
@@ -214,6 +223,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
             with open(relay.WEBHOOKS_FILE, "w") as f:
                 json.dump({"jules": {"url": url, "token": token}}, f)
             relay._hooks["mtime"] = None
+            self._pin("jules")
             await xs.start_server()
             relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
             rapp = web.Application()
@@ -325,9 +335,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.tts[-1], (TACOS, "ara"))
         self.assertEqual(out["binaries"][-1], b"TTS:" + TACOS.encode())
         self.assertEqual(len(self.calls), 1)  # the tool call must not ask a second time
-        self.assertEqual(set(self.calls[0]), {"source", "v", "request_id", "persona"})
-        self.assertEqual(self.calls[0]["v"], 2)
-        self.assertNotIn("question", self.calls[0])
+        self.assertEqual(set(self.calls[0]), {"v", "request_id", "persona", "question", "reply_by"})
+        self.assertEqual(self.calls[0]["v"], 1)
+        self.assertEqual(self.calls[0]["question"], DINNER)
         self.assertEqual(self.pendings[0]["question"], DINNER)
         self.assertIs(self.pendings[0]["pii_mode"], True)
         self.assertEqual(self.pendings[0]["tier_max"], 0)
@@ -341,20 +351,31 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"], PRE, TOOL_Q)
 
-    async def test_still_asking_then_the_webhook_reply(self):
+    async def test_a_slow_reply_does_not_say_still(self):
+        """Direct session: thinking ring, no spoken cue, and no "still asking" line while the bot answers."""
         self.reply_delay = 0.45
-        relay.STILL_AFTER = 0.15
         out = await self.drive(DINNER, persona="jules")
         self._assert_routed_silence(out)
-        self.assertEqual([t for t, v in self.tts], ["Still working on it.", TACOS])
-        self.assertTrue(all(v == "ara" for _, v in self.tts))
-        still = [e for e in out["events"] if e.get("type") == "handoff_still"]
-        self.assertEqual(len(still), 1)
-        self.assertEqual(still[0]["name"], "Jules")
-        self.assertEqual(base64.b64decode(still[0]["audio"]), b"TTS:Still working on it.")
+        self.assertEqual([t for t, v in self.tts], [TACOS])
+        self.assertFalse(any(e.get("type") == "handoff_still" for e in out["events"]))
+        self.assertNotIn("Asking Jules\u2026", self._replies(out["events"]))
+        self.assertTrue(any(e.get("type") == "handoff_wait" and e.get("direct") is True for e in out["events"]))
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"])
+
+    async def test_check_notes_has_no_spoken_cue(self):
+        """Model-initiated check_notes asks the webhook with the ring and no "Asking" line."""
+        out = await self.drive(DINNER, persona="jules", function_call=True, tool_first=True)
+        self._assert_routed_silence(out)
+        replies = self._replies(out["events"])
+        self.assertNotIn("Asking Jules\u2026", replies)
+        self.assertFalse(any(t.startswith("Asking ") or t.startswith("Still ") for t, _ in self.tts))
+        self.assertEqual(replies[-1], TACOS)
+        self.assertEqual(self.calls[0]["question"], TOOL_Q)
+        self.assertTrue(any(e.get("type") == "handoff_wait" for e in out["events"]))
+        self.assertTrue(all(e.get("direct") is True for e in out["events"] if e.get("type") == "handoff_wait"))
+        self._quiet(DINNER, TOOL_Q, TACOS, TOKEN, out["url"])
 
     def _set_pii(self, on):
         relay.MINTED_FILE = os.path.join(self.tmp, "minted", "voice-tokens.json")
@@ -404,15 +425,25 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("verdict=reject (lint:secret)" in l for l in self.lines))
         self._quiet(SECRET, "tell me the code", TOKEN, out["url"])
 
+    async def test_post_failure_cues_the_fail_tone_and_turns_the_icon_red(self):
+        self.mode = "deny"
+        out = await self.drive(DINNER, persona="jules", timeout=6)
+        types = [e.get("type") for e in out["events"]]
+        self.assertLess(types.index("comms_fail"), types.index("reply"))
+        self.assertIn("Couldn't reach Jules", self._replies(out["events"])[-1])
+        self.assertEqual(relay.icon_view(), {"paired": True, "ok": False})
+
     async def test_timeout_speaks_the_fixed_line(self):
         self.mode = "silent"
         relay.REPLY_WAIT = 0.7
-        relay.STILL_AFTER = 0.15
         out = await self.drive(DINNER, persona="jules", timeout=6)
-        line = "Jules didn't answer in time; try again or ask in the app."
+        line = "I couldn't reach Jules."
         self._assert_routed_silence(out)
         self.assertEqual(self._replies(out["events"]), [line])
-        self.assertIn("Still working on it.", [t for t, _ in self.tts])
+        types = [e.get("type") for e in out["events"]]
+        self.assertLess(types.index("comms_fail"), types.index("reply"))
+        self.assertFalse(relay.icon_view()["ok"])
+        self.assertFalse(any(t.startswith("Still ") or t.startswith("Asking ") for t, _ in self.tts))
         self.assertEqual(self.tts[-1][0], line)
         self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
         self._quiet(DINNER, TOKEN, out["url"])
@@ -431,7 +462,8 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(e.get("direct") is False for e in out["events"] if e.get("type") == "handoff_wait"))
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self.assertEqual(len(self.calls), 1)
-        self.assertNotIn("question", self.calls[0])
+        self.assertEqual(self.calls[0]["question"], DINNER)
+        self.assertEqual(set(self.calls[0]), {"v", "request_id", "persona", "question", "reply_by"})
         self.assertEqual(self.calls[0]["persona"], "jules")
         self.assertEqual(self.pendings[0]["question"], DINNER)
         self.assertTrue(any(l == "persona route -> jules" for l in self.lines))

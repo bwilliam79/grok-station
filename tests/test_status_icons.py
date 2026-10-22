@@ -82,36 +82,44 @@ class NetParse(unittest.TestCase):
 
 
 class RelayParse(unittest.TestCase):
-    def test_env_parse_and_none(self):
+    def test_icon_follows_handoff_not_a_lan_probe(self):
+        """Green when a bot is paired and the last request did not fail. Red on timeout or POST failure.
+        No paired bot stays hidden. The poll does not open a socket to a relay host."""
+        self.assertEqual(gs.relay_icon(None), {"ok": None, "detail": ""})
+        self.assertEqual(gs.relay_icon({"ok": True}), {"ok": None, "detail": ""})  # unauthenticated health
+        idle = {"ok": True, "bots": {"paired": True, "ok": True}}
+        down = {"ok": True, "bots": {"paired": True, "ok": False}}
+        bare = {"ok": True, "bots": {"paired": False, "ok": None}}
+        self.assertEqual(gs.relay_icon(idle), {"ok": True, "detail": "ok"})
+        self.assertEqual(gs.relay_icon(down), {"ok": False, "detail": "down"})
+        self.assertEqual(gs.relay_icon(bare), {"ok": None, "detail": ""})
+        self.assertNotIn("example", gs.relay_icon({"bots": {"paired": True, "ok": False}, "host": "relay.example.invalid"})["detail"])
         calls = []
 
-        def connect(host, port, timeout):
-            calls.append((host, port, timeout))
-            return True
+        def fetch():
+            calls.append("health")
+            return down
 
-        self.assertEqual(gs.check_relay({}, "", connect), {"ok": None, "detail": ""})
-        self.assertEqual(calls, [])
-        self.assertIsNone(gs.parse_relay_target(""))
-        self.assertEqual(gs.parse_relay_target("wss://relay.example.invalid/ws"), ("relay.example.invalid", 443))
-        self.assertEqual(gs.parse_relay_target("ws://relay.example.invalid/ws"), ("relay.example.invalid", 80))
-        env = {"GROK_RELAY_URL": "wss://relay.example.invalid/ws"}
-        wake = "GROK_RELAY_TOKEN=secret-token\nGROK_RELAY_URL=ws://other.example.invalid:8791/ws\n"
-        st = gs.check_relay(env, wake, connect)
-        self.assertEqual(st, {"ok": True, "detail": "ok"})
-        self.assertEqual(calls[-1], ("relay.example.invalid", 443, 3))
-        self.assertNotIn("example", st["detail"])
-        self.assertNotIn("secret", st["detail"])
-        calls.clear()
-        st = gs.check_relay({}, "export GROK_RELAY_URL=ws://relay.example.invalid:8791/ws\nOTHER=1\n", connect)
-        self.assertEqual(st["ok"], True)
-        self.assertEqual(calls[-1], ("relay.example.invalid", 8791, 3))
-        gs.check_relay({}, "GROK_RELAY_URL='ws://relay.example.invalid/ws'\n", connect)
-        self.assertEqual(calls[-1], ("relay.example.invalid", 80, 3))
-        self.assertEqual(gs.env_value(wake, "GROK_RELAY_URL"), "ws://other.example.invalid:8791/ws")
-        self.assertEqual(gs.env_value("GROK_RELAY_TOKEN=secret-token\n", "GROK_RELAY_URL"), "")
-        down = gs.check_relay({"GROK_RELAY_URL": "wss://relay.example.invalid/ws"}, "", lambda *a: False)
-        self.assertEqual(down, {"ok": False, "detail": "down"})
-        self.assertNotIn("relay", down["detail"])
+        st = gs.check_relay(fetch)
+        self.assertEqual(calls, ["health"])
+        self.assertEqual(st, {"ok": False, "detail": "down"})
+        self.assertNotIn("relay", st["detail"])
+        self.assertEqual(gs.check_relay(lambda: None), {"ok": None, "detail": ""})
+        kept = gs.check_relay(lambda: None, {"ok": True, "detail": "ok"})
+        self.assertEqual(kept, {"ok": True, "detail": "ok"})
+        names = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "relay": st, "mic": {}})
+        self.assertIn("relay-disconnected", names)
+        self.assertNotIn("relay-connected", names)
+        green = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(idle), "mic": {}})
+        self.assertIn("relay-connected", green)
+        hidden = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(bare), "mic": {}})
+        self.assertFalse(any(n.startswith("relay") for n in hidden))
+        with open(gs.__file__) as fh:
+            src = fh.read()
+        self.assertNotIn("create_connection", src)
+        self.assertNotIn("parse_relay_target", src)
+        self.assertIn("127.0.0.1", gs.relay_health_url())
+        self.assertNotIn("example", gs.relay_health_url())
 
 
 class MicParse(unittest.TestCase):
@@ -169,7 +177,17 @@ class IconLoad(unittest.TestCase):
         self.assertTrue(teal)
         self.assertFalse(amber)
         self.assertFalse(red)
+        relay = gs.load_status_icon("relay-disconnected", 22, directory=empty)
+        teal, amber, red = self._colors(relay)
+        self.assertTrue(red)
+        self.assertFalse(amber)
         self.assertNotEqual(pygame.image.tobytes(shipped, "RGBA"), pygame.image.tobytes(missing, "RGBA"))
+        svg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "assets", "status", "relay-disconnected.svg")
+        with open(svg_path) as fh:
+            svg = fh.read()
+        self.assertIn("#FF5A52", svg)
+        self.assertNotIn("#F5C04A", svg)
 
 
 class IconDraw(unittest.TestCase):

@@ -11,7 +11,7 @@ Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
 Small status icons (network, relay, mic) sit in the top-right corner. A daemon thread polls them; --demo does not.
 """
-import hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
+import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -52,7 +52,6 @@ VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error"
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
 STATUS_DIR = os.path.join(ASSETS, "status")
-WAKE_ENV_PATH = "/etc/grok-station/wake.env"  # relay URL lives here when the display env does not set it
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
 PULSE_PERIOD = 1.0                                        # seconds per listening-ring pulse (~1 Hz)
@@ -395,79 +394,73 @@ def read_net(net_root="/sys/class/net", route_path="/proc/net/route"):
     return net_status(ifaces, route)
 
 
-def env_value(text, key):
-    """Value of one KEY=VALUE assignment. Other keys are ignored; the value is never logged."""
-    found = None
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        if k.strip() != key:
-            continue
-        v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
-            v = v[1:-1]
-        elif " #" in v:
-            v = v.split(" #", 1)[0].rstrip()
-        found = v
-    return found or ""
-
-
-def parse_relay_target(url):
-    """(host, port) for a ws/wss URL. Default port is 443 for wss and 80 for ws. None if it does not parse."""
-    try:
-        parts = urllib.parse.urlsplit((url or "").strip())
-    except ValueError:
-        return None
-    if parts.scheme not in ("ws", "wss") or not parts.hostname:
-        return None
-    port = parts.port or (443 if parts.scheme == "wss" else 80)
-    return parts.hostname, port
-
-
-def relay_url(environ, wake_text):
-    """Display env GROK_RELAY_URL, else the same key in the wake env file text. Empty if neither sets it."""
-    url = str((environ or {}).get("GROK_RELAY_URL") or "").strip()
-    return url or env_value(wake_text, "GROK_RELAY_URL").strip()
-
-
-def check_relay(environ, wake_text, connect):
-    """ok is None when no relay is configured. connect(host, port, timeout) -> bool. Detail never names the host."""
-    url = relay_url(environ, wake_text)
-    if not url:
-        return {"ok": None, "detail": ""}
-    target = parse_relay_target(url)
-    if not target:
-        return {"ok": False, "detail": "down"}
-    host, port = target
-    try:
-        ok = bool(connect(host, port, 3))
-    except Exception:
-        ok = False
-    return {"ok": ok, "detail": "ok" if ok else "down"}
-
-
-def tcp_connect(host, port, timeout):
-    with socket.create_connection((host, port), timeout=timeout):
-        return True
-
-
-def read_wake_text(path=WAKE_ENV_PATH):
+def relay_token():
+    """Bearer for the loopback relay. Never logged."""
+    path = E("GROK_LOCAL_TOKEN_FILE", "/etc/grok-station/secrets/local_token")
     try:
         with open(path) as f:
-            return f.read()
+            tok = f.read().strip()
+        if tok and "\n" not in tok and "\r" not in tok:
+            return tok
     except OSError:
-        return ""
+        pass
+    return E("RELAY_TOKEN", "") or E("GROK_RELAY_TOKEN", "")
+
+
+def relay_health_url():
+    """Loopback relay only. The icon does not open a connection to a LAN or public host."""
+    raw = str(E("RELAY_PORT", "8790") or "")
+    port = int(raw) if raw.isdigit() and 1 <= int(raw) <= 65535 else 8790
+    return f"http://127.0.0.1:{port}/health"
+
+
+def relay_icon(body):
+    """Authorized /health JSON -> icon. No paired bot, or a body with no bots field, stays unconfigured.
+
+    ok True is green (paired, and the last request did not fail, including before any request).
+    ok False is red (last request timed out or its webhook POST failed). Detail never names a host.
+    """
+    if not isinstance(body, dict):
+        return {"ok": None, "detail": ""}
+    bots = body.get("bots")
+    if not isinstance(bots, dict) or bots.get("paired") is not True:
+        return {"ok": None, "detail": ""}
+    if bots.get("ok") is True:
+        return {"ok": True, "detail": "ok"}
+    if bots.get("ok") is False:
+        return {"ok": False, "detail": "down"}
+    return {"ok": None, "detail": ""}
+
+
+def check_relay(fetch, previous=None):
+    """fetch() -> health JSON or None. A failed poll keeps the previous icon instead of inventing an outage."""
+    try:
+        body = fetch()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        if isinstance(previous, dict) and previous.get("ok") is not None:
+            return {"ok": previous.get("ok"), "detail": previous.get("detail") or ""}
+        return {"ok": None, "detail": ""}
+    return relay_icon(body)
+
+
+def fetch_relay_health(timeout=2):
+    """GET loopback /health with the local bearer. None on any failure. The token is not logged."""
+    token = relay_token()
+    if not token:
+        return None
+    req = urllib.request.Request(relay_health_url(), headers={"Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = json.loads(r.read(8192))
+    except Exception:
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def read_relay():
-    configured = (os.environ.get("GROK_RELAY_URL") or "").strip()
-    return check_relay(os.environ, "" if configured else read_wake_text(), tcp_connect)
+    return check_relay(fetch_relay_health, status_snapshot().get("relay"))
 
 
 def speakerphone_present(cards_text, match="emeet"):
@@ -603,7 +596,7 @@ def status_icon_px(scale):
 
 
 def _fallback_status_icon(name, px):
-    """Teal glyph when the state is good; muted glyph plus an amber slash when it is not. Never red."""
+    """Teal glyph when the state is good. A bad relay is red. Other bad icons stay muted plus an amber slash."""
     px = max(1, int(px))
     surf = pygame.Surface((px, px), pygame.SRCALPHA)
     bad = name.endswith("disconnected") or name.endswith("problem")
@@ -641,7 +634,7 @@ def _fallback_status_icon(name, px):
     if bad and px >= 4:
         a, b = (pad, pad), (px - pad - 1, px - pad - 1)
         pygame.draw.line(surf, hexc("0D0B09"), a, b, sw + 2)
-        pygame.draw.line(surf, AMBER, a, b, sw)
+        pygame.draw.line(surf, RED if name.startswith("relay") else AMBER, a, b, sw)
     return surf
 
 

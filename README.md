@@ -1,6 +1,6 @@
 # grok-station
 
-A Raspberry Pi voice station. Everything runs on the Pi: the display, the "Hey Grok" wake listener, the admin page (HTTPS) and the voice relay (loopback only).
+A Raspberry Pi voice station. Everything runs on the Pi: the display, the "Hey Grok" wake listener, the admin page (HTTPS) and the voice relay (loopback only). Connecting a bot is in [docs/bots.md](docs/bots.md).
 
 This README covers installation.
 
