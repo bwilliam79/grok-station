@@ -371,3 +371,97 @@ class Check(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _run(argv, stdin="", env=None):
+    old = (sys.stdin, sys.stdout, sys.stderr, os.environ.get("GROK_STATION_BOT_KEY"))
+    try:
+        sys.stdin, sys.stdout, sys.stderr = io.StringIO(stdin), io.StringIO(), io.StringIO()
+        os.environ.pop("GROK_STATION_BOT_KEY", None)
+        if env:
+            os.environ["GROK_STATION_BOT_KEY"] = env
+        rc = helper.main(argv)
+        return rc, sys.stdout.getvalue(), sys.stderr.getvalue()
+    finally:
+        sys.stdin, sys.stdout, sys.stderr, key = old
+        os.environ.pop("GROK_STATION_BOT_KEY", None)
+        if key is not None:
+            os.environ["GROK_STATION_BOT_KEY"] = key
+
+
+class SealPost(unittest.TestCase):
+    setUp = Check.setUp
+    _go = Check._go
+
+    def _seal_args(self):
+        return ["seal", "--bot", "jules", "--station-pub", botreply.station_pub_b64(self.station), "--request-id", RID]
+
+    def test_seal_then_post_round_trip_verifies(self):
+        seed = _b64(bytes(self.signer))
+        rc, out, err = _run(self._seal_args(), "Tacos on Tuesday.\n", env=seed)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Tacos", out + err)
+        self.assertNotIn(seed, out + err)
+        self.assertEqual(set(json.loads(out)), {"v", "bot", "sealed"})
+        sent = {}
+
+        def fake_post(origin, body, insecure=False, pin=""):
+            sent.update(origin=origin, body=body, insecure=insecure, pin=pin)
+            return 200, "ok"
+
+        real = helper.post_reply
+        helper.post_reply = fake_post
+        try:
+            rc, pout, _ = _run(["post", "--station", "https://127.0.0.1", "--insecure", "--pin-sha256", "ab" * 32], out)
+        finally:
+            helper.post_reply = real
+        self.assertEqual((rc, pout.strip()), (0, "200 ok"))
+        self.assertEqual(sent["pin"], "ab" * 32)
+        got = self._go(sent["body"])
+        self.assertEqual(got["text"], "Tacos on Tuesday.")
+        self.assertEqual(got["request_id"], RID)
+
+    def test_post_rejects_extra_fields_bad_shape_and_oversize(self):
+        good = json.dumps({"v": 1, "bot": "jules", "sealed": _b64(b"x" * 100)})
+        self.assertIsNotNone(helper.check_outer(good))
+        bad = [json.dumps({"v": 1, "bot": "jules", "sealed": _b64(b"x"), "text": "hi"}),
+               json.dumps({"v": 1, "bot": "jules"}),
+               json.dumps({"v": 2, "bot": "jules", "sealed": _b64(b"x")}),
+               json.dumps({"v": True, "bot": "jules", "sealed": _b64(b"x")}),
+               json.dumps({"v": 1, "bot": "jules", "sealed": "not base64!"}),
+               json.dumps({"v": 1, "bot": "jules", "sealed": _b64(b"x" * 7000)}),
+               "[]", "", "nope"]
+        for body in bad:
+            self.assertIsNone(helper.check_outer(body), body[:40])
+            called = []
+            real = helper.post_reply
+            helper.post_reply = lambda *a, **k: called.append(1) or (200, "ok")
+            try:
+                rc, out, _ = _run(["post", "--station", "https://127.0.0.1"], body)
+            finally:
+                helper.post_reply = real
+            self.assertEqual((rc, out.strip(), called), (1, "400 bad request", []))
+        rc, _, err = _run(["post", "--station", "https://127.0.0.1", "--insecure"], good)
+        self.assertEqual(rc, 2)
+        self.assertIn("pin", err)
+
+    def test_seal_refuses_key_args_and_needs_env(self):
+        seed = _b64(bytes(self.signer))
+        for extra in (["--key", seed], ["--seed=" + seed], ["GROK_STATION_BOT_KEY=" + seed]):
+            rc, out, err = _run(self._seal_args() + extra, "hi", env=seed)
+            self.assertEqual(rc, 2)
+            self.assertNotIn(seed, out + err)
+        rc, out, err = _run(self._seal_args(), "hi")
+        self.assertEqual(rc, 2)
+        self.assertIn("GROK_STATION_BOT_KEY", err)
+        self.assertEqual(out, "")
+
+    def test_post_runs_without_pynacl(self):
+        import subprocess
+        code = ("import sys; sys.modules['nacl']=None; sys.argv=['x','post','--station','https://127.0.0.1:1'];"
+                "import runpy; runpy.run_path(%r, run_name='__main__')" % _helper_path)
+        body = json.dumps({"v": 1, "bot": "jules", "sealed": _b64(b"x" * 10)})
+        env = {k: v for k, v in os.environ.items() if k != "GROK_STATION_BOT_KEY"}
+        p = subprocess.run([sys.executable, "-c", code], input=body, capture_output=True, text=True, env=env, timeout=30)
+        self.assertNotIn("nacl", p.stderr.lower())
+        self.assertIn("tls error", p.stderr)
