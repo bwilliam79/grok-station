@@ -102,7 +102,16 @@ LINT = [("link or email", re.compile(r"https?:|www\.|@|\b[a-z0-9-]+\.(com|net|or
         ("IPv6", re.compile(r"(?<![\w:])(?:[0-9a-f]{1,4}:){3,7}[0-9a-f]{1,4}(?![\w:])|[0-9a-f]{1,4}::|::[0-9a-f]{1,4}", re.I)),
         ("VIN", re.compile(r"\b(?=[A-HJ-NPR-Z0-9]*\d)(?=[A-HJ-NPR-Z0-9]*[A-HJ-NPR-Z])[A-HJ-NPR-Z0-9]{17}\b", re.I)),
         ("internal host", re.compile(r"\.(lan|local|internal|home\.arpa|localdomain)\b|\blocalhost\b", re.I))]
-VOICES = set()               # filled from GET /v1/tts/voices at startup; empty = not validated
+VOICES = set()               # live xAI list; empty until a fetch or a seed from offered.json
+_voice_fetch_at = 0.0        # monotonic; a bots list with an empty live set kicks one fetch per minute
+# Known xAI voices, sorted. Used when the live list is empty so add is not blocked by a failed boot fetch.
+BUILTIN_VOICES = (
+    "altair", "ara", "atlas", "carina", "castor", "celeste", "cosmo", "eve",
+    "helios", "helix", "iris", "kepler", "leo", "lumen", "luna", "lux",
+    "naksh", "orion", "perseus", "rex", "rigel", "sal", "sirius", "ursa",
+    "zagan", "zenith",
+)
+_VOICE_ID = re.compile(r"[a-z0-9_-]{1,32}")
 _personas = {"mtime": None, "map": {}, "voices": None, "hosts": [], "names": []}
 _policy = {"mtime": None, "pii": True}
 _portraits_version = 0
@@ -371,14 +380,10 @@ def persona_list():
     """On-voice personas: the read-only registry, with the overlay merged over it.
 
     Renamed names replace the registry name. A voices entry replaces that persona's voice. Hidden slugs are removed.
-    Added personas get a generic prompt and no facts. Re-read when the registry or the overlay changes. Bad entries are skipped. Without xAI's voice list,
-    nothing goes on voice.
+    Added personas get a generic prompt and no facts. Re-read when the registry or the overlay changes. Bad entries are skipped.
+    Voice ids are checked against offered_voices() (the live list, or the built-in list when that is empty).
     """
-    if not VOICES:  # fail closed: without xAI's voice list no persona can be checked, so none go on voice
-        if _personas["voices"] is not False:
-            log("personas: xAI voice list not loaded; Grok only until it is")
-            _personas["voices"] = False
-        return {}
+    offered = offered_voices()
     key = (_stat_ns(PERSONAS_FILE), _stat_ns(overlay_path()))
     if key == _personas["mtime"] and _personas["voices"] is True:
         return _personas["map"]
@@ -416,7 +421,7 @@ def persona_list():
             why = "bad name"
         elif not isinstance(p.get("prompt"), str) or not p["prompt"].strip() or len(p["prompt"].split()) > 200:
             why = "prompt missing or over 200 words"
-        elif not isinstance(p.get("voice"), str) or p["voice"].lower() not in VOICES:
+        elif not isinstance(p.get("voice"), str) or p["voice"].lower() not in offered:
             why = "voice not offered by xAI"
         elif "portrait" in p and not PORTRAIT_FILE.match(str(p["portrait"])):
             why = "bad portrait file name"
@@ -447,7 +452,7 @@ def persona_list():
     for slug, ent in ov["added"].items():
         if slug in ov["hidden"] or slug in out:
             continue
-        if ent["voice"].lower() not in VOICES:
+        if ent["voice"].lower() not in offered:
             continue
         name = ov["renamed"].get(slug, ent["name"])
         if not _name_ok(name, hosts):
@@ -455,7 +460,7 @@ def persona_list():
         out[slug] = {"slug": slug, "name": name, "voice": ent["voice"].lower(), "aliases": [], "facts": [],
                      "prompt": f"You are {name}, one of the household's assistant team."}
     for slug, voice in ov["voices"].items():
-        if slug in out and voice.lower() in VOICES:
+        if slug in out and voice.lower() in offered:
             out[slug] = dict(out[slug], voice=voice.lower())
     _personas.update(mtime=key, map=out, voices=True)
     log(f"personas: {len(out)} on voice: {' '.join(out)}")
@@ -791,11 +796,75 @@ async def portrait_route(req):
 
 
 
+def offered_path():
+    return os.path.join(STATE_DIR, "voices", "offered.json")
+
+
+def offered_voices():
+    """Live list when we have one. Otherwise the built-in names, so a failed boot fetch is not an empty dropdown."""
+    return VOICES if VOICES else BUILTIN_VOICES
+
+
+def seed_offered_voices():
+    """Load STATE_DIR/voices/offered.json into VOICES. Invalid or missing files leave VOICES alone."""
+    try:
+        with open(offered_path()) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return False
+    voices = doc.get("voices") if isinstance(doc, dict) else None
+    if not isinstance(voices, list) or not voices:
+        return False
+    good = []
+    for v in voices:
+        if not isinstance(v, str):
+            return False
+        s = v.strip().lower()
+        if not _VOICE_ID.fullmatch(s):
+            return False
+        good.append(s)
+    VOICES.update(good)
+    _personas["mtime"] = None
+    log(f"voices: seeded {len(VOICES)} from offered.json")
+    return True
+
+
+def kick_voice_fetch():
+    """One background fetch, at most every 60s, and only while the live list is empty."""
+    global _voice_fetch_at
+    if VOICES:
+        return
+    t = time.monotonic()
+    if t - _voice_fetch_at < 60:
+        return
+    _voice_fetch_at = t
+    try:
+        asyncio.get_running_loop().create_task(fetch_voices())
+    except RuntimeError:
+        return
+
+
+def chosen_voice(voice, allow_default=False):
+    """A lowercased offered voice, None when missing and allow_default, or False when rejected."""
+    if voice is None:
+        return None if allow_default else False
+    if not isinstance(voice, str):
+        return False
+    voice = voice.strip()
+    if voice == "":
+        return None if allow_default else False
+    if voice.lower() not in offered_voices():
+        return False
+    return voice.lower()
+
+
 async def load_voices():
-    while not VOICES:
+    seed_offered_voices()
+    while True:
         await fetch_voices()
-        if not VOICES:
-            await asyncio.sleep(300)
+        if VOICES:
+            return
+        await asyncio.sleep(300)
 
 
 async def fetch_voices():
@@ -808,7 +877,7 @@ async def fetch_voices():
         log("voices: list failed, personas not voice-checked:", type(e).__name__)
     if VOICES:
         try:
-            atomic_write(os.path.join(STATE_DIR, "voices", "offered.json"),
+            atomic_write(offered_path(),
                          (json.dumps({"voices": sorted(VOICES)}) + "\n").encode(), 0o644)
         except OSError:
             pass
@@ -820,7 +889,11 @@ async def fetch_voices():
 async def health(req):
     if not authorized(req):
         return web.json_response({"ok": True})
-    link = icon_view()
+    try:
+        link = icon_view()
+    except Exception as e:  # a bad keys/status file must not drop the icon or the health body
+        log("health: icon view failed", type(e).__name__)
+        link = {"paired": False, "ok": None}
     return web.json_response({"ok": True, "key": bool(KEY), "model": MODEL, "busy": stats["busy"],
                               "since_start": {"sessions": stats["sessions"], "seconds": round(stats["seconds"], 1)},
                               "caps": {"turn_s": MAX_SESSION, "session_s": MAX_TOTAL, "no_speech_s": NO_SPEECH},
@@ -1969,8 +2042,10 @@ async def admin_bots_get(req):
                      "webhook": webhook_view(ent), "status": status_view(slug, bool(ent)),
                      "paired": (not killed) and botreply.pinned_bytes(keys, slug) is not None,
                      "stats": stats.bot_view(slug)})
-    return web.json_response({"bots": bots, "voices": sorted(VOICES), "station_pub": station_pub,
-                              "killed": killed, "stats": stats.overall_view()})
+    if not VOICES:
+        kick_voice_fetch()
+    return web.json_response({"bots": bots, "voices": sorted(offered_voices()), "default_voice": VOICE,
+                              "station_pub": station_pub, "killed": killed, "stats": stats.overall_view()})
 
 
 async def admin_bots_post(req):
@@ -1985,12 +2060,15 @@ async def admin_bots_post(req):
         return web.json_response({"error": "bad slug"}, status=400)
     if not _name_ok(name):
         return web.json_response({"error": "bad name"}, status=400)
-    if not isinstance(voice, str) or voice.lower() not in VOICES:
+    voice = chosen_voice(voice, allow_default=True)
+    if voice is False:
         return web.json_response({"error": "bad voice"}, status=400)
+    if voice is None:
+        voice = VOICE.lower()
     ov = load_overlay_doc()
     if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
         return web.json_response({"error": "exists"}, status=409)
-    ov["added"][slug] = {"name": name, "voice": voice.lower()}
+    ov["added"][slug] = {"name": name, "voice": voice}
     try:
         token = mint_voice_token(slug)
         save_overlay(ov)
@@ -2021,15 +2099,19 @@ async def admin_bots_patch(req):
     if has_name and not _name_ok(body.get("name")):
         return web.json_response({"error": "bad name"}, status=400)
     voice = body.get("voice")
-    if has_voice and (not isinstance(voice, str) or voice.lower() not in VOICES):
-        return web.json_response({"error": "bad voice"}, status=400)
+    if has_voice:
+        # Empty voice is the station default, same as POST /admin/bots with no voice.
+        voice = chosen_voice(voice, allow_default=True)
+        if voice is False:
+            return web.json_response({"error": "bad voice"}, status=400)
+        if voice is None:
+            voice = VOICE.lower()
     ov = load_overlay_doc()
     if has_name:
         ov["renamed"][slug] = body["name"]
         if slug in ov["added"]:
             ov["added"][slug]["name"] = body["name"]
     if has_voice:
-        voice = voice.lower()
         ov["voices"][slug] = voice
         if slug in ov["added"]:
             ov["added"][slug]["voice"] = voice
@@ -2496,6 +2578,7 @@ if __name__ == "__main__":
         ensure_policy()  # missing or invalid policy.json becomes pii_mode true, on both files
     except OSError as e:
         log("policy init failed", type(e).__name__)
+    seed_offered_voices()
     app = web.Application(client_max_size=8 << 20)  # avatar bodies are checked again at 2 MB
     app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),

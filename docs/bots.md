@@ -37,12 +37,12 @@ The station waits `REPLY_WAIT` seconds (default 30, environment override) and th
 1. On the bot's own computer (where its secret store lives), install Python 3 and PyNaCl, and copy `tools/grok-station-reply` there. That machine seals.
 2. On the home machine that can reach `https://<station-ip>` on the LAN, copy the same file to `~/bin/grok-station-reply`. `post` is standard library only, so that machine needs only `python3`, no PyNaCl and no key. If the bot runs on the home machine itself, one copy is enough and you can use `send`.
 3. Run `grok-station-reply keygen` on the bot's computer. Put `GROK_STATION_BOT_KEY` in the bot's secret store. Paste the `public:` line into the station admin. Never put the seed in the routine prompt, on the command line, or in a file the routine can read.
-4. On the station, open **Bots**. Add the bot (name, voice, id), pair keys, then connect the webhook URL and webhook key from the bot's routine panel. The webhook key is stored with the relay secrets. The browser cannot read it back.
+4. On the station, open **Bots**. Add the bot: name, id, and voice (leave voice on **Station default** to use the station's voice). Paste the bot's public key and, if you have them, the webhook URL and webhook key. The last step shows a summary (name, id, voice, a short fingerprint of the pinned key, and whether a webhook was set) and asks for the admin password, unless a password grace window is still open for this sign-in. The webhook key is stored with the relay secrets. The browser cannot read it back.
 5. Paste the routine below into the bot.
 
 The station public key (standard base64, 32 bytes) is on the Bots page, with a copy button. The bot public key must be standard base64 of 32 bytes.
 
-**Revoke** on one bot drops that pinned key (admin password). **Revoke all bots** drops every pinned key and rejects every reply until a key is paired again.
+**Remove** asks for the admin password the same way, and skips it while the grace window is open. **Revoke** on one bot drops that pinned key (admin password, same window). **Revoke all bots** drops every pinned key and rejects every reply until a key is paired again. The grace period is **Password grace period** on the System page: 0 always asks, otherwise 1–120 minutes (default 10). Changing that setting always asks for the password. Signing out clears the window.
 
 ## Keygen
 

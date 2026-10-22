@@ -314,6 +314,81 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertRegex(audit, r"admin jules voice -")
         self.assertRegex(audit, r"admin nova voice -")
         self.assertNotIn("nope", audit)
+        blank = await self.client.patch("/admin/bots/nova", headers=h, json={"voice": "  ", "actor": "admin"})
+        self.assertEqual(blank.status, 200)
+        self.assertEqual(self.relay.persona_list()["nova"]["voice"], self.relay.VOICE.lower())
+
+    async def test_empty_voices_use_builtin_add_default_and_offered_reload(self):
+        r = self.relay
+        h = self.headers()
+        self.assertEqual(list(r.BUILTIN_VOICES), sorted(r.BUILTIN_VOICES))
+        old_state, old_fetch, old_kick = r.STATE_DIR, r.fetch_voices, r._voice_fetch_at
+        calls = []
+        done = asyncio.Event()
+
+        async def fake_fetch():
+            calls.append(1)
+            done.set()
+
+        r.STATE_DIR = self.tmp
+        r.fetch_voices = fake_fetch
+        r._voice_fetch_at = 0.0
+        try:
+            r.VOICES.clear()
+            r._personas["mtime"] = None
+            body = await (await self.client.get("/admin/bots", headers=h)).json()
+            self.assertEqual(body["voices"], list(r.BUILTIN_VOICES))
+            self.assertEqual(body["default_voice"], r.VOICE)
+            await asyncio.wait_for(done.wait(), 1)
+            self.assertEqual(calls, [1])
+            body = await (await self.client.get("/admin/bots", headers=h)).json()
+            self.assertEqual(body["voices"], list(r.BUILTIN_VOICES))
+            await asyncio.sleep(0)
+            self.assertEqual(calls, [1])  # still inside the 60s gap
+            r._voice_fetch_at = time.monotonic() - 61
+            done.clear()
+            await self.client.get("/admin/bots", headers=h)
+            await asyncio.wait_for(done.wait(), 1)
+            self.assertEqual(len(calls), 2)
+
+            made = await self.client.post("/admin/bots", headers=h, json={"slug": "nova", "name": "Nova", "actor": "admin"})
+            self.assertEqual(made.status, 201, await made.text())
+            self.assertEqual(r.persona_list()["nova"]["voice"], r.VOICE.lower())
+            blank = await self.client.post("/admin/bots", headers=h,
+                                           json={"slug": "pip", "name": "Pip", "voice": "  ", "actor": "admin"})
+            self.assertEqual(blank.status, 201, await blank.text())
+            self.assertEqual(r.persona_list()["pip"]["voice"], r.VOICE.lower())
+            bad = await self.client.post("/admin/bots", headers=h,
+                                         json={"slug": "quo", "name": "Quo", "voice": "nope", "actor": "admin"})
+            self.assertEqual(bad.status, 400)
+
+            r.VOICES.clear()
+            r._personas["mtime"] = None
+            path = os.path.join(self.tmp, "voices", "offered.json")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"voices": ["ara", "customvoice"]}, f)
+            self.assertTrue(r.seed_offered_voices())
+            self.assertEqual(r.VOICES, {"ara", "customvoice"})
+            listed = await (await self.client.get("/admin/bots", headers=h)).json()
+            self.assertEqual(listed["voices"], ["ara", "customvoice"])
+            self.assertEqual(len(calls), 2)  # live list is non-empty, so no kick
+            r.VOICES.clear()
+            with open(path, "w") as f:
+                json.dump({"voices": ["ok", 3]}, f)
+            self.assertFalse(r.seed_offered_voices())
+            self.assertEqual(r.VOICES, set())
+            with open(path, "w") as f:
+                f.write("{")
+            self.assertFalse(r.seed_offered_voices())
+            self.assertEqual(r.VOICES, set())
+        finally:
+            r.STATE_DIR = old_state
+            r.fetch_voices = old_fetch
+            r._voice_fetch_at = old_kick
+            r.VOICES.clear()
+            r.VOICES.update({"ara", "rex", "luna"})
+            r._personas["mtime"] = None
 
     async def _fake(self, mode):
         seen = {"bodies": [], "auths": []}
@@ -618,3 +693,12 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IconMissingStatusTests(__import__("unittest").TestCase):
+    def test_paired_unreadable_status_green(self):
+        import importlib, sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "relay"))
+        r = importlib.import_module("relay")
+        self.assertEqual(r.icon_from_status(["jules"], None), {"paired": True, "ok": True})
+        self.assertEqual(r.icon_from_status(["jules"], "garbage"), {"paired": True, "ok": True})

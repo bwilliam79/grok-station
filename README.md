@@ -87,7 +87,9 @@ wget -qO- https://raw.githubusercontent.com/bwilliam79/grok-station/main/bootstr
 
 Or, from the cloned repo: `git pull && sudo ./install.sh`. Both are safe to re-run and keep the existing secrets, admin password and key.
 
-Or use **Updates** on the admin page: **Check now** looks up the latest commit on `main`, and **Update** runs the same update on the Pi (`grok-station-update.service`). The daily check only checks; it never installs.
+Or use **Updates** on the admin page: **Check now** compares this station's version with `VERSION` on `main`, and **Update** installs a newer version (`grok-station-update.service`). It does not install an older `main`, and it does not ask for the admin password again. The page shows a spinner while that runs and the result when the admin page comes back. The full log stays in `journalctl -u grok-station-update` and `/var/log/grok-station-install.log`. The daily check only checks; it never installs. See [docs/versioning.md](docs/versioning.md).
+
+**Bots** on the admin page adds a bot in steps (name and ID, key, webhook, then a summary). Voice is optional: leave it on **Station default** and change it later on the bot's row. The admin password is asked once, on the summary, and not again during the grace period (**System**, default 10 minutes, 0 always asks; signing out ends it). Once at least one bot is paired, the relay icon on the station display stays visible: green normally, red only after the last bot request timed out or its webhook failed.
 
 ## Troubleshooting
 

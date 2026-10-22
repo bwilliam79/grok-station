@@ -24,7 +24,14 @@ done
 run() { if [ "$DRY" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 sh_() { if [ "$DRY" = 1 ]; then echo "+ sh -c '$1'"; else sh -c "$1"; fi; }
 O=/opt/grok-station; S=/etc/grok-station/secrets; V=/var/lib/grok-station
-VER="$(git -c safe.directory="$PWD" rev-parse --short HEAD 2>/dev/null || echo dev)"
+# Stamp the semantic VERSION. A checkout without that file falls back to a short commit id.
+VER=
+if [ -f VERSION ]; then
+  VER=$(tr -d '[:space:]' < VERSION)
+fi
+if [ -z "$VER" ]; then
+  VER="$(git -c safe.directory="$PWD" rev-parse --short HEAD 2>/dev/null || echo dev)"
+fi
 FLAGS="${TMPDIR:-/tmp}/grok-station-install.$$"; mkdir -p "$FLAGS"; trap 'rm -rf "$FLAGS"' EXIT
 # Setup is complete once an admin password and the xAI key exist. Then (or from the update unit) this is an update.
 setup_done() { grep -q '"password"' /var/lib/grok-station/admin/auth.json 2>/dev/null && [ -s $S/xai_api_key ]; }
@@ -123,6 +130,7 @@ st_users() {
 }
 gen() {  # gen <file> <owner:group> <mode>: create once with a random token
   sh_ "[ -s $1 ] || { umask 077; t=\$(mktemp $S/.t.XXXXXX); openssl rand -hex 32 > \$t; chown $2 \$t; chmod $3 \$t; mv -f \$t $1; }"
+  sh_ "chown $2 $1 && chmod $3 $1"  # re-assert on upgrade: an older owner/mode hid the display's relay icon
 }
 
 st_display() {

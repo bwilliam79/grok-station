@@ -394,6 +394,16 @@ def read_net(net_root="/sys/class/net", route_path="/proc/net/route"):
     return net_status(ifaces, route)
 
 
+_warned = set()
+
+
+def _warn_once(msg):
+    """Log a message once per process. Never pass secrets."""
+    if msg not in _warned:
+        _warned.add(msg)
+        print(msg, file=sys.stderr, flush=True)
+
+
 def relay_token():
     """Bearer for the loopback relay. Never logged."""
     path = E("GROK_LOCAL_TOKEN_FILE", "/etc/grok-station/secrets/local_token")
@@ -423,13 +433,13 @@ def relay_icon(body):
     if not isinstance(body, dict):
         return {"ok": None, "detail": ""}
     bots = body.get("bots")
+    if bots is None and "key" not in body:
+        _warn_once("relay: /health returned no details (token unreadable or unauthorized); relay icon hidden")
     if not isinstance(bots, dict) or bots.get("paired") is not True:
         return {"ok": None, "detail": ""}
-    if bots.get("ok") is True:
-        return {"ok": True, "detail": "ok"}
     if bots.get("ok") is False:
         return {"ok": False, "detail": "down"}
-    return {"ok": None, "detail": ""}
+    return {"ok": True, "detail": "ok"}  # paired always shows; green unless the last request failed
 
 
 def check_relay(fetch, previous=None):
@@ -449,6 +459,7 @@ def fetch_relay_health(timeout=2):
     """GET loopback /health with the local bearer. None on any failure. The token is not logged."""
     token = relay_token()
     if not token:
+        _warn_once("relay: no local token readable by the display; relay icon hidden")
         return None
     req = urllib.request.Request(relay_health_url(), headers={"Authorization": "Bearer " + token})
     try:

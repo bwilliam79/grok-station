@@ -4,9 +4,10 @@
 No default password: until an admin password is set, the station shows a one-time 6-character setup code (3+3, no
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
-through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a
-10-minute step-up window on that session for saving a webhook, adding or renaming a bot, changing a bot's voice,
-uploading a portrait, and changing the privacy toggle; removing a bot or webhook always asks again. Speaker names stay on this Pi. Stdlib only.
+through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a grace window on that session (password_grace_min, default 10 minutes;
+0 always asks) for saving a webhook, adding, renaming, or removing a bot, changing a bot's voice, uploading a
+portrait, revoking a key, and changing the privacy toggle. Changing the grace period always asks again. Logging
+out ends the window. Speaker names stay on this Pi. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl, sys
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -38,7 +39,8 @@ CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # no 0/O, 1/I
 MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
-STEPUP_TTL = 600  # from the password entry; later requests do not move it
+STEPUP_TTL = 600  # default grace (password_grace_min=10); the open window uses the setting, and later requests do not move it
+GRACE_MAX = 120
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
 BUILTIN_WORD = "hey_grok"
 BUILTIN_LOCKED = "Hey Grok is the station's built-in wake word and can't be turned off"
@@ -108,12 +110,67 @@ def norm_code(s):
     return s
 
 
+_SESSION_KEY = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _is_num(v):
+    """A JSON number, not a bool (bool is a subclass of int)."""
+    return not isinstance(v, bool) and isinstance(v, (int, float))
+
+
 class Auth:
     """Password record, setup code, sessions, global lockout."""
 
     def __init__(self):
         self.sessions, self.setup_tickets, self.fails, self.locked_until = {}, {}, [], 0.0
         self.code = None
+        self._load_sessions()
+
+    def _load_sessions(self):
+        """Restore sha256 session keys after a restart (the update restarts this service).
+
+        Raw tokens are never stored. A missing password (setup or reset) drops every session,
+        including one left on disk, so an old cookie cannot sign in after the password is set again.
+        """
+        if self.setup_required():
+            self.sessions = {}
+            self._load_note = ["setup"]
+            try:
+                os.unlink(path("sessions.json"))
+            except OSError:
+                pass
+            return
+        raw = read_json(path("sessions.json"), {})
+        if not isinstance(raw, dict):
+            return
+        t = now()
+        kept = {}
+        self._load_note = [type(raw).__name__, len(raw)]
+        for key, rec in raw.items():
+            if not isinstance(key, str) or _SESSION_KEY.fullmatch(key) is None or not isinstance(rec, dict):
+                self._load_note.append("skip-key")
+                continue
+            exp, seen = rec.get("exp"), rec.get("seen")
+            if not _is_num(exp) or not _is_num(seen):
+                self._load_note.append(("skip-num", type(exp).__name__, type(seen).__name__, _is_num(exp), _is_num(seen),
+                                        isinstance(exp, bool), isinstance(seen, bool)))
+                continue
+            if exp < t or t - seen > IDLE_TTL:
+                self._load_note.append("skip-stale")
+                continue
+            item = {"exp": float(exp), "seen": float(seen)}
+            until = rec.get("stepup_until")
+            if _is_num(until):
+                item["stepup_until"] = float(until)
+            kept[key] = item
+        self.sessions = kept
+        self._load_note.append(len(kept))
+
+    def _save_sessions(self):
+        try:
+            write_json(path("sessions.json"), self.sessions)
+        except OSError:
+            pass
 
     @property
     def rec(self):
@@ -189,6 +246,8 @@ class Auth:
             doc.update(password=hash_password(pw), set_at=int(now()))
             write_json(path("auth.json"), doc)
             self.setup_tickets.clear()
+            self.sessions.clear()  # a reset must not revive the cookie that was signed in before it
+            self._save_sessions()
             self.code = None
             self.publish()
             return None
@@ -211,6 +270,7 @@ class Auth:
         t = secrets.token_urlsafe(32)
         t0 = now()
         self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0}
+        self._save_sessions()
         return t
 
     def _key(self, token):
@@ -226,14 +286,20 @@ class Auth:
         rec = self.sessions.get(k)
         t = now()
         if not self._fresh(rec, t):
-            self.sessions.pop(k, None)
+            if k in self.sessions:
+                self.sessions.pop(k, None)
+                self._save_sessions()  # an expired cookie must not come back when the service restarts
             return False
         rec["seen"] = t  # idle window slides on each authenticated request; step-up does not
+        self._save_sessions()
         return True
 
     def stepup_until(self, token):
-        """Epoch when this session's step-up window closes, or None. Does not slide or refresh it."""
-        if not token or self.setup_required():
+        """Epoch when this session's grace window closes, or None. Does not slide or refresh it.
+
+        A grace setting of 0 means there is never a window, even if a timestamp is still stored.
+        """
+        if password_grace_min() <= 0 or not token or self.setup_required():
             return None
         rec = self.sessions.get(self._key(token))
         t = now()
@@ -248,16 +314,28 @@ class Auth:
         return self.stepup_until(token) is not None
 
     def open_stepup(self, token):
-        """Start a fresh STEPUP_TTL window on this session. Caller already checked the password."""
-        if not token or self.setup_required():
+        """Start a fresh grace window on this session. Caller already checked the password.
+
+        The length is password_grace_min at this moment. Zero does not open a window.
+        """
+        ttl = password_grace_min() * 60
+        if ttl <= 0 or not token or self.setup_required():
             return None
         rec = self.sessions.get(self._key(token))
         t = now()
         if not self._fresh(rec, t):
             return None
-        rec["stepup_until"] = t + STEPUP_TTL
+        rec["stepup_until"] = t + ttl
+        self._save_sessions()
         audit_stepup()
         return rec["stepup_until"]
+
+    def clear_stepups(self):
+        """Drop every open grace window. Used when the grace setting is lowered."""
+        for rec in self.sessions.values():
+            if isinstance(rec, dict):
+                rec.pop("stepup_until", None)
+        self._save_sessions()
 
     def reauth(self, pw):
         """Admin password again for a bot change. Wrong guesses share the login lockout.
@@ -276,8 +354,12 @@ class Auth:
             return None
 
     def logout(self, token):
-        if token:
-            self.sessions.pop(hashlib.sha256(token.encode()).hexdigest(), None)
+        if not token:
+            return
+        key = hashlib.sha256(token.encode()).hexdigest()
+        if key in self.sessions:
+            self.sessions.pop(key, None)
+            self._save_sessions()
 
     def change_password(self, old, new):
         with LOCK:
@@ -293,6 +375,7 @@ class Auth:
             doc.update(password=hash_password(new), set_at=int(now()))
             write_json(path("auth.json"), doc)
             self.sessions.clear()
+            self._save_sessions()
             return None
 
 
@@ -561,8 +644,8 @@ ACTIVE_ENROLL = ("recording", "uploading", "training")
 WEBHOOK_HOST = "api2.cursor.sh"
 RELAY_ENV = E("ADMIN_RELAY_ENV", "/etc/grok-station/admin-relay.env")
 RELAY_UNCONFIGURED = "The station can't reach the relay's admin API yet"
-LS_REMOTE = None  # tests: () -> "<40 hex>" or raises OSError. No network.
-UPDATE_REPO = "https://github.com/bwilliam79/grok-station"
+REMOTE_MAIN = None  # tests: () -> {"version": "0.1.1", "sha": "<40 hex>"} or raises OSError. No network.
+_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 REBOOT_FLAG = E("ADMIN_REBOOT_FLAG", "/run/grok-station-reboot-required")  # install.sh: boot options changed
 RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
@@ -1610,65 +1693,147 @@ def _settings_path():
     return path("update-settings.json")
 
 
-def load_update_settings():
+def _settings_doc():
     d = read_json(_settings_path(), {})
-    return {"autocheck": isinstance(d, dict) and d.get("autocheck") is True}
+    return d if isinstance(d, dict) else {}
 
 
-def remote_main_sha():
-    """Latest commit on origin/main, from `git ls-remote` (public repo, no credentials, no local clone needed)."""
-    if LS_REMOTE is not None:
-        out = LS_REMOTE()
+def password_grace_min():
+    """Minutes a correct password covers later changes. 0 always asks. Bad values fall back to 10."""
+    n = _settings_doc().get("password_grace_min", 10)
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
+        return 10
+    return n
+
+
+def store_password_grace_min(n):
+    """Merge the grace setting into the admin settings file. Leaves autocheck alone."""
+    d = _settings_doc()
+    d["password_grace_min"] = n
+    write_json(_settings_path(), d)
+
+
+def load_update_settings():
+    return {"autocheck": _settings_doc().get("autocheck") is True}
+
+
+def semver_tuple(value):
+    if not isinstance(value, str):
+        return None
+    match = _SEMVER.fullmatch(value.strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def version_order(installed, available):
+    """newer, same, older, or unknown.
+
+    unknown: available is not MAJOR.MINOR.PATCH, so it is never an upgrade.
+    newer: available is semver and installed is not (a short commit id left by an older installer, or dev).
+    """
+    avail = semver_tuple(available)
+    if avail is None:
+        return "unknown"
+    inst = semver_tuple(installed)
+    if inst is None:
+        return "newer"
+    if avail > inst:
+        return "newer"
+    if avail < inst:
+        return "older"
+    return "same"
+
+
+def update_block(installed, available, checked):
+    """None when apply may start. Otherwise the error to show. checked is False before a successful check."""
+    if not checked:
+        return "Check for updates first."
+    order = version_order(installed, available)
+    if order == "newer":
+        return None
+    if order == "same":
+        return "Already up to date."
+    remote = available if isinstance(available, str) and available else "nothing"
+    inst = installed if isinstance(installed, str) and installed else "nothing"
+    return f"Refusing to install {remote} over {inst}. The main branch is older than this station."
+
+
+def remote_main():
+    """origin/main VERSION and full commit id. The helper fetches the recorded clone. Tests inject REMOTE_MAIN."""
+    if REMOTE_MAIN is not None:
+        out = REMOTE_MAIN()
+        if not isinstance(out, dict):
+            raise OSError("remote")
     else:
-        env = dict(os.environ, HOME=RUN_DIR, GIT_TERMINAL_PROMPT="0", GIT_CONFIG_NOSYSTEM="1")
-        p = subprocess.run(["git", "ls-remote", UPDATE_REPO, "refs/heads/main"], capture_output=True, timeout=20, env=env)
-        if p.returncode:
-            raise OSError("ls-remote")
-        out = p.stdout.decode("ascii", "replace")
-    m = re.match(r"^([0-9a-f]{40})\s", out.strip() + " ")
-    if not m:
-        raise OSError("ls-remote")
-    return m.group(1)
-
-
-def is_current(installed, available):
-    """The installed VERSION is the short SHA install.sh was run from; it matches when the remote SHA starts with it."""
-    inst = str(installed or "").strip().lower()
-    return bool(available and re.fullmatch(r"[0-9a-f]{7,40}", inst) and available.startswith(inst))
+        ok, out = helper("update-remote", timeout=40)
+        if not ok or not isinstance(out, dict):
+            raise OSError("remote")
+    sha = str(out.get("sha") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise OSError("remote")
+    ver = str(out.get("version") or "").strip()
+    if semver_tuple(ver) is None:
+        ver = ""
+    return {"version": ver, "sha": sha}
 
 
 def run_update_check():
-    """Look up origin/main and cache it. Never installs anything."""
+    """Look up origin/main's VERSION and cache it. Never installs anything."""
     try:
-        sha = remote_main_sha()
+        info = remote_main()
     except (OSError, subprocess.TimeoutExpired):
-        write_json(path("update-check.json"), {"available": None, "error": True, "checked_at": int(now())})
+        write_json(path("update-check.json"), {"available": None, "sha": None, "error": True, "checked_at": int(now())})
         _audit_update("update-check-failed", "network")
         return
-    write_json(path("update-check.json"), {"available": sha, "error": False, "checked_at": int(now())})
-    _audit_update("update-check", sha[:7])
+    write_json(path("update-check.json"), {
+        "available": info["version"] or None, "sha": info["sha"], "error": False, "checked_at": int(now()),
+    })
+    _audit_update("update-check", info["version"] or info["sha"][:7])
+
+
+def _short_error(text):
+    """One line for the page. The install log itself is not returned."""
+    if not isinstance(text, str):
+        return "The update failed."
+    s = " ".join(text.split())[:160]
+    low = s.lower()
+    if not s or "bearer " in low or "-----begin" in low or "password=" in low or "://" in s:
+        return "The update failed."
+    return s
 
 
 def update_job():
-    """State of the update unit plus the last lines of the install log, via the root helper."""
+    """State of the update unit. A failure is one line; the log stays in the journal."""
     ok, out = helper("update-status", timeout=10)
     if not ok or not isinstance(out, dict):
-        return {"state": "unknown", "log": []}
-    log = [str(x)[:300] for x in out.get("log", [])][-20:] if isinstance(out.get("log"), list) else []
+        return {"state": "unknown"}
     state = out.get("state") if out.get("state") in ("running", "succeeded", "failed", "idle") else "unknown"
-    return {"state": state, "log": log}
+    job = {"state": state}
+    if state == "failed":
+        job["error"] = _short_error(out.get("error"))
+    return job
+
+
+def _update_cache():
+    cache = read_json(path("update-check.json"), {})
+    return cache if isinstance(cache, dict) else {}
 
 
 def updates_view():
-    cache = read_json(path("update-check.json"), {})
-    if not isinstance(cache, dict):
-        cache = {}
+    cache = _update_cache()
     installed = version()
-    avail = cache.get("available") if isinstance(cache.get("available"), str) and re.fullmatch(r"[0-9a-f]{40}", cache["available"]) else None
+    sha = cache.get("sha") if isinstance(cache.get("sha"), str) and re.fullmatch(r"[0-9a-f]{40}", cache.get("sha") or "") else None
+    avail = cache.get("available") if isinstance(cache.get("available"), str) and cache.get("available") else None
+    checked = bool(sha) and not cache.get("error")
+    order = version_order(installed, avail) if checked else None
+    blocked = update_block(installed, avail, True) if checked and order in ("older", "unknown") else None
     return {
         "installed": installed,
-        "available": avail[:7] if avail else None,
-        "update_available": bool(avail) and not is_current(installed, avail),
+        "available": avail,
+        "available_sha": sha[:7] if sha else None,
+        "update_available": order == "newer",
+        "update_blocked": blocked,
         "cant_check": bool(cache.get("error")),
         "checked_at": cache.get("checked_at") if isinstance(cache.get("checked_at"), int) else None,
         "autocheck": load_update_settings()["autocheck"],
@@ -1679,8 +1844,18 @@ def updates_view():
 
 
 def start_update():
-    """Start the fixed update unit (git pull + install.sh). It runs in its own cgroup, so the admin restart it
-    causes doesn't stop it; the page reads its status again after the admin is back."""
+    """Start the fixed update unit only when origin/main is a newer VERSION.
+
+    The unit runs in its own cgroup, so the admin restart it causes doesn't stop it. The page reads
+    status again after this service is back. No URL or ref is taken from the caller.
+    """
+    cache = _update_cache()
+    sha = cache.get("sha") if isinstance(cache.get("sha"), str) else ""
+    checked = bool(re.fullmatch(r"[0-9a-f]{40}", sha)) and not cache.get("error")
+    avail = cache.get("available") if isinstance(cache.get("available"), str) else ""
+    block = update_block(version(), avail, checked)
+    if block:
+        return 409, {"error": block}
     ok, out = helper("update-start", timeout=15)
     if not ok:
         _audit_update("update-failed", "start")
@@ -2309,9 +2484,11 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- bots (proxied to the relay; webhook keys are not stored here)
     def need_password(self, j, always=False):
-        """Password check for a bot change. always=True never skips (remove bot, remove webhook, unpair).
+        """Password check. An open grace window is enough unless always=True.
 
-        Otherwise an open step-up window is enough. A correct password opens or reopens the window.
+        always=True is for changing the grace period: a correct password is required even when a
+        window is already open. A correct password opens the window (no-op when the setting is 0).
+        A wrong password does not.
         """
         token = self.cookie("gs_session")
         pw = j.get("password") if isinstance(j, dict) and "password" in j else None
@@ -2424,7 +2601,8 @@ class Handler(BaseHTTPRequestHandler):
         drop_stale_guest()
         got = relay_call("GET", "/admin/bots")
         if got is None:
-            return self.send(200, {"bots": local_bots(), "voices": [], "message": RELAY_UNCONFIGURED,
+            return self.send(200, {"bots": local_bots(), "voices": [], "default_voice": "",
+                                   "message": RELAY_UNCONFIGURED,
                                    "stepup_until": self._stepup(), "station_pub": "", "killed": False,
                                    "stats": stats_view(None)})
         status, data = got
@@ -2432,7 +2610,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data)
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
         pub = data.get("station_pub")
-        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")), "stepup_until": self._stepup(),
+        return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")),
+                               "default_voice": data.get("default_voice") if voice_ok(data.get("default_voice")) else "",
+                               "stepup_until": self._stepup(),
                                "station_pub": "".join(pub.split()) if box_pub_ok(pub) else "",
                                "killed": data.get("killed") is True, "stats": stats_view(data.get("stats"))})
 
@@ -2486,17 +2666,28 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(202, {"ok": True})
 
     def bots_add(self, j):
-        slug, name, voice = j.get("slug"), clean_name(j.get("name")), j.get("voice")
+        slug, name = j.get("slug"), clean_name(j.get("name"))
         problem = bot_id_problem(slug)
         if problem:
             return self.send(400, {"error": problem})
         if not name:
             return self.send(400, {"error": "Type a name."})
-        if not voice_ok(voice):
-            return self.send(400, {"error": "Pick a voice."})
+        raw = j.get("voice", None) if isinstance(j, dict) else None
+        voice = None
+        if raw is not None:
+            if not isinstance(raw, str):
+                return self.send(400, {"error": "Pick a voice."})
+            voice = raw.strip()
+            if voice == "":
+                voice = None
+            elif not voice_ok(voice):
+                return self.send(400, {"error": "Pick a voice."})
         if not self.need_password(j):
             return
-        got = relay_call("POST", "/admin/bots", {"slug": slug, "name": name, "voice": voice, "actor": RELAY_ACTOR})
+        body = {"slug": slug, "name": name, "actor": RELAY_ACTOR}
+        if voice:
+            body["voice"] = voice
+        got = relay_call("POST", "/admin/bots", body)
         if got is None:
             return self.bots_unconfigured()
         status, data = got
@@ -2520,8 +2711,13 @@ class Handler(BaseHTTPRequestHandler):
         if has_name and not name:
             return self.send(400, {"error": "Type a name."})
         voice = j.get("voice") if has_voice else None
-        if has_voice and not voice_ok(voice):
-            return self.send(400, {"error": "Pick a voice."})
+        if has_voice:
+            # An empty voice means "station default". The relay stores that default voice.
+            if not isinstance(voice, str):
+                return self.send(400, {"error": "Pick a voice."})
+            voice = voice.strip()
+            if voice and not voice_ok(voice):
+                return self.send(400, {"error": "Pick a voice."})
         if not self.need_password(j):
             return
         body = {"actor": RELAY_ACTOR}
@@ -2542,7 +2738,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True})
 
     def bots_remove(self, slug, j):
-        if not self.need_password(j, always=True):
+        if not self.need_password(j):
             return
         got = relay_call("DELETE", "/admin/bots/" + slug, {"actor": RELAY_ACTOR})
         if got is None:
@@ -2590,7 +2786,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def bots_key_delete(self, slug, j):
         """Drop one pinned key. Replies from this bot are rejected until it is paired again."""
-        if not self.need_password(j, always=True):
+        if not self.need_password(j):
             return
         got = relay_call("DELETE", "/admin/bots/" + slug + "/key", {"actor": RELAY_ACTOR})
         if got is None:
@@ -2603,7 +2799,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def bots_revoke_all(self, j):
         """Drop every pinned key and reject every reply until a key is paired again."""
-        if not self.need_password(j, always=True):
+        if not self.need_password(j):
             return
         got = relay_call("POST", "/admin/bots/revoke-all", {"actor": RELAY_ACTOR})
         if got is None:
@@ -2615,7 +2811,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True})
 
     def bots_webhook_delete(self, slug, j):
-        if not self.need_password(j, always=True):
+        if not self.need_password(j):
             return
         got = relay_call("DELETE", "/admin/bots/" + slug + "/webhook", {"actor": RELAY_ACTOR})
         if got is None:
@@ -2698,7 +2894,32 @@ class Handler(BaseHTTPRequestHandler):
         if p != "/api/system":
             return self.send(404, {"error": "not found"})
         return self.send(200, {"version": version(), "health": health(), "services": services(), "network": net_summary(),
-                               "tls": {**tls_info(), "url": admin_url()}})
+                               "tls": {**tls_info(), "url": admin_url()}, "password_grace_min": password_grace_min()})
+
+    def api_put_system(self, p, q, j):
+        if p != "/api/system/password-grace":
+            return self.send(404, {"error": "not found"})
+        if not isinstance(j, dict):
+            return self.send(400, {"error": "Pick a grace period from 0 to 120 minutes."})
+        n = j.get("password_grace_min")
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
+            return self.send(400, {"error": "Pick a grace period from 0 to 120 minutes."})
+        old = password_grace_min()
+        if not self.need_password(j, always=True):
+            return
+        try:
+            store_password_grace_min(n)
+        except OSError:
+            return self.send(500, {"error": "Couldn't save that."})
+        token = self.cookie("gs_session")
+        if n < old:
+            AUTH.clear_stepups()
+            until = None
+        elif n > old:
+            until = AUTH.open_stepup(token)
+        else:
+            until = AUTH.stepup_until(token)
+        return self.send(200, {"ok": True, "password_grace_min": n, "stepup_until": until})
 
     def api_post_system(self, p, q, j):
         if p == "/api/system/restart-voice":
@@ -2754,7 +2975,9 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(on, bool):
             return self.send(400, {"error": "Say whether checking is on."})
         try:
-            write_json(_settings_path(), {"autocheck": on})
+            doc = _settings_doc()
+            doc["autocheck"] = on
+            write_json(_settings_path(), doc)
         except OSError:
             return self.send(500, {"error": "Couldn't save that."})
         _audit_update("update-autocheck", "on" if on else "off")

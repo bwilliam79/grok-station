@@ -225,6 +225,36 @@ class Sessions(unittest.TestCase):
         c.req("POST", "/api/logout")
         self.assertEqual(c.req("GET", "/api/home")[0], 401)
 
+    def test_sign_in_survives_admin_restart_logout_does_not(self):
+        """The update restarts this process. The session file is hashes only, mode 0600, and logout deletes it."""
+        c = signed_in()
+        token = c.jar["gs_session"]
+        raw = open(ga.path("sessions.json")).read()
+        self.assertNotIn(token, raw)
+        self.assertRegex(raw, r'"[0-9a-f]{64}"')
+        self.assertEqual(stat.S_IMODE(os.stat(ga.path("sessions.json")).st_mode), 0o600)
+        self.assertIsNotNone(ga.AUTH.open_stepup(token))
+        ga.AUTH.__init__()
+        st, j = c.req("GET", "/api/state")
+        self.assertEqual(st, 200)
+        self.assertTrue(j["signed_in"])
+        self.assertIsNotNone(j["stepup_until"])
+        self.assertEqual(c.req("POST", "/api/logout", {})[0], 200)
+        ga.AUTH.__init__()
+        self.assertFalse(c.req("GET", "/api/state")[1]["signed_in"])
+
+    def test_expired_session_stays_dead_after_restart(self):
+        c = signed_in()
+        base = CLOCK[0]
+        try:
+            CLOCK[0] = base + ga.IDLE_TTL + 5
+            self.assertFalse(c.req("GET", "/api/state")[1]["signed_in"])
+            ga.AUTH.__init__()
+            CLOCK[0] = base  # a restart must not revive it by moving the clock back
+            self.assertFalse(c.req("GET", "/api/state")[1]["signed_in"])
+        finally:
+            CLOCK[0] = base
+
     def test_wrong_old_password_refused(self):
         c = signed_in()
         self.assertEqual(c.req("POST", "/api/password", {"old": "wrong one!!", "new": "a brand new pass 7"})[0], 400)
@@ -404,6 +434,7 @@ class Reset(unittest.TestCase):
         st, j = c2.req("GET", "/api/state")
         self.assertEqual(j["wizard"], {"step": 8, "done": True})  # other settings (and the finished wizard) kept
         self.assertTrue(os.path.exists(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json")))
+        self.assertEqual(c.req("GET", "/api/home")[0], 401)  # the cookie from before the reset stays dead
 
     def prep(self):
         c = signed_in()
@@ -572,14 +603,43 @@ class Bots(unittest.TestCase):
         self.assertEqual(len([c for c in self.calls if c[0] == "PUT"]), 0)
 
     def test_add_rename_remove_need_password_token_once(self):
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {})[0], 403)  # no grace window yet
         self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve"})[0], 403)
         st, j = self.c.req("POST", "/api/bots", {"slug": "zed", "name": "Zed", "voice": "eve", "password": GOOD})
         self.assertIn(st, (200, 201)); self.assertTrue(j["voice_token"].startswith("vt_"))
         self.assertNotIn(j["voice_token"].encode(), self.disk_blob())
-        # the add's password opened step-up: rename passes without re-entry, remove still prompts
+        # the add's password opened the grace window: rename and remove both pass without re-entry
         self.assertEqual(self.c.req("PATCH", "/api/bots/zed", {"name": "Zane"})[0], 200)
-        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {})[0], 403)
-        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {"password": GOOD})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zed", {})[0], 200)
+
+    def test_add_omits_blank_voice_and_passes_default_voice(self):
+        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "voice": "bad voice", "password": GOOD})[0], 400)
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "voice": 3, "password": GOOD})[0], 400)
+        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])  # a bad voice does not open the window
+        self.assertFalse(any(c[0] == "POST" for c in self.calls))
+        st, j = self.c.req("POST", "/api/bots", {"slug": "pip", "name": "Pip", "password": GOOD})
+        self.assertEqual(st, 201, j)
+        self.assertNotIn("voice", self.calls[-1][2])
+        st, j = self.c.req("POST", "/api/bots", {"slug": "quo", "name": "Quo", "voice": "   "})
+        self.assertEqual(st, 201, j)
+        self.assertNotIn("voice", self.calls[-1][2])
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(j["default_voice"], "")
+
+        def fake(method, path, payload=None, timeout=10):
+            if path == "/admin/bots" and method == "GET":
+                return 200, {"bots": [], "voices": ["luna", "eve"], "default_voice": "luna"}
+            return 200, {"ok": True}
+
+        ga.relay_call = fake
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(j["default_voice"], "luna")
+        self.assertEqual(j["voices"], ["luna", "eve"])
+        ga.relay_call = lambda *a, **k: None
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(j["default_voice"], "")
+        self.assertEqual(j["message"], ga.RELAY_UNCONFIGURED)
 
     def test_voice_patch_forwards_with_the_rename_stepup(self):
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})[0], 400)
@@ -592,6 +652,9 @@ class Bots(unittest.TestCase):
         st, j = self.c.req("PATCH", "/api/bots/kai", {"name": "Kay", "voice": "rex"})
         self.assertEqual(st, 200, j)
         self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"name": "Kay", "voice": "rex", "actor": "admin"}))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "   "})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "", "actor": "admin"}))
 
     def test_test_needs_no_password_and_unconfigured_message(self):
         st, j = self.c.req("POST", "/api/bots/kai/test", {})
@@ -954,12 +1017,77 @@ class StepUp(unittest.TestCase):
         self.assertFalse(j["signed_in"])
         self.assertIsNone(j["stepup_until"])
 
-    def test_remove_still_prompts_inside_the_window(self):
+    def test_remove_honors_the_grace_window(self):
         self._save()
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/webhook", {})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/key", {})[0], 200)
+        self.assertEqual(self.c.req("POST", "/api/bots/revoke-all", {})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai", {})[0], 200)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)  # rename still skipped
+        CLOCK[0] = 10 * 3600  # window closed
         self.assertEqual(self.c.req("DELETE", "/api/bots/kai", {})[0], 403)
         self.assertEqual(self.c.req("DELETE", "/api/bots/kai/webhook", {})[0], 403)
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)  # rename still skipped
-        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/webhook", {"password": GOOD})[0], 200)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai/key", {})[0], 403)
+        self.assertEqual(self.c.req("POST", "/api/bots/revoke-all", {})[0], 403)
+
+    def test_grace_zero_always_asks(self):
+        self._save()
+        self.assertEqual(self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 0})[0], 403)
+        st, j = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 0, "password": GOOD})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["password_grace_min"], 0)
+        self.assertIsNone(j["stepup_until"])
+        self.assertIsNone(self._until())
+        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "zoa", "name": "Zoa"})[0], 403)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai", {})[0], 403)
+        st, j = self.c.req("POST", "/api/bots", {"slug": "zoa", "name": "Zoa", "password": GOOD})
+        self.assertEqual(st, 201, j)
+        self.assertIsNone(self._until())  # grace 0 does not open a window
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zoa", {})[0], 403)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/zoa", {"password": GOOD})[0], 200)
+        self.assertIsNone(self._until())
+
+    def test_lowering_grace_clears_windows_and_needs_password(self):
+        self._save()
+        other = C()
+        self.assertEqual(other.req("POST", "/api/login", {"password": GOOD})[0], 200)
+        self.assertEqual(other.req("PUT", "/api/bots/kai/webhook",
+                                   {"url": self.URL, "key": self.KEY, "password": GOOD})[0], 200)
+        self.assertIsNotNone(other.req("GET", "/api/state")[1]["stepup_until"])
+        st, j = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 5, "password": GOOD})
+        self.assertEqual(st, 200, j)
+        self.assertIsNone(j["stepup_until"])
+        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
+        self.assertIsNone(other.req("GET", "/api/state")[1]["stepup_until"])
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 403)
+
+    def test_grace_get_and_csrf_and_bounds(self):
+        st, j = self.c.req("GET", "/api/system")
+        self.assertEqual(st, 200)
+        self.assertEqual(j["password_grace_min"], 10)
+        self.assertEqual(self.c.req("PUT", "/api/system/password-grace",
+                                    {"password_grace_min": 15, "password": GOOD}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("POST", "/api/bots",
+                                    {"slug": "zoa", "name": "Zoa", "password": GOOD}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("DELETE", "/api/bots/kai", {"password": GOOD}, csrf=False)[0], 403)
+        for bad in (-1, 121, True, 1.5, "10"):
+            st, j = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": bad, "password": GOOD})
+            self.assertEqual(st, 400, bad)
+        self.assertIsNone(self._until())
+        st, _ = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 15, "password": "wrong-wrong-1"})
+        self.assertEqual(st, 403)
+        self.assertIsNone(self._until())
+        st, j = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 15, "password": GOOD})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(j["password_grace_min"], 15)
+        self.assertEqual(self._until(), CLOCK[0] + 15 * 60)
+        settings = os.path.join(os.environ["ADMIN_STATE_DIR"], "update-settings.json")
+        doc = json.load(open(settings))
+        self.assertEqual(doc["password_grace_min"], 15)
+        self.assertEqual(self.c.req("PUT", "/api/updates/autocheck", {"on": True})[0], 200)
+        doc = json.load(open(settings))
+        self.assertIs(doc["autocheck"], True)
+        self.assertEqual(doc["password_grace_min"], 15)
 
     def test_audit_line_once_per_open(self):
         buf = io.StringIO()
@@ -1231,7 +1359,8 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
         self.assertIn(">Bot ID <", js)
         self.assertNotIn(">Slug<", js)
-        self.assertIn("Short lowercase ID for this bot, like nix. Used for wake-word routing, portraits and replies. Can't be changed later.", js)
+        self.assertIn("Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.", js)
+        self.assertNotIn("like nix", js)
         self.assertIn("Hey Grok is the built-in wake word. It is always on.", js)
         self.assertNotIn("Jarvis", js)
         self.assertIn("Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.", js)
@@ -1420,66 +1549,113 @@ class FirstRunKey(unittest.TestCase):
 
 
 class Updates(unittest.TestCase):
-    """Single-device updates: origin/main via git ls-remote (injected here), one Update button, check-only daily."""
+    """Single-device updates: origin/main VERSION (injected here), one Update button, check-only daily."""
     SHA = "4915427d34633848f41448c563eb0543c3bce44a"
 
     def setUp(self):
         reset_state()
-        self._helper, self._ls = ga.helper, ga.LS_REMOTE
+        self._helper, self._remote, self._ver = ga.helper, ga.REMOTE_MAIN, ga.VERSION_FILE
+        self.ver_path = os.path.join(TMP, "installed-version")
+        with open(self.ver_path, "w") as fh:
+            fh.write("0.1.0\n")
+        ga.VERSION_FILE = self.ver_path
         self.calls = []
 
         def fake(*a, **k):
             self.calls.append(a)
             if a[0] == "update-status":
-                return True, {"state": "idle", "log": []}
+                return True, {"state": "idle", "log": ["should-not-reach-the-page"]}
             if a[0] == "update-start":
                 return True, {"ok": True}
             return self._helper(*a, **k)
         ga.helper = fake
 
     def tearDown(self):
-        ga.helper, ga.LS_REMOTE = self._helper, self._ls
+        ga.helper, ga.REMOTE_MAIN, ga.VERSION_FILE = self._helper, self._remote, self._ver
 
-    def test_is_current(self):
-        self.assertTrue(ga.is_current("4915427", self.SHA))
-        self.assertFalse(ga.is_current("6b841f6", self.SHA))
-        self.assertFalse(ga.is_current("dev", self.SHA))
-        self.assertFalse(ga.is_current("4915427", None))
+    def _remote_is(self, version, sha=None):
+        sha = sha or self.SHA
+        ga.REMOTE_MAIN = lambda: {"version": version, "sha": sha}
+
+    def test_version_order(self):
+        self.assertEqual(ga.version_order("0.1.0", "0.1.1"), "newer")
+        self.assertEqual(ga.version_order("0.1.0", "0.1.0"), "same")
+        self.assertEqual(ga.version_order("0.1.2", "0.1.0"), "older")
+        self.assertEqual(ga.version_order("1.9.0", "1.10.0"), "newer")
+        self.assertEqual(ga.version_order("4915427", "0.1.0"), "newer")  # short commit id installed
+        self.assertEqual(ga.version_order("dev", "0.1.1"), "newer")
+        self.assertEqual(ga.version_order("0.1.0", ""), "unknown")
+        self.assertEqual(ga.version_order("0.1.0", None), "unknown")
+        self.assertEqual(ga.version_order("0.1.0", "0.1"), "unknown")
+        self.assertIsNone(ga.update_block("0.1.0", "0.1.1", True))
+        self.assertEqual(ga.update_block("0.1.0", "0.1.1", False), "Check for updates first.")
+        self.assertIn("Already up to date", ga.update_block("0.1.0", "0.1.0", True))
+        refused = ga.update_block("0.1.2", "0.1.0", True)
+        self.assertIn("Refusing to install 0.1.0 over 0.1.2", refused)
+        self.assertIn("Refusing", ga.update_block("0.1.0", "", True))
 
     def test_check_caches_main_and_flags_update(self):
-        ga.LS_REMOTE = lambda: self.SHA + "\trefs/heads/main\n"
+        self._remote_is("0.1.1")
         ga.run_update_check()
         v = ga.updates_view()
-        self.assertEqual(v["available"], self.SHA[:7])
+        self.assertEqual(v["installed"], "0.1.0")
+        self.assertEqual(v["available"], "0.1.1")
+        self.assertEqual(v["available_sha"], self.SHA[:7])
+        self.assertTrue(v["update_available"])
         self.assertFalse(v["cant_check"])
-        self.assertEqual(v["update_available"], not ga.is_current(ga.version(), self.SHA))
-        self.assertTrue(any(" update-check 4915427" in h for h in v["history"]))
+        self.assertIsNone(v["update_blocked"])
+        self.assertNotIn("log", v["job"])
+        self.assertTrue(any(" update-check 0.1.1" in h for h in v["history"]))
         self.assertNotIn("relay", v["installed"] if isinstance(v["installed"], dict) else {})
 
     def test_check_failure_is_reported_not_raised(self):
         def boom():
             raise OSError("no network")
-        ga.LS_REMOTE = boom
+        ga.REMOTE_MAIN = boom
         ga.run_update_check()
         v = ga.updates_view()
         self.assertTrue(v["cant_check"])
         self.assertIsNone(v["available"])
+        self.assertNotIn("log", v["job"])
         self.assertTrue(any("update-check-failed network" in h for h in v["history"]))
 
     def test_apply_starts_only_the_fixed_unit(self):
         c = signed_in()
+        self._remote_is("0.1.1")
+        ga.run_update_check()
         st, j = c.req("POST", "/api/updates/apply", {})
         self.assertEqual(st, 202, j)
         self.assertIn(("update-start",), self.calls)
         self.assertFalse(any(a[0] == "update-start" and len(a) > 1 for a in self.calls))
 
+    def test_apply_refuses_older_or_equal_and_needs_a_check(self):
+        c = signed_in()
+        st, j = c.req("POST", "/api/updates/apply", {})
+        self.assertEqual(st, 409, j)
+        self.assertIn("Check for updates first", j["error"])
+        self.assertFalse(any(a[0] == "update-start" for a in self.calls))
+        self._remote_is("0.1.0")
+        ga.run_update_check()
+        st, j = c.req("POST", "/api/updates/apply", {})
+        self.assertEqual(st, 409, j)
+        self.assertIn("Already up to date", j["error"])
+        with open(self.ver_path, "w") as fh:
+            fh.write("0.1.2\n")
+        self._remote_is("0.1.0")
+        ga.run_update_check()
+        st, j = c.req("POST", "/api/updates/apply", {})
+        self.assertEqual(st, 409, j)
+        self.assertIn("Refusing to install 0.1.0 over 0.1.2", j["error"])
+        self.assertFalse(any(a[0] == "update-start" for a in self.calls))
+
     def test_check_and_apply_need_session_and_csrf_not_a_password(self):
         """A signed-in session plus the CSRF header is enough. No password, and no caller-supplied URL."""
         c = signed_in()
-        ga.LS_REMOTE = lambda: self.SHA + "\trefs/heads/main\n"
+        self._remote_is("0.1.1")
         st, j = c.req("POST", "/api/updates/check", {})
         self.assertEqual(st, 200, j)
         self.assertNotIn("password", j)
+        self.assertTrue(j["update_available"])
         st, j = c.req("POST", "/api/updates/apply", {"url": "https://example.invalid/evil", "ref": "heads/evil"})
         self.assertEqual(st, 202, j)
         self.assertFalse(any(len(a) > 1 and "evil" in str(a) for a in self.calls))

@@ -4,6 +4,29 @@
 # Extra arguments go to install.sh, e.g. ... | sudo sh -s -- --verbose
 # Never reads stdin (it is this script when piped), so there are no prompts.
 set -eu
+# semver-order:start
+semver_order() {
+  awk -v inst="$1" -v avail="$2" '
+function ok(s,    n, a, i) {
+  if (s == "" || s ~ /[^0-9.]/) return 0
+  n = split(s, a, ".")
+  if (n != 3) return 0
+  for (i = 1; i <= 3; i++) if (a[i] !~ /^[0-9]+$/) return 0
+  return 1
+}
+BEGIN {
+  if (!ok(avail)) { print "unknown"; exit }
+  if (!ok(inst)) { print "newer"; exit }
+  split(inst, I, ".")
+  split(avail, A, ".")
+  for (i = 1; i <= 3; i++) {
+    if (A[i] + 0 > I[i] + 0) { print "newer"; exit }
+    if (A[i] + 0 < I[i] + 0) { print "older"; exit }
+  }
+  print "same"
+}'
+}
+# semver-order:end
 
 REPO_URL=https://github.com/bwilliam79/grok-station
 BRANCH=main
@@ -45,8 +68,28 @@ main() {
     owner=$(stat -c %U "$DIR")
     g() { if [ "$owner" != root ]; then sudo -u "$owner" git -C "$DIR" "$@"; else git -C "$DIR" "$@"; fi; }
     echo "  ... Downloading grok-station (update in $DIR)"
-    { g fetch --quiet origin && { [ "$(g rev-parse --abbrev-ref HEAD)" = "$BRANCH" ] || g checkout --quiet "$BRANCH"; } \
-      && g pull --quiet --ff-only origin "$BRANCH"; } < /dev/null >> "$LOG" 2>&1 \
+    { g fetch --quiet origin && { [ "$(g rev-parse --abbrev-ref HEAD)" = "$BRANCH" ] || g checkout --quiet "$BRANCH"; }; } \
+      < /dev/null >> "$LOG" 2>&1 \
+      || { tail -n 20 "$LOG" >&2; die "Couldn't update $DIR (local changes? log: $LOG)"; }
+    # After fetch, before pull: never install an equal or older VERSION. Equal is already up to date.
+    # A missing installed version (or a short commit id) is older than a semver on main.
+    INSTALLED=
+    if [ -f /opt/grok-station/VERSION ]; then
+      INSTALLED=$(tr -d '[:space:]' < /opt/grok-station/VERSION)
+    fi
+    REMOTE=$(g show "origin/$BRANCH:VERSION" 2>/dev/null || true)
+    REMOTE=$(printf '%s' "$REMOTE" | tr -d '[:space:]')
+    order=$(semver_order "$INSTALLED" "$REMOTE")
+    if [ "$order" = "same" ]; then
+      ok "Already up to date."
+      exit 0
+    fi
+    if [ "$order" != "newer" ]; then
+      msg="Refusing to install ${REMOTE:-nothing} over ${INSTALLED:-nothing}. The main branch is older than this station."
+      printf '%s\n' "$msg" >> "$LOG" 2>/dev/null || true
+      die "$msg"
+    fi
+    { g pull --quiet --ff-only origin "$BRANCH"; } < /dev/null >> "$LOG" 2>&1 \
       || { tail -n 20 "$LOG" >&2; die "Couldn't update $DIR (local changes? log: $LOG)"; }
   else
     echo "  ... Downloading grok-station (into $DIR)"

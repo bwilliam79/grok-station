@@ -268,42 +268,70 @@ async function refreshUpdateBadge() {
   nodes.forEach(b => { b.hidden = !n; b.textContent = n ? "1" : ""; });
 }
 const JOB_TEXT = {running: "Updating… The admin page restarts during the update and comes back by itself.",
-  succeeded: "The last update finished.", failed: "The last update failed. The log is below."};
+  succeeded: "The last update finished.", failed: "The update failed."};
 async function paintUpdates(el) {
   const r = await api("GET", "/api/updates");
   if (!document.body.contains(el)) return;
-  const d = r.ok && r.data ? r.data : {};
-  const job = d.job || {}, running = job.state === "running";
+  if (r.ok && r.data) el._snap = r.data;
+  const offline = !!(el._applying && r.status === 0);
+  const d = r.ok && r.data ? r.data : (offline && el._snap ? el._snap : {});
+  const job = d.job || {};
+  if (el._applying && r.ok && (job.state === "succeeded" || job.state === "failed")) el._applying = false;
+  if (el._applying && r.ok && job.state !== "running") el._applyWait = (el._applyWait || 0) + 1;
+  else if (!offline) el._applyWait = 0;
+  if (el._applying && el._applyWait > 15) { el._applying = false; el._applyStuck = true; }
+  const spinning = !!(el._applying || job.state === "running");
+  const stuck = !!el._applyStuck;
+  el._applyStuck = false;
   const auto = !!d.autocheck;
+  const sha = d.available_sha ? `<span class="sha">${esc(d.available_sha)}</span>` : "";
+  const failLine = job.state === "failed" ? (job.error || JOB_TEXT.failed) : "";
+  const noteLine = offline ? "Reconnecting…" : (job.state === "succeeded" ? JOB_TEXT.succeeded : (spinning ? JOB_TEXT.running : ""));
   el.innerHTML = `${d.reboot_required ? `<div class="banner warn" style="flex-wrap:wrap">The last update changed boot options. Reboot the station (System, Reboot) to finish.</div>` : ""}
     ${d.cant_check ? `<div class="banner warn" style="flex-wrap:wrap">Couldn't reach GitHub to check for updates. Check the station's internet connection.</div>` : ""}
-    ${!r.ok ? `<div class="banner bad" style="flex-wrap:wrap">${esc((r.data && r.data.error) || "Can't load updates.")}</div>` : ""}
+    ${!r.ok && !offline ? `<div class="banner bad" style="flex-wrap:wrap">${esc((r.data && r.data.error) || "Can't load updates.")}</div>` : ""}
     <div class="card"><h2>Station</h2>
+      ${d.update_available ? `<div class="banner up">Update available: ${esc(d.installed || "—")} → <span class="ver-new">${esc(d.available)}</span></div>` : ""}
+      ${d.update_blocked ? `<div class="banner bad">${esc(d.update_blocked)}</div>` : ""}
+      ${d.available && !d.update_available && !d.update_blocked && !d.cant_check ? `<div class="uptodate">Up to date</div>` : ""}
       <div class="row"><span>Installed</span><span class="right mono">${esc(d.installed || "—")}</span></div>
-      <div class="row"><span>Available</span><span class="right mono">${esc(d.available || "—")}${d.available && !d.update_available ? " (up to date)" : ""}</span></div>
+      <div class="row"><span>Available</span><span class="right">${d.update_available ? `<span class="ver-new">${esc(d.available)}</span>` : `<span class="mono">${esc(d.available || "—")}</span>`}${sha}</span></div>
       ${d.checked_at ? `<p class="note">Checked ${esc(localTime(d.checked_at))}. Updates come from the main branch on GitHub.</p>` : ""}
-      ${JOB_TEXT[job.state] ? `<p class="note">${esc(JOB_TEXT[job.state])}</p>` : ""}
-      <div class="field inline"><button type="button" class="btn p" id="upd"${d.update_available && !running ? "" : " disabled"}>Update</button>
-        <button type="button" class="btn" id="checknow"${running ? " disabled" : ""}>Check now</button></div>
+      ${noteLine ? `<p class="note">${esc(noteLine)}</p>` : ""}
+      ${failLine ? `<p class="err" role="alert">${esc(failLine)}</p>` : ""}
+      ${stuck ? `<p class="err" role="alert">The update didn't start.</p>` : ""}
+      <div class="field inline">${spinning
+        ? `<span class="spin" role="status" aria-label="Updating"></span>`
+        : `<button type="button" class="btn p" id="upd"${d.update_available ? "" : " disabled"}>Update</button>`}
+        <button type="button" class="btn" id="checknow"${spinning ? " disabled" : ""}>Check now</button></div>
       <div id="ue"></div>
-      ${(running || job.state === "failed") && (job.log || []).length ? `<pre class="mono help" style="white-space:pre-wrap;margin-top:12px">${esc(job.log.join("\n"))}</pre>` : ""}
       <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
         <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div></div>
     <div class="card"><h2>History</h2>${historyHTML(d.history)}</div>`;
-  if (running) setTimeout(() => { if (document.body.contains(el)) paintUpdates(el); }, 4000);
+  el._paintGen = (el._paintGen || 0) + 1;
+  const gen = el._paintGen;
+  if (spinning) setTimeout(() => { if (document.body.contains(el) && el._paintGen === gen) paintUpdates(el); }, 2000);
   // Check and apply do not ask for the password again. The signed-in session is enough.
+  // The installer log stays on the station. This page shows a spinner, then one line on failure.
   const run = async (btn, label, busy, path, okMsg) => {
     if (btn && btn.isConnected) busyBtn(btn, true, busy);
     const res = await api("POST", path, {});
     if (!document.body.contains(el)) return res;
-    if (!res.ok) errBox($("#ue", el), (res.data && res.data.error) || "That didn't work.");
-    else if (okMsg) toast(okMsg);
+    if (path === "/api/updates/apply" && res.status !== 0 && !res.ok) el._applying = false;
     await paintUpdates(el);
+    if (!document.body.contains(el)) return res;
+    if (!res.ok && res.status !== 0) errBox($("#ue", el), (res.data && res.data.error) || "That didn't work.");
+    else if (okMsg) toast(okMsg);
     refreshUpdateBadge();
     return res;
   };
   const up = $("#upd", el);
-  if (up) up.onclick = () => run(up, "Update", "Starting…", "/api/updates/apply", "Update started.");
+  if (up) up.onclick = async () => {
+    el._applying = true;
+    await paintUpdates(el);
+    if (!document.body.contains(el)) return;
+    return run(null, "Update", "Starting…", "/api/updates/apply", "");
+  };
   const check = $("#checknow", el);
   if (check) check.onclick = () => run(check, "Check now", "Checking…", "/api/updates/check", "");
   $("#auto", el).onclick = () => {
@@ -812,7 +840,7 @@ function mss(s) {
 function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
 const BOT_ID_RE = /^[a-z][a-z0-9-]{1,23}$/;
 const BOT_ID_ERROR = "Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. The voice service doesn't allow a longer id.";
-const BOT_ID_HELP = "Short lowercase ID for this bot, like nix. Used for wake-word routing, portraits and replies. Can't be changed later.";
+const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.";
 function botIdFromName(name) {
   let s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-");
   if (s.length > 24) s = s.slice(0, 24).replace(/-+$/g, "");
@@ -1032,12 +1060,53 @@ function bindAvatars(root) {
   if (!root || !root.querySelectorAll) return;
   root.querySelectorAll("img.av").forEach(img => { img.onerror = () => avatarOnError(img); });
 }
-function voiceOptions(voices, current, id) {
+function voiceOptions(voices, current, id, blankLabel, attrs) {
   const list = Array.isArray(voices) ? voices.slice() : [];
-  if (current && list.indexOf(current) < 0) list.unshift(current);
-  const opts = list.map(v => `<option value="${esc(v)}"${v === current ? " selected" : ""}>${esc(v)}</option>`).join("");
-  const required = id === "avoice" ? " required" : "";
-  return `<select class="sel" id="${id}"${required}>${opts || `<option value="">No voices yet</option>`}</select>`;
+  const cur = typeof current === "string" ? current : "";
+  if (cur && list.indexOf(cur) < 0) list.unshift(cur);
+  const blank = blankLabel || "Station default";
+  let opts = `<option value=""${cur ? "" : " selected"}>${esc(blank)}</option>`;
+  opts += list.map(v => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+  return `<select class="sel" id="${id}"${attrs || ""}>${opts}</select>`;
+}
+function voiceChoice(bot, el) {
+  const v = (bot && bot.voice) || "";
+  const d = (el && el._defaultVoice) || "";
+  if (!v || (d && v.toLowerCase() === d.toLowerCase())) return "";
+  return v;
+}
+function stationVoiceLabel(el) {
+  const v = el && el._defaultVoice;
+  return v ? "Station default (" + v + ")" : "Station default";
+}
+function keyFingerprint(text) {
+  if (!pubKeyOk(text)) return "";
+  const raw = atob(String(text).replace(/\s+/g, ""));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return sha256Hex(bytes).slice(0, 16).replace(/(.{4})/g, "$1 ").trim();
+}
+function dialogX() {
+  return `<button class="x" type="button" id="dx" aria-label="Close">×</button>`;
+}
+function bindSheet(d, close) {
+  const x = $("#dx", d);
+  if (x) x.onclick = ev => { ev.preventDefault(); close(); };
+  if (!d._esc) {
+    d._esc = ev => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      close();
+    };
+    d.addEventListener("keydown", d._esc);
+  }
+  const card = d.querySelector("[role=dialog]");
+  if (card && !card.hasAttribute("tabindex")) card.tabIndex = -1;
+  const field = d.querySelector("input:not([readonly]), select, textarea");
+  const btn = d.querySelector("button.btn.p, button.btn.d");
+  const target = field || btn || card;
+  if (target && target.focus) target.focus();
 }
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
@@ -1069,6 +1138,51 @@ function askPassword(title, text, label, send, onCancel) {
   };
   $("#pwv", d).focus();
 }
+function confirmRemove(bot, onDone) {
+  const d = document.createElement("div");
+  d.className = "sheet";
+  const open = stepupOpen();
+  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" aria-label="Remove bot" style="width:min(400px,100%)">
+    ${dialogX()}
+    <h2>Remove ${esc(bot.name)}?</h2>
+    <p class="sub">This removes the bot from the station. A registry teammate is hidden. An added bot is deleted.</p>
+    ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="rmpw">Admin password</label><input class="inp" type="password" id="rmpw" autocomplete="current-password" required></div>`}
+    <div id="rme"></div>
+    <div class="field"><button class="btn d" id="rmgo" type="submit">Remove bot</button></div></form>`;
+  document.body.appendChild(d);
+  const close = () => d.remove();
+  bindSheet(d, close);
+  d.querySelector("form").onsubmit = async ev => {
+    ev.preventDefault();
+    const pwEl = $("#rmpw", d);
+    let pw = pwEl ? pwEl.value : "";
+    if (pwEl) pwEl.value = "";
+    const body = {};
+    if (pw) body.password = pw;
+    pw = "";
+    const btn = $("#rmgo", d);
+    if (btn) busyBtn(btn, true);
+    const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
+    body.password = "";
+    if (!r.ok) {
+      if (btn && btn.isConnected) busyBtn(btn, false, "Remove bot");
+      if (r.status === 403 && !$("#rmpw", d) && $("#rme", d)) {
+        const holder = document.createElement("div");
+        holder.className = "field";
+        holder.innerHTML = `<label for="rmpw">Admin password</label><input class="inp" type="password" id="rmpw" autocomplete="current-password" required>`;
+        $("#rme", d).before(holder);
+        const again = $("#rmpw", d);
+        if (again) again.focus();
+      }
+      errBox($("#rme", d), (r.data && r.data.error) || "Couldn't remove that bot.");
+      return;
+    }
+    refreshStepup();
+    close();
+    toast("Removed.");
+    if (onDone) onDone();
+  };
+}
 function paintBots(el, bots) {
   const n = s => bots.filter(b => (b.status || {}).state === s).length;
   const count = $("#bcount", el);
@@ -1081,11 +1195,17 @@ function paintBots(el, bots) {
     return `<div class="botrow">${avatar(b.slug, b.name)}
     <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
     <div class="help">${esc(rttLine(b.stats))}</div></div>
+    ${voiceOptions(el._voices, voiceChoice(b, el), "vv-" + b.slug, "", ` data-vsel="${esc(b.slug)}" aria-label="Voice"`)}
     <button class="btn sm" type="button" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
     ${(b.webhook && b.webhook.configured) ? "" : `<button class="btn sm" type="button" data-hook="${esc(b.slug)}">Connect webhook</button>`}
     <button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div>`;
   }).join("") || `<p class="help">No bots yet.</p>`;
   bindAvatars(list);
+  list.querySelectorAll("[data-vsel]").forEach(sel => {
+    sel.dataset.prev = sel.value;
+    sel.onfocus = () => { sel.dataset.prev = sel.value; };
+    sel.onchange = () => saveRowVoice(sel, bots.find(b => b.slug === sel.dataset.vsel), el);
+  });
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
   list.querySelectorAll("[data-hook]").forEach(btn => btn.onclick = () => connectWebhookWizard(bots.find(b => b.slug === btn.dataset.hook), el));
   list.querySelectorAll("[data-voice]").forEach(btn => btn.onclick = () => {
@@ -1095,13 +1215,55 @@ function paintBots(el, bots) {
     else enrollDrawer(null, [], () => refreshBots(el), bot.slug);
   });
 }
+function saveRowVoice(sel, bot, el) {
+  if (!bot || !sel) return;
+  const voice = sel.value;
+  const prev = sel.dataset.prev || "";
+  const send = async pw => {
+    const body = {voice};
+    if (pw) body.password = pw;
+    const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
+    if (r && r.ok) {
+      bot.voice = voice || (el && el._defaultVoice) || "";
+      sel.dataset.prev = voice;
+      toast("Voice saved.");
+      if (el) el._holdPaint = false;
+      refreshBots(el);
+    }
+    return r;
+  };
+  const revert = () => {
+    if (el) el._holdPaint = false;
+    sel.value = prev;
+  };
+  if (el) el._holdPaint = true;
+  if (stepupOpen()) send("").then(r => {
+    if (r && r.status === 403) askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", async pw => {
+      const res = await send(pw);
+      if (!(res && res.ok)) revert();
+      return res;
+    }, revert);
+    else if (!(r && r.ok)) {
+      revert();
+      toast((r && r.data && r.data.error) || "Couldn't save the voice.", "bad");
+    }
+  });
+  else askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", async pw => {
+    const res = await send(pw);
+    if (!(res && res.ok)) revert();
+    return res;
+  }, revert);
+}
 async function refreshBots(el) {
   const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
   if (!r.ok || !$("#blist", el)) return null;
   noteStepup(r.data);
   el._voices = (r.data && r.data.voices) || [];
+  el._defaultVoice = (r.data && r.data.default_voice) || "";
   el._voice = (s.data && s.data.buttons) || {};
   applyBotMeta(el, r.data);
+  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.vsel;
+  if (el._holdPaint || focused) return r.data;
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, r.data.bots || []);
@@ -1181,13 +1343,12 @@ function openBot(bot, el) {
   $("#dx", d).onclick = async () => { await cancelTest(); d.remove(); };
   $("#vsave", d).onclick = () => {
     const voice = ($("#bvoice", d) && $("#bvoice", d).value) || "";
-    if (!voice) return toast("Pick a voice.", "bad");
     const send = async pw => {
       const body = {voice};
       if (pw) body.password = pw;
       const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
       if (r.ok) {
-        bot.voice = voice;
+        bot.voice = voice || (el && el._defaultVoice) || "";
         toast("Voice saved.");
         refreshBots(el);
       }
@@ -1372,10 +1533,10 @@ function openBot(bot, el) {
       refreshBots(el);
     };
   };
-  $("#delbot", d).onclick = () => askPassword(`Remove ${bot.name}?`, "This removes the bot from the station. A registry teammate is hidden. An added bot is deleted.", "Remove bot", async pw => {
-    const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}`, {password: pw});
-    if (r.ok) { toast("Removed."); d.remove(); refreshBots(el); }
-    return r;
+  $("#delbot", d).onclick = () => confirmRemove(bot, async () => {
+    await cancelTest();
+    d.remove();
+    refreshBots(el);
   });
 }
 const ADD_STEP_LABEL = "1 Bot · 2 Pair keys · 3 Webhook · 4 Done";
@@ -1394,6 +1555,17 @@ function httpsWebhook(url) {
     const u = new URL(v);
     return u.protocol === "https:" && !u.username && !u.password && !!u.hostname;
   } catch (e) { return false; }
+}
+function webhookProblem(url, key) {
+  const v = String(url || "").trim();
+  let u;
+  try { u = new URL(v); } catch (e) { u = null; }
+  const port = u ? u.port : "";
+  const pathAt = v.indexOf("/", v.indexOf("://") + 3);
+  if (!u || !httpsWebhook(v) || v.length > 512 || /\s/.test(v) || pathAt < 0 || u.hostname !== "api2.cursor.sh" || (port && port !== "443") || u.hash)
+    return "That webhook address isn't allowed.";
+  if (!/^[\x21-\x7e]{8,400}$/.test(String(key || ""))) return "Paste the webhook key.";
+  return "";
 }
 function shownLast4(v) {
   return typeof v === "string" && /^[\x21-\x7e]{1,4}$/.test(v) ? v : "";
@@ -1594,11 +1766,24 @@ function addBot(voices, el) {
   closeFloats();
   const d = document.createElement("div");
   d.className = "sheet";
-  d._cancel = () => {};
+  const draft = {name: "", slug: "", voice: "", pub: "", url: "", key: ""};
+  let created = false;
+  const wipe = () => { draft.pub = ""; draft.key = ""; draft.url = ""; };
+  d._cancel = wipe;
+  const shut = () => { wipe(); d.remove(); if (created) refreshBots(el); };
   document.body.appendChild(d);
-  const step4 = (bot, connected, last4) => {
-    d._cancel = () => {};
-    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Done">${addStepper(4)}
+  const showPw = () => {
+    if ($("#apw", d) || !$("#ape", d)) return;
+    const holder = document.createElement("div");
+    holder.className = "field";
+    holder.innerHTML = `<label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required>`;
+    $("#ape", d).before(holder);
+    const again = $("#apw", d);
+    if (again) again.focus();
+  };
+  const stepDone = (connected, last4) => {
+    refreshBots(el);
+    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Done">${dialogX()}${addStepper(4)}
       <h2>Done</h2><p id="donesum"></p><p class="note" id="donenote"></p>
       <div class="field"><button class="btn p" id="adddone" type="button">Close</button></div></div>`;
     const sum = $("#donesum", d);
@@ -1610,40 +1795,154 @@ function addBot(voices, el) {
         mask.textContent = " •••• " + last4;
         sum.appendChild(mask);
       }
-    } else sum.textContent = HOOK_LATER;
-    $("#donenote", d).textContent = (bot.name || "This bot") + " is on the station.";
-    $("#adddone", d).onclick = () => { d.remove(); refreshBots(el); };
+    } else if (sum) sum.textContent = HOOK_LATER;
+    const note = $("#donenote", d);
+    if (note) note.textContent = (draft.name || "This bot") + " is on the station.";
+    bindSheet(d, shut);
+    const done = $("#adddone", d);
+    if (done) done.onclick = shut;
   };
-  const step3 = (bot) => {
-    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Connect webhook">${addStepper(3)}<div id="hookmount"></div></div>`;
-    const ctl = mountWebhookStep($("#hookmount", d), bot, el, (connected, last4) => step4(bot, connected, last4));
-    d._cancel = () => ctl.cancel();
+  const step4 = () => {
+    const fp = draft.pub ? keyFingerprint(draft.pub) : "";
+    const hook = !!(draft.url && draft.key);
+    const open = stepupOpen();
+    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${dialogX()}${addStepper(4)}
+      <h2>Add bot</h2><p class="sub">Check this, then add the bot.</p>
+      <div class="row"><span>Name</span><span class="right">${esc(draft.name)}</span></div>
+      <div class="row"><span>ID</span><span class="right mono">${esc(draft.slug)}</span></div>
+      <div class="row"><span>Voice</span><span class="right">${esc(draft.voice ? draft.voice : stationVoiceLabel(el))}</span></div>
+      <div class="row"><span>Key</span><span class="right mono">${fp ? esc(fp) : "no"}</span></div>
+      <div class="row"><span>Webhook</span><span class="right">${hook ? "yes" : "no"}</span></div>
+      ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
+      <div id="ape"></div>
+      <div class="field"><button class="btn p" id="ago" type="submit">Add bot</button></div></form>`;
+    bindSheet(d, shut);
+    d.querySelector("form").onsubmit = async ev => {
+      ev.preventDefault();
+      const pwEl = $("#apw", d);
+      let pw = pwEl ? pwEl.value : "";
+      if (pwEl) pwEl.value = "";
+      const btn = $("#ago", d);
+      if (btn) busyBtn(btn, true);
+      const fail = (r, msg) => {
+        pw = "";
+        if (!document.body.contains(d)) { if (created) refreshBots(el); return; }
+        if (btn && btn.isConnected) busyBtn(btn, false, "Add bot");
+        if (r && r.status === 403) showPw();
+        const box = $("#ape", d);
+        if (box) errBox(box, (r && r.data && r.data.error) || msg);
+      };
+      try {
+        if (!created) {
+          const body = {name: draft.name, slug: draft.slug};
+          if (draft.voice) body.voice = draft.voice;
+          if (pw) body.password = pw;
+          const r = await api("POST", "/api/bots", body);
+          body.password = "";
+          if (r && r.data) r.data.voice_token = "";
+          if (!r.ok) return fail(r, "Couldn't add that bot.");
+          created = true;
+        }
+        if (draft.pub) {
+          const body = {public_key: draft.pub};
+          if (pw) body.password = pw;
+          const r = await api("PUT", `/api/bots/${encodeURIComponent(draft.slug)}/key`, body);
+          body.public_key = "";
+          body.password = "";
+          if (!r.ok) return fail(r, "The bot was added, but the key wasn't pinned.");
+          draft.pub = "";
+        }
+        let connected = false, last4 = "";
+        if (draft.url && draft.key) {
+          const body = {url: draft.url, key: draft.key};
+          if (pw) body.password = pw;
+          const r = await api("PUT", `/api/bots/${encodeURIComponent(draft.slug)}/webhook`, body);
+          last4 = r && r.ok ? shownLast4(r.data && r.data.last4) : "";
+          body.key = "";
+          body.password = "";
+          if (!r.ok) return fail(r, "The bot was added, but the webhook wasn't saved.");
+          draft.key = "";
+          draft.url = "";
+          connected = true;
+        }
+        pw = "";
+        refreshStepup();
+        if (!document.body.contains(d)) { refreshBots(el); return; }
+        stepDone(connected, last4);
+      } finally { pw = ""; }
+    };
   };
-  const step2 = (bot) => {
-    d._cancel = () => {};
-    d.innerHTML = `<div class="card wizcard" role="dialog" aria-label="Pair keys">${addStepper(2)}
+  const step3 = () => {
+    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Connect webhook">${dialogX()}${addStepper(3)}
+      <h2>Connect webhook</h2>
+      <p class="sub">Optional. Copy the webhook URL and its key from this bot's routine panel.</p>
+      <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512"></div>
+      <div class="field"><label for="akey">Key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400"></div>
+      <div id="awe"></div>
+      <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div>
+      <div class="field"><a href="#" class="skipnow" id="askip">Skip for now</a></div></form>`;
+    const urlEl = $("#aurl", d), keyEl = $("#akey", d);
+    if (urlEl) urlEl.value = draft.url;
+    bindSheet(d, shut);
+    const skip = $("#askip", d);
+    if (skip) skip.onclick = ev => { ev.preventDefault(); draft.url = ""; draft.key = ""; step4(); };
+    d.querySelector("form").onsubmit = ev => {
+      ev.preventDefault();
+      const url = urlEl ? urlEl.value.trim() : "";
+      const key = keyEl ? keyEl.value : "";
+      if (!url && !String(key).trim()) { draft.url = ""; draft.key = ""; if (keyEl) keyEl.value = ""; step4(); return; }
+      const problem = webhookProblem(url, String(key).trim());
+      if (problem) { errBox($("#awe", d), problem); return; }
+      draft.url = url;
+      draft.key = String(key).trim();
+      if (keyEl) keyEl.value = "";
+      step4();
+    };
+  };
+  const step2 = () => {
+    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Pair keys">${dialogX()}${addStepper(2)}
       <h2>Pair keys</h2>
       <p class="sub">On the bot's machine, run grok-station-reply keygen. Paste the public line here.</p>
-      ${pairFields(el._stationPub, bot.paired)}
-      <div class="field"><button class="btn p" id="pairnext" type="button">Continue</button></div>
-      <div class="field"><a href="#" class="skipnow" id="pairskip">Skip for now</a></div></div>`;
-    wirePair(d, bot, el);
-    $("#pairnext", d).onclick = () => step3(bot);
-    $("#pairskip", d).onclick = ev => { ev.preventDefault(); step3(bot); };
+      <div class="field"><label for="astapub">Station public key</label>
+        <div class="inline"><input class="inp mono" id="astapub" readonly value="${esc(el._stationPub || "")}">
+        <button class="btn sm" id="astacopy" type="button">Copy</button></div>
+        <p class="note">The bot seals replies to this key. Never port-forward the admin port.</p></div>
+      <div class="field"><label for="apub">Bot public key</label>
+        <input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120">
+        <p class="note">From grok-station-reply keygen. The private key stays on the bot.</p></div>
+      <div id="ape2"></div>
+      <div class="field"><button class="btn p" id="apairnext" type="submit">Next</button></div>
+      <div class="field"><a href="#" class="skipnow" id="apairskip">Skip for now</a></div></form>`;
+    bindSheet(d, shut);
+    const copy = $("#astacopy", d);
+    if (copy) copy.onclick = () => { const box = $("#astapub", d); copyText(box ? box.value : ""); };
+    const skip = $("#apairskip", d);
+    if (skip) skip.onclick = ev => { ev.preventDefault(); draft.pub = ""; step3(); };
+    d.querySelector("form").onsubmit = ev => {
+      ev.preventDefault();
+      const inp = $("#apub", d);
+      const pub = inp ? inp.value.trim() : "";
+      if (!pub) { draft.pub = ""; step3(); return; }
+      if (!pubKeyOk(pub)) {
+        errBox($("#ape2", d), "Paste the bot's public key: base64 of 32 bytes.");
+        if (inp) inp.focus();
+        return;
+      }
+      draft.pub = pub;
+      if (inp) inp.value = "";
+      step3();
+    };
   };
   const step1 = () => {
-    d._cancel = () => {};
-    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${addStepper(1)}
+    d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${dialogX()}${addStepper(1)}
       <h2>Add bot</h2><p class="sub">A new teammate. Next you'll pair its key, then connect its webhook.</p>
       <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
       <div class="field"><label for="aslug">Bot ID <span class="tipwrap info" tabindex="0" role="note" aria-label="${esc(BOT_ID_HELP)}">i<span class="tip">${esc(BOT_ID_HELP)}</span></span></label>
         <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
         <p class="note">${esc(BOT_ID_HELP)}</p>
         <p class="err" id="asluge" hidden></p></div>
-      <div class="field"><label for="avoice">Voice</label>${voiceOptions(voices, "", "avoice")}</div>
-      ${stepupOpen() ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
-      <div id="ape"></div>
-      <div class="field inline"><button class="btn p" id="ago" type="submit">Add bot</button><button class="btn g" type="button" id="ano">Cancel</button></div></form>`;
+      <div class="field"><label for="avoice">Voice</label>${voiceOptions(voices, "", "avoice", stationVoiceLabel(el))}</div>
+      <div class="field"><button class="btn p" type="submit">Next</button></div></form>`;
     let slugEdited = false;
     const showId = () => {
       const slug = $("#aslug", d).value.trim();
@@ -1654,38 +1953,17 @@ function addBot(voices, el) {
     };
     $("#aname", d).oninput = () => { if (!slugEdited) $("#aslug", d).value = botIdFromName($("#aname", d).value); showId(); };
     $("#aslug", d).oninput = () => { slugEdited = true; showId(); };
-    $("#ano", d).onclick = () => d.remove();
-    d.querySelector("form").onsubmit = async ev => {
+    bindSheet(d, shut);
+    d.querySelector("form").onsubmit = ev => {
       ev.preventDefault();
       const name = $("#aname", d).value.trim();
       const slug = $("#aslug", d).value.trim();
       const problem = showId();
-      if (problem) return;
-      const voice = $("#avoice", d).value;
-      const pwEl = $("#apw", d);
-      let pw = pwEl ? pwEl.value : "";
-      if (pwEl) pwEl.value = "";
-      busyBtn($("#ago", d), true);
-      const body = {name, slug, voice};
-      if (pw) body.password = pw;
-      pw = "";
-      const r = await api("POST", "/api/bots", body);
-      body.password = "";
-      if (!r.ok) {
-        if ($("#ago", d)) busyBtn($("#ago", d), false, "Add bot");
-        if (r.status === 403 && !$("#apw", d)) {
-          const holder = document.createElement("div");
-          holder.className = "field";
-          holder.innerHTML = `<label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required>`;
-          $("#ape", d).before(holder);
-        }
-        return errBox($("#ape", d), (r.data && r.data.error) || "Couldn't add that bot.");
-      }
-      await refreshBots(el);
-      const bot = {slug, name, voice, webhook: {configured: false, last4: null}, paired: false};
-      if (r.data) r.data.voice_token = "";
-      if (!document.body.contains(d)) return;
-      step2(bot);
+      if (!name || problem) return;
+      draft.name = name;
+      draft.slug = slug;
+      draft.voice = ($("#avoice", d) && $("#avoice", d).value) || "";
+      step2();
     };
   };
   step1();
@@ -1699,6 +1977,7 @@ async function pageBots(el) {
   if (slot) slot.innerHTML = `<button class="btn sm" id="avatars" type="button">Refresh avatars</button>`;
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
+  el._defaultVoice = data.default_voice || "";
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
@@ -1769,7 +2048,13 @@ async function pageSystem(el) {
       <div class="log" id="log" style="margin-top:12px">Pick a part and press Show.</div></div>
     <div class="card"><h2>Restart</h2><div class="inline" style="margin-top:8px"><button class="btn" id="rv">Restart voice only</button><button class="btn dg" id="rb">Reboot station…</button><button class="btn g" id="again">Run setup again</button></div><div id="se"></div></div>
     <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
-      ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>`;
+      ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
+    <div class="card"><h2>Password grace period</h2>
+      <p class="sub">After you enter the admin password, later changes on this sign-in skip it for this many minutes. 0 always asks. Signing out ends it.</p>
+      <div class="field"><label for="grace">Minutes</label><input class="inp" id="grace" type="number" inputmode="numeric" min="0" max="120" step="1" value="10"></div>
+      <p class="note">Changing this always asks for the password.</p>
+      <div id="ge"></div>
+      <div class="field"><button class="btn p" id="gsave" type="button">Save</button></div></div>`;
   wirePw("np1", "np2", $("#pgo", el));
   $("#pw", el).onsubmit = async ev => {
     ev.preventDefault();
@@ -1778,6 +2063,28 @@ async function pageSystem(el) {
     r.ok ? toast("Password changed. Other devices are signed out.") : errBox($("#pe", el), r.data.error);
   };
   const s = (await api("GET", "/api/system")).data || {};
+  const g = s.password_grace_min;
+  const gEl = $("#grace", el);
+  if (gEl && typeof g === "number" && g >= 0 && g <= 120) gEl.value = String(g);
+  const gsave = $("#gsave", el);
+  if (gsave) gsave.onclick = () => {
+    const raw = (gEl && gEl.value || "").trim();
+    const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(n) || n < 0 || n > 120) {
+      errBox($("#ge", el), "Pick a grace period from 0 to 120 minutes.");
+      return;
+    }
+    errBox($("#ge", el), "");
+    askPassword("Password grace period", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", async pw => {
+      const r = await api("PUT", "/api/system/password-grace", {password_grace_min: n, password: pw});
+      if (r && r.ok) {
+        noteStepup(r.data);
+        if (gEl) gEl.value = String(n);
+        toast(n === 0 ? "The station will always ask for the password." : "Grace period saved.");
+      }
+      return r;
+    });
+  };
   const hh = s.health || {};
   const t = s.tls || {};
   $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station made its own certificate for ${esc(t.url || "this page")}. If your browser warns about it, check that the browser's SHA-256 fingerprint matches this one exactly (it's also shown on the station screen for 10 minutes after a new certificate is made), then trust it.</p>

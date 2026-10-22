@@ -237,8 +237,52 @@ def update_start():
     out({"ok": True})
 
 
+def _one_line(text):
+    """A single short failure line. Never a log dump, and never a line that looks like a secret."""
+    s = " ".join(str(text or "").split())[:160]
+    low = s.lower()
+    if not s or "bearer " in low or "-----begin" in low or "password=" in low or "://" in s:
+        return "The update failed."
+    return s
+
+
+def update_remote():
+    """Fetch origin/main in the clone install.sh recorded, and report its VERSION plus full commit id.
+
+    Stdin is ignored. No credentials are read. A missing VERSION is an empty string, not an error:
+    the admin treats that as not an upgrade.
+    """
+    try:
+        src = open("/etc/grok-station/source-dir", encoding="utf-8").read().strip()
+    except OSError:
+        fail("no source")
+    if not src or "\n" in src or "\x00" in src or not os.path.isdir(os.path.join(src, ".git")):
+        fail("no source")
+
+    def g(*args, timeout=30):
+        return run("git", "-c", "safe.directory=" + src, "-C", src, *args, timeout=timeout)
+
+    try:
+        rc, _ = g("fetch", "--quiet", "origin", "main", timeout=25)
+        if rc:
+            fail("fetch")
+        rc, blob = g("show", "origin/main:VERSION", timeout=15)
+        rc2, sha = g("rev-parse", "origin/main", timeout=15)
+    except subprocess.TimeoutExpired:
+        fail("fetch")
+    version = ""
+    if rc == 0:
+        line = blob.strip().splitlines()[0].strip() if blob.strip() else ""
+        if re.fullmatch(r"\d+\.\d+\.\d+", line):
+            version = line
+    sha = sha.strip().lower()
+    if rc2 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        fail("rev")
+    out({"version": version, "sha": sha})
+
+
 def update_status():
-    """{state: idle|running|succeeded|failed, log: last 20 lines of the install log}. The log holds no secrets."""
+    """{state: idle|running|succeeded|failed, error?: one line}. The install log stays on disk."""
     _, text = run("systemctl", "show", UPDATE_UNIT, "-p", "ActiveState", "-p", "Result", "-p", "ExecMainStartTimestampMonotonic")
     props = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
     act, res = props.get("ActiveState", ""), props.get("Result", "")
@@ -251,13 +295,18 @@ def update_status():
         state = "succeeded"
     else:
         state = "idle"
-    log = []
-    try:
-        with open(INSTALL_LOG, encoding="utf-8", errors="replace") as f:
-            log = [ln.rstrip("\n")[:300] for ln in f.readlines()[-20:]]
-    except OSError:
-        pass
-    out({"state": state, "log": log})
+    body = {"state": state}
+    if state == "failed":
+        err = ""
+        try:
+            with open(INSTALL_LOG, encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+            if lines:
+                err = lines[-1]
+        except OSError:
+            pass
+        body["error"] = _one_line(err)
+    out(body)
 
 
 def nm(*a, timeout=30):
@@ -475,6 +524,8 @@ def main():
         secret_status()
     if cmd == "relay-test":
         relay_test()
+    if cmd == "update-remote" and len(a) == 1:
+        update_remote()
     if cmd == "update-start" and len(a) == 1:
         update_start()
     if cmd == "update-status" and len(a) == 1:

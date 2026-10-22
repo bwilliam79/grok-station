@@ -245,3 +245,32 @@ class IconDraw(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RelayIconPairedTests(__import__("unittest").TestCase):
+    def setUp(self):
+        import importlib, os, sys
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        self.g = importlib.import_module("grok_station")
+
+    def test_paired_no_history_green(self):
+        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "key": True, "bots": {"paired": True, "ok": True}})}
+        self.assertIn("relay-connected", self.g.status_icon_names(st))
+
+    def test_paired_unknown_ok_still_green(self):
+        self.assertEqual(self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": None}})["ok"], True)
+
+    def test_paired_timeout_red(self):
+        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": False}})}
+        self.assertIn("relay-disconnected", self.g.status_icon_names(st))
+
+    def test_zero_paired_hidden(self):
+        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": False, "ok": None}})}
+        names = self.g.status_icon_names(st)
+        self.assertNotIn("relay-connected", names)
+        self.assertNotIn("relay-disconnected", names)
+
+    def test_failed_poll_keeps_paired_state(self):
+        prev = {"ok": True, "detail": "ok"}
+        self.assertEqual(self.g.check_relay(lambda: None, prev)["ok"], True)
