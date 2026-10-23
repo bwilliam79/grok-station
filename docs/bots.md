@@ -260,7 +260,7 @@ Nothing is moved into place until every file checks out and the key setup succee
 2. `python3 tools/check-deploy-pins.py` (each pin matches that commit; HEAD has the same bytes, or the check prints a pending re-pin note).
 3. After the push, `python3 tools/check-deploy-pins.py --remote` (GitHub serves the same bytes).
 
-If a release does change a pinned file, ship it first, then re-pin in the next release. 0.11.0 changes the home-mode scripts and adds `scripts/install-home.sh`, so `deploy-pins.js` still names `7cf268ec448f6fad7c900a8c9ad828fedcfad97d`. A pin that does not match that commit is a failure. A file that differs at HEAD, and `scripts/install-home.sh` not being pinned yet, are pending notes. `scripts/install-home.sh` embeds those same previous hashes and says so: until the next re-pin, a GitHub download from that script is still the previous macOS-only copy. The admin page's generated script has the same limit.
+If a release does change a pinned file, ship it first, then re-pin in the next release. `scripts/install-home.sh` embeds the same commit and hashes as `deploy-pins.js`; update both. In 0.11.0 they name the commit with the macOS and Linux scripts.
 
 ## Home mode: gs-seal-setup and gs-seal-reply
 

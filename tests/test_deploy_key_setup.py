@@ -763,7 +763,7 @@ class DeployKeySetup(unittest.TestCase):
         text = self._install_home_text()
         syntax = subprocess.run(["sh", "-n", os.path.join(ROOT, "scripts", "install-home.sh")], capture_output=True, text=True)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertIn("7cf268ec448f6fad7c900a8c9ad828fedcfad97d", text)
+        self.assertIn("df9221e6a62d9b7af99be12036315ba2ce760aa6", text)
         for rel in ("scripts/gs-seal-setup", "scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/vendor-lock.txt"):
             self.assertIn(self.pins["files"][rel], text)
         self.assertNotIn("ln -s", text)
