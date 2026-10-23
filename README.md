@@ -117,3 +117,4 @@ sudo systemctl restart grok-station-relay              # restart one service
 - **The admin page doesn't load:** check `grok-station-admin`, and try `https://<IP>` if `.local` names don't resolve on your network.
 - **"No framebuffer (/dev/fb0)":** reboot so the display driver loads.
 - **The installer says "Needs 64-bit Raspberry Pi OS (aarch64)":** re-image with the 64-bit Lite image.
+- **The screen stays bright at night:** open Display and set Brightness to Schedule, Sunrise, or Light sensor. Off leaves the backlight alone. With no backlight file, the station draws a dark layer instead. See [docs/dimming.md](docs/dimming.md).

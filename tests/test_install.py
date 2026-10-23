@@ -57,7 +57,7 @@ class Install(unittest.TestCase):
         for name in ("admin/pairing.py", "admin/pair_listener.py", "relay/release.py"):
             self.assertFalse(os.path.exists(os.path.join(ROOT, name)), name)
         for m in mods:
-            local = [d for d in ("admin", "relay") if os.path.isfile(os.path.join(ROOT, d, m + ".py"))]
+            local = [d for d in ("admin", "relay", "app") if os.path.isfile(os.path.join(ROOT, d, m + ".py"))]
             if local:
                 self.assertIn(f"{local[0]}/{m}.py", files, m)
 

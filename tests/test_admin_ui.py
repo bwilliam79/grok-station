@@ -156,6 +156,21 @@ class AdminUI(unittest.TestCase):
         self.assertIn("/webhook", hook)
         self.assertIn("/test", hook)
 
+    def test_display_dimming_uses_amber_attention(self):
+        js, css = self.js, self.css
+        self.assertIn("auto-sensor", js)
+        self.assertIn("Needs attention", js)
+        self.assertIn("isn't reporting a reading", js)
+        self.assertIn("dim-overlay", js)
+        self.assertIn("GROK_STATION_DIM_MODE", js)
+        self.assertNotIn("isn't adjustable", js)
+        self.assertIn(".nightprev", css)
+        self.assertIn(".dim-overlay", css)
+        self.assertIn("#9A7752", css)
+        self.assertIn("#5E4934", css)
+        panel = js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
+        self.assertNotIn("errBox", panel)
+
     def test_configure_drawer_can_change_voice(self):
         fn = _fn(self.js, "openBot")
         self.assertIn('<label for="bvoice">Voice</label>', fn)

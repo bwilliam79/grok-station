@@ -1505,6 +1505,125 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertEqual(j["buttons"]["kai"]["label"], "Processing…")
 
 
+class DimDisplay(unittest.TestCase):
+    """Display dimming is validated before the helper runs, and coordinates are not audited."""
+
+    def setUp(self):
+        self.c = signed_in()
+        self.calls = []
+        self._helper = ga.helper
+        self._root = tempfile.mkdtemp()
+        self._sys = os.environ.get("GROK_STATION_SYS_ROOT")
+        os.environ["GROK_STATION_SYS_ROOT"] = self._root
+
+        def fake(*args, stdin=None, timeout=30):
+            self.calls.append((args, stdin))
+            if args[:2] == ("settings-get", "display"):
+                return True, {"values": {
+                    "GROK_STATION_HOLD": "30",
+                    "GROK_STATION_NIGHT": "22-6",
+                    "GROK_STATION_DIM_MODE": "sun",
+                    "GROK_STATION_DIM_LAT": "12.3456",
+                    "GROK_STATION_DIM_LON": "-7.5000",
+                }}
+            return True, {"ok": True}
+
+        ga.helper = fake
+
+    def tearDown(self):
+        ga.helper = self._helper
+        if self._sys is None:
+            os.environ.pop("GROK_STATION_SYS_ROOT", None)
+        else:
+            os.environ["GROK_STATION_SYS_ROOT"] = self._sys
+        shutil.rmtree(self._root, ignore_errors=True)
+
+    def test_get_rounds_coordinates_and_hides_the_word(self):
+        st, raw = self.c.req("GET", "/api/settings/display", raw=True)
+        self.assertEqual(st, 200)
+        body = raw.decode()
+        self.assertNotIn("latitude", body.lower())
+        self.assertNotIn("longitude", body.lower())
+        self.assertNotIn("12.3456", body)
+        self.assertNotIn("-7.5000", body)
+        vals = json.loads(body)["values"]
+        self.assertEqual(vals["GROK_STATION_DIM_LAT"], "12.35")
+        self.assertEqual(vals["GROK_STATION_DIM_LON"], "-7.50")
+        dim = json.loads(body)["dim"]
+        self.assertIn("dim", json.loads(body))
+        self.assertIsNone(dim["lux"])
+        self.assertNotIn("dir", json.dumps(dim))
+
+    def test_put_rejects_a_bad_latitude_before_the_helper(self):
+        before = len(self.calls)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self.c.req("PUT", "/api/settings/display", {
+                "GROK_STATION_DIM_MODE": "sun", "GROK_STATION_DIM_LAT": "91", "GROK_STATION_DIM_LON": "0"})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], "Latitude must be between -90 and 90.")
+        self.assertEqual(len(self.calls), before)
+        self.assertNotIn("dim-", buf.getvalue())
+
+    def test_put_sun_rounds_audits_and_does_not_print_coordinates(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self.c.req("PUT", "/api/settings/display", {
+                "GROK_STATION_DIM_MODE": "sun", "GROK_STATION_DIM_LAT": "41.878",
+                "GROK_STATION_DIM_LON": "-87.634", "GROK_STATION_HOLD": "30"})
+        self.assertEqual(st, 200, j)
+        stdin = self.calls[-1][1]
+        self.assertEqual(stdin["GROK_STATION_DIM_LAT"], "41.88")
+        self.assertEqual(stdin["GROK_STATION_DIM_LON"], "-87.63")
+        self.assertEqual(stdin["GROK_STATION_DIM_MODE"], "sun")
+        text = buf.getvalue()
+        self.assertIn("action=dim-sun", text)
+        self.assertNotIn("41.88", text)
+        self.assertNotIn("41.878", text)
+        self.assertNotIn("-87.63", text)
+        self.assertNotIn("-87.634", text)
+        self.assertNotIn("41.88", json.dumps(j))
+
+    def test_put_legacy_night_does_not_audit_dimming(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self.c.req("PUT", "/api/settings/display", {
+                "GROK_STATION_NIGHT": "22-6", "GROK_STATION_HOLD": "30"})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(self.calls[-1][1], {"GROK_STATION_NIGHT": "22-6", "GROK_STATION_HOLD": "30"})
+        self.assertNotIn("dim-", buf.getvalue())
+
+    def test_put_schedule_needs_both_times_and_one_coordinate_is_not_enough(self):
+        before = len(self.calls)
+        st, j = self.c.req("PUT", "/api/settings/display", {"GROK_STATION_DIM_MODE": "schedule"})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], "Dim from and dim until need a time like 22:00.")
+        st, j = self.c.req("PUT", "/api/settings/display", {
+            "GROK_STATION_DIM_MODE": "off", "GROK_STATION_DIM_FROM": "25:00"})
+        self.assertEqual(st, 400)
+        self.assertIn("22:00", j["error"])
+        st, j = self.c.req("PUT", "/api/settings/display", {
+            "GROK_STATION_DIM_MODE": "sun", "GROK_STATION_DIM_LAT": "12.34", "GROK_STATION_DIM_LON": ""})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], "Enter both latitude and longitude, or leave both blank.")
+        st, j = self.c.req("PUT", "/api/settings/display", {"GROK_STATION_DIM_MODE": "sensor"})
+        self.assertEqual(st, 400)
+        self.assertIn("auto-sensor", j["error"])
+        self.assertEqual(len(self.calls), before)
+
+    def test_put_auto_sensor_allows_blank_coordinates(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self.c.req("PUT", "/api/settings/display", {
+                "GROK_STATION_DIM_MODE": "auto-sensor", "GROK_STATION_DIM_DAY": 90, "GROK_STATION_DIM_NIGHT": "20"})
+        self.assertEqual(st, 200, j)
+        stdin = self.calls[-1][1]
+        self.assertEqual(stdin["GROK_STATION_DIM_LAT"], "")
+        self.assertEqual(stdin["GROK_STATION_DIM_LON"], "")
+        self.assertEqual(stdin["GROK_STATION_DIM_DAY"], "90")
+        self.assertIn("action=dim-auto-sensor", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
 

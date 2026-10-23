@@ -14,10 +14,21 @@ NM_DIR = "/etc/NetworkManager/system-connections"
 REPO = "bwilliam79/grok-station"
 HOTSPOT = "grok-hotspot"
 SETTINGS = {  # section -> {key: (env file, validator)}
+    # Dim levels, times, and coordinates are the strings the admin form already normalized
+    # (2 decimal places, no leading zeros). A bad value fails here before the file is written.
     "display": {"GROK_STATION_HOLD": ("display", r"^([5-9]|[1-9]\d|[1-5]\d\d|600)$"),
                 "GROK_STATION_NIGHT": ("display", r"^((\d|1\d|2[0-3])-(\d|1\d|2[0-3]))?$"),
                 "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$"),
-                "GROK_STATION_FADE": ("display", r"^[01]$")},
+                "GROK_STATION_FADE": ("display", r"^[01]$"),
+                "GROK_STATION_DIM_MODE": ("display", r"^(off|schedule|sun|auto-sensor)$"),
+                "GROK_STATION_DIM_DAY": ("display", r"^(?:100|[1-9]?\d)$"),
+                "GROK_STATION_DIM_NIGHT": ("display", r"^(?:100|[1-9]?\d)$"),
+                "GROK_STATION_DIM_FROM": ("display", r"^(([01]\d|2[0-3]):[0-5]\d)?$"),
+                "GROK_STATION_DIM_TO": ("display", r"^(([01]\d|2[0-3]):[0-5]\d)?$"),
+                "GROK_STATION_DIM_LAT": ("display", r"^(-?(?:90\.00|[0-8]?\d\.\d{2}))?$"),
+                "GROK_STATION_DIM_LON": ("display", r"^(-?(?:180\.00|(?:1[0-7]\d|[1-9]?\d)\.\d{2}))?$"),
+                "GROK_STATION_DIM_SUNRISE": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$"),
+                "GROK_STATION_DIM_SUNSET": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$")},
     "time": {"GROK_STATION_LAT": ("display", r"^-?\d{1,2}(\.\d{1,4})?$"), "GROK_STATION_LON": ("display", r"^-?\d{1,3}(\.\d{1,4})?$"),
              "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$")},
     "audio": {"WAKE_DEVICE_NAME": ("wake", r"^[A-Za-z0-9 _.-]{1,40}$"), "WAKE_GAIN": ("wake", r"^\d(\.\d{1,2})?$"),
@@ -171,6 +182,15 @@ def settings_set(sec):
         elif not re.fullmatch(rule, v):
             fail(f"bad value for {k}")
         upd.setdefault(SETTINGS[sec][k][0], {})[k] = v
+    if sec == "display":
+        block = upd.get("display", {})
+        cur = env_read("display")
+        mode = block["GROK_STATION_DIM_MODE"] if "GROK_STATION_DIM_MODE" in block else (cur.get("GROK_STATION_DIM_MODE") or "")
+        if mode == "schedule":
+            start = block["GROK_STATION_DIM_FROM"] if "GROK_STATION_DIM_FROM" in block else (cur.get("GROK_STATION_DIM_FROM") or "")
+            end = block["GROK_STATION_DIM_TO"] if "GROK_STATION_DIM_TO" in block else (cur.get("GROK_STATION_DIM_TO") or "")
+            if not start or not end:
+                fail("Dim from and dim until need a time like 22:00.")
     if sec == "time" and "timezone" in j:
         tz = str(j["timezone"])
         if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}", tz) or not os.path.isfile("/usr/share/zoneinfo/" + tz):

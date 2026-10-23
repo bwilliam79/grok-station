@@ -701,24 +701,60 @@ function openVoiceStatus(bot, el) {  // reopen the in-progress (or failed) attem
 async function displayPanel(el) {
   const g = await api("GET", "/api/settings/display");
   const v = (g.data || {}).values || {};
+  const dim = (g.data || {}).dim || {};
+  const sensor = dim.sensor || null;
   const [nf, nt] = (v.GROK_STATION_NIGHT || "22-6").split("-");
   const hours = sel => [...Array(24).keys()].map(h => `<option value="${h}"${String(h) === sel ? " selected" : ""}>${((h + 11) % 12) + 1} ${h < 12 ? "AM" : "PM"}</option>`).join("");
-  el.innerHTML = `<div class="card"><h2>Display</h2>
-    <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock overnight.</div></div></div>
+  const pct = (s, fallback) => { const n = parseInt(s, 10); return Number.isFinite(n) && n >= 0 && n <= 100 ? String(n) : String(fallback); };
+  const hhmm = (s, fallback) => /^\d{2}:\d{2}$/.test(s || "") ? s : fallback;
+  const off = (s, fallback) => { const n = parseInt(s, 10); return Number.isFinite(n) && n >= -180 && n <= 180 ? String(n) : String(fallback); };
+  const modes = ["off", "schedule", "sun", "auto-sensor"];
+  const mode = modes.includes(v.GROK_STATION_DIM_MODE) ? v.GROK_STATION_DIM_MODE : "off";
+  const day = pct(v.GROK_STATION_DIM_DAY, 90), night = pct(v.GROK_STATION_DIM_NIGHT, 20);
+  const attn = (box, msg) => { box.innerHTML = msg ? `<div class="banner warn" role="alert"><span class="pill warn">Needs attention</span> ${esc(msg)}</div>` : ""; };
+  el.innerHTML = `<div class="cols"><div class="card"><h2>Display</h2>
+    <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock overnight. With dimming on, it follows that window.</div></div></div>
     <div class="row inline"><label class="help">From <select class="sel" id="nf" style="width:130px">${hours(nf)}</select></label><label class="help">to <select class="sel" id="nt" style="width:130px">${hours(nt)}</select></label></div>
     <div class="field"><label for="hold">Message hold time <span class="help" id="holdv"></span></label><input type="range" id="hold" min="5" max="120" value="${esc(v.GROK_STATION_HOLD || "30")}"></div>
     <div class="row"><button class="tog${v.GROK_STATION_FADE === "0" ? "" : " on"}" role="switch" id="fade" aria-label="Fade"></button><div class="lbl">Fade between screens</div></div>
     <div class="field"><label for="dun">Temperature</label><select class="sel" id="dun"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
-    <div id="de"></div><div class="field inline"><button class="btn p" id="dsave">Save</button></div>
-    <p class="note">Brightness isn't adjustable from here yet: it depends on the monitor (HDMI monitors need DDC/CI support).</p></div>
-    <div class="card"><h2>Live preview</h2><img class="thumb" id="pv" alt="What the station screen shows now"></div>`;
+    <div class="field"><label for="dmode">Brightness</label><select class="sel" id="dmode">
+      <option value="off">Off</option><option value="schedule">Schedule</option><option value="sun">Sunrise and sunset</option><option value="auto-sensor">Light sensor</option></select>
+      <div class="help">Off leaves the backlight alone. Schedule and sunrise need no sensor. A light sensor is used only when the kernel already exposes one.</div></div>
+    <div class="field"><label for="dday">Day brightness <span class="help" id="ddayv"></span></label><input type="range" id="dday" min="0" max="100" value="${day}"></div>
+    <div class="field"><label for="dnight">Night brightness <span class="help" id="dnightv"></span></label><input type="range" id="dnight" min="0" max="100" value="${night}"></div>
+    <div class="row inline"><label class="help">Dim from <input class="inp" type="time" id="dfrom" value="${hhmm(v.GROK_STATION_DIM_FROM, "22:00")}"></label><label class="help">until <input class="inp" type="time" id="dto" value="${hhmm(v.GROK_STATION_DIM_TO, "06:00")}"></label></div>
+    <div class="row inline"><label class="help">Sunrise offset <input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"></label><label class="help">Sunset offset <input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"></label></div>
+    <div class="row inline"><label class="help">Latitude <input class="inp" id="dlat" maxlength="8" inputmode="decimal" placeholder="12.34" value="${esc(v.GROK_STATION_DIM_LAT || "")}"></label><label class="help">Longitude <input class="inp" id="dlon" maxlength="8" inputmode="decimal" placeholder="-56.78" value="${esc(v.GROK_STATION_DIM_LON || "")}"></label></div>
+    <p class="note">Blank latitude and longitude use the station location, rounded to 2 decimals. Sensor: ${sensor ? esc(sensor.name) : "none"}. ${dim.backlight ? "Backlight: " + esc(dim.backlight.name) : "No backlight file; a dark layer is drawn instead."}</p>
+    <div id="de"></div><div class="field inline"><button class="btn p" id="dsave">Save</button></div></div>
+    <div class="card"><h2>Live preview</h2><img class="thumb" id="pv" alt="What the station screen shows now">
+      <div class="nightprev" id="nprev"><div class="tm">11:24</div><div class="dt">Thu, Oct 22</div><div class="dim-overlay" id="nov"></div></div>
+      <p class="note">Example night clock. The black layer is the night brightness.</p></div></div>`;
+  $("#dmode", el).value = mode;
   $("#non", el).onclick = $("#fade", el).onclick = ev => ev.currentTarget.classList.toggle("on");
   const hl = () => ($("#holdv", el).textContent = $("#hold", el).value + " s"); $("#hold", el).oninput = hl; hl();
+  const levels = () => { $("#ddayv", el).textContent = $("#dday", el).value + "%"; $("#dnightv", el).textContent = $("#dnight", el).value + "%";
+    const n = parseInt($("#dnight", el).value, 10) || 0; $("#nov", el).style.opacity = String((100 - n) / 100); };
+  $("#dday", el).oninput = $("#dnight", el).oninput = levels; levels();
+  const noReading = dim.lux == null;
+  const showSense = () => {
+    if ($("#dmode", el).value !== "auto-sensor" || !noReading) { attn($("#de", el), ""); return; }
+    attn($("#de", el), sensor
+      ? "The light sensor isn't reporting a reading. Dimming uses the schedule, then sunrise, then the day level."
+      : "No light sensor was found. Dimming uses the schedule, then sunrise, then the day level.");
+  };
+  $("#dmode", el).onchange = showSense; showSense();
   every(5000, () => { const p = $("#pv", el); if (p) p.src = "/api/preview?t=" + Date.now(); });
   $("#dsave", el).onclick = async () => {
     const r = await api("PUT", "/api/settings/display", {GROK_STATION_NIGHT: $("#non", el).classList.contains("on") ? `${$("#nf", el).value}-${$("#nt", el).value}` : "",
-      GROK_STATION_HOLD: $("#hold", el).value, GROK_STATION_FADE: $("#fade", el).classList.contains("on") ? "1" : "0", GROK_STATION_UNITS: $("#dun", el).value});
-    r.ok ? (errBox($("#de", el), ""), toast("Saved. The screen restarts.")) : errBox($("#de", el), r.data.error);
+      GROK_STATION_HOLD: $("#hold", el).value, GROK_STATION_FADE: $("#fade", el).classList.contains("on") ? "1" : "0", GROK_STATION_UNITS: $("#dun", el).value,
+      GROK_STATION_DIM_MODE: $("#dmode", el).value, GROK_STATION_DIM_DAY: $("#dday", el).value, GROK_STATION_DIM_NIGHT: $("#dnight", el).value,
+      GROK_STATION_DIM_FROM: $("#dfrom", el).value, GROK_STATION_DIM_TO: $("#dto", el).value,
+      GROK_STATION_DIM_LAT: $("#dlat", el).value.trim(), GROK_STATION_DIM_LON: $("#dlon", el).value.trim(),
+      GROK_STATION_DIM_SUNRISE: $("#dsr", el).value, GROK_STATION_DIM_SUNSET: $("#dss", el).value});
+    if (r.ok) { showSense(); toast("Saved. The screen restarts."); }
+    else attn($("#de", el), (r.data && r.data.error) || "Couldn't save.");
   };
 }
 

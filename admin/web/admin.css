@@ -130,6 +130,10 @@ button.tog.on:disabled{background:var(--gs-surface-3);border-color:var(--gs-rule
 .hero .ring{width:64px;height:64px;border-radius:50%;background:var(--gs-surface-2) url(assets/mark.svg) center/68% no-repeat;box-shadow:0 0 0 4px var(--gs-teal)}
 .hero .ring.amber{box-shadow:0 0 0 4px var(--gs-amber)}
 .thumb{width:100%;max-width:420px;aspect-ratio:3/2;border-radius:12px;border:1px solid var(--gs-rule);background:var(--gs-bg);object-fit:contain}
+.nightprev{position:relative;background:#000;border-radius:12px;min-height:96px;padding:16px 18px;overflow:hidden;margin-top:12px}
+.nightprev .tm{position:relative;z-index:1;font:600 32px var(--disp);color:#9A7752;letter-spacing:-.02em}
+.nightprev .dt{position:relative;z-index:1;color:#5E4934;font-size:13px;margin-top:2px}
+.dim-overlay{position:absolute;inset:0;background:#000;z-index:2;pointer-events:none}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
 .tile{background:var(--gs-surface);border:1px solid var(--gs-rule);border-radius:16px;padding:16px}
 .chip{display:inline-flex;padding:3px 10px;border-radius:99px;background:var(--gs-surface-2);font-size:12.5px;margin:2px 4px 2px 0}

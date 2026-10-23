@@ -25,3 +25,7 @@ Minor feature: a cached "Asking <name>…" clip plays as soon as a handoff is kn
 ## 0.3.0
 
 Minor feature: named station timers (up to eight, countdown rings, an amber ringing screen). See [timers.md](timers.md).
+
+## 0.4.0
+
+Minor: the display can dim from a light sensor, a clock schedule, or sunrise and sunset computed on the station. Settings are on the Display page. See [dimming.md](dimming.md).

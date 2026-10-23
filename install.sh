@@ -151,6 +151,7 @@ gen() {  # gen <file> <owner:group> <mode>: create once with a random token
 st_display() {
   run install -d $O $O/assets/fonts $O/assets/portraits $O/assets/brand $O/assets/avatars $O/assets/status
   run install -m755 app/grok_station.py $O/
+  run install -m644 app/dimming.py $O/
   run install -m644 app/avatars.py $O/
   sh_ "install -m644 assets/fonts/* $O/assets/fonts/"
   sh_ "install -m644 assets/brand/*.png assets/brand/*.svg $O/assets/brand/"
@@ -222,7 +223,7 @@ st_health() {
   chk $O/relay/venv/bin/python -m py_compile $O/relay/relay.py
   chk $O/wake/venv/bin/python -c 'import openwakeword, onnxruntime, numpy, websockets'
   chk python3 -c 'import pygame, qrcode, cryptography'
-  chk python3 -m py_compile /opt/grok-station/grok_station.py /opt/grok-station/admin/grok_admin.py
+  chk python3 -m py_compile /opt/grok-station/grok_station.py /opt/grok-station/dimming.py /opt/grok-station/admin/grok_admin.py
   if [ "$MODE" = update ]; then
     sleep 3
     for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do

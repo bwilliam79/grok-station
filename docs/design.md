@@ -214,6 +214,15 @@ Rules:
   - Toggles are teal when on.
   - Sliders use a 6 px track with a teal fill, an 18 px knob, end labels and the value at the right.
 
+### 8.3 Screen dimming
+The idle screen can dim. **Off** leaves the backlight alone. **Schedule** uses two clock times (the window may cross midnight). **Sunrise** uses latitude and longitude on the station, NOAA math, no network, plus minute offsets. **Light sensor** reads a kernel illuminance file when one is already there; a missing sensor is normal and falls back to the schedule, then sunrise, then the day level.
+
+Brightness is a percent on `/sys/class/backlight` when that file is writable. Otherwise the frame is copied and a black layer is drawn on the copy (same math as CSS opacity `(100 − level) / 100`). The working frame stays bright so partial updates do not punch a hole in the dim.
+
+With the night-clock toggle on, schedule, sunrise, and full dark (at or below the night lux) use the night face: black, clock `#9A7752`, secondary `#5E4934`. Partial light keeps the day screen and only moves the brightness. The toggle off keeps the day screen.
+
+The Display page saves mode, levels, times, and coordinates rounded to 2 decimals. A problem on that page is an amber **Needs attention** banner, not red. That includes a light sensor that is present but not reporting a reading.
+
 ## 9. Designing new features
 New features are designed **to fit these principles and tokens first**. They don't arrive with their own look.
 1. **Start from an existing pattern** in section 8, and reuse its tokens, type roles and safe area.

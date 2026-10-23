@@ -10,6 +10,8 @@ reply stays visible. The strip or the rings repaint locally; the wake listener p
 when it changes. The countdown follows a monotonic anchor taken when the list arrives, so a wall-clock
 step does not jump the digits.
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
+When Display dimming is on, brightness follows a light sensor, a clock schedule, or local sunrise.
+Off leaves the backlight alone. A missing backlight file is a black overlay on a copy of the frame.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
 Small status icons (network, relay, mic) sit in the top-right corner. A daemon thread polls them; --demo does not.
@@ -28,6 +30,11 @@ except ImportError:  # installed next to this file once the helper is shipped; t
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
+
+try:
+    import dimming
+except ImportError:  # display still runs; dimming stays off
+    dimming = None
 
 E = os.environ.get
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -812,6 +819,69 @@ def is_night(now):
         return False
     h = now.tm_hour
     return (a <= h or h < b) if a > b else (a <= h < b)
+
+
+_DIM = {"sig": None, "lux": None, "at": 0.0, "face": None, "mode": "off", "why": None}
+
+
+def night_face(now):
+    """Idle night clock. Off keeps the hour window. A dim mode follows the dim window, and only
+    while the night-clock toggle is on (NIGHT is not empty). Partial sensor light stays on the day screen."""
+    if dimming is None:
+        return is_night(now)
+    cfg = dimming.config_from_env()
+    if cfg.get("mode") == "off":
+        return is_night(now)
+    if not NIGHT:
+        return False
+    return dimming.in_dim_period(cfg, now, lux=_DIM.get("lux"))
+
+
+def refresh_dim(force=False):
+    """Apply brightness at most every 30 seconds. Returns 'overlay', 'night', or None.
+
+    'overlay' means the software dim changed (repaint even during a session).
+    'night' means the idle night face changed (repaint only when nothing else is on screen).
+    """
+    if dimming is None:
+        return None
+    t = time.monotonic()
+    if not force and t - _DIM["at"] < 30:
+        return None
+    _DIM["at"] = t
+    cfg = dimming.config_from_env()
+    _DIM["mode"] = cfg.get("mode") or "off"
+    root = E("GROK_STATION_SYS_ROOT", "/")
+    stamp = E("GROK_STATION_DIM_STAMP", "/var/cache/grok-station/dim-level")
+    lux = dimming.current_lux(root) if cfg.get("mode") == "auto-sensor" else None
+    _DIM["lux"] = lux
+    level, why = dimming.select_level(cfg, time.localtime(), lux=lux)
+    key = ("off",) if cfg.get("mode") == "off" else (level,)
+    prev = dimming.overlay_level()
+    if why != _DIM.get("why"):
+        _DIM["why"] = why
+        if why:  # no-sensor, no-times, no-location: no coordinates, no paths
+            print(f"dim {why}", flush=True)
+    if key != _DIM["sig"]:
+        if cfg.get("mode") == "off":
+            dimming.apply_brightness(None, root, stamp)
+            print("dim off", flush=True)
+        else:
+            how = dimming.apply_brightness(level, root, stamp)
+            if how == "backlight":
+                print(f"dim backlight {level}", flush=True)
+            else:
+                print(f"dim overlay {level}", flush=True)
+        _DIM["sig"] = key
+    face = night_face(time.localtime())
+    overlay_changed = dimming.overlay_level() != prev
+    face_changed = face != _DIM["face"]
+    _DIM["face"] = face
+    if overlay_changed:
+        return "overlay"
+    if face_changed:
+        return "night"
+    return None
 
 
 class Layout:
@@ -2492,10 +2562,49 @@ class Display:
         self.screen = self.full if self.view.size == (fw, fh) else self.full.subsurface(self.view)
         self.L = Layout(*self.screen.get_size())
 
+    def _presented(self):
+        """Bytes to write, and a surface that must stay alive while those bytes are used.
+
+        The working surface stays bright. A 16bpp frame is scaled (RGB565) so a black overlay
+        matches CSS opacity (100-level)/100. Other depths get a black SRCALPHA blit on a copy.
+        """
+        raw = self.full.get_buffer().raw
+        level = None if dimming is None else dimming.overlay_level()
+        if level is None or level >= 100:
+            return raw, None
+        if self.full.get_bytesize() == 2:
+            buf = bytearray(raw)
+            dimming.shade_rgb565(buf, level)
+            return buf, None
+        copy = self.full.copy()
+        layer = pygame.Surface(copy.get_size(), pygame.SRCALPHA)
+        layer.fill((0, 0, 0, dimming.overlay_alpha(level)))
+        copy.blit(layer, (0, 0))
+        return copy.get_buffer().raw, copy
+
+    def _snap_surface(self):
+        level = None if dimming is None else dimming.overlay_level()
+        if level is None or level >= 100:
+            return self.full
+        if self.full.get_bytesize() != 2:
+            return self._presented()[1] or self.full
+        raw, _hold = self._presented()
+        w, h = self.full.get_size()
+        pitch, bpp = self.full.get_pitch(), 2
+        try:
+            if pitch == w * bpp:
+                return pygame.image.frombytes(bytes(raw), (w, h), "RGB565")
+            tight = b"".join(bytes(raw[y * pitch:y * pitch + w * bpp]) for y in range(h))
+            return pygame.image.frombytes(tight, (w, h), "RGB565")
+        except (pygame.error, ValueError, TypeError):
+            return self.full
+
     def flush(self):
         if self.fb:
+            raw, hold = self._presented()
             with open(self.fb, "wb") as f:  # 16bpp RGB565 surface matches the vc4 fbdev layout
-                f.write(self.full.get_buffer().raw)
+                f.write(raw)
+            del hold
 
     def flush_rect(self, rect):
         """Write only rect's rows/columns. fb=None (demo, tests) is a no-op."""
@@ -2505,13 +2614,14 @@ class Display:
         if rect.w <= 0 or rect.h <= 0:
             return
         bpp, pitch = self.full.get_bytesize(), self.full.get_pitch()
-        raw = self.full.get_buffer().raw
+        raw, hold = self._presented()
         x, y, w, h = rect
         with open(self.fb, "r+b") as f:
             for row in range(y, y + h):
                 off = row * pitch + x * bpp
                 f.seek(off)
                 f.write(raw[off:off + w * bpp])
+        del hold
 
     def show(self, painter, *args, fade=False, snapshot=True):
         if fade and FADE:
@@ -2529,7 +2639,7 @@ class Display:
             self.flush()
         if snapshot and SNAP:
             try:
-                pygame.image.save(self.full, SNAP)
+                pygame.image.save(self._snap_surface(), SNAP)
             except Exception:
                 pass
 
@@ -2569,7 +2679,7 @@ def main():
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
-        view = screen_for(sd, thinking(), msg, is_night(now), bool(TIMER_CHIPS))
+        view = screen_for(sd, thinking(), msg, night_face(now), bool(TIMER_CHIPS))
         if view == "thinking":
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -2649,6 +2759,7 @@ def main():
             return True
         return False
 
+    refresh_dim(force=True)
     paint()
     threading.Thread(target=wx.loop, daemon=True).start()
     threading.Thread(target=status_loop, name="status", daemon=True).start()
@@ -2656,6 +2767,9 @@ def main():
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     print(f"listening on :{PORT}", flush=True)
     while True:
+        why = refresh_dim()
+        if why and not setup["doc"] and (why == "overlay" or not msg):
+            paint(snapshot=False)  # a session stays a session; only the overlay changes under it
         t = time.time()
         minute = 60.2 - (t % 60)  # wake just after the minute boundary; no busy loop
         if thinking():
@@ -2687,6 +2801,8 @@ def main():
                 if delay < 0.05:
                     delay += 1.0
                 wait = min(wait, delay)
+        if _DIM.get("mode") not in (None, "off"):
+            wait = min(wait, 30.0)  # wake to re-read the sensor or the sun
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW):
             continue  # nothing else is shown until setup is done
@@ -2733,7 +2849,7 @@ def main():
             paint()
             print("rendered", flush=True)
         elif ev.type == WEATHER:
-            if not msg and not is_night(time.localtime()):
+            if not msg and not night_face(time.localtime()):
                 paint(snapshot=False)
         elif ev.type == STATUS_EV:
             paint(snapshot=False)

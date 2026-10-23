@@ -28,6 +28,13 @@ HELPER = E("ADMIN_HELPER", "sudo -n /usr/local/lib/grok-station/grok-station-hel
 _RELAY_SRC = os.path.join(os.path.dirname(HERE), "relay")
 if os.path.isdir(_RELAY_SRC) and _RELAY_SRC not in sys.path:
     sys.path.insert(0, _RELAY_SRC)
+_APP_DIR = os.path.join(os.path.dirname(HERE), "app")
+if os.path.isdir(_APP_DIR) and _APP_DIR not in sys.path:
+    sys.path.append(_APP_DIR)  # repo checkout: app/dimming.py
+_PARENT = os.path.dirname(HERE)
+if os.path.isfile(os.path.join(_PARENT, "dimming.py")) and _PARENT not in sys.path:
+    sys.path.append(_PARENT)  # installed: /opt/grok-station/dimming.py
+import dimming
 WAKE_CTL = E("ADMIN_WAKE_CTL", "http://127.0.0.1:8789")
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
 ENROLLED = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled") + "/wakewords.enrolled.json"
@@ -1601,6 +1608,21 @@ def save_location_label(label):
     write_json(path("location.json"), {"label": label}, 0o640)
 
 
+def display_public(out):
+    """Display settings the browser may see. Dim coordinates are 2 decimals. No device paths."""
+    if not isinstance(out, dict):
+        out = {}
+    vals = out.get("values") if isinstance(out.get("values"), dict) else {}
+    body = dict(out)
+    body["values"] = dimming.display_view(vals)
+    root = os.environ.get("GROK_STATION_SYS_ROOT", "/")
+    try:
+        body["dim"] = dimming.hardware_status(root)
+    except OSError:
+        body["dim"] = {"sensor": None, "backlight": None}
+    return body
+
+
 def public_time(out):
     """Settings the browser may see: the place label, never coordinates."""
     src = out.get("values") if isinstance(out, dict) else None
@@ -2225,6 +2247,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(503, {"error": "Can't read settings."})
         if sec == "time":
             out = public_time(out)
+        elif sec == "display":
+            out = display_public(out)
         return self.send(200, out)
 
     def api_put_settings(self, p, q, j):
@@ -2232,16 +2256,25 @@ class Handler(BaseHTTPRequestHandler):
         if sec not in ("display", "time", "audio"):
             return self.send(404, {"error": "not found"})
         label = tz = None
+        dim_mode = None
         if sec == "time":
             j, err, label, tz = time_body(j)
             if err:
                 return self.send(400, {"error": err})
+        elif sec == "display":
+            j, err = dimming.normalize_form(j if isinstance(j, dict) else {})
+            if err:
+                return self.send(400, {"error": err})
+            if "GROK_STATION_DIM_MODE" in j:
+                dim_mode = j["GROK_STATION_DIM_MODE"]
         ok, out = helper("settings-set", sec, stdin=j)
         if not ok:
             msg = out.get("error", "Couldn't save.") if isinstance(out, dict) else "Couldn't save."
             if not isinstance(msg, str) or coord_key(msg):
                 msg = "Couldn't save."
             return self.send(400, {"error": msg})
+        if dim_mode in dimming.MODES:
+            audit("-", "dim-" + dim_mode)
         if label:
             save_location_label(label)
         if sec == "audio" or out.get("restart_wake"):
