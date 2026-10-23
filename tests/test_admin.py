@@ -829,7 +829,7 @@ class WakePhraseAndStatus(unittest.TestCase):
     def test_each_quality_reason(self):
         self.assertEqual(ga.phrase_problem("cat"), ga.TOO_SHORT)
         self.assertEqual(ga.phrase_problem("kitchen"), ga.TOO_SHORT)          # one word
-        self.assertEqual(ga.phrase_problem("hi bob"), ga.TOO_SHORT)           # two words, five letters
+        self.assertEqual(ga.phrase_problem("hi tom"), ga.TOO_SHORT)           # two words, five letters
         self.assertEqual(ga.phrase_problem("hey"), "“Hey” is only common words like “hey” or “okay”. Add a word that's yours.")
         self.assertEqual(ga.phrase_problem("okay"), "“Okay” is only common words like “hey” or “okay”. Add a word that's yours.")
         self.assertEqual(ga.phrase_problem("hey okay"), "“Hey Okay” is only common words like “hey” or “okay”. Add a word that's yours.")
