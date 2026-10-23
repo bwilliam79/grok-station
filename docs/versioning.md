@@ -135,3 +135,9 @@ Patch release. Installs over 0.9.1.
 - **Wake words.** The shipped starter models (Hey Ash, Hey Miles, Hey Kai, Hey Piper, Hey Jules, Hey Rhea) are installed, so those bots have a wake word without training; turn it on under Wake words. Training is a fixed 10 recordings per session; when the training gate says it isn't good enough, **Train more** records 10 more and adds them. Wake words other than Hey Grok can be deleted (recordings, model, entry; the listener reloads). The station still does not train words itself (see docs/enroll.md).
 - **Team logos.** Logo hosts default to `a.espncdn.com` and move under an advanced option.
 - **Display cards from bots.** The Add bot instructions teach recipe, sports, calendar and home cards (`grok-station-reply seal-show`, then `post --show`). Configure has **Copy updated instructions** for bots already set up.
+
+## 0.9.3
+
+Patch release. Installs over 0.9.2.
+
+- **Linux-only image build.** The card image builds with `tools/build-image/build-image.sh` on a Linux PC or a Linux VM. The macOS (`build-image-macos.sh`, Lima) and Windows (`build-image.ps1`, WSL) scripts are removed. The normal install is unchanged.

@@ -23,7 +23,7 @@ The root filesystem is grown by 3 GB in the image file to fit the packages and v
 
 ## Build
 
-### Linux (native)
+### Linux
 
 Debian or Ubuntu, Intel/AMD or arm64:
 
@@ -36,29 +36,7 @@ sudo tools/build-image/build-image.sh --output "$HOME/grok-station.img"
 
 On an arm64 Linux host `qemu-user-static` is not needed. The build needs root for `losetup`, `mount` and `chroot`. It attaches only the image file and never writes the computer's own disks. Expect it to take a while: the package and Python installs run under arm64 emulation on Intel/AMD.
 
-### macOS
-
-macOS can't loop-mount ext4 or run an arm64 Linux chroot natively, so there is no truly native build. The least complicated route is a small Linux VM through Lima, which `tools/build-image/build-image-macos.sh` drives for you:
-
-```bash
-brew install lima
-tools/build-image/build-image-macos.sh grok-station.img
-```
-
-It creates a Debian VM named `grok-station-build` (once), installs the build tools in it, runs `build-image.sh` there, and moves the image into the repository folder. On Apple silicon the VM is arm64, so no emulation is needed. **Untested on macOS.**
-
-### Windows
-
-Windows can't do it natively either. `tools/build-image/build-image.ps1` runs the Linux build inside WSL 2, Microsoft's built-in Linux:
-
-```powershell
-wsl --install -d Ubuntu          # once, as administrator, then restart
-# in the Ubuntu window, once:
-#   sudo apt-get update && sudo apt-get install -y git curl xz-utils python3 e2fsprogs qemu-user-static binfmt-support
-.\tools\build-image\build-image.ps1 -Name grok-station.img
-```
-
-**Untested on Windows.**
+The image builds on Linux only: a Linux PC or a Linux VM you already have. There are no macOS, Windows, Lima, WSL or Docker scripts.
 
 ## Options
 
