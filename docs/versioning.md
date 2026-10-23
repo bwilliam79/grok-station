@@ -108,3 +108,10 @@ Patch release. Installs over 0.8.2.
 
 Patch: the Updates page has a "View update log" button that shows the last 200 lines of the latest update attempt (admin sign-in only, passwords and keys hidden). A failed update now says why. When main on GitHub was rewritten, the updater moves to the official `origin/main` (only when `origin` is the grok-station GitHub repo) instead of failing; untracked files and the settings in `/etc/grok-station` and `/var/lib/grok-station` are kept. Stations on 0.8.10 or older need the one-time recovery in [update-recovery.md](update-recovery.md). pii-guard's push check now scans every commit not on a remote when the remote's old commit isn't known locally.
 
+## 0.9.0
+
+Minor release. Installs over 0.8.12.
+
+- **Deploy step in the setup prompt.** The instructions copied from Add bot replace the one-time keygen lines with a section, "Deploy bot key setup on system running Grok Bot (one time)". It names the files and the directory they land in. For a bot-computer key, run it on your own computer and on the home computer running Grok Bot. For a home-computer key, run it on that home computer. It asks before the script runs, it is one time, and the station never pushes code or asks for those files again. The script is filled in with the bot id, the station address, the certificate fingerprint, and the station key. After it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key. The routine the bot follows for each question is unchanged.
+- **No partial installs.** Files move into place only after key setup succeeds. Clear messages on a failed step or a missing pinned file. Downloads never follow redirects.
+- **Release check.** `tools/check-deploy-pins.py` proves the pinned files match git and GitHub. Home setup is macOS only.

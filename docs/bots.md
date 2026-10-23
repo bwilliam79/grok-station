@@ -69,7 +69,7 @@ Add your main bot first.
 2. On the home machine that can reach `https://<station-ip>` on the LAN, copy the same file to `~/bin/grok-station-reply`. `post` is standard library only, so that machine needs only `python3`, no PyNaCl and no key. If the bot runs on the home machine itself, one copy is enough and you can use `send`.
 3. Run `grok-station-reply keygen` on the bot's computer. Put `GROK_STATION_BOT_KEY` in the bot's secret store. Paste the `public:` line into the station admin. Never put the seed in the routine prompt, on the command line, or in a file the routine can read.
 4. On the station, open **Bots**. Add the bot: name, id, and voice (leave voice on **Station default** to use the station's voice). On the public-key step, choose where the key lives (cloud computer is the default, or the home machine). Paste the bot's public key and, if you have them, the webhook URL and webhook key. The last step shows a summary (name, id, voice, where the key lives, a short fingerprint of the pinned key, and whether a webhook was set) and asks for the admin password, unless a password grace window is still open for this sign-in. The webhook key is stored with the relay secrets. The browser cannot read it back.
-5. Paste the routine below into the bot. The text changes with the key location. Cloud is two commands. Home is one.
+5. Paste the routine below into the bot. The text changes with the key location. Cloud is two commands. Home is one. The same instructions include the one-time deploy step below, which installs the programs for you.
 
 ## Where the key lives
 
@@ -179,6 +179,35 @@ The key is already on disk for this persona. Never print the key, never put it i
 `<station address>` is the admin page origin, `https://` plus the host you opened (no path). `<fingerprint>` is the certificate SHA-256 from the System page. A cloud-mode list still uses exactly those two commands: `seal-list`, then `post`. A home-mode list is the one `gs-seal-reply reply` command with `--kind bot_list`.
 
 Single-machine cloud setups can instead run the one `send` command from the section above.
+
+## Deploy bot key setup
+
+The instructions you copy from Add bot include a section titled "Deploy bot key setup on system running Grok Bot (one time)".
+
+Ask the user before you run the script. It is one time. The station never pushes code, and it does not ask you to download these files again. The script in that section is filled in with this bot's id, the station address, the certificate fingerprint, and the station key.
+
+When the key lives on the bot computer, run that script on your own computer and on the home computer running Grok Bot.
+
+- Your own computer (run the script with `bot`): `grok-station-reply` and `vendor-lock.txt` in `~/.local/share/grok-station/bin`.
+- The home computer running Grok Bot (run the script with `home`): `grok-station-reply` in `~/.local/share/grok-station/bin`.
+
+When the key lives on the home computer, run the script there. Home setup is macOS only. It installs `gs-seal-setup`, `gs-seal-reply`, `gs_seal_common.py`, and `vendor-lock.txt` in `~/.local/share/grok-station/bin`.
+
+After it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.
+
+On the bot computer, the script saves the private key in `~/.local/share/grok-station/bot-seed` (mode 0600). Store it as the secret `GROK_STATION_BOT_KEY`, then delete that file.
+
+Nothing is moved into place until every file checks out and the key setup succeeds. If a step fails, the script cleans up and prints "partial install; re-run with UPGRADE=1". If GitHub answers 403 or 404, it prints "pinned file unavailable (repo private or commit gone)".
+
+### Release step: deploy pins
+
+`admin/web/deploy-pins.js` pins the commit the script downloads from and the sha256 of each file. A commit cannot name itself, so the pins name the release commit's parent, and the release must not change the five pinned files. At ship time:
+
+1. `python3 tools/gen-deploy-pins.py $(git rev-parse origin/main)` on the branch rebased onto `origin/main`.
+2. `python3 tools/check-deploy-pins.py` (pins match the pinned commit and HEAD has the same bytes).
+3. After the push, `python3 tools/check-deploy-pins.py --remote` (GitHub serves the same bytes).
+
+If a release does change a pinned file, ship it first, then re-pin in the next release.
 
 ## Home mode: gs-seal-setup and gs-seal-reply
 

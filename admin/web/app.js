@@ -2400,21 +2400,40 @@ function routineForBot(slug, pub, fp, mode) {
   body = fill(body, "<station public key>", pub);
   body = fill(body, "<station address>", stationAddress());
   body = fill(body, "<fingerprint>", fp);
-  if (home) {
-    const who = slug || "<slug>";
-    return "Create a webhook-triggered routine and use the text below as that routine.\n\n"
-      + body
-      + "\n\nOn the home machine, once, run gs-seal-setup keygen --persona " + who
-      + " and then gs-seal-setup init --persona " + who
-      + " --station " + stationAddress()
-      + " --pin-sha256 '" + (fp || "<fingerprint>")
-      + "' --station-pub '" + (pub || "<station public key>")
-      + "'. Keep the key file out of git, sync, and backups.\n"
-      + "Reply with the webhook URL, the webhook key, and your public key.";
+  let script = "";
+  try {
+    const pins = typeof DEPLOY_PINS === "undefined" ? null : DEPLOY_PINS;
+    script = deployScript(home ? "home" : "cloud", pins, slug || "", stationAddress(), fp || "", pub || "");
+  } catch (e) {
+    script = "";
   }
+  // File names and directories match deployScript. Cloud is two computers; home is the one Mac.
+  const where = home
+    ? "On the home computer running Grok Bot, it installs these files:\n"
+      + "~/.local/share/grok-station/bin/gs-seal-setup\n"
+      + "~/.local/share/grok-station/bin/gs-seal-reply\n"
+      + "~/.local/share/grok-station/bin/gs_seal_common.py\n"
+      + "~/.local/share/grok-station/bin/vendor-lock.txt\n"
+    : "Run it on your own computer and on the home computer running Grok Bot.\n"
+      + "\n"
+      + "On your own computer, run the script below with bot. It installs these files:\n"
+      + "~/.local/share/grok-station/bin/grok-station-reply\n"
+      + "~/.local/share/grok-station/bin/vendor-lock.txt\n"
+      + "\n"
+      + "On the home computer running Grok Bot, run the script below with home. It installs this file:\n"
+      + "~/.local/share/grok-station/bin/grok-station-reply\n";
+  const shown = script
+    ? "The script:\n" + script
+    : "The setup script could not be filled in yet.\n";
   return "Create a webhook-triggered routine and use the text below as that routine.\n\n"
     + body
-    + "\n\nAlso run grok-station-reply keygen once. Store the seed in your secret store as GROK_STATION_BOT_KEY. Do not put the seed in the routine.\n"
+    + "\n\nDeploy bot key setup on system running Grok Bot (one time)\n\n"
+    + "Ask the user before you run this. It is one time. The station never pushes code, and it does not ask you to download these files again.\n\n"
+    + where
+    + "\n"
+    + shown
+    + (home ? "" : "\nThe script saves the bot's private key in ~/.local/share/grok-station/bot-seed. Store it as the secret GROK_STATION_BOT_KEY, then tell the user to delete that file.\n")
+    + "\nAfter it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.\n"
     + "Reply with the webhook URL, the webhook key, and your public key.";
 }
 function addBot(voices, el, preset) {
@@ -2532,7 +2551,10 @@ function addBot(voices, el, preset) {
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Connect webhook">${dialogX()}${addStepper(3)}
       <h2>Connect webhook</h2>
       <p class="sub">Copy the instructions to your Grok Bot, then paste what it sends back below.</p>
-      <div class="field"><div class="inline">
+      <div class="field">
+        <div class="lbl">Deploy bot key setup on system running Grok Bot</div>
+        <p class="help">These instructions have your Grok Bot set up its key on the computer running Grok Bot. It asks you first, and it only happens once.</p>
+        <div class="inline">
           <button type="button" class="btn sm" id="aview" aria-expanded="false" aria-controls="aroutine">View instructions</button>
           <button type="button" class="btn sm" id="acopy" data-copy="aroutine">Copy instructions</button>
           <span class="copied" role="status" hidden></span></div>
@@ -2818,4 +2840,426 @@ function pageMore(el) {
   refreshUpdateBadge();
 }
 
+// One-time POSIX sh installer. mode is "home" or "cloud".
+// pins is {commit, files} (DEPLOY_PINS). Hashes are embedded; the script downloads only those files.
+// Home uses persona, station, pinSha256, and stationPub for gs-seal-setup init.
+// Cloud ignores those four. Run the cloud script as `sh script bot` or `sh script home`.
+function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
+  const RAW = "https://raw.githubusercontent.com/bwilliam79/grok-station/";
+  const HOME_FILES = [
+    ["scripts/gs-seal-setup", "gs-seal-setup", "700"],
+    ["scripts/gs-seal-reply", "gs-seal-reply", "700"],
+    ["scripts/gs_seal_common.py", "gs_seal_common.py", "600"],
+    ["scripts/vendor-lock.txt", "vendor-lock.txt", "600"]
+  ];
+  const CLOUD_BOT = [
+    ["tools/grok-station-reply", "grok-station-reply", "700"],
+    ["scripts/vendor-lock.txt", "vendor-lock.txt", "600"]
+  ];
+  const CLOUD_HOME = [
+    ["tools/grok-station-reply", "grok-station-reply", "700"]
+  ];
+
+  function fail(msg) { throw new Error("deployScript: " + msg); }
+  function shq(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+  function pinOf(path) {
+    if (typeof path !== "string" || path.indexOf("..") >= 0 || path[0] === "/" || path.indexOf("\\") >= 0) fail("bad path");
+    const sum = pins && pins.files ? pins.files[path] : "";
+    if (typeof sum !== "string" || !/^[0-9a-f]{64}$/.test(sum)) fail("missing pin for " + path);
+    return sum;
+  }
+  function normPin(text) {
+    const fp = String(text == null ? "" : text).replace(/:/g, "").replace(/\s+/g, "").toLowerCase();
+    return /^[0-9a-f]{64}$/.test(fp) ? fp : "";
+  }
+  function normPub(text) {
+    const s = String(text == null ? "" : text).replace(/\s+/g, "");
+    if (!s || s.length > 80 || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(s)) return "";
+    const pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0;
+    return ((s.length / 4) * 3 - pad) === 32 ? s : "";
+  }
+  function stationOk(url) {
+    if (typeof url !== "string" || url.length < 8 || url.length > 300) return false;
+    for (let i = 0; i < url.length; i++) {
+      const c = url.charCodeAt(i);
+      if (c < 0x21 || c > 0x7e) return false;
+    }
+    if (/[@\\'"`$]/.test(url)) return false;
+    let u;
+    try { u = new URL(url); } catch (e) { return false; }
+    if (u.protocol !== "https:" || !u.hostname) return false;
+    if (u.username || u.password || u.hash || u.search) return false;
+    if (u.pathname !== "/" && u.pathname !== "") return false;
+    return true;
+  }
+  function personaOk(name) {
+    return typeof name === "string" && name !== "grok" && /^[a-z][a-z0-9-]{1,23}$/.test(name);
+  }
+
+  if (mode !== "home" && mode !== "cloud") fail("mode must be home or cloud");
+  if (!pins || typeof pins.commit !== "string" || !/^[0-9a-f]{40}$/.test(pins.commit)) fail("commit must be 40 lowercase hex characters");
+  if (!pins.files || typeof pins.files !== "object") fail("pins.files missing");
+
+  let who = "", site = "", pin = "", pub = "";
+  if (mode === "home") {
+    who = personaOk(persona) ? persona : "";
+    site = stationOk(station) ? station : "";
+    pin = normPin(pinSha256);
+    pub = normPub(stationPub);
+    if (!who || !site || !pin || !pub) fail("home mode needs persona, station, pinSha256, and stationPub");
+  }
+
+  const files = mode === "home" ? HOME_FILES : null;
+  const lines = [];
+  const add = s => lines.push(s);
+  const fileCmds = list => list.map(row => {
+    const url = RAW + pins.commit + "/" + row[0];
+    return "fetch_one " + shq(row[1]) + " " + shq(url) + " " + shq(pinOf(row[0])) + " " + row[2];
+  });
+
+  if (mode === "home") {
+    add("#!/bin/sh");
+    add("# Installs the grok-station home programs once, on this Mac.");
+    add("# The station never pushes code. You run this script yourself.");
+    add("# Files land in ~/.local/share/grok-station/bin (created mode 0700):");
+    add("#   gs-seal-setup, gs-seal-reply, gs_seal_common.py, vendor-lock.txt");
+    add("# After every file verifies, it runs gs-seal-setup vendor-install, keygen, and init.");
+    add("# Set UPGRADE=1 to download and verify again before replacing existing files.");
+    add("# An upgrade does not replace a key or config that is already there.");
+    add("# Pinned commit " + pins.commit + ".");
+  } else {
+    add("#!/bin/sh");
+    add("# Installs grok-station reply programs once. The station never pushes code.");
+    add("# You run this script yourself. It downloads only the pinned files below.");
+    add("#");
+    add("# Bot computer:  sh this-script bot");
+    add("#   ~/.local/share/grok-station/bin/grok-station-reply");
+    add("#   ~/.local/share/grok-station/bin/vendor-lock.txt");
+    add("#   Then PyNaCl for this user, from the verified lock file.");
+    add("#   Keygen writes the seed to ~/.local/share/grok-station/bot-seed (mode 0600)");
+    add("#   and does not print the seed. Store that file as GROK_STATION_BOT_KEY,");
+    add("#   then delete it. Stdout is only the public key and its fingerprint.");
+    add("#");
+    add("# Home computer: sh this-script home");
+    add("#   ~/.local/share/grok-station/bin/grok-station-reply");
+    add("#   only, for post. No PyNaCl and no key.");
+    add("#");
+    add("# Set UPGRADE=1 to download and verify again before replacing existing files.");
+    add("# Pinned commit " + pins.commit + ".");
+  }
+  add("set -eu");
+  add("umask 077");
+  add("");
+  if (mode === "cloud") {
+    add('role=${1:-}');
+    add('if [ "$role" != "bot" ] && [ "$role" != "home" ]; then');
+    add("  printf '%s\\n' \"usage: sh this-script bot|home\" >&2");
+    add("  printf '%s\\n' \"  bot   bot computer: grok-station-reply, PyNaCl, and a new key\" >&2");
+    add("  printf '%s\\n' \"  home  home computer: grok-station-reply only, for post\" >&2");
+    add("  exit 1");
+    add("fi");
+  } else {
+    add('if [ "$(uname -s)" != "Darwin" ]; then');
+    add("  printf '%s\\n' \"Home mode runs on macOS only.\" >&2");
+    add("  exit 1");
+    add("fi");
+  }
+  add('if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then');
+  add("  printf '%s\\n' \"HOME is not set.\" >&2");
+  add("  exit 1");
+  add("fi");
+  add('case "$HOME" in');
+  add("  /*) ;;");
+  add("  *) printf '%s\\n' \"HOME must be an absolute path.\" >&2; exit 1 ;;");
+  add("esac");
+  add('if ! command -v curl >/dev/null 2>&1; then');
+  add("  printf '%s\\n' \"curl is required.\" >&2");
+  add("  exit 1");
+  add("fi");
+  add('if ! command -v python3 >/dev/null 2>&1; then');
+  add("  printf '%s\\n' \"python3 is required.\" >&2");
+  add("  exit 1");
+  add("fi");
+  add("if command -v sha256sum >/dev/null 2>&1; then");
+  add("  HASHER=sha256sum");
+  add("elif command -v shasum >/dev/null 2>&1; then");
+  add("  HASHER=shasum");
+  add("else");
+  add("  printf '%s\\n' \"sha256sum or shasum is required.\" >&2");
+  add("  exit 1");
+  add("fi");
+  add("");
+  add('BIN="$HOME/.local/share/grok-station/bin"');
+  add('stage=""');
+  add('phase=""');
+  add("cleanup() {");
+  add("  rc=$?");
+  add('  if [ "$rc" -ne 0 ] && [ "$phase" = "setup" ]; then');
+  add("    printf '%s\\n' \"partial install; re-run with UPGRADE=1\" >&2");
+  add("  fi");
+  add('  if [ -n "${stage:-}" ] && [ -d "$stage" ]; then');
+  add('    case "$stage" in');
+  add('      "$BIN"/.stage.*) rm -rf "$stage" || true ;;');
+  add("    esac");
+  add("  fi");
+  add("}");
+  add("trap cleanup EXIT");
+  add("trap 'cleanup; exit 1' INT TERM");
+  add("");
+  add("sha256_of() {");
+  add('  sumf="$stage/.sum.$$"');
+  add('  if [ "$HASHER" = "sha256sum" ]; then');
+  add('    sha256sum "$1" > "$sumf" || return 1');
+  add("  else");
+  add('    shasum -a 256 "$1" > "$sumf" || return 1');
+  add("  fi");
+  add('  hex=$(cut -d " " -f 1 "$sumf") || return 1');
+  add('  rm -f "$sumf"');
+  add("  printf '%s\\n' \"$hex\"");
+  add("}");
+  add("make_private() {");
+  add('  _rest=$1');
+  add('  _acc=""');
+  add('  case "$_rest" in');
+  add("    /*) ;;");
+  add("    *) printf '%s\\n' \"bad path\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  while [ -n "$_rest" ]; do');
+  add('    _rest=${_rest#/}');
+  add('    _seg=${_rest%%/*}');
+  add('    if [ "$_rest" = "$_seg" ]; then');
+  add('      _rest=""');
+  add("    else");
+  add('      _rest=${_rest#*/}');
+  add("    fi");
+  add('    if [ -z "$_seg" ]; then');
+  add("      continue");
+  add("    fi");
+  add('    _acc="$_acc/$_seg"');
+  add('    if [ -d "$_acc" ] && [ ! -L "$_acc" ]; then');
+  add("      continue");
+  add("    fi");
+  add('    if [ -e "$_acc" ] || [ -L "$_acc" ]; then');
+  add("      printf '%s\\n' \"refusing $_acc\" >&2");
+  add("      exit 1");
+  add("    fi");
+  add('    mkdir -m 700 "$_acc"');
+  add('    chmod 700 "$_acc"');
+  add("  done");
+  add("}");
+  add("refuse_exists() {");
+  add('  dest=$1');
+  add('  if [ -L "$dest" ]; then');
+  add("    printf '%s\\n' \"refusing symlink: $dest\" >&2");
+  add("    exit 1");
+  add("  fi");
+  add('  if [ -e "$dest" ]; then');
+  add('    if [ ! -f "$dest" ]; then');
+  add("      printf '%s\\n' \"not a regular file: $dest\" >&2");
+  add("      exit 1");
+  add("    fi");
+  add('    if [ "${UPGRADE:-}" != "1" ]; then');
+  add("      printf '%s\\n' \"already exists (set UPGRADE=1 to replace): $dest\" >&2");
+  add("      exit 1");
+  add("    fi");
+  add("  fi");
+  add("}");
+  add("fetch_one() {");
+  add("  base=$1");
+  add("  url=$2");
+  add("  sum=$3");
+  add("  mode=$4");
+  add('  case "$base" in');
+  add("    *[!A-Za-z0-9._-]*) printf '%s\\n' \"bad name\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  case "$url" in');
+  add("    https://raw.githubusercontent.com/bwilliam79/grok-station/*/*) ;;");
+  add("    *) printf '%s\\n' \"refusing url\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  case "$url" in');
+  add("    *'?'*|*'#'*|*'@'*|*' '*) printf '%s\\n' \"refusing url\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  case "$sum" in');
+  add("    *[!0-9a-f]*) printf '%s\\n' \"bad checksum\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  nsum=$(printf \'%s\' "$sum" | wc -c | tr -d " ")');
+  add('  if [ "$nsum" -ne 64 ]; then');
+  add("    printf '%s\\n' \"bad checksum\" >&2");
+  add("    exit 1");
+  add("  fi");
+  add('  tmp="$stage/$base"');
+  add('  code=$(curl --proto =https --tlsv1.2 --max-redirs 0 -sS -o "$tmp" -w "%{http_code}" "$url") || {');
+  add("    printf '%s\\n' \"download failed: $base\" >&2");
+  add("    exit 1");
+  add("  }");
+  add('  case "$code" in');
+  add("    200) ;;");
+  add("    403|404) printf '%s\\n' \"pinned file unavailable (repo private or commit gone): $base\" >&2; exit 1 ;;");
+  add("    *) printf '%s\\n' \"download failed (HTTP $code): $base\" >&2; exit 1 ;;");
+  add("  esac");
+  add('  got=$(sha256_of "$tmp") || exit 1');
+  add('  if [ "$got" != "$sum" ]; then');
+  add("    printf '%s\\n' \"checksum mismatch: $base\" >&2");
+  add("    exit 1");
+  add("  fi");
+  add('  chmod "$mode" "$tmp"');
+  add("}");
+  add("place_one() {");
+  add("  base=$1");
+  add('  dest="$BIN/$base"');
+  add('  refuse_exists "$dest"');
+  add('  mv -f "$stage/$base" "$dest"');
+  add("}");
+  add("");
+  if (mode === "home") {
+    HOME_FILES.forEach(row => add('refuse_exists "$BIN/' + row[1] + '"'));
+  } else {
+    add('if [ "$role" = "bot" ]; then');
+    CLOUD_BOT.forEach(row => add('  refuse_exists "$BIN/' + row[1] + '"'));
+    add("else");
+    CLOUD_HOME.forEach(row => add('  refuse_exists "$BIN/' + row[1] + '"'));
+    add("fi");
+  }
+  add('make_private "$BIN"');
+  add('chmod 700 "$BIN"');
+  add('python3 - "$BIN" <<\'PY\'');
+  add("import os, stat, sys");
+  add("cur = os.path.abspath(sys.argv[1])");
+  add("uid = os.geteuid()");
+  add("while True:");
+  add("    try:");
+  add("        st = os.lstat(cur)");
+  add("    except OSError:");
+  add('        sys.stderr.write("cannot stat %s\\n" % cur)');
+  add("        raise SystemExit(1)");
+  add("    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):");
+  add('        sys.stderr.write("refusing %s\\n" % cur)');
+  add("        raise SystemExit(1)");
+  add("    if st.st_uid != uid and st.st_uid != 0:");
+  add('        sys.stderr.write("not owned by you or root: %s\\n" % cur)');
+  add("        raise SystemExit(1)");
+  add("    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):");
+  add('        sys.stderr.write("group or world writable: %s\\n" % cur)');
+  add("        raise SystemExit(1)");
+  add('    if cur == "/":');
+  add("        break");
+  add("    parent = os.path.dirname(cur)");
+  add("    if parent == cur:");
+  add("        raise SystemExit(1)");
+  add("    cur = parent");
+  add("PY");
+  add('stage=$(mktemp -d "$BIN/.stage.XXXXXX") || exit 1');
+  add('chmod 700 "$stage"');
+  add('CURL_HOME="$stage/nocurlrc"');
+  add('mkdir -m 700 "$CURL_HOME"');
+  add("export CURL_HOME");
+  add("");
+  add("# Download and verify every file before anything is moved into place.");
+  if (mode === "home") {
+    fileCmds(HOME_FILES).forEach(add);
+    add("");
+    add("phase=setup");
+    add('"$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"');
+    add('keyf="$HOME/.config/grok-station/keys/' + who + '.key"');
+    add('cfgf="$HOME/.config/grok-station/' + who + '.json"');
+    add('if [ -L "$keyf" ] || [ -L "$cfgf" ]; then');
+    add("  printf '%s\\n' \"refusing symlink in ~/.config/grok-station\" >&2");
+    add("  exit 1");
+    add("fi");
+    add('if [ -e "$keyf" ] && [ -e "$cfgf" ]; then');
+    add("  printf '%s\\n' \"Key and config are already in place. Not minting a new key.\" >&2");
+    add("else");
+    add('  if [ ! -e "$keyf" ]; then');
+    add('    "$stage/gs-seal-setup" keygen --persona ' + shq(who));
+    add("  fi");
+    add('  if [ ! -e "$cfgf" ]; then');
+    add('    "$stage/gs-seal-setup" init --persona ' + shq(who) + " --station " + shq(site) + " --pin-sha256 " + shq(pin) + " --station-pub " + shq(pub));
+    add("  fi");
+    add("fi");
+    HOME_FILES.forEach(row => add("place_one " + shq(row[1])));
+    add("phase=done");
+    add("printf '%s\\n' \"Installed into $BIN\" >&2");
+  } else {
+    add('if [ "$role" = "bot" ]; then');
+    fileCmds(CLOUD_BOT).forEach(cmd => add("  " + cmd));
+    add("  python3 -m pip install --user --require-hashes --no-deps --only-binary :all: -r \"$stage/vendor-lock.txt\" > \"$stage/pip.out\" 2> \"$stage/pip.err\" || {");
+    add('    cat "$stage/pip.err" >&2');
+    add('    cat "$stage/pip.out" >&2');
+    add("    exit 1");
+    add("  }");
+    add("  phase=setup");
+    add('  mark="$HOME/.local/share/grok-station/keygen-done"');
+    add('  seedf="$HOME/.local/share/grok-station/bot-seed"');
+    add('  if [ -L "$mark" ] || [ -L "$seedf" ]; then');
+    add("    printf '%s\\n' \"refusing symlink next to the install directory\" >&2");
+    add("    exit 1");
+    add("  fi");
+    add('  if [ -f "$mark" ] || [ -f "$seedf" ]; then');
+    add("    printf '%s\\n' \"A key was already generated. Not minting another.\" >&2");
+    add('    if [ -f "$seedf" ]; then');
+    add("      printf '%s\\n' \"The seed is in $seedf (mode 0600). Store it as GROK_STATION_BOT_KEY in your secret store, then delete that file.\" >&2");
+    add("    fi");
+    add("  else");
+    add('    raw="$stage/keygen.out"');
+    add('    "$stage/grok-station-reply" keygen > "$raw"');
+    add("    n=$(awk 'END { print NR }' \"$raw\")");
+    add('    l1=$(sed -n \'1p\' "$raw")');
+    add('    l2=$(sed -n \'2p\' "$raw")');
+    add('    if [ "$n" -ne 2 ]; then');
+    add('      rm -f "$raw"');
+    add("      unset l1 l2");
+    add("      printf '%s\\n' \"keygen did not print exactly two lines.\" >&2");
+    add("      exit 1");
+    add("    fi");
+    add('    case "$l1" in');
+    add("      GROK_STATION_BOT_KEY=*) ;;");
+    add("      *) rm -f \"$raw\"; unset l1 l2; printf '%s\\n' \"keygen seed line missing.\" >&2; exit 1 ;;");
+    add("    esac");
+    add('    case "$l1" in');
+    add("      *[!A-Za-z0-9+/=_]*) rm -f \"$raw\"; unset l1 l2; printf '%s\\n' \"keygen seed line rejected.\" >&2; exit 1 ;;");
+    add("    esac");
+    add('    case "$l2" in');
+    add('      "public: "[A-Za-z0-9+/=]*) ;;');
+    add("      *) rm -f \"$raw\"; unset l1 l2; printf '%s\\n' \"keygen public line missing.\" >&2; exit 1 ;;");
+    add("    esac");
+    add("    pubonly=\${l2#\"public: \"}");
+    add('    case "$pubonly" in');
+    add("      *[!A-Za-z0-9+/=]*|\"\") rm -f \"$raw\"; unset l1 l2 pubonly; printf '%s\\n' \"keygen public key rejected.\" >&2; exit 1 ;;");
+    add("    esac");
+    add("    fp=$(printf '%s\\n' \"$l2\" | python3 -c 'import base64, hashlib, sys");
+    add("line = sys.stdin.readline().strip()");
+    add("p = \"public: \"");
+    add("if not line.startswith(p):");
+    add("    raise SystemExit(1)");
+    add("raw = base64.b64decode(line[len(p):])");
+    add("if len(raw) != 32:");
+    add("    raise SystemExit(1)");
+    add("h = hashlib.sha256(raw).hexdigest()[:16]");
+    add("sys.stdout.write(\" \".join(h[i:i+4] for i in range(0, 16, 4)))");
+    add("') || exit 1");
+    add("    printf '%s\\n' \"$l1\" > \"$seedf\"");
+    add('    chmod 600 "$seedf"');
+    add("    rm -f \"$raw\"");
+    add("    unset l1");
+    add("    printf '%s\\n' \"The signing seed is in $seedf (mode 0600). Store it as GROK_STATION_BOT_KEY in your secret store, then delete that file.\" >&2");
+    add("    printf '%s\\n' \"$l2\"");
+    add("    printf '%s\\n' \"fingerprint: $fp\"");
+    add("    unset l2 pubonly");
+    add("    printf '%s\\n' \"1\" > \"$mark\"");
+    add('    chmod 600 "$mark"');
+    add("  fi");
+    CLOUD_BOT.forEach(row => add("  place_one " + shq(row[1])));
+    add("  phase=done");
+    add("else");
+    fileCmds(CLOUD_HOME).forEach(cmd => add("  " + cmd));
+    add("  place_one " + shq("grok-station-reply"));
+    add("fi");
+    add("printf '%s\\n' \"Installed into $BIN\" >&2");
+  }
+  add("exit 0");
+  add("");
+  return lines.join("\n");
+}
+
 boot();
+if (typeof module !== "undefined" && module.exports) module.exports = {deployScript: deployScript};
