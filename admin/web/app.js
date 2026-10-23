@@ -1137,8 +1137,9 @@ function keyModeFields(mode) {
   const home = mode === "home";
   return `<fieldset class="field" id="kmlive">
       <legend>Where the bot's key lives</legend>
-      <label class="choice"><input type="radio" name="blives" value="cloud"${home ? "" : " checked"}> Bot computer (default)</label>
+      <label class="choice"><input type="radio" name="blives" value="cloud"${home ? "" : " checked"}> Bot computer</label>
       ${HOME_MODE ? `<label class="choice"><input type="radio" name="blives" value="home"${home ? " checked" : ""}> Home computer</label>` : `<span class="help">Home computer will be available after it's been tested.</span>`}
+      <p class="note">${esc(HOME_24_7)}</p>
       <p class="note">Switching this removes the current key. Your bot will need to send a new one.</p>
       <div id="kmnote" class="note" hidden></div>
       <div id="kme"></div>
@@ -1925,7 +1926,7 @@ function openBot(bot, el) {
     refreshBots(el);
   });
 }
-const HOME_24_7 = "A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station.";
+const HOME_24_7 = "Storing the key on your home computer allows replies to come back faster. Either way, a computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station.";
 const ADD_STEP_LABEL = "1 Bot · 2 Connect · 3 Webhook · 4 Done";
 const HOOK_LATER = "Not connected yet - use Connect webhook on the Bots page";
 function addStepper(n) {
@@ -2481,8 +2482,8 @@ function addBot(voices, el, preset) {
       <h2>Connect your bot</h2>
       <fieldset class="field">
         <legend>Where the bot's key lives</legend>
-        <label class="choice"><input type="radio" name="alives" value="cloud"${home ? "" : " checked"}> Bot computer (default)</label>
-        ${HOME_MODE ? `<label class="choice"><input type="radio" name="alives" value="home"${home ? " checked" : ""}> Home computer</label><span class="help">Replies come back faster.</span>` : `<span class="help">Home computer will be available after it's been tested.</span>`}
+        <label class="choice"><input type="radio" name="alives" value="cloud"${home ? "" : " checked"}> Bot computer</label>
+        ${HOME_MODE ? `<label class="choice"><input type="radio" name="alives" value="home"${home ? " checked" : ""}> Home computer</label>` : `<span class="help">Home computer will be available after it's been tested.</span>`}
         <p class="note">${esc(HOME_24_7)}</p>
       </fieldset>
       <div class="field"><button class="btn p" id="apairnext" type="submit">Next</button></div></form>`;
