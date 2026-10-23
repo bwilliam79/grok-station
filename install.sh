@@ -197,8 +197,32 @@ st_wake() {
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
   run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/wakewords.json $O/wake/
-  # Every shipped starter model (Hey Ash, Hey Rhea, ...), so a bot with that name has a wake word without training.
-  sh_ "install -o grok -g grok -m644 wake/models/*.onnx $O/wake/models/"
+  # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
+  run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
+  # 0.9.4: drop the starter models 0.9.2 used to ship, and their override entries. Only these six exact files in
+  # $O/wake/models (never models/enrolled), and an override is kept when an enrolled model of that name exists.
+  sh_ "rm -f $O/wake/models/hey_ash.onnx $O/wake/models/hey_jules.onnx $O/wake/models/hey_kai.onnx $O/wake/models/hey_miles.onnx $O/wake/models/hey_piper.onnx $O/wake/models/hey_rhea.onnx"
+  if [ "$DRY" = 1 ]; then echo "+ prune retired starter wake words from $V/admin/wake-overrides.json"; else
+    python3 - "$V/admin/wake-overrides.json" "$O/wake/models/enrolled" <<'PY' || true
+import json, os, sys
+p, enr = sys.argv[1], sys.argv[2]
+old = ["hey_ash", "hey_jules", "hey_kai", "hey_miles", "hey_piper", "hey_rhea"]
+try:
+    ov = json.load(open(p))
+except Exception:
+    sys.exit(0)
+if not isinstance(ov, dict):
+    sys.exit(0)
+gone = [n for n in old if n in ov and not os.path.isfile(os.path.join(enr, n + ".onnx"))]
+if gone:
+    for n in gone:
+        ov.pop(n)
+    st = os.stat(p)
+    with open(p + ".tmp", "w") as f:
+        json.dump(ov, f, indent=1)
+    os.chown(p + ".tmp", st.st_uid, st.st_gid); os.chmod(p + ".tmp", st.st_mode & 0o777); os.replace(p + ".tmp", p)
+PY
+  fi
 }
 
 st_boot() {  # boot splash and kiosk; hides the blinking console cursor

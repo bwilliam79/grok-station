@@ -92,7 +92,11 @@ class Install(unittest.TestCase):
         src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         self.assertIn("--buffer-time=", src); self.assertIn("--period-time=", src)
         self.assertIn('download_models(["feature-models-only"])', sh)
-        self.assertIn("wake/models/*.onnx", sh)
+        self.assertNotIn("wake/models/*.onnx", sh)
+        self.assertIn("wake/models/hey_grok.onnx $O/wake/models/", sh)
+        for n in ("ash", "jules", "kai", "miles", "piper", "rhea"):  # retired starter models are removed on update
+            self.assertIn("$O/wake/models/hey_%s.onnx" % n, sh)
+        self.assertNotIn("rm -f $O/wake/models/enrolled", sh)
         self.assertIn("$V/voice/ack", sh)  # cached "Asking <name>" clips; the relay unit already writes the state dir
         self.assertNotIn("jarvis", sh.lower())
 

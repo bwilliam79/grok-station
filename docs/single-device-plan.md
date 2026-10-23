@@ -82,7 +82,7 @@ Transfer, with no scp/rsync and no secrets printed:
 2. Stream it over the existing SSH channel: `cat bundle.age | ssh grok-station "grok-station migrate import"`. This is
    the same `cat | ssh` pattern the deploys use. Import decrypts in place, installs files with their modes, verifies
    sha256 against a manifest and prints only file names, counts and hashes.
-3. No training data migrates. The existing enrolled models (hey_hank, hey_finn, hey_rhea) can go in the bundle as
+3. No training data migrates. The existing enrolled models (earlier test words) can go in the bundle as
    drop-dir models.
 4. Tokens: keep the existing bot voice tokens, so the bot routines don't change. Only `TILE_INGEST_URL` moves to the
    Pi's HTTPS URL. Each bot's routine config needs a URL edit, coordinated through Rhea. That's an external change, so

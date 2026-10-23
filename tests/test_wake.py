@@ -61,17 +61,20 @@ class TestWake(unittest.TestCase):
 
     def test_patience(self):
         gw.WORDS.clear()
-        gw.WORDS.update(hey_rhea=gw._word({"name": "hey_rhea", "persona": "rhea", "threshold": 0.8, "patience": 2}))
+        gw.WORDS.update(hey_kitchen=gw._word({"name": "hey_kitchen", "persona": "kitchen", "threshold": 0.8, "patience": 2}))
         d = gw.Detector()
-        self.assertIsNone(d.feed({"hey_rhea": 0.9}))
-        self.assertEqual(d.feed({"hey_rhea": 0.85}), "hey_rhea")
-        d.reset(); d.feed({"hey_rhea": 0.9})
-        self.assertIsNone(d.feed({"hey_rhea": 0.5}))
+        self.assertIsNone(d.feed({"hey_kitchen": 0.9}))
+        self.assertEqual(d.feed({"hey_kitchen": 0.85}), "hey_kitchen")
+        d.reset(); d.feed({"hey_kitchen": 0.9})
+        self.assertIsNone(d.feed({"hey_kitchen": 0.5}))
 
     def test_repo_config(self):
         cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "wake", "wakewords.json")))
         names = {w["name"]: w for w in cfg["words"]}
         self.assertNotIn("hey_finn", names)
+        self.assertEqual(list(names), ["hey_grok"])
+        shipped = sorted(os.listdir(os.path.join(os.path.dirname(__file__), "..", "wake", "models")))
+        self.assertEqual([f for f in shipped if f.endswith(".onnx")], ["hey_grok.onnx"])
         for w in cfg["words"]:
             self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(__file__), "..", "wake", "models", w["name"] + ".onnx")))
 
