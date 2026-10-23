@@ -470,6 +470,100 @@ class AdminUI(unittest.TestCase):
         self.assertIsNone(re.search(r"console\.(?:log|debug|info|warn|error)\s*\([^)]*(?:token|key|password|secret)", js, re.I))
         self.assertIsNone(re.search(r"toast\([^)]*voice_token", js))
 
+    def test_offline_banner_save_state_and_skeletons(self):
+        """Station offline banner, Saving/Unsaved, and skeleton placeholders (design.md 8.2)."""
+        js, css = self.js, self.css
+        self.assertEqual(js.count('id="offline"'), 1)
+        self.assertEqual(js.count("Can't reach the station. Retrying…"), 1)
+        banner = re.search(r"<div id=\"offline\"[^>]*>", js)
+        self.assertIsNotNone(banner)
+        self.assertNotIn("button", banner.group(0))
+        show = _fn(js, "showOffline")
+        self.assertIn("signed_in", show)
+        self.assertIn('classList.add("offline")', show)
+        self.assertIn("setInterval(retryStation, 5000)", show)
+        self.assertIn("offlineText()", show)
+        text = _fn(js, "offlineText")
+        self.assertIn("as of ", text)
+        self.assertIn("toLocaleTimeString()", text)
+        retry = js.split("function retryStation", 1)[1].split("async function api(", 1)[0]
+        self.assertIn('api("GET", "/api/state")', retry)
+        api = js.split("async function api(", 1)[1].split("async function apiRaw", 1)[0]
+        self.assertIn("showOffline()", api)
+        self.assertIn("netDown(r.status)", api)
+        self.assertIn('path === "/api/state"', api)
+        self.assertIn("hideOffline()", api)
+        down = _fn(js, "netDown")
+        for code in ("status === 0", "status === 502", "status === 503", "status === 504"):
+            self.assertIn(code, down, code)
+        shell = js.split("function shell()", 1)[1].split("window.addEventListener", 1)[0]
+        self.assertIn("if (stationOffline) showOffline();", shell)
+
+        saving = _fn(js, "markSaving")
+        self.assertIn('n.textContent = "Saving…"', saving)
+        self.assertIn('classList.add("saving")', saving)
+        unsaved = _fn(js, "markUnsaved")
+        self.assertIn('"<i></i>Unsaved changes"', unsaved)
+        self.assertIn('classList.add("unsaved")', unsaved)
+        saved = _fn(js, "markSaved")
+        self.assertIn("All changes saved", saved)
+        self.assertIn('classList.remove("saving", "unsaved")', saved)
+        watch = _fn(js, "watchSave")
+        self.assertIn("markUnsaved()", watch)
+        self.assertIn("All changes saved", watch)
+        self.assertIn("btn.disabled", watch)
+        self.assertIn("dataset.saved", watch)
+
+        # A Save that POST/PUTs and already called markSaved also marks saving, then unsaved on failure.
+        for call in (
+            'api("POST", "/api/network/hostname"',
+            'api("PUT", "/api/updates/autocheck"',
+            'api("PUT", "/api/settings/time"',
+            'api("PUT", "/api/settings/audio"',
+            'api("PUT", "/api/settings/display"',
+            'api("PUT", "/api/cards"',
+            'api("POST", "/api/xai-key"',
+            'api("PUT", "/api/privacy"',
+            'api("PUT", "/api/bots/list-source"',
+            'api("PUT", "/api/system/password-grace"',
+            'api("POST", "/api/password"',
+        ):
+            i = js.find(call)
+            self.assertGreater(i, 0, call)
+            self.assertIn("markSaving()", js[max(0, i - 400):i], call)
+            self.assertIn("markUnsaved()", js[i:i + 900], call)
+
+        self.assertNotIn('<p class="help">Loading…</p>', js)
+        skel = js.split("function skel(", 1)[1].split("async function pageUpdates", 1)[0]
+        self.assertIn('class="skel"', skel)
+        self.assertIn('class="sr"', skel)
+        self.assertIn("Loading…", skel)
+        updates = js.split("async function pageUpdates", 1)[1].split("async function timePanel", 1)[0]
+        home = js.split("async function pageHome", 1)[1].split("async function pageVoice", 1)[0]
+        self.assertIn("skel(3)", updates)
+        self.assertIn('id="updatesroot"', updates)
+        self.assertIn("skel(4)", home)
+        self.assertIn('id="hero"', home)
+
+        self.assertLess(css.find(".copied{"), css.find("/* station status:"))
+        block = css.split("/* station status:", 1)[1]
+        self.assertNotIn("#FF", block)
+        self.assertNotIn("#ff", block)
+        self.assertIn("--gs-amber", block)
+        self.assertIn("--gs-amber-bg", block)
+        self.assertIn("--gs-lavender", block)
+        self.assertIn("--gs-surface-2", block)
+        self.assertIn(".main.offline .body button, .main.offline .body input, .main.offline .body select {pointer-events:none;opacity:.5}", block)
+        self.assertIn(".saved.saving", block)
+        self.assertIn(".saved.unsaved", block)
+        self.assertIn(".skel", block)
+        self.assertIn("@keyframes gs-shimmer", block)
+        self.assertIn("opacity", block.split("@keyframes gs-shimmer", 1)[1].split("}", 1)[0])
+        self.assertIn(".sr", block)
+        # The existing reduced-motion rule turns every animation off, including the skeleton shimmer.
+        motion = css.split("prefers-reduced-motion", 1)[1].split("}", 1)[0]
+        self.assertIn("animation:none!important", motion)
+
 
 if __name__ == "__main__":
     unittest.main()

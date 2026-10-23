@@ -2008,7 +2008,7 @@ def draw_idle(surf, L, now, wx, colon_on=True):
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
-    clock_px = L(320)
+    clock_px = L(300)  # design.md §13 refresh: idle clock 300 px @1080
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
     x = L.m - L(8)
     digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base, colon_on)
@@ -2411,13 +2411,13 @@ def draw_night(surf, L, now, colon_on=True):
     LAST_TIMER_RECT = None  # the dim clock doesn't carry the timer strip
     surf.fill(BLACK)
     hhmm, ampm = clock_parts(now)
-    f, fm = font("night", L(340)), font("night", L(90))
+    f, fm = font("night", L(440)), font("night", L(90))  # design.md §12: night clock 440 px @1080
     wc, wm = f.size(hhmm)[0], fm.size(ampm)[0]
     shift = (now.tm_min // 10) % 4  # burn-in: drift up to 16px (at 1080p) every 10 minutes
     dx, dy = L((-8, 8, 8, -8)[shift]), L((-8, -8, 8, 8)[shift])
     x = (L.w - (wc + L(20) + wm)) // 2 + dx
     base = L.h // 2 + int(f.get_ascent() * 0.36) + dy
-    draw_clock(surf, "night", L(340), hhmm, NIGHT_TEXT, x, base, colon_on)
+    draw_clock(surf, "night", L(440), hhmm, NIGHT_TEXT, x, base, colon_on)
     baseline_text(surf, "night", L(90), ampm, NIGHT_DIM, x + wc + L(20), base)
     draw_status_icons(surf, L)
 

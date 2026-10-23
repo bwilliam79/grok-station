@@ -36,11 +36,11 @@ Theme name: **Hearth**. Warm near-black, real persona photos in circles, one tea
 | lavender | `--gs-lavender` | `#A99CFF` | Working or waiting: thinking, queued, training, saving, testing |
 | lavender-bg | `--gs-lavender-bg` | `#221E3A` | Lavender tinted fills |
 | warm | `--gs-warm` | `#FFE6BF` | Speaking; get-ready countdown; the admin's current-step marker |
-| amber | `--gs-amber` | `#F5C04A` | Warnings: default password, offline, guest mode, update ready |
+| amber | `--gs-amber` | `#F5C04A` | Warnings: setup needed, offline, update ready; admin errors ("Needs attention") and destructive actions; ringing timer |
 | amber-bg | `--gs-amber-bg` | `#33270F` | Banner fill |
-| red | `--gs-red` | `#FF5A52` | Mic off, and a home-feed stock-down arrow. Admin: destructive actions and existing form errors. Card-policy problems use amber and the words Needs attention |
+| red | `--gs-red` | `#FF5A52` | **Only** mic off and a home-feed stock-down arrow (▼). Never used in the admin (errors there are amber "Needs attention", §8.2) |
 | stock-up | — | `#4ADE80` | Home-feed trend up only, always with an arrow. Not a status color |
-| red-bg | `--gs-red-bg` | `#3A1513` | Error fills |
+| red-bg | `--gs-red-bg` | `#3A1513` | Mic-off fills only |
 | night-text / night-dim | `--gs-night-text` / `--gs-night-dim` | `#9A7752` / `#5E4934` | Night clock on `#000000` |
 | on-teal | `--gs-on-teal` | `#0D0B09` | Text on teal buttons |
 
@@ -59,7 +59,7 @@ Fonts:
 ### 3.1 Station display (px at 2560×1706)
 | Role | Size | Font | Max |
 |---|---|---|---|
-| Idle clock | 453 (340 × s) | Tight 600 | fixed |
+| Idle clock | 400 (300 × s; 2026-10-22 refresh) | Tight 600 | fixed |
 | Hero / headline | 160 | Tight 600, −2 px tracking, lh 1.02 | 1 line, ≤ 16 chars |
 | Persona name | 160 | Tight 600 | 1 line, ellipsize |
 | Status / progress line | 107 | Tight 600, teal | 1 line, ≤ 22 chars |
@@ -184,23 +184,26 @@ Rules:
   - Labels sit above fields, and help text goes below in muted.
   - Inputs are 38 px tall (44 on the phone), with a bg well, a rule-2 border and 10 radius.
   - Focus shows a teal border with a 3 px glow at 30%.
-  - Errors show a red border plus a message underneath.
+  - Errors show an amber border plus a "Needs attention" message underneath (no red).
 - **Masked secret field (xAI key, relay token):**
   - **Write-only.** Once saved, the field shows `•••• last 4` and a "Saved" teal pill, with Replace and Test buttons. The value is never shown again.
   - **Replacing the key:** opens an empty field with paste and show/hide controls (show applies only while typing a new value), plus Save and Cancel.
 - **Banners:**
   - **Width:** full content width, directly under the page header, with an icon, one line of text and an action.
-  - **Amber** for warnings. The default-password banner is persistent and can't be dismissed.
-  - **Red** for errors, **teal** for success (dismissible).
+  - **Amber** for warnings.
+  - **Station offline:** a persistent amber banner on every page ("Can't reach the station. Retrying…") with the last "as of" time; controls are disabled until it reconnects.
+  - **Amber "Needs attention"** for errors (no red), **teal** for success (dismissible).
 - **Buttons:**
   - **Primary:** teal fill with on-teal text.
   - **Secondary:** surface-2 with a rule-2 border.
   - **Ghost:** text only.
-  - **Danger:** a red outline that opens a confirm. The red fill appears only inside that confirm.
+  - **Danger** (e.g. Reboot, Remove bot): amber text/outline that opens a confirm; the confirm action is amber-fill. No red.
   - **Sizes:** 38 / 32 small, 48 on the phone. A button shows a spinner and lavender text while it's working.
 - **Toasts:**
   - Bottom right on the laptop, top on the phone. Use a surface-3 fill and a 4 px left bar in the state color.
-  - Auto-hide after 4 s, except errors, which stay until dismissed.
+  - Auto-hide after 4 s, except errors (amber), which stay until dismissed.
+  - **Save state indicator** (page header right): lavender "Saving…", then teal "All changes saved"; unsaved edits show an amber dot "Unsaved changes".
+  - **Loading:** skeleton blocks in surface-2 at the shape of the content, never a bare "Loading…".
   - Never stack more than 2.
 - **Tables:**
   - Row height 48, with a rule divider between rows, a muted 13 px uppercase header and mono for values.
@@ -220,7 +223,7 @@ The idle screen can dim. **Off** leaves the backlight alone. **Schedule** uses t
 
 Brightness is a percent on `/sys/class/backlight` when that file is writable. Otherwise the frame is copied and a black layer is drawn on the copy (same math as CSS opacity `(100 − level) / 100`). The working frame stays bright so partial updates do not punch a hole in the dim.
 
-With the night-clock toggle on, schedule, sunrise, and full dark (at or below the night lux) use the night face: black, clock `#9A7752`, secondary `#5E4934`. Partial light keeps the day screen and only moves the brightness. The toggle off keeps the day screen.
+With the night-clock toggle on, schedule, sunrise, and full dark (at or below the night lux) use the night face: black, clock `#9A7752`, secondary `#5E4934`, clock 440 px @1080 (0.407 × short edge, 2026-10-22 refresh). Partial light keeps the day screen and only moves the brightness. The toggle off keeps the day screen.
 
 The Display page saves mode, levels, times, and coordinates rounded to 2 decimals. A problem on that page is an amber **Needs attention** banner, not red. That includes a light sensor that is present but not reporting a reading.
 

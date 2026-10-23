@@ -8,16 +8,66 @@ let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0, }
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
 const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 const ENROLL_ACTIVE = ["recording", "uploading", "training"];
+let stationOffline = false, lastOkAt = 0, offlineTimer = 0, retryBusy = false;
+let reachSeq = 0, lastGoodSeq = 0, offlineSeq = 0;
+
+function netDown(status) { return status === 0 || status === 502 || status === 503 || status === 504; }
+function offlineText() {
+  const when = lastOkAt ? new Date(lastOkAt).toLocaleTimeString() : "";
+  return "Can't reach the station. Retrying…" + (when ? " as of " + when : "");
+}
+function showOffline() {
+  // One banner, only while the signed-in shell is on screen. Not dismissible.
+  if (!(S.state && S.state.signed_in)) return;
+  const main = document.querySelector("main.main");
+  if (!main) return;
+  stationOffline = true;
+  main.classList.add("offline");
+  let n = document.getElementById("offline");
+  if (!n) {
+    main.insertAdjacentHTML("afterbegin", '<div id="offline" class="banner warn" role="status"></div>');
+    n = document.getElementById("offline");
+  }
+  if (n) n.textContent = offlineText();
+  if (!offlineTimer) offlineTimer = setInterval(retryStation, 5000);
+}
+function hideOffline() {
+  stationOffline = false;
+  if (offlineTimer) { clearInterval(offlineTimer); offlineTimer = 0; }
+  const n = document.getElementById("offline");
+  if (n) n.remove();
+  const main = document.querySelector("main.main");
+  if (main) main.classList.remove("offline");
+}
+async function retryStation() {
+  if (!stationOffline || retryBusy) return;
+  retryBusy = true;
+  try { await api("GET", "/api/state"); }
+  finally { retryBusy = false; }
+}
 
 async function api(method, path, body) {
   const opt = {method, credentials: "same-origin", headers: {"X-GS-Admin": "1"}};
   if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
   else if (method !== "GET") { opt.headers["Content-Type"] = "application/json"; opt.body = "{}"; }
+  const seq = ++reachSeq;
   let r;
-  try { r = await fetch(path, opt); } catch (e) { return {status: 0, data: {error: "The station isn't answering. Check it's on and on this network."}}; }
+  try { r = await fetch(path, opt); }
+  catch (e) {
+    // A response that already succeeded is newer than this throw: leave the banner down.
+    if (seq > lastGoodSeq) { offlineSeq = seq; showOffline(); }
+    return {status: 0, data: {error: "The station isn't answering. Check it's on and on this network."}};
+  }
   let data = {};
   try { data = await r.json(); } catch (e) { /* image or empty */ }
   if (r.status === 401 && !/^\/api\/(login|setup)/.test(path)) { boot(); }
+  if (netDown(r.status)) {
+    if (seq > lastGoodSeq) { offlineSeq = seq; showOffline(); }
+  } else {
+    lastOkAt = Date.now();
+    if (seq > lastGoodSeq) lastGoodSeq = seq;
+    if (stationOffline && r.ok && path === "/api/state" && seq > offlineSeq) hideOffline();
+  }
   return {status: r.status, ok: r.ok, data};
 }
 async function apiRaw(method, path, bytes, ctype, password) {
@@ -90,7 +140,7 @@ function meter(db) {  // design.md: Too quiet / Good / Too loud
   return `<div class="inline"><div class="meterbar" style="flex:1;min-width:120px"><b style="width:${pct.toFixed(0)}%"></b></div>
     <span class="pill ${lab[1]}"><i></i>${lab[0]}</span><span class="help mono">${db.toFixed(0)} dBFS</span></div>`;
 }
-function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">${esc(msg)}</div>` : ""; }
+function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">Needs attention. ${esc(msg)}</div>` : ""; }
 function attn(el, msg) {
   if (!el) return;
   el.innerHTML = msg ? `<div class="banner warn" role="alert"><span class="pill warn"><i></i>Needs attention</span> ${esc(msg)}</div>` : "";
@@ -104,7 +154,24 @@ const CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden=
 function markSaved() {
   const n = document.querySelector("header.top .saved");
   if (!n) return;
+  n.classList.remove("saving", "unsaved");
   n.innerHTML = CHECK_ICON + "All changes saved";
+  n.hidden = false;
+}
+function markSaving() {
+  const n = document.querySelector("header.top .saved");
+  if (!n) return;
+  n.classList.remove("unsaved");
+  n.classList.add("saving");
+  n.textContent = "Saving…";
+  n.hidden = false;
+}
+function markUnsaved() {
+  const n = document.querySelector("header.top .saved");
+  if (!n) return;
+  n.classList.remove("saving");
+  n.classList.add("unsaved");
+  n.innerHTML = "<i></i>Unsaved changes";
   n.hidden = false;
 }
 function setTog(btn, on) {
@@ -117,7 +184,15 @@ function watchSave(btn, nodes) {
   if (!btn) return () => {};
   const read = n => String(n.value);
   nodes.forEach(n => { n.dataset.saved = read(n); });
-  const sync = () => { btn.disabled = !nodes.some(n => read(n) !== n.dataset.saved); };
+  const sync = () => {
+    const dirty = nodes.some(n => read(n) !== n.dataset.saved);
+    btn.disabled = !dirty;
+    if (dirty) return markUnsaved();
+    const ind = document.querySelector("header.top .saved");
+    // Back to the saved values: hide Unsaved, but leave "All changes saved" up.
+    if (ind && !ind.hidden && !ind.classList.contains("unsaved") && !ind.classList.contains("saving") && ind.textContent.indexOf("All changes saved") !== -1) return;
+    if (ind) { ind.classList.remove("saving", "unsaved"); ind.hidden = true; }
+  };
   nodes.forEach(n => { n.addEventListener("input", sync); n.addEventListener("change", sync); });
   sync();
   return () => { nodes.forEach(n => { n.dataset.saved = read(n); }); sync(); };
@@ -251,8 +326,9 @@ async function wifiPanel(el, opts = {}) {
       const h = hn.value.trim().toLowerCase();
       if (h === hn.dataset.saved.trim().toLowerCase()) return;
       if (!confirm(`Rename the station to ${h}? This page will move to http://${h}.local`)) return;
+      markSaving();
       const r = await api("POST", "/api/network/hostname", {hostname: h});
-      if (!r.ok) return attn($("#ne", el), (r.data && r.data.error) || "Couldn't save that.");
+      if (!r.ok) { markUnsaved(); return attn($("#ne", el), (r.data && r.data.error) || "Couldn't save that."); }
       attn($("#ne", el), "");
       hn.dataset.saved = h;
       syncH();
@@ -434,23 +510,33 @@ async function paintUpdates(el) {
     const send = async pw => {
       const body = {on};
       if (pw) body.password = pw;
+      markSaving();
       const res = await api("PUT", "/api/updates/autocheck", body);
       if (res.ok) {
         setTog(btn, on);
         attn($("#autoe", el), "");
         markSaved();
         toast(on ? "Daily check on." : "Daily check off.");
-      } else if (res.status !== 403) {
-        revert();
-        attn($("#autoe", el), (res.data && res.data.error) || "Couldn't save that.");
+      } else {
+        if (res.status !== 403) {
+          revert();
+          attn($("#autoe", el), (res.data && res.data.error) || "Couldn't save that.");
+        }
+        markUnsaved();
       }
       return res;
     };
     withPassword("Daily check", "Enter the admin password to change the daily check. A check does not install anything.", "Save", send, revert);
   };
 }
+function skel(lines) {
+  const n = Math.max(1, lines | 0);
+  let html = "";
+  for (let i = 0; i < n; i++) html += '<div class="skel"></div>';
+  return html + '<span class="sr">Loading…</span>';
+}
 async function pageUpdates(el) {
-  el.innerHTML = `<div id="updatesroot"><p class="help">Loading…</p></div>`;
+  el.innerHTML = `<div id="updatesroot">${skel(3)}</div>`;
   await paintUpdates($("#updatesroot", el));
   refreshUpdateBadge();
 }
@@ -488,8 +574,9 @@ async function timePanel(el, opts = {}) {
   $("#tsave", el).onclick = async () => {
     const body = {timezone: $("#tz", el).value, GROK_STATION_UNITS: $("#un", el).value};
     if (pick && pick.id) body.place = pick.id;
+    markSaving();
     const r = await api("PUT", "/api/settings/time", body);
-    if (!r.ok) return attn($("#te", el), (r.data && r.data.error) || "Couldn't save that.");
+    if (!r.ok) { markUnsaved(); return attn($("#te", el), (r.data && r.data.error) || "Couldn't save that."); }
     if (r.data.location) $("#found", el).textContent = "Current location: " + r.data.location;
     if (r.data.timezone && [...$("#tz", el).options].some(o => o.value === r.data.timezone)) $("#tz", el).value = r.data.timezone;
     pick = null;
@@ -581,16 +668,17 @@ async function audioPanel(el) {
     const wg = $("#wg", el), vg = $("#vg", el);
     if (wg.value !== wg.dataset.saved) body.WAKE_GAIN = (+wg.value).toFixed(1);
     if (vg.value !== vg.dataset.saved) body.VOICE_GAIN = (+vg.value).toFixed(1);
+    markSaving();
     const r = await api("PUT", "/api/settings/audio", body);
-    if (!r.ok) return attn($("#ae", el), (r.data && r.data.error) || "Couldn't save that.");
+    if (!r.ok) { markUnsaved(); return attn($("#ae", el), (r.data && r.data.error) || "Couldn't save that."); }
     attn($("#ae", el), "");
     if (body.WAKE_GAIN) wakeStored = true;
     if (body.VOICE_GAIN) voiceStored = true;
     // Voice with no line of its own follows the wake gain the listener just kept.
     if (body.WAKE_GAIN && !voiceStored && vg.value === vg.dataset.saved) setGain(vg, body.WAKE_GAIN);
+    markSaved();
     commitAudio();
     lab();
-    markSaved();
     toast(r.data.pending || "Saved.");
   };
 }
@@ -632,6 +720,7 @@ async function wakePanel(el, opts = {}) {
     const was = b.classList.contains("on");
     const on = !was;
     setTog(b, on);
+    markSaving();
     const res = await api("PUT", "/api/wakewords/" + b.dataset.tog, {enabled: on});
     if (res.ok) {
       attn($("#we", el), "");
@@ -639,6 +728,7 @@ async function wakePanel(el, opts = {}) {
       toast(`${wordLabel({name: b.dataset.tog})} ${on ? "on" : "off"}.`);
     } else {
       setTog(b, was);
+      markUnsaved();
       attn($("#we", el), (res.data && res.data.error) || "Couldn't save that.");
     }
   });
@@ -651,8 +741,9 @@ async function wakePanel(el, opts = {}) {
     sync();
     if (!btn) return;
     btn.onclick = async () => {
+      markSaving();
       const res = await api("PUT", "/api/wakewords/" + s.dataset.sens, {sensitivity: +s.value / 100});
-      if (!res.ok) return attn($("#we", el), (res.data && res.data.error) || "Couldn't save that.");
+      if (!res.ok) { markUnsaved(); return attn($("#we", el), (res.data && res.data.error) || "Couldn't save that."); }
       s.dataset.saved = String(s.value);
       sync();
       attn($("#we", el), "");
@@ -856,8 +947,9 @@ async function displayPanel(el) {
   for (const id of [...Object.keys(FIELDS), "nf", "nt", "chosts"]) { $("#" + id, el).addEventListener("input", syncDisp); $("#" + id, el).addEventListener("change", syncDisp); }
   syncDisp();
   const putDisp = async body => {
+    markSaving();
     const r = await api("PUT", "/api/settings/display", body);
-    if (!r.ok) { attn($("#de", el), (r.data && r.data.error) || "Couldn't save that."); return false; }
+    if (!r.ok) { markUnsaved(); attn($("#de", el), (r.data && r.data.error) || "Couldn't save that."); return false; }
     showSense();
     markSaved();
     return true;
@@ -886,17 +978,16 @@ async function displayPanel(el) {
     const body = fieldVals();
     if ($("#non", el).classList.contains("on")) body.GROK_STATION_NIGHT = curHours();
     const displayOk = await putDisp(body);
+    markSaving();
     const c = await api("PUT", "/api/cards", {hosts: $("#chosts", el).value});
     if (c.ok) attnBox($("#ce", el), "");
     else attnBox($("#ce", el), (c.data && c.data.error) || "Couldn't save logo hosts.");
-    if (!displayOk || !c.ok) {
-      if (!c.ok) { const n = document.querySelector("header.top .saved"); if (n) n.hidden = true; }
-      return;
-    }
+    if (!displayOk || !c.ok) { markUnsaved(); return; }
     savedDisp.fields = fieldVals();
     if (body.GROK_STATION_NIGHT != null) savedDisp.hours = body.GROK_STATION_NIGHT;
     savedDisp.hosts = $("#chosts", el).value;
     syncDisp();
+    markSaved();
     toast("Saved. The screen restarts.");
   };
 }
@@ -929,11 +1020,12 @@ async function xaiKeyPanel(el, onSaved, replacing) {
     ev.preventDefault();
     const inp = $("#xkv", el), btn = $("#xks", el);
     busyBtn(btn, true, "Saving…");
+    markSaving();
     const r = await api("POST", "/api/xai-key", {key: inp.value.trim()});
     inp.value = "";
     busyBtn(btn, false, "Save key");
     if (btn) btn.disabled = true;
-    if (!r.ok) return attn($("#xke", el), (r.data && r.data.error) || "Couldn't save the key.");
+    if (!r.ok) { markUnsaved(); return attn($("#xke", el), (r.data && r.data.error) || "Couldn't save the key."); }
     if (S.state) S.state.xai_key_set = true;
     markSaved();
     toast("Key saved. Voice is on.");
@@ -1025,11 +1117,12 @@ function shell() {
   clearTimers();
   PAGES[page][1]($("#pg"));
   refreshUpdateBadge();
+  if (stationOffline) showOffline();
 }
 window.addEventListener("hashchange", () => { if (S.state && S.state.signed_in && !(S.state.wizard && !S.state.wizard.done)) shell(); });
 
 async function pageHome(el) {
-  el.innerHTML = `<div class="cols"><div class="card" id="hero"><p class="help">Loading…</p></div><div class="card"><h2>On the station now</h2><img class="thumb" id="pv" alt="Live preview of the station screen"><p class="note" id="pva"></p></div></div>
+  el.innerHTML = `<div class="cols"><div class="card" id="hero">${skel(4)}</div><div class="card"><h2>On the station now</h2><img class="thumb" id="pv" alt="Live preview of the station screen"><p class="note" id="pva"></p></div></div>
     <div class="tiles" id="tiles"></div>`;
   const load = async () => {
     const r = await api("GET", "/api/home");
@@ -1842,7 +1935,9 @@ function openBot(bot, el) {
       sync();
       const body = {url, key};
       if (pw) body.password = pw;
+      markSaving();
       const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
+      if (!r.ok) markUnsaved();
       if (r.ok) {
         bot.webhook = {configured: true, last4: r.data.last4, saved_at: Math.floor(Date.now() / 1000)};
         $("#burl", d).value = "";
@@ -2118,12 +2213,13 @@ function mountWebhookStep(root, bot, el, onFinish) {
       if (keyEl) keyEl.value = "";
       const body = {url, key};
       if (pw) body.password = pw;
+      markSaving();
       const r = await api("PUT", `/api/bots/${encodeURIComponent(bot.slug)}/webhook`, body);
       body.key = "";
       body.password = "";
       saving = false;
       if (btn) busyBtn(btn, false, "Save");
-      if (!(r && r.ok)) syncHook();
+      if (!(r && r.ok)) { markUnsaved(); syncHook(); }
       if (r && r.ok) {
         key = "";
         connected = true;
@@ -2229,9 +2325,10 @@ function paintImported(el, data) {
   if (save) save.onclick = async () => {
     const slug = sel ? sel.value : "";
     busyBtn(save, true);
+    markSaving();
     const r = await api("PUT", "/api/bots/list-source", {list_source: slug});
     if (save.isConnected) busyBtn(save, false, "Save");
-    if (!r.ok) return attn($("#iere", el), (r.data && r.data.error) || "Couldn't save the list source.");
+    if (!r.ok) { markUnsaved(); return attn($("#iere", el), (r.data && r.data.error) || "Couldn't save the list source."); }
     attn($("#iere", el), "");
     if (sel) sel.dataset.touched = "";
     markSaved();
@@ -2543,7 +2640,8 @@ async function pageBots(el) {
   el._defaultVoice = data.default_voice || "";
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
-    <div class="card"><div class="inline"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
+    <div class="card"><h2>Bots</h2><p class="sub">Teammates the station can talk to. Webhooks are saved on the station and never shown again. You can connect other bots from your Grok Bot account.</p>
+      <div class="inline" style="margin-top:12px"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
       <span class="stepup" id="sulock" hidden></span>
       <button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button>
       <button class="btn p sm right" id="add">Add bot</button></div>
@@ -2593,6 +2691,7 @@ async function pagePrivacy(el) {
     const send = async pw => {
       const body = {pii_mode: next};
       if (pw) body.password = pw;
+      markSaving();
       return api("PUT", "/api/privacy", body);
     };
     const apply = res => {
@@ -2601,6 +2700,7 @@ async function pagePrivacy(el) {
           revert();
           attn($("#pe", el), (res && res.data && res.data.error) || "Couldn't save.");
         }
+        markUnsaved();
         return res;
       }
       setTog(btn, next);
@@ -2634,11 +2734,12 @@ async function pageSystem(el) {
   wirePw("np1", "np2", $("#pgo", el));
   $("#pw", el).onsubmit = async ev => {
     ev.preventDefault();
+    markSaving();
     const r = await api("POST", "/api/password", {old: $("#old", el).value, new: $("#np1", el).value});
     $("#old", el).value = $("#np1", el).value = $("#np2", el).value = "";
     $("#np1", el).dispatchEvent(new Event("input"));
     if (r.ok) { attn($("#pe", el), ""); markSaved(); toast("Password changed. Other devices are signed out."); }
-    else attn($("#pe", el), (r.data && r.data.error) || "Couldn't save that.");
+    else { markUnsaved(); attn($("#pe", el), (r.data && r.data.error) || "Couldn't save that."); }
   };
   const s = (await api("GET", "/api/system")).data || {};
   const g = s.password_grace_min;
@@ -2660,6 +2761,7 @@ async function pageSystem(el) {
     }
     attn($("#ge", el), "");
     askPassword("Password grace period", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", async pw => {
+      markSaving();
       const r = await api("PUT", "/api/system/password-grace", {password_grace_min: n, password: pw});
       if (r && r.ok) {
         noteStepup(r.data);
@@ -2668,7 +2770,7 @@ async function pageSystem(el) {
         attn($("#ge", el), "");
         markSaved();
         toast(n === 0 ? "The station will always ask for the password." : "Grace period saved.");
-      }
+      } else markUnsaved();
       return r;
     });
   };
