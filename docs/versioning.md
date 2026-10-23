@@ -147,3 +147,15 @@ Patch release. Installs over 0.9.2.
 Patch release. Installs over 0.9.3.
 
 - **Hey Grok only.** Hey Grok is the only wake word model in the repo and the only one the installer copies. On update, the installer deletes the six starter models 0.9.2 installed and their entries in the wake overrides. Custom words you trained or uploaded (`wake/models/enrolled`) are never touched. Reach any bot with "Hey Grok, ask <bot>", or give it its own trained word.
+
+## 0.10.0
+
+Minor release. Installs over 0.9.4.
+
+- **Wake words made from your recordings.** The station builds a custom wake word from the 10 recordings you make on it. No training computer is needed. It reuses the speech features Hey Grok already computes (openWakeWord's melspectrogram and embedding models) and compares them against your recordings (`wake/fewshot.py`). The station sets how strict each word is from your recordings, the room noise it records first, a bank of everyday speech (`wake/models/fewshot_negatives.npz`, made from synthetic voices), Hey Grok, and your other words. When it can't tell the word apart well enough, the page says "Not good enough yet" and **Train more** records 10 more and rebuilds it.
+- A word that sounds too much like Hey Grok or another of your words is refused, with a message saying which one.
+- Deleting a wake word also deletes its recordings and what was built from them.
+- A model trained on a separate computer (`.onnx` in `/var/lib/grok-station/wakewords`) still loads, and replaces a recorded word with the same name.
+- `grok_wake.py --bench file.wav` times detection on recorded audio. `tools/fewshot_eval.py` and `tools/fewshot_tts.py` are the offline eval (dev only).
+- Not yet tested on a Pi.
+
