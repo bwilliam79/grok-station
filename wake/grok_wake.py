@@ -90,13 +90,18 @@ def up24(x, prev):
     return np.interp(np.arange(len(x) * 3 // 2) / 1.5, np.arange(len(xs)), xs)
 
 
-def relay_get(path):
-    """GET a loopback relay path with the local bearer token. Returns bytes or None."""
+def relay_get(path, missing_ok=False):
+    """GET a loopback relay path with the local bearer token. Returns bytes or None.
+    missing_ok: a 404 is normal (a bot with no portrait uses its initials) and is not logged."""
     base = re.sub(r"^ws", "http", RELAY_URL).rsplit("/ws", 1)[0]
     try:
         req = urllib.request.Request(base + path, headers={"Authorization": f"Bearer {relay_token()}"})
         with urllib.request.urlopen(req, timeout=8) as r:
             return r.read(2 << 20)
+    except urllib.error.HTTPError as e:
+        if not (missing_ok and e.code == 404):
+            print(f"relay get {path.split('/')[1]} failed: HTTP {e.code}", flush=True)
+        return None
     except Exception as e:
         print(f"relay get {path.split('/')[1]} failed: {type(e).__name__}", flush=True)
         return None
@@ -117,7 +122,7 @@ def sync_personas():
         slug = str(p.get("slug", ""))
         if not re.fullmatch(r"[a-z]{2,16}", slug) or slug == "grok":
             continue
-        img = relay_get(f"/portrait/{slug}")
+        img = relay_get(f"/portrait/{slug}", missing_ok=True)
         if img and (img[:3] == b"\xff\xd8\xff" or img[:8] == b"\x89PNG\r\n\x1a\n"
                     or (len(img) >= 12 and img[:4] == b"RIFF" and img[8:12] == b"WEBP")):
             ext = "png" if img[:4] == b"\x89PNG" else "webp" if img[:4] == b"RIFF" else "jpg"
@@ -930,7 +935,11 @@ _FEAT = {}
 
 
 def _features():
-    """openWakeWord's own melspectrogram + embedding models, loaded once for enrollment."""
+    """openWakeWord's melspectrogram + embedding models. Reuses the listener's loaded copy (the wake unit has a memory
+    cap; a second copy plus a second Hey Grok model got the listener killed mid-build in 0.10.0)."""
+    live = _FEAT.get("model")
+    if live is not None and getattr(live, "preprocessor", None) is not None:
+        return live.preprocessor
     if "af" not in _FEAT:
         from openwakeword.utils import AudioFeatures
         _FEAT["af"] = AudioFeatures(inference_framework="onnx")
@@ -984,22 +993,76 @@ def _write_enrolled(words):
     os.replace(cfgp + ".tmp", cfgp)
 
 
-def hey_grok_hears(padded_clips):
-    """Highest Hey Grok score over these clips: a custom phrase that sets off Hey Grok would collide with it."""
-    from openwakeword.model import Model
-    path = os.path.join(os.path.dirname(MODEL), BUILTIN + ".onnx")
-    if not os.path.isfile(path):
+def hey_grok_hears(frames):
+    """Highest Hey Grok score over these embedding streams, using the listener's loaded Hey Grok model on the frames
+    already computed (no second model). A phrase that sets off Hey Grok would collide with it. 0.0 when unavailable."""
+    live = _FEAT.get("model")
+    sess = getattr(live, "models", {}).get(BUILTIN) if live is not None else None
+    if sess is None:
         return 0.0
-    m, top = Model(wakeword_models=[path], inference_framework="onnx"), 0.0
-    for x in padded_clips:
-        m.reset()
-        for i in range(0, len(x) - CHUNK, CHUNK):
-            top = max(top, max(m.predict(x[i:i + CHUNK]).values(), default=0.0))
-    return float(top)
+    top = 0.0
+    try:
+        name = sess.get_inputs()[0].name
+        for f in frames:
+            for i in range(16, len(f) + 1):
+                out = sess.run(None, {name: f[None, i - 16:i].astype(np.float32)})[0]
+                top = max(top, float(np.max(out)))
+    except Exception as e:
+        print(f"fewshot: Hey Grok check skipped ({type(e).__name__})", flush=True)
+    return top
 
 
-def build_fewshot(phrase, persona):
+BUILD_STOPPED = "Building the wake word stopped partway. Press Record voice to try again, or delete it."
+
+
+def _marker(phrase):
+    return os.path.join(ENROLL_DIR, phrase, "building.json")
+
+
+def stale_build():
+    """At listener start: a build marker left behind means the listener died while building. Report it as failed."""
+    try:
+        names = sorted(os.listdir(ENROLL_DIR))
+    except OSError:
+        return None
+    for phrase in names:
+        mk = _marker(phrase)
+        if not os.path.isfile(mk):
+            continue
+        try:
+            doc = json.load(open(mk))
+        except (OSError, ValueError):
+            doc = {}
+        try:
+            os.remove(mk)
+        except OSError:
+            pass
+        print(f"fewshot {phrase}: build did not finish before the listener restarted", flush=True)
+        ENROLL_STATE["last"] = {"phrase": phrase, "session": doc.get("session"), "persona": doc.get("persona"),
+                                "stage": "failed", "message": BUILD_STOPPED, "started": time.time()}
+        return phrase
+    return None
+
+
+def build_fewshot(phrase, persona, session=None):
     """Turn this phrase's recordings into templates + a threshold. Returns the calibration result (ok, message, ...)."""
+    mk = _marker(phrase)
+    try:
+        with open(mk, "w") as f:
+            json.dump({"session": session, "persona": persona}, f)
+    except OSError:
+        mk = None
+    try:
+        return _build_fewshot(phrase, persona)
+    finally:
+        if mk:
+            try:
+                os.remove(mk)
+            except OSError:
+                pass
+
+
+def _build_fewshot(phrase, persona):
     import fewshot as fs
     clips, noise = phrase_clips(phrase)
     room = np.concatenate(noise) if noise else None
@@ -1024,7 +1087,7 @@ def build_fewshot(phrase, persona):
                 pass
     cal = fs.calibrate(frames, lens, negs, others)
     if cal.get("templates") and BUILTIN != phrase:
-        hg = hey_grok_hears(padded)
+        hg = hey_grok_hears(frames)
         cal["hey_grok"] = round(hg, 3)
         if hg >= THRESH:
             cal["ok"] = False
@@ -1039,7 +1102,7 @@ def build_fewshot(phrase, persona):
     os.replace(path + ".tmp.npz", path)
     words = [w for w in _enrolled_doc()["words"] if isinstance(w, dict) and w.get("name") != phrase]
     words.append({"name": phrase, "persona": persona, "threshold": cal["threshold"], "patience": FEWSHOT_PATIENCE,
-                  "kind": "fewshot", "path": path, "enrolled": True,
+                  "kind": "fewshot", "path": path, "enrolled": True, "built_at": int(time.time()),
                   "metrics": {"heard": cal["heard"], "count": cal["count"], "templates": len(cal["templates"])}})
     _write_enrolled(words)
     RELOAD.set()
@@ -1112,13 +1175,14 @@ def enroll(req, read16, play):
             enroll_stage("training", TRAINER_LATER, phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|saved|")
             try:
-                cal = build_fewshot(phrase, persona)
+                cal = build_fewshot(phrase, persona, ses)
             except Exception as e:
-                print(f"fewshot {phrase} failed: {type(e).__name__}: {e}", flush=True)
-                cal = {"ok": False, "message": "Not good enough yet. Something went wrong checking the recordings. Train more to try again."}
-            msg = cal["message"] if cal.get("ok") else (cal["message"] if cal["message"].startswith("Not good enough")
-                                                         else "Not good enough yet. " + cal["message"])
-            enroll_stage("published" if cal.get("ok") else "failed_quality", msg, phrase, ses)
+                print(f"fewshot {phrase} build failed: {type(e).__name__}: {e}", flush=True)
+                cal = {"ok": False, "error": True,
+                       "message": "Couldn't build the wake word on the station. Press Record voice to try again."}
+            msg = cal["message"] if cal.get("ok") or cal.get("error") or cal["message"].startswith("Not good enough") \
+                else "Not good enough yet. " + cal["message"]
+            enroll_stage("published" if cal.get("ok") else "failed" if cal.get("error") else "failed_quality", msg, phrase, ses)
             threading.Thread(target=follow_training, args=(phrase, ses, say, persona, bool(cal.get("ok"))), daemon=True).start()
         else:
             enroll_stage("failed", "Couldn't save the clips.", phrase, ses)
@@ -1359,6 +1423,7 @@ def load_model():
         print(f"wake word {k} -> {w['persona']} threshold={w['threshold']} patience={w['patience']}"
               f"{' (provisional)' if w['provisional'] else ''}{' (enrolled)' if w['enrolled'] else ''}", flush=True)
     print(f"loaded {len(WORDS)} wake words", flush=True)
+    _FEAT["model"] = model
     return model
 
 
@@ -1865,6 +1930,7 @@ def main():
     make_chime(CHIME)
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
+    stale_build()
     threading.Thread(target=control_server, daemon=True).start()
     timers_load()
     threading.Thread(target=timers_loop, daemon=True).start()

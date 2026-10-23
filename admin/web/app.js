@@ -714,7 +714,8 @@ function enrollStatusText(row) {
   if (!row) return "";
   if (row.state === "processing" || ENROLL_ACTIVE.includes(row.state)) return "Processing…";
   if (row.state === "published" || row.state === "ready") return "Ready";
-  if (row.state === "failed_quality") return "Not good enough yet. Train more to add 10 more recordings.";
+  if (row.state === "failed_quality") return row.message && row.message.startsWith("Not good enough") ? row.message : "Not good enough yet. Train more to add 10 more recordings.";
+  if (row.state === "failed") return row.message || "Didn't work. Press Record voice to try again.";
   return "";
 }
 async function wakePanel(el, opts = {}) {
@@ -741,6 +742,12 @@ async function wakePanel(el, opts = {}) {
       ${(train[w.name] || {}).state === "failed_quality" ? `<button class="btn p sm" data-more="${esc(w.name)}">Train more</button>` : ""}
       ${w.builtin ? "" : `<button class="btn d sm" data-del="${esc(w.name)}">Delete</button>`}`}</div>`;
     }).join("")}
+    ${Object.entries(train).filter(([n, t]) => n !== "hey_grok" && !words.some(w => w.name === n) && t && t.state && t.state !== "idle").map(([n, t]) => `<div class="row" style="flex-wrap:wrap">
+      <div style="min-width:160px"><div class="lbl">${esc(WORD(n))}</div><div class="help">Opens ${esc(PERSONA(t.persona || "grok"))}</div></div>
+      <span class="pill ${t.state === "failed" || t.state === "failed_quality" ? "warn" : "busy"}"><i></i>${t.state === "failed" || t.state === "failed_quality" ? "Not finished" : "In progress"}</span>
+      <span class="help">${esc(enrollStatusText(t))}</span>
+      <button class="btn sm right" data-enroll="${esc(n)}">Record voice</button>
+      <button class="btn d sm" data-del="${esc(n)}">Delete</button></div>`).join("")}
     <div id="we"></div></div>`;
   el.querySelectorAll("[data-tog]").forEach(b => b.onclick = async () => {
     const was = b.classList.contains("on");
@@ -829,7 +836,12 @@ function watchEnroll(d, id, box) {
     if (w.state === "ready" || w.state === "published" || w.state === "failed" || w.state === "failed_quality") {
       clearInterval(d.t);
       const go = $("#dgo", d);
-      if (go) go.textContent = w.state === "ready" || w.state === "published" ? "Done" : "Record voice";
+      if (w.state === "ready" || w.state === "published") {
+        // Done: say so, then close the dialog and refresh the list behind it.
+        toast(`${w.label || WORD(id)} is ready.`);
+        if (go) { go.textContent = "Done"; go.disabled = false; go.onclick = () => { const x = $("#dx", d); if (x) x.click(); else d.remove(); }; }
+        setTimeout(() => { if (document.body.contains(d)) { const x = $("#dx", d); if (x) x.click(); else d.remove(); } }, 2500);
+      } else if (go) { go.textContent = "Try again"; go.disabled = false; }
     }
   };
   tick();
