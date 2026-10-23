@@ -196,9 +196,11 @@ st_wake() {
     requests "websockets>=17"
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/wakewords.json $O/wake/
+  run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wakewords.json $O/wake/
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
   run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
+  # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).
+  run install -o grok -g grok -m644 wake/models/fewshot_negatives.npz $O/wake/models/
   # 0.9.4: drop the starter models 0.9.2 used to ship, and their override entries. Only these six exact files in
   # $O/wake/models (never models/enrolled), and an override is kept when an enrolled model of that name exists.
   sh_ "rm -f $O/wake/models/hey_ash.onnx $O/wake/models/hey_jules.onnx $O/wake/models/hey_kai.onnx $O/wake/models/hey_miles.onnx $O/wake/models/hey_piper.onnx $O/wake/models/hey_rhea.onnx"
@@ -213,7 +215,8 @@ except Exception:
     sys.exit(0)
 if not isinstance(ov, dict):
     sys.exit(0)
-gone = [n for n in old if n in ov and not os.path.isfile(os.path.join(enr, n + ".onnx"))]
+gone = [n for n in old if n in ov and not os.path.isfile(os.path.join(enr, n + ".onnx"))
+        and not os.path.isfile(os.path.join(enr, n + ".fewshot.npz"))]
 if gone:
     for n in gone:
         ov.pop(n)

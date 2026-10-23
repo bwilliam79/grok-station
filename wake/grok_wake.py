@@ -24,7 +24,9 @@ openWakeWord models (models_dir/<name>.onnx), each with a persona slug, threshol
 frames at or above the threshold). A wake opens the session as that persona (relay /ws?persona=<slug>). The optional
 Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. Without the file: hey_grok alone.
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
-`grok_wake.py --bench [seconds]` times the loaded models on noise.
+`grok_wake.py --bench [seconds | file.wav]` times the loaded models on noise or on recorded audio.
+Recorded wake words (wake/fewshot.py) are built on this station from the user's 10 recordings, with no training
+step, and scored on the same embedding stream as Hey Grok.
 """
 import base64, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
@@ -920,7 +922,128 @@ def last_session(phrase):
     return ses[-1] if ses else None
 
 
-TRAINER_LATER = "Saved. This station can't train wake words itself; your training computer trains them (see docs/enroll.md)."
+TRAINER_LATER = "Saved. Checking the recordings."  # shown while the station builds the wake word from them
+FEWSHOT_NEG = E("WAKE_FEWSHOT_NEG", "/opt/grok-station/wake/models/fewshot_negatives.npz")  # everyday-speech bank
+FEWSHOT = {}  # name -> fewshot.Matcher for words built from recordings on this station
+FEWSHOT_PATIENCE = 2
+_FEAT = {}
+
+
+def _features():
+    """openWakeWord's own melspectrogram + embedding models, loaded once for enrollment."""
+    if "af" not in _FEAT:
+        from openwakeword.utils import AudioFeatures
+        _FEAT["af"] = AudioFeatures(inference_framework="onnx")
+    return _FEAT["af"]
+
+
+def _embed(pcm):
+    return _features()._get_embeddings(np.asarray(pcm, np.int16)).astype(np.float32)
+
+
+def _read_wav(path):
+    with wave.open(path) as w:
+        return np.frombuffer(w.readframes(w.getnframes()), "<i2")
+
+
+def phrase_clips(phrase):
+    """Every kept recording of this phrase on the station (all sessions, so Train more adds to them), and room noise."""
+    clips, noise = [], []
+    root = os.path.join(ENROLL_DIR, phrase)
+    try:
+        sessions = sorted(x for x in os.listdir(root) if re.fullmatch(r"\d{8}-\d{6}", x))
+    except OSError:
+        return clips, noise
+    for ses in sessions:
+        d = os.path.join(root, ses)
+        for fn in sorted(os.listdir(d)):
+            try:
+                if re.fullmatch(r"\d{2}\.wav", fn):
+                    clips.append(_read_wav(os.path.join(d, fn)))
+                elif fn == "noise.wav":
+                    noise.append(_read_wav(os.path.join(d, fn)))
+            except (OSError, EOFError, wave.Error):
+                pass
+    return clips, noise
+
+
+def _enrolled_doc():
+    try:
+        with open(os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")) as f:
+            doc = json.load(f)
+        return doc if isinstance(doc, dict) and isinstance(doc.get("words"), list) else {"words": []}
+    except (OSError, ValueError):
+        return {"words": []}
+
+
+def _write_enrolled(words):
+    os.makedirs(ENROLLED_DIR, exist_ok=True)
+    cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
+    with open(cfgp + ".tmp", "w") as f:
+        f.write(json.dumps({"words": words}, indent=1))
+    os.replace(cfgp + ".tmp", cfgp)
+
+
+def hey_grok_hears(padded_clips):
+    """Highest Hey Grok score over these clips: a custom phrase that sets off Hey Grok would collide with it."""
+    from openwakeword.model import Model
+    path = os.path.join(os.path.dirname(MODEL), BUILTIN + ".onnx")
+    if not os.path.isfile(path):
+        return 0.0
+    m, top = Model(wakeword_models=[path], inference_framework="onnx"), 0.0
+    for x in padded_clips:
+        m.reset()
+        for i in range(0, len(x) - CHUNK, CHUNK):
+            top = max(top, max(m.predict(x[i:i + CHUNK]).values(), default=0.0))
+    return float(top)
+
+
+def build_fewshot(phrase, persona):
+    """Turn this phrase's recordings into templates + a threshold. Returns the calibration result (ok, message, ...)."""
+    import fewshot as fs
+    clips, noise = phrase_clips(phrase)
+    room = np.concatenate(noise) if noise else None
+    padded = [fs.pad_clip(c, room) for c in clips]
+    frames = [_embed(x) for x in padded]
+    lens = [len(c) / 16000 for c in clips]
+    negs = [_embed(room)] if room is not None and len(room) > 16000 else []
+    try:
+        bank = fs.load(FEWSHOT_NEG)
+        negs += bank
+    except (OSError, ValueError, KeyError):
+        print("fewshot: everyday-speech bank missing; calibrating on room noise only", flush=True)
+    others = []
+    for w in _enrolled_doc()["words"]:
+        if isinstance(w, dict) and w.get("kind") == "fewshot" and w.get("name") != phrase:
+            try:
+                t = fs.load(w["path"])
+                negs += t  # the other words must not set this one off
+                om = fs.Matcher(t); om.threshold = float(w.get("threshold", 0.9))
+                others.append((str(w["name"]).replace("_", " ").title(), om))
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+    cal = fs.calibrate(frames, lens, negs, others)
+    if cal.get("templates") and BUILTIN != phrase:
+        hg = hey_grok_hears(padded)
+        cal["hey_grok"] = round(hg, 3)
+        if hg >= THRESH:
+            cal["ok"] = False
+            cal["message"] = "Not good enough yet. It sounds too much like Hey Grok. Try a different phrase."
+    print(f"fewshot {phrase}: {'ok' if cal['ok'] else 'not good enough'} heard={cal.get('heard')}/{cal.get('count')} "
+          f"threshold={cal.get('threshold')} neg_max={cal.get('neg_max')} templates={len(cal.get('templates') or [])}", flush=True)
+    if not cal["ok"]:
+        return cal
+    path = os.path.join(ENROLLED_DIR, phrase + ".fewshot.npz")
+    os.makedirs(ENROLLED_DIR, exist_ok=True)
+    fs.save(path + ".tmp.npz", cal["templates"], {})
+    os.replace(path + ".tmp.npz", path)
+    words = [w for w in _enrolled_doc()["words"] if isinstance(w, dict) and w.get("name") != phrase]
+    words.append({"name": phrase, "persona": persona, "threshold": cal["threshold"], "patience": FEWSHOT_PATIENCE,
+                  "kind": "fewshot", "path": path, "enrolled": True,
+                  "metrics": {"heard": cal["heard"], "count": cal["count"], "templates": len(cal["templates"])}})
+    _write_enrolled(words)
+    RELOAD.set()
+    return cal
 
 
 def enroll(req, read16, play):
@@ -940,8 +1063,12 @@ def enroll(req, read16, play):
     sent, i, tries = 0, 1, 0
     try:
         show(1, "prompt")
-        for _ in range(int(3 / 0.08)):
-            read16()
+        room = np.vstack([read16() for _ in range(int(3 / 0.08))]).ravel()  # room noise: a negative for calibration
+        try:
+            with wave.open(os.path.join(d, "noise.wav"), "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(room.astype("<i2").tobytes())
+        except OSError:
+            pass
         while i <= n:
             show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
@@ -982,9 +1109,17 @@ def enroll(req, read16, play):
             ok = False
         print(f"enroll end {phrase}: {i - 1} recorded, {sent} saved, {'kept' if ok else 'NOT kept'}", flush=True)
         if ok:
-            enroll_stage("saved", TRAINER_LATER, phrase, ses)
+            enroll_stage("training", TRAINER_LATER, phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"{sent}/{sent}|saved|")
-            threading.Thread(target=follow_training, args=(phrase, ses, say, persona), daemon=True).start()
+            try:
+                cal = build_fewshot(phrase, persona)
+            except Exception as e:
+                print(f"fewshot {phrase} failed: {type(e).__name__}: {e}", flush=True)
+                cal = {"ok": False, "message": "Not good enough yet. Something went wrong checking the recordings. Train more to try again."}
+            msg = cal["message"] if cal.get("ok") else (cal["message"] if cal["message"].startswith("Not good enough")
+                                                         else "Not good enough yet. " + cal["message"])
+            enroll_stage("published" if cal.get("ok") else "failed_quality", msg, phrase, ses)
+            threading.Thread(target=follow_training, args=(phrase, ses, say, persona, bool(cal.get("ok"))), daemon=True).start()
         else:
             enroll_stage("failed", "Couldn't save the clips.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/{n}|error|")
@@ -1017,14 +1152,11 @@ def _train_outcome(j):
     return None
 
 
-def follow_training(phrase, ses, say, persona, every=60, limit=4 * 3600):
-    """Clips stay in the inbox. Training runs in the trainer app, not on this Pi."""
+def follow_training(phrase, ses, say, persona, published=False, every=60, limit=4 * 3600):
+    """Tell the screen how the wake word came out, once no voice session is on it."""
     while SESSION_OPEN.is_set():
         time.sleep(min(2, every or 2))
-        if time.time() < 0:  # keep the signature used by callers and tests
-            break
-    enroll_stage("saved", TRAINER_LATER, phrase, ses)
-    post_state("notice", text=TRAINER_LATER, who=persona)
+    post_state("notice", text=training_notice(phrase, published), who=persona)
 
 
 def load_dropped_wakewords(directory=None):
@@ -1088,7 +1220,7 @@ def forget_word(name):
     if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
         return False, "busy"
     shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
-    for fn in (name + ".onnx", name + ".json"):
+    for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
         try:
             os.remove(os.path.join(ENROLLED_DIR, fn))
         except OSError:
@@ -1119,6 +1251,9 @@ def sync_wakewords(directory=None):
         return words
     cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
     old = open(cfgp).read() if os.path.isfile(cfgp) else ""
+    dropped = {w["name"] for w in words}  # an uploaded .onnx replaces a recorded word of the same name
+    words = [w for w in _enrolled_doc()["words"] if isinstance(w, dict) and w.get("kind") == "fewshot"
+             and w.get("name") not in dropped] + words
     new = json.dumps({"words": words}, indent=1)
     if new != old:
         try:
@@ -1154,7 +1289,8 @@ def apply_wake_overrides(entries, ov):
             entries.pop(name, None)
             print(f"wake word {name}: turned off on the admin page", flush=True)
             continue
-        if isinstance(o.get("threshold"), (int, float)) and 0.05 <= float(o["threshold"]) <= 0.99:
+        if (isinstance(o.get("threshold"), (int, float)) and 0.05 <= float(o["threshold"]) <= 0.99
+                and entries[name].get("kind") != "fewshot"):  # a recorded word keeps its calibrated threshold
             entries[name]["threshold"] = float(o["threshold"])
         if persona_ok(str(o.get("persona") or "")):
             entries[name]["persona"] = str(o["persona"])
@@ -1192,6 +1328,18 @@ def load_model():
     except (OSError, ValueError):
         ov = {}
     apply_wake_overrides(entries, ov)
+    FEWSHOT.clear()
+    for name in [n for n, raw in entries.items() if raw.get("kind") == "fewshot"]:
+        raw = entries.pop(name)
+        try:
+            import fewshot as fs
+            m = fs.Matcher(fs.load(str(raw["path"])))
+        except Exception as e:
+            print(f"wake word {name}: recordings unreadable ({type(e).__name__}), skipped", flush=True)
+            continue
+        FEWSHOT[name] = m
+        WORDS[name] = _word(dict(raw, patience=raw.get("patience", FEWSHOT_PATIENCE)))
+        WORDS[name]["kind"] = "fewshot"
     for raw in entries.values():
         w = _word(raw)
         path = raw.get("path") or os.path.join(cfg.get("models_dir", ""), w["name"] + ".onnx")
@@ -1204,7 +1352,7 @@ def load_model():
         paths.append(os.path.join(cfg.get("models_dir", "") or os.path.dirname(MODEL), BUILTIN + ".onnx")); WORDS[BUILTIN] = w
     model = Model(wakeword_models=paths, inference_framework="onnx")
     for k in list(WORDS):
-        if k not in model.models:
+        if k not in model.models and k not in FEWSHOT:
             print(f"wake word {k}: not in loaded models, skipped", flush=True)
             WORDS.pop(k)
     for k, w in WORDS.items():
@@ -1326,7 +1474,21 @@ def post_state(state=None, **kw):
 
 
 def scores(model, pcm):
-    return model.predict(pcm)
+    """openWakeWord scores, plus a score for each recorded word from the same 80 ms embedding Hey Grok just used."""
+    sc = model.predict(pcm)
+    if FEWSHOT:
+        sc = dict(sc)
+        e = model.preprocessor.feature_buffer[-1].astype(np.float32)
+        e = e / (np.linalg.norm(e) + 1e-6)
+        for k, m in FEWSHOT.items():
+            sc[k] = m.feed(e)
+    return sc
+
+
+def reset_detect(model):
+    model.reset()
+    for m in FEWSHOT.values():
+        m.reset()
 
 
 def test(path):
@@ -1352,16 +1514,30 @@ def test(path):
         print(f"{os.path.basename(path)}: no trigger; peaks: {others}")
 
 
-def bench(seconds=30):
+def bench(seconds=30, path=None):
     model = load_model()
     x = (np.random.randn(16000 * seconds) * 1000).astype("<i2")
+    if path:  # recorded audio instead of noise: a 16 kHz mono WAV
+        with wave.open(path) as w:
+            x = np.frombuffer(w.readframes(w.getnframes()), "<i2")
+        while len(x) < 16000 * 4:
+            x = np.concatenate([x, x])
     for i in range(0, 16000 * 2, CHUNK):
-        model.predict(x[i:i + CHUNK])
+        scores(model, x[i:i + CHUNK])
     t, n = time.process_time(), 0
     for i in range(0, len(x) - CHUNK, CHUNK):
-        model.predict(x[i:i + CHUNK]); n += 1
+        scores(model, x[i:i + CHUNK]); n += 1
     ms = (time.process_time() - t) / n * 1000
-    print(f"bench: {len(WORDS)} words, {ms:.2f} ms CPU per 80 ms frame = {ms / 80 * 100:.1f}% of one core")
+    fs_ms = 0.0
+    if FEWSHOT:  # the template match alone, on the same frames
+        e = model.preprocessor.feature_buffer[-1].astype(np.float32)
+        t = time.process_time()
+        for _ in range(n):
+            for m in FEWSHOT.values():
+                m.feed(e)
+        fs_ms = (time.process_time() - t) / n * 1000
+    print(f"bench: {len(WORDS)} words ({len(FEWSHOT)} recorded), {ms:.2f} ms CPU per 80 ms frame = "
+          f"{ms / 80 * 100:.1f}% of one core; recorded-word matching {fs_ms:.3f} ms of that")
 
 
 class Session:
@@ -1739,7 +1915,7 @@ def main():
                 except Exception as e:
                     print(f"enroll failed: {type(e).__name__}", flush=True)
                     post_state("error", text="Enrollment stopped.")
-                model.reset(); det.reset()
+                reset_detect(model); det.reset()
                 continue
             if RELOAD.is_set() and not sess:
                 RELOAD.clear()
@@ -1751,7 +1927,7 @@ def main():
             LIVE["session"] = bool(sess and sess.active)
             if sess and not sess.active:
                 sess = None
-                model.reset()  # drop audio features from the session before listening again
+                reset_detect(model)  # drop audio features from the session before listening again
                 det.reset()
             if sess:
                 if sess.feeding:
@@ -1808,7 +1984,8 @@ if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--test":
         test(sys.argv[2])
     elif len(sys.argv) in (2, 3) and sys.argv[1] == "--bench":
-        bench(int(sys.argv[2]) if len(sys.argv) == 3 else 30)
+        a = sys.argv[2] if len(sys.argv) == 3 else "30"
+        bench(30, a) if a.endswith(".wav") else bench(int(a))
     elif len(sys.argv) == 2 and sys.argv[1] == "--sync":
         sync_personas()
         sync_wakewords()

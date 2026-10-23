@@ -1,51 +1,88 @@
-# Enroll mode: real-voice wake-word training
+# Custom wake words
 
-**Where training runs.** The station records the clips (10 per session) but does not train: openWakeWord training needs a large synthetic set and hours of compute, which a Pi can't do. A training computer set up with the `train/` scripts picks up the clips, trains, applies the quality gate (real held-out recall at least 0.80) and publishes the model back. Until that computer is set up, a recorded word stays "Saved" and isn't used. Bots named like a shipped starter model (Ash, Miles, Kai, Piper, Jules, Rhea) work without training.
+Hey Grok is built in. Every other wake word is made on the station from your own voice. You record the phrase 10
+times and the station builds the word from those recordings in a few seconds. There's no training computer and no
+upload.
 
-Goal: record 20-30 real clips of a wake phrase on the station, train on the training host with those
-clips mixed into the synthetic set, gate on the same bar (recall >= 0.80, <= 1.0 false wakes per hour), and have
-the station load the new model and its threshold/patience automatically. Never started by voice.
+## Make a wake word for a bot
+
+1. Open the admin page, go to **Wake words**, and add a phrase for the bot, like "Hey Rhea". Use 2 to 4 words.
+2. Stand where you normally talk to the station, and keep the room quiet.
+3. Press **Record**. The station listens to the room for 3 seconds first, so stay quiet until the first chime.
+4. Say the phrase after each chime, 10 times, the way you would normally say it.
+5. Wait a few seconds while it checks the recordings. Then it shows one of these:
+   - **Ready.** Say the phrase and the station starts that bot.
+   - **Not good enough yet.** Press **Train more** to record 10 more. The new recordings are added to the old
+     ones, and the word is rebuilt. You can do this more than once.
+   - **Sounds too much like Hey Grok** (or another of your words). Pick a different phrase.
+6. Delete a word to remove it and all of its recordings.
+
+"Hey Grok, ask Rhea …" always works too, with no recording.
+
+## How it works
+
+- **Same features as Hey Grok.** openWakeWord turns every 80 ms of sound into a short list of numbers
+  (`melspectrogram.onnx` and `embedding_model.onnx`). Hey Grok's model reads that stream, and so do custom words.
+  This adds no audio processing (`wake/fewshot.py`).
+- **Templates.** Each recording becomes a template: the frames that cover the spoken phrase, up to 1.44 s.
+  At most 20 recordings per word are kept, the ones most like the others.
+- **Matching.** Each new frame is compared with every template using streaming dynamic time warping with cosine
+  distance, so a slower or faster delivery still lines up. The word's score is the mean of its best two template
+  scores. It has to stay over the word's threshold for 2 frames in a row (patience). The listener's normal cooldown
+  applies after any wake.
+- **How strict it is (calibration).** Each recording is scored against the other 9 (leave one out). The station
+  also scores these, which must never wake it:
+  - the 3 s of room noise recorded before the first chime
+  - a bank of everyday speech shipped with the station (`wake/models/fewshot_negatives.npz`, 210 sentences from
+    synthetic voices)
+  - your other custom words
+  - Hey Grok
+  The threshold sits between the loudest of those and the recordings it must hear.
+- **The quality gate.** The word is ready when at least 8 of 10 recordings are heard (80% after Train more) and the
+  weakest of them still beats the loudest negative by 0.03. Otherwise the station shows "Not good enough yet". If
+  Hey Grok fires on your recordings, or another of your words does, the phrase is refused.
+- **Files on the Pi.**
+  - Recordings and room noise: `/var/lib/grok-station/enroll/inbox/<phrase>/<session>/`
+  - The built word: `/opt/grok-station/wake/models/enrolled/<phrase>.fewshot.npz`, listed in
+    `wakewords.enrolled.json` as `"kind": "fewshot"` with its threshold
+  - The sensitivity slider doesn't change a recorded word's threshold. Train more to make it better.
+- **CPU.** Matching costs about 0.05 ms per word per 80 ms frame on a desktop CPU. Expect roughly 0.3 to 0.5 ms on
+  a Pi 4 and about twice that on a Pi 3B, so under 1% of a core per word. That's on top of the feature models that
+  run for Hey Grok anyway. Building a word took 1.7 s on a desktop, so expect about 10 to 30 s on a Pi. Check on
+  the Pi with `sudo -u grok /opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --bench some.wav`.
+  A 16 kHz mono recording works, or noise if you give a number of seconds.
+- **Who it works for.** It's tuned to the voice that recorded it. Other people may or may not wake it.
+
+## Offline eval (dev only)
 
 ```
- LAN client ──POST /enroll (show token)──▶ display :8787 ──▶ wake listener control 127.0.0.1:8789
- or on the Pi:  grok_wake.py --enroll hey_finn 25 ───────────────────────▶ (same control endpoint)
-                                                                                 │ pauses wake detection
- display "enroll" screen ◀── POST /state {"state":"enroll", phrase, i, n} ───────┤ chime, 2 s capture per clip,
-                                                                                 │ level/clip checks, retry
- relay (mTLS + relay token) ◀── POST /enroll/<phrase>/<session>/<NN>.wav ────────┤ upload each clip
-                            ◀── POST /enroll/<phrase>/<session>/done ────────────┘
-   writes $GROK_STATION_ENROLL/<phrase>/<session>/  (inbox, host dir)
- training host: enroll_watch.sh (launchd, every 60 s) ── READY session ──▶ enroll_train.sh (nice 10, caffeinate)
-   1 synthetic clips + features for the phrase (generated once if missing, e.g. hey_hank)
-   2 real clips: 80 % train (augmented x ROUNDS with RIRs + background), 20 % held out
-   3 train a variant from synthetic + real positive features, kept background/ACAV negatives
-   4 evaluate2 (FA/h on the 10.7 h validation set) + held-out real-clip recall per threshold/patience
-   5 gate: pick FA/h <= 1.0 config with best real recall; publish only if real recall >= 0.80
-     → $GROK_STATION_WAKEWORDS/<phrase>.onnx + <phrase>.json (threshold, patience, persona, metrics)
-   watchdog (same watch script): job dead without a result, or log idle > 30 min → STALL in enroll.log,
-   one automatic restart, then marks the session FAILED
- Pi: sync_wakewords (startup, hourly, every 5 min for 3 h after an upload) GET /wakewords + /wakeword/<file>
-   → /opt/grok-station/wake/models/enrolled/ + wakewords.enrolled.json (sha256 checked), detector reloads
-   between sessions; enrolled entries override the repo config for the same phrase.
+python3 tools/fewshot_tts.py en_US-libritts_r-medium.onnx /tmp/fsdata   # Piper TTS, 12 synthetic voices
+python tools/fewshot_eval.py /tmp/fsdata --bank wake/models/fewshot_negatives.npz
 ```
 
-On the station screen, a wake word with no persona shows the Echo mark on a surface-2 circle (not a portrait file). The boot splash is the same Echo brand; `tools/install-splash.sh` installs it.
+Run these with openwakeword 0.6.0 and onnxruntime installed, like the wake venv. The eval covers 4 phrases (hey ash,
+hey jules, hey rhea, okay milo), each enrolled from 4 voices with 10 recordings each.
 
-Privacy: clips stay on the LAN (Pi local copy + training host inbox). There is no speaker id. Sessions are
-timestamps, and a top-up merges earlier clips of the same phrase. The admin enroll request does not take a
-speaker. An older client that still sends `speaker` is ignored, not rejected. `/api/speakers` is gone. An existing
-`speakers.json` is left on disk and is never read or written. A stored model note may still contain old `speaker`,
-`speakers`, or `guest` fields; those are ignored when the note is loaded.
-Tokens stay in the existing secret files (`/etc/grok-station/env`, `/etc/grok-station/wake.env`, relay secrets).
-Phrases accepted: `^hey_[a-z]{2,16}$` and listed in `wakewords.json` (`words` or `enroll`). The station recorder
-also accepts `hey_<bot id>` (a letter first, then letters, digits, or hyphens). The relay upload may still only
-accept the letter-only form. The recorder asks for **20–30 clips, default 25**, on the admin page, the admin API,
-and the wake listener (`count must be 20-30`). 16 kHz mono PCM16 WAV.
+- True accepts: 20 more takes from the same voice, with room noise at 15 dB SNR.
+- False accepts: 10 minutes of everyday speech and near misses from voices not used in the bank, plus the other
+  phrases.
 
-`enroll/status.json` (and each session's `.outcome.json`) uses `recording`, `processing`, `published`,
-`failed_quality`, or `failed`. `done` is not a success. "JOB DONE published" is `published`. "JOB DONE below the
-gate, not published" is `failed_quality` and keeps the gate scores (recall and false accepts versus recall 0.80 and
-1.0 false accepts per hour). A check run ("JOB DONE check (…), not published") is `failed` and is never published.
-When the wake listener sees `published` or `failed_quality`, the station display shows a `notice` for about 10
-seconds: "Hey Finn is ready", or "Hey Finn needs more clips. Record 20-30 somewhere quiet." A hard failure stays on
-the enrollment error screen. A tool card still holds 4 seconds after a session; that is separate from the notice.
+Results at 0.10.0 (synthetic voices, so a sanity check, not a real-room number):
+
+| | Result |
+|---|---|
+| Passed the gate | 13 of 16 enrollments. The 3 failures were all "hey rhea", the shortest phrase, which correctly asked for Train more. |
+| Same-voice true accept | 92.7% |
+| Other-voice accept | 55% (it's tuned to one voice) |
+| False accepts | 0 in 2.5 h of speech |
+
+Real rooms, real mics and real voices will be worse than this.
+
+## Advanced: a model trained on another computer
+
+The older path still works. A computer with the `train/` scripts can train a full openWakeWord model from the
+clips in the inbox. Put the trained `<phrase>.onnx` and its `<phrase>.json` (with `sha256`, `threshold`, `patience`
+and `persona`) in `/var/lib/grok-station/wakewords`, then run `grok_wake.py --sync` or wait for the listener's sync.
+An uploaded model replaces a recorded word with the same name. See `train/README.md`.
+
+Privacy: recordings stay on the station. There is no speaker id, and nothing is uploaded.
