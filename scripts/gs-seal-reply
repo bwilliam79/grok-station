@@ -76,6 +76,23 @@ def _trusted_path(path, uid, kind):
     return True
 
 
+def invoked_path_ok(script_file):
+    """The path as invoked, and every parent up to /, must not be a symlink. Checked before any resolving."""
+    if not isinstance(script_file, str) or not script_file or "\x00" in script_file:
+        return False
+    try:
+        cur = os.path.abspath(script_file)
+        while True:
+            if stat.S_ISLNK(os.lstat(cur).st_mode):
+                return False
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                return True
+            cur = parent
+    except (OSError, ValueError):
+        return False
+
+
 def script_tree_ok(script_file, uid, root_path):
     """Resolved script, gs_seal_common.py beside it, and parents through root_path are trusted."""
     if not isinstance(script_file, str) or not isinstance(root_path, str):
@@ -85,6 +102,8 @@ def script_tree_ok(script_file, uid, root_path):
     try:
         uid = int(uid)
     except (TypeError, ValueError):
+        return False
+    if not invoked_path_ok(script_file):
         return False
     try:
         resolved = os.path.realpath(script_file)

@@ -1140,6 +1140,47 @@ class SealReply(unittest.TestCase):
             self.assertEqual(err.getvalue(), "refused\n")
             self.assertEqual(mod._stdlib_dirs(), gsc._stdlib_dirs())
 
+    def test_symlinked_call_path_refuses_before_resolving(self):
+        for mod in (gs, su):
+            head = self.slurp(SCRIPT if mod is gs else SETUP)
+            body = head.split("def script_tree_ok(", 1)[1].split("\ndef ", 1)[0]
+            self.assertLess(body.index("invoked_path_ok(script_file)"), body.index("os.path.realpath"))
+            base = os.path.realpath(tempfile.mkdtemp(dir=self.home))
+            os.chmod(base, 0o755)
+            script_dir = os.path.join(base, "bin")
+            os.mkdir(script_dir, 0o755)
+            script = os.path.join(script_dir, "gs-seal-reply")
+            with open(script, "w") as fh:
+                fh.write("#!/usr/bin/python3 -I\n")
+            os.chmod(script, 0o755)
+            common = os.path.join(script_dir, "gs_seal_common.py")
+            with open(common, "w") as fh:
+                fh.write("# common\n")
+            os.chmod(common, 0o644)
+            uid = os.geteuid()
+            self.assertTrue(mod.invoked_path_ok(script))
+            self.assertTrue(mod.script_tree_ok(script, uid, base))
+            link_dir = os.path.join(base, "links")
+            os.mkdir(link_dir, 0o755)
+            link = os.path.join(link_dir, "gs-seal-reply")
+            os.symlink(script, link)
+            self.assertFalse(mod.invoked_path_ok(link))
+            self.assertFalse(mod.script_tree_ok(link, uid, base))
+            dir_link = os.path.join(base, "binlink")
+            os.symlink(script_dir, dir_link)
+            via_dir = os.path.join(dir_link, "gs-seal-reply")
+            self.assertFalse(mod.invoked_path_ok(via_dir))
+            self.assertFalse(mod.script_tree_ok(via_dir, uid, base))
+            err = io.StringIO()
+            with _patched(sys, "stderr", err):
+                with self.assertRaises(SystemExit) as caught:
+                    mod._enforce_script_tree(link, uid, base)
+            self.assertEqual(caught.exception.code, 1)
+            self.assertEqual(err.getvalue(), "refused\n")
+            self.assertTrue(mod.script_tree_ok(script, uid, base))
+            self.assertFalse(mod.invoked_path_ok(""))
+            self.assertFalse(mod.invoked_path_ok("a\x00b"))
+
     def _trusted_vendor(self, home, files):
         vendor = os.path.join(home, ".config", "grok-station", "vendor")
         for rel, data in files.items():

@@ -60,3 +60,9 @@ Minor release. Installs over 0.7.0.
 - **Trusted imports.** Before importing anything, both scripts check the script, its helper and every parent folder, and every standard library folder they put on the path (owned by you or root, no group or world write, no symlinks). PyNaCl comes from a hash-locked vendor folder (`scripts/vendor-lock.txt`, `--require-hashes --only-binary :all:`), checked against a SHA-256 manifest on every run.
 - **Not enabled yet.** The Add bot flow still offers cloud mode only. Home mode will be enabled after its first validation run.
 
+
+## 0.8.1
+
+Patch release. Installs over 0.8.0.
+
+- **Symlinked call path refused.** `gs-seal-setup` and `gs-seal-reply` now check the path they were invoked by, before resolving it: if that path or any parent folder is a symlink, they print `refused` and exit 1. Run them from the real install directory. Home mode stays off in Add bot.
