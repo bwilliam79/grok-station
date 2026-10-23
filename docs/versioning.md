@@ -115,3 +115,13 @@ Minor release. Installs over 0.8.12.
 - **Deploy step in the setup prompt.** The instructions copied from Add bot replace the one-time keygen lines with a section, "Deploy bot key setup on system running Grok Bot (one time)". It names the files and the directory they land in. For a bot-computer key, run it on your own computer and on the home computer running Grok Bot. For a home-computer key, run it on that home computer. It asks before the script runs, it is one time, and the station never pushes code or asks for those files again. The script is filled in with the bot id, the station address, the certificate fingerprint, and the station key. After it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key. The routine the bot follows for each question is unchanged.
 - **No partial installs.** Files move into place only after key setup succeeds. Clear messages on a failed step or a missing pinned file. Downloads never follow redirects.
 - **Release check.** `tools/check-deploy-pins.py` proves the pinned files match git and GitHub. Home setup is macOS only.
+
+## 0.9.1
+
+Patch release. Installs over 0.9.0.
+
+- **Card image builds again.** `tools/build-image/build-image.sh` works with the current Raspberry Pi OS list, which no longer publishes a download checksum for Lite; the `.sha256` file published beside the image is used instead.
+- **Any network on first boot.** The card no longer needs Ethernet. It waits up to 10 minutes for a cable, Wi-Fi set in Raspberry Pi Imager, or Wi-Fi added at build time with `--wifi-from-env` (values come from the environment and are never printed).
+- **Build on macOS, Windows or Linux.** `tools/build-image/docker-build.sh` and `docker-build.ps1` run the Linux build in a container. When a container has no partition devices, the build attaches the root partition by offset.
+- **Same install as a normal setup.** The card runs the same `install.sh` on first boot. `install.sh` now installs `git` and `ca-certificates` itself, so an image-built station gets a git clone and in-app updates. A test fails if first boot starts doing install steps of its own.
+- **Clear screen while installing.** First boot shows "Installing Grok Station" and the plain step names; details go to the log.

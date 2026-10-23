@@ -5,7 +5,8 @@
 # It downloads the image Raspberry Pi publishes, checks the published SHA256,
 # loop-mounts the root filesystem, and copies this repository (git archive of
 # HEAD) plus a first-boot unit. The unit runs install.sh once on the Pi.
-# No Wi-Fi profile, SSH key, hostname, or password is written.
+# No SSH key, hostname, or password is written, and no Wi-Fi profile unless
+# --wifi-from-env is given.
 #
 # Loop-mount needs root: losetup turns the image file into a block device and
 # mount attaches its ext4 root. Only that file is attached. The computer's
@@ -32,6 +33,7 @@ SECRET_PATH_RE='(^|/)\.git(/|$)|(^|/)\.env$|(^|/)id_rsa$|(^|/)id_ed25519$|(^|/)\
 
 DRY=0
 XZ=0
+WIFI=0
 OUTPUT=
 MODE=build
 SELECT_ONLY=
@@ -56,11 +58,14 @@ usage: sudo tools/build-image/build-image.sh [--dry-run] [--xz] [--output PATH]
 
 Download the official Raspberry Pi OS Lite (64-bit) image, check its
 published SHA256, and add this repository plus a first-boot unit.
-Writes an .img (or .img.xz with --xz). Does not set Wi-Fi, SSH, a
+Writes an .img (or .img.xz with --xz). Sets Wi-Fi only with --wifi-from-env; never SSH, a
 hostname, or a password.
 
   --dry-run           print every action and change nothing (no root, no network)
   --xz                compress the finished image with xz
+  --wifi-from-env     add one Wi-Fi network from GS_WIFI_SSID, GS_WIFI_PSK and
+                      GS_WIFI_COUNTRY (never printed; the image then holds
+                      that password, so do not share it)
   --output PATH       image file to write (refuses /dev and existing files)
   --select-only FILE  print the Lite arm64 entry in an OS-list JSON, then stop
   --check-url URL     exit 0 only if URL is https://downloads.raspberrypi.com/...
@@ -172,7 +177,11 @@ def lite_arm64(node):
         return None
     sha = (node.get("image_download_sha256") or "").lower()
     ext = (node.get("extract_sha256") or "").lower()
-    if not is_hex64(sha) or not is_hex64(ext):
+    # The current OS list publishes extract_sha256 but not always
+    # image_download_sha256. A missing download hash is allowed; the bash side
+    # then requires the <image>.img.xz.sha256 sibling instead. A present but
+    # malformed hash still rejects the entry.
+    if not is_hex64(ext) or (sha and not is_hex64(sha)):
         return None
     return {
         "url": url,
@@ -377,6 +386,31 @@ verify_sha256() {
   (cd "$dir" && sha256sum -c "$sums") || die "SHA256 mismatch (${label})"
 }
 
+check_wifi_env() {
+  [[ -n "${GS_WIFI_SSID:-}" ]] || die "--wifi-from-env needs GS_WIFI_SSID"
+  [[ "${#GS_WIFI_SSID}" -le 32 ]] || die "GS_WIFI_SSID is longer than 32 bytes"
+  [[ "${#GS_WIFI_PSK}" -ge 8 && "${#GS_WIFI_PSK}" -le 63 ]] || die "GS_WIFI_PSK must be 8 to 63 characters"
+  [[ "${GS_WIFI_COUNTRY:-}" =~ ^[A-Z]{2}$ ]] || die "GS_WIFI_COUNTRY must be a two-letter code such as US"
+  case "$GS_WIFI_SSID$GS_WIFI_PSK" in
+    *$'\n'*|*$'\r'*) die "Wi-Fi values must be one line" ;;
+  esac
+}
+
+# NetworkManager keyfile, root-only. Raspberry Pi OS keeps Wi-Fi blocked until
+# a country is set, so firstboot.sh sets it from the country file.
+write_wifi() {
+  local mnt=$1 dir esc_ssid esc_psk
+  dir="${mnt}/etc/NetworkManager/system-connections"
+  install -d -m 0700 "$dir"
+  esc_ssid=${GS_WIFI_SSID//\\/\\\\}
+  esc_psk=${GS_WIFI_PSK//\\/\\\\}
+  (umask 077
+   printf '[connection]\nid=grok-station-wifi\ntype=wifi\nautoconnect=true\n\n[wifi]\nmode=infrastructure\nssid=%s\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk=%s\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n' \
+     "$esc_ssid" "$esc_psk" > "${dir}/grok-station-wifi.nmconnection"
+   printf '%s\n' "$GS_WIFI_COUNTRY" > "${mnt}/var/lib/grok-station-firstboot-wifi-country")
+  chown root:root "${dir}/grok-station-wifi.nmconnection" "${mnt}/var/lib/grok-station-firstboot-wifi-country"
+}
+
 need_live_tools() {
   local cmd
   for cmd in curl sha256sum xz git python3 losetup mount umount mountpoint tar install stat; do
@@ -396,9 +430,12 @@ archive_is_clean() {
 }
 
 build() {
-  local selection url json_sha ext_sha rel dl_size ext_size base sib_url sib_hash="" published img uncomp part unit_src ver waited line
+  local p2_start p2_len selection url json_sha ext_sha rel dl_size ext_size base sib_url sib_hash="" published img uncomp part unit_src ver waited line
   local -a hashes
 
+  if [[ "$WIFI" -eq 1 ]]; then
+    check_wifi_env
+  fi
   REPO=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
   COMMIT=$(git -C "$REPO" -c "safe.directory=${REPO}" rev-parse HEAD)
   if [[ -n "$(git -C "$REPO" -c "safe.directory=${REPO}" status --porcelain)" ]]; then
@@ -435,7 +472,7 @@ build() {
   # --- step 2. Pick Lite (64-bit) only. Newest release_date wins.
   step 2 "select Raspberry Pi OS Lite (64-bit) from that list"
   printf '  require host downloads.raspberrypi.com and path raspios_lite_arm64\n'
-  printf '  require published image_download_sha256 and extract_sha256\n'
+  printf '  require published extract_sha256, and image_download_sha256 or a .sha256 sibling\n'
   if [[ "$DRY" -eq 1 ]]; then
     printf '+ python3 select the newest name containing Lite and 64-bit\n'
   else
@@ -456,7 +493,7 @@ build() {
         extract_size=*) ext_size=${line#extract_size=} ;;
       esac
     done <<< "$selection"
-    [[ -n "$url" && -n "$json_sha" && -n "$ext_sha" ]] || die "OS list selection is incomplete"
+    [[ -n "$url" && -n "$ext_sha" ]] || die "OS list selection is incomplete"
     assert_image_url "$url"
     printf '  selected %s\n' "$url"
     printf '  release_date %s\n' "$rel"
@@ -487,9 +524,14 @@ build() {
       sib_hash=$(parse_sums "${WORKDIR}/image.sha256" "$base")
       printf '  sibling checksum published\n'
     else
+      [[ -n "$json_sha" ]] || die "no published download checksum (no image_download_sha256 and no .sha256 sibling)"
       printf '  no sibling .sha256; using image_download_sha256 from the official OS list\n'
     fi
-    hashes=("$json_sha")
+    # At least one download hash must exist (agree dies with none).
+    hashes=()
+    if [[ -n "$json_sha" ]]; then
+      hashes+=("$json_sha")
+    fi
     if [[ -n "$sib_hash" ]]; then
       hashes+=("$sib_hash")
     fi
@@ -543,6 +585,26 @@ build() {
       sleep 0.1
       waited=$((waited + 1))
     done
+    if [[ ! -b "$part" ]]; then
+      # No udev (containers, Docker Desktop): attach partition 2 by offset.
+      losetup -d "$LOOP"
+      LOOP=
+      read -r p2_start p2_len < <(python3 - "$img" <<'PY'
+import struct, sys
+mbr = open(sys.argv[1], "rb").read(512)
+if mbr[510:512] != b"\x55\xaa":
+    sys.exit("no MBR")
+e = mbr[446 + 16:446 + 32]
+start, length = struct.unpack("<II", e[8:16])
+if e[4] != 0x83 or not start or not length:
+    sys.exit("partition 2 is not Linux")
+print(start * 512, length * 512)
+PY
+) || die "cannot read partition 2 from the image"
+      LOOP=$(losetup --find --show --offset "$p2_start" --sizelimit "$p2_len" "$img")
+      part=$LOOP
+      printf '  no partition nodes; attached partition 2 by offset\n'
+    fi
     [[ -b "$part" ]] || die "partition 2 did not appear on ${LOOP}"
     MNT="${WORKDIR}/mnt"
     mkdir -p "$MNT"
@@ -594,6 +656,17 @@ build() {
     chmod 0644 "${MNT}/var/lib/grok-station-firstboot"
   fi
 
+  # --- optional Wi-Fi. Values come from the environment and are never printed.
+  if [[ "$WIFI" -eq 1 ]]; then
+    printf '  wifi: adding one NetworkManager profile (values not shown)\n'
+    if [[ "$DRY" -eq 1 ]]; then
+      printf '+ write /etc/NetworkManager/system-connections/grok-station-wifi.nmconnection (0600)\n'
+      printf '+ write /var/lib/grok-station-firstboot-wifi-country (0600)\n'
+    else
+      write_wifi "$MNT"
+    fi
+  fi
+
   # --- step 10. Detach the loop device and write the output file.
   step 10 "write the image"
   printf '  output: %s\n' "$OUTPUT"
@@ -632,6 +705,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY=1; shift ;;
     --xz) XZ=1; shift ;;
+    --wifi-from-env) WIFI=1; shift ;;
     --output)
       [[ $# -ge 2 && "$2" != -* ]] || usage_err
       OUTPUT=$2

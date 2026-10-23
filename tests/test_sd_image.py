@@ -2,6 +2,7 @@
 """SD image builder: dry-run plan, published-checksum selection, no secrets, first-boot unit."""
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -151,10 +152,14 @@ class SdImage(unittest.TestCase):
         self.assertNotIn("BEGIN OPENSSH PRIVATE KEY", blob)
         self.assertNotIn("BEGIN RSA PRIVATE KEY", blob)
         self.assertNotRegex(blob, r"ssh-(rsa|ed25519) AAAA")
+        # The only Wi-Fi secret is the opt-in --wifi-from-env placeholder, filled from the environment.
         self.assertNotRegex(blob, r"(?i)\b(pass(word)?|psk|secret)\b\s*[:=]\s*\S+")
+        self.assertIn('"$esc_ssid" "$esc_psk" > ', script)
+        self.assertNotRegex(script, r"printf[^\n]*GS_WIFI_PSK[^\n]*>&2")
         self.assertNotIn("wpa_supplicant", blob)
         self.assertNotIn("userconf.txt", blob)
-        self.assertNotIn("nmcli", blob)
+        self.assertNotIn("nmcli", script)
+        self.assertNotRegex(parts[1], r"nmcli (?!connection up grok-station-wifi)")
         self.assertNotRegex(blob, r"grok-station-[0-9A-F]{4}")
         self.assertNotIn("hearth-", blob)
 
@@ -249,6 +254,31 @@ class SdImage(unittest.TestCase):
         proc = self.run_script("--select-only", "/no/such/os-list.json")
         self.assertNotEqual(proc.returncode, 0)
 
+    def test_select_allows_missing_download_hash(self):
+        # The live OS list (Oct 2026) publishes extract_sha256 only; the
+        # .img.xz.sha256 sibling covers the download in that case.
+        url = (
+            "https://downloads.raspberrypi.com/raspios_lite_arm64/images/"
+            "raspios_lite_arm64-2026-10-06/2026-10-06-raspios-trixie-arm64-lite.img.xz"
+        )
+        entry = {"name": "Raspberry Pi OS Lite (64-bit)", "url": url,
+                 "extract_sha256": H_EXT, "release_date": "2026-10-06"}
+        doc = {"os_list": [{"name": "Raspberry Pi OS (other)", "subitems": [entry]}]}
+        proc = self.select(doc)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("url=" + url + "\n", proc.stdout)
+        self.assertIn("image_download_sha256=\n", proc.stdout)
+        bad = dict(entry, image_download_sha256="nothex")
+        self.assertNotEqual(self.select({"os_list": [bad]}).returncode, 0)
+        script = open(SCRIPT, encoding="utf-8").read()
+        self.assertIn("no published download checksum", script)
+
+    def test_firstboot_restores_git_clone(self):
+        fb = open(FIRSTBOOT, encoding="utf-8").read()
+        self.assertLess(fb.index("install.sh"), fb.index("git -C"))
+        self.assertIn("fetch --quiet origin main", fb)
+        self.assertLess(fb.index("reset --quiet --mixed"), fb.index('rm -f -- "$STAMP"'))
+
     def test_url_allowlist(self):
         proc = self.run_script("--check-image-url", NEW_URL)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -333,3 +363,30 @@ class SdImage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImageInstallParity(unittest.TestCase):
+    """An image-built station must get every install.sh fix by running install.sh itself."""
+
+    def setUp(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.fb = open(FIRSTBOOT, encoding="utf-8").read()
+        self.install = open(os.path.join(root, "install.sh"), encoding="utf-8").read()
+        self.boot = open(os.path.join(root, "bootstrap.sh"), encoding="utf-8").read()
+        self.build = open(SCRIPT, encoding="utf-8").read()
+
+    def test_firstboot_runs_install_sh_and_nothing_of_its_own(self):
+        self.assertIn('sh "$SRC/install.sh" --no-reboot', self.fb)
+        for own in ("apt-get", "pip ", "useradd", "systemctl enable", "amixer", "powersave",
+                    "journald", "/opt/grok-station", "/etc/grok-station"):
+            self.assertNotIn(own, self.fb, own)
+
+    def test_build_does_not_bake_install_steps(self):
+        for own in ("/opt/grok-station", "/etc/grok-station", "apt-get", "chroot", "powersave"):
+            self.assertNotIn(own, self.build, own)
+
+    def test_install_sh_has_every_package_bootstrap_installs(self):
+        pk = re.search(r"st_packages\(\) \{(.*?)\n\}", self.install, re.S).group(1)
+        for line in re.findall(r"apt-get install[^;}]*", self.boot):
+            for name in re.findall(r"\b([a-z0-9][a-z0-9.+-]+)\b", line.split("--no-install-recommends", 1)[-1]):
+                self.assertIn(" " + name, pk, name)

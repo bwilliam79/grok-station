@@ -107,7 +107,7 @@ stage() {
 st_packages() {
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame \
-    python3-qrcode python3-venv python3-pip python3-cryptography alsa-utils openssl curl libegl1 libegl-mesa0 libgles2 \
+    python3-qrcode python3-venv python3-pip python3-cryptography alsa-utils openssl curl git ca-certificates libegl1 libegl-mesa0 libgles2 \
     libgbm1 libgl1-mesa-dri
 }
 

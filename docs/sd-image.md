@@ -2,7 +2,7 @@
 
 `tools/build-image/build-image.sh` builds a card image on a Linux computer. It is not a prebuilt grok-station image. The script downloads the official Raspberry Pi OS Lite (64-bit) image, checks the checksum Raspberry Pi publishes, and copies this repository onto that image. You write the result with any image tool.
 
-Nothing in the image is a Wi-Fi profile, an SSH key, a hostname, or a password. The login account, if you want one, is created by Raspberry Pi OS on first boot, or by the imager you use to write the card. This script does not create it.
+Nothing in the image is an SSH key, a hostname, or a password. A Wi-Fi profile is added only with `--wifi-from-env` (see **Wi-Fi** below). The login account, if you want one, is created by Raspberry Pi OS on first boot, or by the imager you use to write the card. This script does not create it.
 
 The copy is `git archive` of `HEAD`. Uncommitted files and `.git` are not included. On the Pi, a one-shot systemd unit runs `install.sh` and reboots. After that, the station services are the ones `install.sh` already enables. No new port is opened. With no cable and no saved Wi-Fi, the existing setup hotspot starts (`admin/grok_admin.py` `hotspot_loop`). That is the AP setup mode. This script does not start an access point of its own.
 
@@ -14,9 +14,32 @@ The copy is `git archive` of `HEAD`. Uncommitted files and `.git` are not includ
 - Several gigabytes free. The script keeps the download, the uncompressed image, and the output at the same time.
 - A microSD card of 16 GB or more, as in the main install guide.
 
-## Build
+## Build on macOS, Windows, or Linux
 
-From a checkout of this repository:
+`tools/build-image/docker-build.sh` (macOS, Linux, WSL) and `tools/build-image/docker-build.ps1` (Windows PowerShell) run `build-image.sh` inside a `debian:trixie` container with `--privileged`, because the build attaches the image file with `losetup`. The image is written to the repository folder. Docker Desktop has no partition devices for loop images, so the build attaches the root partition by its offset when `<loop>p2` does not appear. The offset path was tested on Linux without Docker; the Docker scripts themselves have not been run yet, on any OS.
+
+```bash
+tools/build-image/docker-build.sh grok-station.img            # macOS / Linux
+```
+
+```powershell
+.\tools\build-image\docker-build.ps1 -Name grok-station.img   # Windows
+```
+
+## Wi-Fi
+
+The card needs the internet on its second boot, because `install.sh` downloads packages and Python wheels. The setup hotspot belongs to the installed station, so it cannot carry that first install. Any network works: a cable, Wi-Fi set in Raspberry Pi Imager, or Wi-Fi added at build time:
+
+```bash
+export GS_WIFI_SSID=... GS_WIFI_PSK=... GS_WIFI_COUNTRY=US
+sudo -E tools/build-image/build-image.sh --wifi-from-env --output "$HOME/grok-station.img"
+```
+
+The values are read from the environment, checked, and never printed. They are written as a root-only NetworkManager profile (`grok-station-wifi`) and a country file that first boot uses to unblock Wi-Fi. The password is inside the image file, so don't share the file. With saved Wi-Fi in range, the station joins it and does not start the setup hotspot.
+
+## Build on Linux directly
+
+From a clean checkout of this repository (the script refuses uncommitted changes, because the image is `git archive HEAD`):
 
 ```bash
 tools/build-image/build-image.sh --dry-run
@@ -34,11 +57,11 @@ The script prints the same step numbers in `--dry-run` and in a real build.
 
 1. **Fetch the official OS list.** The URL is `https://downloads.raspberrypi.com/os_list_imagingutility_v4.json`, the list Raspberry Pi Imager uses. No checksum is stored in this repository. Downloads are https only, with a size ceiling, and a redirect is refused unless the final URL is still on `downloads.raspberrypi.com`.
 
-2. **Select Raspberry Pi OS Lite (64-bit).** The entry's name contains `Lite` and `64-bit`, and its URL is under `https://downloads.raspberrypi.com/raspios_lite_arm64/images/<release>/<file>.img.xz`. The file name contains `lite` and `arm64`. The newest `release_date` wins. Two different images with the same date stop the script. Desktop, 32-bit, and any other host are ignored.
+2. **Select Raspberry Pi OS Lite (64-bit).** The entry's name contains `Lite` and `64-bit`, and its URL is under `https://downloads.raspberrypi.com/raspios_lite_arm64/images/<release>/<file>.img.xz`. The file name contains `lite` and `arm64`. The entry must publish `extract_sha256`. The newest `release_date` wins. Two different images with the same date stop the script. Desktop, 32-bit, Legacy (bookworm), and any other host are ignored.
 
 3. **Download the `.img.xz`.** The ceiling is 2 GB. If the list publishes `image_download_size`, the file must be that size.
 
-4. **Verify the download.** The hash is `image_download_sha256` from the OS list. If Raspberry Pi also published `<image>.img.xz.sha256` beside the file, that hash must be the same. The script then runs `sha256sum -c`. A mismatch stops the build before anything is mounted.
+4. **Verify the download.** The hash is `<image>.img.xz.sha256`, published beside the file, and `image_download_sha256` from the OS list when the list has it (the current list often does not). When both exist they must be the same; when neither exists the build stops. The script then runs `sha256sum -c`. A mismatch stops the build before anything is mounted.
 
 5. **Decompress.** `xz --robot --list` must show an uncompressed size of at most 8 GB, and that size must match `extract_size` when the list publishes one.
 
@@ -58,9 +81,9 @@ Raspberry Pi OS expands the card on its own first boot and reboots. This script 
 
 On the next boot, `userconfig.service` (Raspberry Pi OS) may ask on the console for a username and password. The first-boot unit is ordered after that service when it exists. This repository does not write the account.
 
-The unit then runs `tools/build-image/firstboot.sh`, which runs `install.sh --no-reboot`. Ethernet needs to be connected for that boot: the image has no Wi-Fi profile, and `install.sh` installs packages. `GROK_STATION_NONINTERACTIVE` is left unset on purpose. That variable selects update mode and would start the services immediately. Fresh mode enables them and leaves them stopped until reboot.
+The unit then runs `tools/build-image/firstboot.sh`, which runs `install.sh --no-reboot`. The screen shows "Installing Grok Station" and the plain step names; details go to the log. First boot waits up to 10 minutes for any network (see **Wi-Fi**) and exits if there is none, so the next boot tries again. `GROK_STATION_NONINTERACTIVE` is left unset on purpose. That variable selects update mode and would start the services immediately. Fresh mode enables them and leaves them stopped until reboot.
 
-If `install.sh` fails, the stamp stays and the unit runs again on the next boot. If it succeeds, the script removes the stamp and the enable symlink, then reboots.
+If `install.sh` fails, the stamp stays and the unit runs again on the next boot. If it succeeds, the script turns `/usr/local/src/grok-station` into a git clone of the GitHub repository (installing `git` first, since Lite does not include it; fetch `main`, then point at the image's own commit), so the Updates page can update the station later. If that fetch fails the station still works, but in-app updates need a clone from `bootstrap.sh`. It then removes the stamp and the enable symlink, then reboots.
 
 The boot after that starts the station. The screen shows the setup code. Leave the cable in to open the admin page from another device on that network. Unplug the cable and reboot to use the setup hotspot: with no wired link and no saved Wi-Fi, `hotspot_loop` starts the access point and the display shows that hotspot screen. Join the network named on the screen and open the address shown there.
 
@@ -78,7 +101,7 @@ Logs: `journalctl -u grok-station-firstboot` and `/var/log/grok-station-install.
 
 ## How to write the card
 
-Use any tool that writes a whole-disk image. Do not apply a Wi-Fi profile. A Wi-Fi profile keeps the setup hotspot from starting while that network is in range. Leave the hostname and SSH keys unset. A username and password in the imager are optional; they only create the local account Raspberry Pi OS would otherwise ask for.
+Use any tool that writes a whole-disk image. Wi-Fi in the imager is fine; the station then uses that network instead of its setup hotspot. Leave the hostname and SSH keys unset. A username and password in the imager are optional; they only create the local account Raspberry Pi OS would otherwise ask for.
 
 - **Raspberry Pi Imager:** choose **Use custom** and select the `.img` or `.img.xz`. Skip OS customisation, or set a user only.
 - **balenaEtcher:** select the image file, select the card, and flash.
@@ -89,6 +112,10 @@ sudo dd if=grok-station-raspios-lite-arm64.img of=/dev/sdX bs=4M conv=fsync stat
 ```
 
 Writing the wrong device destroys that disk.
+
+## Same install as a normal setup
+
+The image does not copy install steps. First boot runs the repository's own `install.sh`, the same file `bootstrap.sh` runs, so every install fix (packages including `git`, users and secrets, Wi-Fi power save off, journal cap, display, relay, wake listener and mic gain, boot splash, admin page and update unit, health check) applies to an image-built station the same way. `tests/test_sd_image.py` (`ImageInstallParity`) fails if first boot or the build script starts doing install work of its own, or if `bootstrap.sh` installs a package `install.sh` does not.
 
 ## Validation on the Pi
 
