@@ -331,6 +331,10 @@ def main(argv=None):
         sp.add_argument("--bot", required=True)
         sp.add_argument("--station-pub", required=True)
         sp.add_argument("--request-id", required=True)
+    post.add_argument("--show", action="store_true", help="post a sealed card (from seal-show) to /voice/show")
+    seal_show = sub.add_parser("seal-show")
+    seal_show.add_argument("--bot", required=True)
+    seal_show.add_argument("--station-pub", required=True)
     show = sub.add_parser("show")
     show.add_argument("--bot", required=True)
     show.add_argument("--station-pub", required=True)
@@ -357,6 +361,22 @@ def main(argv=None):
             return rc
         print(body.decode())
         return 0
+    if args.cmd == "seal-show":  # cloud computer: seal a card; the home machine posts it with post --show
+        doc = _read_show()
+        if doc is None:
+            print("400 bad request")
+            return 1
+        seed = os.environ.get("GROK_STATION_BOT_KEY", "")
+        if not seed.strip():
+            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            return 2
+        try:
+            body = build_show(args.bot, doc, seed, args.station_pub)
+        except Exception:
+            print("400 bad request")
+            return 1
+        print(body.decode())
+        return 0
     if args.cmd == "post":
         pin = _post_args(args)
         if pin is None:
@@ -365,7 +385,7 @@ def main(argv=None):
         if body is None:
             print("400 bad request")
             return 1
-        return _do_post(args, body, pin)
+        return _do_post(args, body, pin, path="/voice/show" if args.show else "/voice/reply")
     if args.cmd == "send":
         pin = _post_args(args)
         if pin is None:
