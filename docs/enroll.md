@@ -1,5 +1,7 @@
 # Enroll mode: real-voice wake-word training
 
+**Where training runs.** The station records the clips (10 per session) but does not train: openWakeWord training needs a large synthetic set and hours of compute, which a Pi can't do. A training computer set up with the `train/` scripts picks up the clips, trains, applies the quality gate (real held-out recall at least 0.80) and publishes the model back. Until that computer is set up, a recorded word stays "Saved" and isn't used. Bots named like a shipped starter model (Ash, Miles, Kai, Piper, Jules, Rhea) work without training.
+
 Goal: record 20-30 real clips of a wake phrase on the station, train on the training host with those
 clips mixed into the synthetic set, gate on the same bar (recall >= 0.80, <= 1.0 false wakes per hour), and have
 the station load the new model and its threshold/patience automatically. Never started by voice.

@@ -38,6 +38,7 @@ Theme name: **Hearth**. Warm near-black, real persona photos in circles, one tea
 | warm | `--gs-warm` | `#FFE6BF` | Speaking; get-ready countdown; the admin's current-step marker |
 | amber | `--gs-amber` | `#F5C04A` | Warnings: setup needed, offline, update ready; admin errors ("Needs attention") and destructive actions; ringing timer |
 | amber-bg | `--gs-amber-bg` | `#33270F` | Banner fill |
+| gold | `--gs-gold` | `#FFC83D` | The main bot's star (★) in the admin Bots list. Nothing else |
 | red | `--gs-red` | `#FF5A52` | **Only** mic off and a home-feed stock-down arrow (▼). Never used in the admin (errors there are amber "Needs attention", §8.2) |
 | stock-up | — | `#4ADE80` | Home-feed trend up only, always with an arrow. Not a status color |
 | red-bg | `--gs-red-bg` | `#3A1513` | Mic-off fills only |

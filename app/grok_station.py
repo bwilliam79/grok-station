@@ -349,7 +349,7 @@ def logo_cache():
     global _LOGO
     if _LOGO is None:
         root = E("GROK_STATION_LOGO_CACHE", "/var/cache/grok-station/logos")
-        _LOGO = cards.LogoCache(root, cards.hosts_from_env(E("GROK_STATION_LOGO_HOSTS", "")))
+        _LOGO = cards.LogoCache(root, cards.hosts_from_env(os.environ.get("GROK_STATION_LOGO_HOSTS")))
     return _LOGO
 
 

@@ -2416,6 +2416,8 @@ def read_logo_hosts():
     try:
         with open(logo_hosts_path()) as f:
             doc = json.load(f)
+    except FileNotFoundError:
+        return list(load_cards().DEFAULT_LOGO_HOSTS)  # never saved: the display uses the same default
     except (OSError, ValueError):
         return []
     if not isinstance(doc, dict):

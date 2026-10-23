@@ -3,8 +3,12 @@
 # (64-bit) download. This script does not ship a prebuilt grok-station image.
 #
 # It downloads the image Raspberry Pi publishes, checks the published SHA256,
-# loop-mounts the root filesystem, and copies this repository (git archive of
-# HEAD) plus a first-boot unit. The unit runs install.sh once on the Pi.
+# grows the root filesystem, loop-mounts it, clones this repository from
+# GitHub at HEAD's commit (a real clone, so the web updater works), and runs
+# install.sh inside the image (arm64 chroot, qemu-user-static on other hosts)
+# with GROK_STATION_IMAGE_BUILD=1: packages, Python venvs and wake models.
+# A first-boot unit finishes install.sh offline on the Pi (secrets, files,
+# services). No network is needed on the Pi.
 # No SSH key, hostname, or password is written, and no Wi-Fi profile unless
 # --wifi-from-env is given.
 #
@@ -27,6 +31,9 @@ MAX_OS_LIST=$((5 * 1024 * 1024))
 MAX_SUMS=$((1024 * 1024))
 MAX_XZ=$((2 * 1024 * 1024 * 1024))
 MAX_IMG=$((8 * 1024 * 1024 * 1024))
+# Extra root filesystem space for packages and the Python venvs.
+GROW_BYTES=$((3 * 1024 * 1024 * 1024))
+REPO_URL=https://github.com/bwilliam79/grok-station.git
 
 # Archive member names that must not be copied onto the card.
 SECRET_PATH_RE='(^|/)\.git(/|$)|(^|/)\.env$|(^|/)id_rsa$|(^|/)id_ed25519$|(^|/)\.ssh/|\.pem$|(^|/)credentials\.json$|(^|/)secrets\.json$|(^|/)\.netrc$'
@@ -42,6 +49,9 @@ SUMS_FILE=
 SUMS_NAME=
 LOOP=
 MNT=
+CHROOT_MOUNTS=0
+QEMU_COPIED=
+RESOLV_SAVED=
 WORKDIR=
 REPO=
 COMMIT=
@@ -123,6 +133,9 @@ assert_image_url() {
 cleanup() {
   local rc=$?
   set +e
+  if [[ -n "$MNT" ]]; then
+    chroot_teardown
+  fi
   if [[ -n "$MNT" ]] && command -v mountpoint >/dev/null && mountpoint -q "$MNT"; then
     umount "$MNT"
   fi
@@ -411,11 +424,104 @@ write_wifi() {
   chown root:root "${dir}/grok-station-wifi.nmconnection" "${mnt}/var/lib/grok-station-firstboot-wifi-country"
 }
 
+# arm64 binaries in the chroot: native on an arm64 Linux host, otherwise the
+# kernel's binfmt_misc entry for qemu-aarch64 (Debian/Ubuntu package
+# qemu-user-static, plus binfmt-support on older releases).
+check_arm64_exec() {
+  [[ "$(uname -s)" == Linux ]] || die "the image build needs Linux (loop devices, ext4, chroot). See docs/sd-image.md for macOS and Windows."
+  [[ "$(uname -m)" == aarch64 ]] && return 0
+  local f
+  for f in /proc/sys/fs/binfmt_misc/qemu-aarch64 /proc/sys/fs/binfmt_misc/qemu-aarch64-static; do
+    if [[ -r "$f" ]] && grep -q '^enabled' "$f"; then
+      return 0
+    fi
+  done
+  die "no arm64 emulation. Install the qemu-user-static package (and binfmt-support on older releases), then re-run."
+}
+
+# Bind the host's /proc, /sys and /dev into the image root, give it a DNS
+# config, and stop package scripts from starting services in the chroot.
+chroot_setup() {
+  local mnt=$1 f interp
+  mount -t proc proc "${mnt}/proc"
+  mount --rbind /sys "${mnt}/sys"
+  mount --rbind /dev "${mnt}/dev"
+  CHROOT_MOUNTS=1
+  if [[ -e "${mnt}/etc/resolv.conf" || -L "${mnt}/etc/resolv.conf" ]]; then
+    mv -- "${mnt}/etc/resolv.conf" "${mnt}/etc/resolv.conf.grok-station-build"
+    RESOLV_SAVED=1
+  fi
+  cp -L /etc/resolv.conf "${mnt}/etc/resolv.conf"
+  printf '#!/bin/sh\nexit 101\n' > "${mnt}/usr/sbin/policy-rc.d"
+  chmod 0755 "${mnt}/usr/sbin/policy-rc.d"
+  # binfmt entries without the F flag look for the interpreter inside the chroot.
+  if [[ "$(uname -m)" != aarch64 ]]; then
+    for f in /proc/sys/fs/binfmt_misc/qemu-aarch64 /proc/sys/fs/binfmt_misc/qemu-aarch64-static; do
+      [[ -r "$f" ]] || continue
+      interp=$(awk '$1 == "interpreter" { print $2 }' "$f")
+      if [[ -n "$interp" && -x "$interp" ]] && ! grep -q '^flags:.*F' "$f" && [[ ! -e "${mnt}${interp}" ]]; then
+        install -D -m 0755 "$interp" "${mnt}${interp}"
+        QEMU_COPIED="${mnt}${interp}"
+      fi
+    done
+  fi
+}
+
+chroot_teardown() {
+  local mnt=$MNT
+  rm -f -- "${mnt}/usr/sbin/policy-rc.d"
+  if [[ -n "$QEMU_COPIED" ]]; then
+    rm -f -- "$QEMU_COPIED"
+    QEMU_COPIED=
+  fi
+  if [[ -n "$RESOLV_SAVED" ]]; then
+    rm -f -- "${mnt}/etc/resolv.conf"
+    mv -- "${mnt}/etc/resolv.conf.grok-station-build" "${mnt}/etc/resolv.conf"
+    RESOLV_SAVED=
+  fi
+  if [[ "$CHROOT_MOUNTS" -eq 1 ]]; then
+    umount -R "${mnt}/dev" 2>/dev/null || umount -lR "${mnt}/dev" || true
+    umount -R "${mnt}/sys" 2>/dev/null || umount -lR "${mnt}/sys" || true
+    umount "${mnt}/proc" 2>/dev/null || umount -l "${mnt}/proc" || true
+    CHROOT_MOUNTS=0
+  fi
+}
+
+# Grow partition 2 (the last MBR partition) to the end of the file.
+grow_partition2() {
+  local img=$1
+  python3 - "$img" <<'PY'
+import struct, sys
+path = sys.argv[1]
+with open(path, "r+b") as fh:
+    fh.seek(0, 2)
+    sectors = fh.tell() // 512
+    fh.seek(0)
+    mbr = bytearray(fh.read(512))
+    if mbr[510:512] != b"\x55\xaa":
+        sys.exit("no MBR")
+    off = 446 + 16
+    start, length = struct.unpack("<II", mbr[off + 8:off + 16])
+    if mbr[off + 4] != 0x83 or not start:
+        sys.exit("partition 2 is not Linux")
+    for i in (2, 3):
+        if mbr[446 + 16 * i + 4] != 0:
+            sys.exit("unexpected partition %d" % (i + 1))
+    new = sectors - start
+    if new < length:
+        sys.exit("image shrank")
+    mbr[off + 12:off + 16] = struct.pack("<I", new)
+    fh.seek(0)
+    fh.write(mbr)
+PY
+}
+
 need_live_tools() {
   local cmd
-  for cmd in curl sha256sum xz git python3 losetup mount umount mountpoint tar install stat; do
+  for cmd in curl sha256sum xz git python3 losetup mount umount mountpoint tar install stat chroot truncate e2fsck resize2fs; do
     command -v "$cmd" >/dev/null || die "missing command: ${cmd}"
   done
+  check_arm64_exec
   [[ "$(id -u)" -eq 0 ]] || die "loop-mount needs root (losetup and mount). Re-run with sudo. --dry-run does not need root."
 }
 
@@ -430,7 +536,7 @@ archive_is_clean() {
 }
 
 build() {
-  local p2_start p2_len selection url json_sha ext_sha rel dl_size ext_size base sib_url sib_hash="" published img uncomp part unit_src ver waited line
+  local dst p2_start p2_len selection url json_sha ext_sha rel dl_size ext_size base sib_url sib_hash="" published img uncomp part unit_src ver waited line
   local -a hashes
 
   if [[ "$WIFI" -eq 1 ]]; then
@@ -439,7 +545,7 @@ build() {
   REPO=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
   COMMIT=$(git -C "$REPO" -c "safe.directory=${REPO}" rev-parse HEAD)
   if [[ -n "$(git -C "$REPO" -c "safe.directory=${REPO}" status --porcelain)" ]]; then
-    printf 'build-image: note: uncommitted changes are not copied; the image is git archive of HEAD %s\n' "$COMMIT" >&2
+    printf 'build-image: note: uncommitted changes are not copied; the image is a clone of GitHub at HEAD %s\n' "$COMMIT" >&2
   fi
 
   if [[ -z "$OUTPUT" ]]; then
@@ -571,10 +677,15 @@ build() {
   printf '  Partition 1 is the FAT boot firmware and is not mounted or modified.\n'
   printf '  Partition 2 is the ext4 root. Mounting it needs root.\n'
   if [[ "$DRY" -eq 1 ]]; then
+    printf '+ truncate -s +%s <image.img>; grow partition 2 to the end\n' "$GROW_BYTES"
     printf '+ losetup --find --show --partscan <image.img>\n'
+    printf '+ e2fsck -fy <loop>p2; resize2fs <loop>p2\n'
     printf '+ mount <loop>p2 <mnt>\n'
     printf '+ require /etc/rpi-issue or /usr/lib/raspberrypi-sys-mods in the mount\n'
   else
+    # Room for packages and venvs. Raspberry Pi OS still expands to the card on first boot.
+    truncate -s "+${GROW_BYTES}" "$img"
+    grow_partition2 "$img" || die "cannot grow partition 2"
     LOOP=$(losetup --find --show --partscan "$img")
     part="${LOOP}p2"
     waited=0
@@ -606,6 +717,8 @@ PY
       printf '  no partition nodes; attached partition 2 by offset\n'
     fi
     [[ -b "$part" ]] || die "partition 2 did not appear on ${LOOP}"
+    e2fsck -fy "$part" >/dev/null || [[ $? -le 1 ]] || die "e2fsck failed on partition 2"
+    resize2fs "$part" >/dev/null || die "resize2fs failed on partition 2"
     MNT="${WORKDIR}/mnt"
     mkdir -p "$MNT"
     mount -o noatime "$part" "$MNT"
@@ -614,24 +727,46 @@ PY
     fi
   fi
 
-  # --- step 8. git archive of HEAD. No .git, no untracked files, no secrets.
-  step 8 "copy grok-station with git archive of HEAD (no .git, no untracked files)"
-  printf '  commit %s\n' "$COMMIT"
+  # --- step 8. A real clone of GitHub main at HEAD's commit, so the web updater works.
+  step 8 "clone grok-station from GitHub at commit ${COMMIT}"
+  printf '  origin %s\n' "$REPO_URL"
   if [[ "$DRY" -eq 1 ]]; then
-    printf '+ git -C %q -c safe.directory=%q archive --format=tar %s\n' "$REPO" "$REPO" "$COMMIT"
-    printf '+ reject archive paths matching .git .env id_rsa id_ed25519 .ssh .pem credentials.json secrets.json .netrc\n'
-    printf '+ tar -C <mnt>/usr/local/src/grok-station -xf -\n'
-    printf '+ chown -R root:root <mnt>/usr/local/src/grok-station\n'
+    printf '+ git clone --branch main %s <mnt>/usr/local/src/grok-station\n' "$REPO_URL"
+    printf '+ require %s on origin/main (push first), then git reset --hard to it\n' "$COMMIT"
+    printf '+ reject tracked paths matching .env id_rsa id_ed25519 .ssh .pem credentials.json secrets.json .netrc\n'
   else
-    git -C "$REPO" -c "safe.directory=${REPO}" archive --format=tar HEAD > "${WORKDIR}/grok-station.tar"
-    archive_is_clean "${WORKDIR}/grok-station.tar"
-    install -d -m 0755 "${MNT}/usr/local/src/grok-station"
-    tar -C "${MNT}/usr/local/src/grok-station" -xf "${WORKDIR}/grok-station.tar"
-    chown -R root:root "${MNT}/usr/local/src/grok-station"
-    ver=$(tr -d '[:space:]' < "${MNT}/usr/local/src/grok-station/VERSION")
-    [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "archived VERSION is not MAJOR.MINOR.PATCH"
+    dst="${MNT}/usr/local/src/grok-station"
+    git clone --quiet --branch main "$REPO_URL" "$dst" || die "git clone of ${REPO_URL} failed"
+    git -C "$dst" merge-base --is-ancestor "$COMMIT" origin/main 2>/dev/null \
+      || die "commit ${COMMIT} is not on GitHub main; push it first (the station updates from GitHub)"
+    git -C "$dst" reset --quiet --hard "$COMMIT"
+    git -C "$dst" ls-tree -r --name-only HEAD > "${WORKDIR}/tracked.txt"
+    if grep -E "$SECRET_PATH_RE" "${WORKDIR}/tracked.txt" | grep -v '^\.git' >&2; then
+      die "the commit tracks a secret-shaped path; refusing to copy it"
+    fi
+    chown -R root:root "$dst"
+    ver=$(tr -d '[:space:]' < "${dst}/VERSION")
+    [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "VERSION is not MAJOR.MINOR.PATCH"
     printf 'commit %s\nversion %s\n' "$COMMIT" "$ver" > "${MNT}/usr/local/src/grok-station-image-commit"
     chmod 0644 "${MNT}/usr/local/src/grok-station-image-commit"
+  fi
+
+  # --- step 8b. The same install.sh, in build mode, inside the image.
+  step 8b "run install.sh in the image (GROK_STATION_IMAGE_BUILD=1; packages, venvs, wake models)"
+  printf '  arm64 chroot; qemu-user-static on non-arm64 hosts. Secrets and services are left for first boot.\n'
+  if [[ "$DRY" -eq 1 ]]; then
+    printf '+ mount proc, rbind /sys and /dev, copy resolv.conf, policy-rc.d exit 101\n'
+    printf '+ chroot <mnt> env GROK_STATION_IMAGE_BUILD=1 sh /usr/local/src/grok-station/install.sh\n'
+    printf '+ chroot <mnt> apt-get clean; undo the chroot setup\n'
+  else
+    chroot_setup "$MNT"
+    chroot "$MNT" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+      HOME=/root LANG=C.UTF-8 GROK_STATION_IMAGE_BUILD=1 LOG=/var/log/grok-station-image-build.log \
+      sh /usr/local/src/grok-station/install.sh \
+      || { cp -f -- "${MNT}/var/log/grok-station-image-build.log" "${OUTPUT}.build.log" 2>/dev/null || true
+           die "install.sh failed in the image; its log is at ${OUTPUT}.build.log"; }
+    chroot "$MNT" apt-get clean || true
+    chroot_teardown
   fi
 
   # --- step 9. First-boot unit, taken from the archive so it matches HEAD.

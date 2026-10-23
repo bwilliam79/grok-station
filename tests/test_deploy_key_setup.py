@@ -777,3 +777,10 @@ class DeployPinsReleaseCheck(unittest.TestCase):
             self.skipTest("pinned commit not in this clone")
         _c, _f, problems = mod.check(remote=False)
         self.assertEqual(problems, [])
+
+
+class SealShow(unittest.TestCase):
+    def test_seal_show_then_post_show(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "grok-station-reply")).read()
+        self.assertIn('sub.add_parser("seal-show")', src)
+        self.assertIn('"/voice/show" if args.show else "/voice/reply"', src)

@@ -37,6 +37,8 @@ if os.path.isfile(os.path.join(_PARENT, "dimming.py")) and _PARENT not in sys.pa
 import dimming
 WAKE_CTL = E("ADMIN_WAKE_CTL", "http://127.0.0.1:8789")
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
+ENROLL_REPS = 10  # clips per training session, not configurable
+WAKE_DROP_DIR = E("WAKE_DROP_DIR", "/var/lib/grok-station/wakewords")
 ENROLLED = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled") + "/wakewords.enrolled.json"
 PERSONAS = E("ADMIN_PERSONAS", "/opt/grok-station/portraits/personas.json")
 SNAPSHOT = E("GROK_STATION_SNAPSHOT", "/run/grok-station/last.png")
@@ -604,6 +606,8 @@ def wakewords():
         n = w.get("name")
         if not n or any(x["name"] == n for x in out):
             continue
+        if n != BUILTIN_WORD and isinstance(ov.get(n), dict) and ov[n].get("hidden"):
+            continue  # deleted on the admin page
         o = ov.get(n) if isinstance(ov.get(n), dict) else {}
         e = enrolled.get(n, {})
         has_model = n in enrolled or os.path.isfile(os.path.join(cfg.get("models_dir", ""), n + ".onnx"))
@@ -2641,6 +2645,46 @@ class Handler(BaseHTTPRequestHandler):
         wake("POST", "/reload", {})
         return self.send(200, {"ok": True})
 
+    def api_delete_wakewords(self, p, q, j):
+        """Delete one wake word: clips, trained model, config entry. Hey Grok can't be deleted.
+
+        Works for orphaned or untrained entries too. Shipped and bot entries stay hidden so they are not re-added.
+        """
+        name = urllib.parse.unquote(p.split("/")[3]) if p.count("/") >= 3 else ""
+        if name == BUILTIN_WORD:
+            return self.send(409, {"error": "Hey Grok is built in and can't be deleted."})
+        known = {w["name"] for w in wakewords()}
+        ov = read_json(path("wake-overrides.json"), {})
+        if not isinstance(ov, dict):
+            ov = {}
+        if name not in known and name not in ov:
+            return self.send(404, {"error": "No such wake word."})
+        if not wake_name_ok(name) and name not in ov:
+            return self.send(400, {"error": "bad name"})
+        code, out = wake("POST", "/forget", {"name": name}) if wake_name_ok(name) else (200, {})
+        if code == 409:
+            return self.send(409, {"error": "That word is recording right now. Try again when it finishes."})
+        for fn in (name + ".onnx", name + ".json"):
+            try:
+                os.remove(os.path.join(WAKE_DROP_DIR, fn))
+            except OSError:
+                pass
+        cfg = read_json(WAKE_CONFIG, {})
+        keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
+        if keep_hidden:
+            ov[name] = {"enabled": False, "hidden": True, "persona": (ov.get(name) or {}).get("persona", "grok")}
+        else:
+            ov.pop(name, None)
+        write_json(path("wake-overrides.json"), ov, 0o640)
+        doc = read_enroll_status()
+        if doc.pop(name, None) is not None:
+            write_enroll_status(doc)
+        models = read_json(path("models.json"), {})
+        if isinstance(models, dict) and models.pop(name, None) is not None:
+            write_json(path("models.json"), models, 0o640)
+        wake("POST", "/reload", {})
+        return self.send(200, {"ok": True})
+
     def api_post_enroll(self, p, q, j):
         if p == "/api/enroll/check":
             err = phrase_problem(j.get("phrase", ""))
@@ -2648,14 +2692,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": err})
             mid, _words = normalize_phrase(j.get("phrase", ""))
             return self.send(200, {"ok": True, "id": mid, "label": phrase_label(mid)})
-        raw, count = j.get("phrase", ""), j.get("count", 25)
+        raw, count = j.get("phrase", ""), ENROLL_REPS  # fixed per session; "Train more" adds another session
         direct = str(raw or "").strip().lower()
         # hey_<bot id> can contain a hyphen or a digit; normalize_phrase would strip those.
         mid = direct if wake_name_ok(direct) else normalize_phrase(raw)[0]
-        if isinstance(count, bool) or not isinstance(count, int) or not 20 <= count <= 30:
-            return self.send(400, {"error": "Pick a wake word and 20 to 30 clips."})
         if not wake_name_ok(mid):
-            return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word and 20 to 30 clips."})
+            return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word."})
         personas = phrase_personas()
         persona = j.get("persona")
         creating = mid not in personas

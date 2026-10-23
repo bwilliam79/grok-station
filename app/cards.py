@@ -171,9 +171,17 @@ def parse_hosts(value):
     return normalize_hosts(parts)
 
 
+# ESPN's public team-logo CDN (a.espncdn.com/i/teamlogos/<league>/500/<abbr>.png, or the
+# /combiner/i?img=...&w=200&h=200 resize, which stays well under the 64 KiB cap). Used until the
+# user saves their own list on the Display page; an explicitly saved empty list stays empty.
+DEFAULT_LOGO_HOSTS = ("a.espncdn.com",)
+
+
 def hosts_from_env(raw):
-    """Runtime allowlist. One illegal token, or more than 8, fails closed to no hosts."""
-    if raw is None or raw == "":
+    """Runtime allowlist. Unset means the default; one illegal token, or more than 8, fails closed to no hosts."""
+    if raw is None:
+        return list(DEFAULT_LOGO_HOSTS)
+    if raw == "":
         return []
     if not isinstance(raw, str):
         return []

@@ -683,7 +683,7 @@ def enroll_stage(stage, message, phrase=None, session=None):
     last["message"] = message
 CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
                                          # ring fills over it), too loud / didn't hear it hold before the retry
-ENROLL_COUNT, TOPUP_COUNT = 25, 25       # default clips per session (allowed 20–30); top-up uses the same default
+ENROLL_COUNT, TOPUP_COUNT = 10, 10       # clips per session, fixed; "Train more" records another 10 and merges them
 SESSION_OPEN = threading.Event()         # a voice session is on screen: enrollment result notices wait for it
 
 
@@ -765,7 +765,7 @@ def parse_enroll(j):
         persona = str(j["persona"])
     if persona is None or not wake_name_ok(phrase):
         return None
-    if not 20 <= count <= 30:
+    if count != ENROLL_COUNT:
         return {"error": "count"}
     return {"phrase": phrase, "persona": persona, "count": count, "topup": bool(j.get("topup"))}
 
@@ -806,6 +806,14 @@ def control_server():
             if self.path == "/reload":
                 RELOAD.set()
                 return self._r(202, {"ok": True})
+            if self.path == "/forget":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    return self._r(400, {"error": "bad json"})
+                ok, err = forget_word(body.get("name") if isinstance(body, dict) else None)
+                return self._r(200 if ok else (409 if err == "busy" else 400), {"ok": ok, "error": err})
             if self.path == "/test-sound":
                 if LIVE["session"] or ENROLL_STATE["busy"] or not LIVE["play"]:
                     return self._r(409, {"error": "busy"})
@@ -844,7 +852,7 @@ def control_server():
             if req is None:
                 return self._r(400, {"error": "unknown phrase", "phrases": sorted(enroll_phrases())})
             if req.get("error") == "count":
-                return self._r(400, {"error": "count must be 20-30"})
+                return self._r(400, {"error": "count must be 10"})
             if setup_mode():
                 return self._r(423, {"error": "setup needed"})
             if ENROLL_STATE["busy"]:
@@ -912,7 +920,7 @@ def last_session(phrase):
     return ses[-1] if ses else None
 
 
-TRAINER_LATER = "needs the trainer app (coming later)"
+TRAINER_LATER = "Saved. This station can't train wake words itself; your training computer trains them (see docs/enroll.md)."
 
 
 def enroll(req, read16, play):
@@ -991,7 +999,7 @@ def training_notice(phrase, published):
     label = " ".join((w[:1].upper() + w[1:]) for w in words if w) or "Hey"
     if published:
         return f"{label} is ready"
-    return f"{label} needs more clips. Record 20-30 somewhere quiet."
+    return f"{label} is not good enough yet. Train more to add 10 more recordings, somewhere quiet."
 
 
 def _train_outcome(j):
@@ -1067,6 +1075,37 @@ def load_dropped_wakewords(directory=None):
         accepted.append({"name": name, "persona": persona, "threshold": threshold, "patience": patience,
                          "path": op, "enrolled": True, "sha256": sha})
     return accepted
+
+
+def forget_word(name):
+    """Delete one wake word's recorded clips and its trained model on this Pi, then reload. Never hey_grok.
+
+    Returns (ok, error). Shipped models under models_dir are not touched; the admin hides those.
+    """
+    import shutil
+    if name == BUILTIN or not wake_name_ok(name):
+        return False, "bad name"
+    if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
+        return False, "busy"
+    shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
+    for fn in (name + ".onnx", name + ".json"):
+        try:
+            os.remove(os.path.join(ENROLLED_DIR, fn))
+        except OSError:
+            pass
+    cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
+    try:
+        with open(cfgp) as f:
+            doc = json.load(f)
+        words = [w for w in doc.get("words", []) if isinstance(w, dict) and w.get("name") != name]
+        if len(words) != len(doc.get("words", [])):
+            with open(cfgp + ".tmp", "w") as f:
+                f.write(json.dumps({"words": words}, indent=1))
+            os.replace(cfgp + ".tmp", cfgp)
+    except (OSError, ValueError, AttributeError):
+        pass
+    RELOAD.set()
+    return True, None
 
 
 def sync_wakewords(directory=None):

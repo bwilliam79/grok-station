@@ -99,7 +99,9 @@ class SdImage(unittest.TestCase):
                 "extract_sha256",
                 "sha256sum -c",
                 "losetup --find --show --partscan",
-                "git archive",
+                "git clone --branch main",
+                "GROK_STATION_IMAGE_BUILD=1",
+                "qemu-user-static",
                 "grok-station-firstboot.service",
                 "/var/lib/grok-station-firstboot",
                 "needs root",
@@ -169,11 +171,10 @@ class SdImage(unittest.TestCase):
         script = open(SCRIPT, encoding="utf-8").read()
         self.assertIn("ConditionPathExists=/var/lib/grok-station-firstboot\n", unit)
         self.assertIn("ExecStart=/usr/local/src/grok-station/tools/build-image/firstboot.sh\n", unit)
-        self.assertIn("After=network-online.target userconfig.service\n", unit)
-        self.assertIn("Wants=network-online.target\n", unit)
+        self.assertIn("After=userconfig.service systemd-user-sessions.service\n", unit)
         self.assertIn("Type=oneshot\n", unit)
         self.assertIn("WantedBy=multi-user.target\n", unit)
-        self.assertIn("TimeoutStartSec=90min\n", unit)
+        self.assertIn("TimeoutStartSec=30min\n", unit)
         self.assertNotIn("User=", unit)
         self.assertNotIn("Restart=", unit)
         self.assertIn('sh "$SRC/install.sh" --no-reboot\n', boot)
@@ -273,11 +274,13 @@ class SdImage(unittest.TestCase):
         script = open(SCRIPT, encoding="utf-8").read()
         self.assertIn("no published download checksum", script)
 
-    def test_firstboot_restores_git_clone(self):
+    def test_firstboot_is_offline(self):
         fb = open(FIRSTBOOT, encoding="utf-8").read()
-        self.assertLess(fb.index("install.sh"), fb.index("git -C"))
-        self.assertIn("fetch --quiet origin main", fb)
-        self.assertLess(fb.index("reset --quiet --mixed"), fb.index('rm -f -- "$STAMP"'))
+        self.assertIn('GROK_STATION_OFFLINE=1 sh "$SRC/install.sh" --no-reboot', fb)
+        for net in ("curl", "git ", "apt-get", "network-online", "pip "):
+            self.assertNotIn(net, fb, net)
+        self.assertIn("Getting Grok Station ready", fb)
+        self.assertLess(fb.index("install.sh\" --no-reboot"), fb.index('rm -f -- "$STAMP"'))
 
     def test_url_allowlist(self):
         proc = self.run_script("--check-image-url", NEW_URL)
@@ -376,14 +379,48 @@ class ImageInstallParity(unittest.TestCase):
         self.build = open(SCRIPT, encoding="utf-8").read()
 
     def test_firstboot_runs_install_sh_and_nothing_of_its_own(self):
-        self.assertIn('sh "$SRC/install.sh" --no-reboot', self.fb)
+        self.assertIn('GROK_STATION_OFFLINE=1 sh "$SRC/install.sh" --no-reboot', self.fb)
         for own in ("apt-get", "pip ", "useradd", "systemctl enable", "amixer", "powersave",
                     "journald", "/opt/grok-station", "/etc/grok-station"):
             self.assertNotIn(own, self.fb, own)
 
     def test_build_does_not_bake_install_steps(self):
-        for own in ("/opt/grok-station", "/etc/grok-station", "apt-get", "chroot", "powersave"):
+        # The build runs install.sh itself; it must not copy install steps.
+        for own in ("/opt/grok-station", "/etc/grok-station", "apt-get install", "pip install", "powersave", "useradd"):
             self.assertNotIn(own, self.build, own)
+        self.assertIn("GROK_STATION_IMAGE_BUILD=1", self.build)
+        self.assertIn("sh /usr/local/src/grok-station/install.sh", self.build)
+
+    def run_install_dry(self, **env):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "install.log")
+            e = dict(os.environ, LOG=log, **env)
+            proc = subprocess.run(["sh", os.path.join(root, "install.sh"), "--dry-run", "-v"],
+                                  capture_output=True, text=True, timeout=60, env=e)
+            self.assertEqual(proc.returncode, 0, proc.stdout[-2000:] + proc.stderr[-2000:])
+            return proc.stdout + open(log, encoding="utf-8").read()
+
+    def test_install_build_mode_does_network_work_only(self):
+        out = self.run_install_dry(GROK_STATION_IMAGE_BUILD="1")
+        self.assertIn("apt-get install", out)
+        self.assertIn("pip install", out)
+        self.assertIn("download_models", out)
+        for skipped in ("openssl rand", "station_box_key", "systemctl", "install-files.sh", "boot-config", "Setting up web service"):
+            self.assertNotIn(skipped, out, skipped)
+        self.assertIn("Image prepared", out)
+
+    def test_install_offline_mode_does_everything_else(self):
+        out = self.run_install_dry(GROK_STATION_OFFLINE="1")
+        for net in ("apt-get", "pip install", "download_models"):
+            self.assertNotIn(net, out, net)
+        for step in ("openssl rand", "station_box_key", "install-files.sh", "boot-config", "systemctl enable", "Checking health"):
+            self.assertIn(step, out, step)
+
+    def test_normal_install_unchanged(self):
+        out = self.run_install_dry()
+        for step in ("apt-get install", "pip install", "openssl rand", "install-files.sh", "systemctl enable"):
+            self.assertIn(step, out, step)
 
     def test_install_sh_has_every_package_bootstrap_installs(self):
         pk = re.search(r"st_packages\(\) \{(.*?)\n\}", self.install, re.S).group(1)

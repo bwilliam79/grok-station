@@ -92,7 +92,7 @@ class Install(unittest.TestCase):
         src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         self.assertIn("--buffer-time=", src); self.assertIn("--period-time=", src)
         self.assertIn('download_models(["feature-models-only"])', sh)
-        self.assertIn("wake/models/hey_grok.onnx", sh)
+        self.assertIn("wake/models/*.onnx", sh)
         self.assertIn("$V/voice/ack", sh)  # cached "Asking <name>" clips; the relay unit already writes the state dir
         self.assertNotIn("jarvis", sh.lower())
 
