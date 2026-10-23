@@ -1,0 +1,568 @@
+#!/usr/bin/python3 -I
+"""Seal and post one reply from the home Grok Bot machine. macOS only.
+
+  gs-seal-reply reply --persona <slug> --request-id <rid> [--kind answer|bot_list]
+
+Reply text is stdin only. The station address and certificate pin come from the config file
+written by gs-seal-setup. One pinned HTTPS POST per request id. No retry and no second host.
+"""
+import os, stat, sys
+
+
+def _stdlib_chain_ok(path, uid, root_path="/"):
+    """lstat each directory from path up to root_path: a real directory, owned by uid or root, no g/o write."""
+    try:
+        cur = os.path.normpath(path)
+        stop = os.path.realpath(root_path)
+        uid = int(uid)
+    except (OSError, ValueError, TypeError):
+        return False
+    while True:
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            return False
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return False
+        if st.st_uid != uid and st.st_uid != 0:
+            return False
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return False
+        if cur == stop:
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _stdlib_dirs(uid=None, root_path="/"):
+    """The standard library directory (where os.py lives) and its lib-dynload. No site-packages.
+
+    Derived from os.__file__, not sysconfig: sysconfig imports _sysconfigdata lazily through sys.path.
+    """
+    base = os.path.normpath(os.path.realpath(os.path.dirname(os.__file__)))
+    found = [base]
+    dyn = os.path.join(base, "lib-dynload")
+    if os.path.isdir(dyn):
+        found.append(dyn)
+    for norm in found:
+        parts = norm.split(os.sep)
+        if "site-packages" in parts or "dist-packages" in parts:
+            sys.stderr.write("refused\n")
+            raise SystemExit(1)
+        if not _stdlib_chain_ok(norm, os.geteuid() if uid is None else uid, root_path):
+            sys.stderr.write("refused\n")
+            raise SystemExit(1)
+    return found
+
+
+def _trusted_path(path, uid, kind):
+    """lstat: not a symlink, owned by uid or root, no group or other write bit."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return False
+    if kind == "file" and not stat.S_ISREG(st.st_mode):
+        return False
+    if kind == "dir" and not stat.S_ISDIR(st.st_mode):
+        return False
+    if st.st_uid != uid and st.st_uid != 0:
+        return False
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return False
+    return True
+
+
+def script_tree_ok(script_file, uid, root_path):
+    """Resolved script, gs_seal_common.py beside it, and parents through root_path are trusted."""
+    if not isinstance(script_file, str) or not isinstance(root_path, str):
+        return False
+    if not script_file or not root_path or "\x00" in script_file or "\x00" in root_path:
+        return False
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        resolved = os.path.realpath(script_file)
+        stop = os.path.realpath(root_path)
+    except (OSError, ValueError):
+        return False
+    script_dir = os.path.dirname(resolved)
+    common = os.path.join(script_dir, "gs_seal_common.py")
+    if not _trusted_path(resolved, uid, "file") or not _trusted_path(common, uid, "file"):
+        return False
+    cur = script_dir
+    while True:
+        if not _trusted_path(cur, uid, "dir"):
+            return False
+        if cur == stop:
+            return True
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def _enforce_script_tree(script_file, uid, root_path):
+    if script_tree_ok(script_file, uid, root_path):
+        return
+    sys.stderr.write("refused\n")
+    raise SystemExit(1)
+
+
+# The installed command is executed as __main__. Importing the module must not exit.
+if __name__ == "__main__":
+    _enforce_script_tree(__file__, os.geteuid(), "/")
+
+sys.dont_write_bytecode = True
+_SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
+
+import base64, hashlib, http.client, json, math, re, ssl, time, unicodedata
+from urllib.parse import urlsplit
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+
+from gs_seal_common import (
+    Refused, QuietParser, SLUG, REQUEST_ID, slug_ok, access_ok,
+    root_dir, keys_dir, key_path, config_path, sent_path, log_path,
+    _require_dir, _require_file, _check_tree, _open_private, _write_all,
+    _pin, _b64_32, station_ok,
+    refuse_unsafe_location, require_time_machine_exclusion, require_same_host,
+    load_nacl,
+)
+
+LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
+LIST_MAX = 24
+STDIN_MAX = 1024 * 1024
+ANSWER_MAX = 400
+SENT_KEEP_SECONDS = 7 * 24 * 60 * 60
+
+# Secret lint, copied in spirit from the station checker. Fail closed on any doubt.
+# Also refuse a key-shaped token, a URL with credentials, and a long base64 or hex run.
+_SECRET_VALUE = re.compile(
+    r"\b(?:password|passcode|passwd|pin|token|api[ _-]?key|secret|key|code)\b\s*(?:is|=|:)\s*\S+",
+    re.I)
+_PREFIX = re.compile(
+    r"(?<![a-z0-9])(?:sk|xai)-[a-z0-9_\-]{8,}"
+    r"|(?<![a-z0-9])ghp_[a-z0-9]{8,}"
+    r"|(?<![a-z0-9])github_pat_[a-z0-9_]{8,}"
+    r"|(?<![a-z0-9])akia[a-z0-9]{16}"
+    r"|(?<![a-z0-9])bearer\s+[a-z0-9._\-+/=]{8,}")
+_PEM = re.compile(r"-----begin [a-z0-9 ]{0,48}private key-----")
+_URL_USERINFO = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/]+@", re.I)
+_LONG_HEX = re.compile(r"(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])")
+_LONG_B64 = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{32,}={0,2}(?![A-Za-z0-9+/])")
+
+
+def _entropy_hit(text):
+    for m in re.finditer(r"[a-z0-9+/_]{32,}={0,2}", text):
+        s = m.group().rstrip("=")
+        if len(s) < 32 or not any(c.isdigit() for c in s) or not any(c.isalpha() for c in s):
+            continue
+        if len(set(s)) < 8:
+            continue
+        freq = {}
+        for c in s:
+            freq[c] = freq.get(c, 0) + 1
+        n = len(s)
+        if -sum((c / n) * math.log2(c / n) for c in freq.values()) >= 3.5:
+            return True
+    return False
+
+
+def _secret_lint(text):
+    norm = unicodedata.normalize("NFKC", str(text)).lower()
+    if _PEM.search(norm) or _PREFIX.search(norm) or _SECRET_VALUE.search(norm) or _SECRET_VALUE.search(text):
+        return "secret"
+    if _URL_USERINFO.search(text) or _URL_USERINFO.search(norm):
+        return "secret"
+    if _LONG_HEX.search(norm):
+        return "secret"
+    if _LONG_B64.search(text) or _LONG_B64.search(norm):
+        return "secret"
+    if _entropy_hit(norm):
+        return "secret"
+    return None
+
+
+def secret_lint(text):
+    """A reason string, or None. Any error inside the checker is a hit."""
+    try:
+        if not isinstance(text, str):
+            return "error"
+        return _secret_lint(text)
+    except Exception:
+        return "error"
+
+
+def _list_name(raw):
+    if not isinstance(raw, str) or not raw:
+        return None
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in raw):
+        return None
+    if any(ord(c) > 127 for c in raw):  # do not NFKC-fold fullwidth or other lookalikes into ASCII
+        return None
+    t = unicodedata.normalize("NFKC", raw)
+    t = "".join(c for c in t if unicodedata.category(c) not in ("Cc", "Cf"))
+    t = " ".join(t.split())
+    if not t or len(t) > 32 or LIST_NAME.fullmatch(t) is None:
+        return None
+    return t
+
+
+def parse_names(text):
+    names, seen = [], set()
+    for line in str(text).splitlines():
+        if not line.strip():
+            continue
+        name = _list_name(line)
+        if name is None:
+            return None
+        key = name.casefold()
+        if key in seen:
+            return None
+        seen.add(key)
+        names.append(name)
+        if len(names) > LIST_MAX:
+            return None
+    return names
+
+
+def canonical_answer(request_id, text):
+    body = {"action_class": "answer", "request_id": request_id, "text": text, "tier": 0}
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def canonical_list(request_id, names):
+    body = {"action_class": "bot_list", "bots": [{"name": n} for n in names], "kind": "bot_list",
+            "request_id": request_id, "tier": 0}
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def _wipe(buf):
+    if isinstance(buf, bytearray):
+        for i in range(len(buf)):
+            buf[i] = 0
+
+
+def seal_outer(slug, request_id, kind, payload, seed, station_pub):
+    load_nacl()
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    material = bytearray(seed)
+    if isinstance(seed, bytearray):
+        _wipe(seed)
+    sk = None
+    try:
+        sk = SigningKey(bytes(material))
+        msg = canonical_list(request_id, payload) if kind == "bot_list" else canonical_answer(request_id, payload)
+        signed = sk.sign(msg)
+        sealed = SealedBox(PublicKey(station_pub)).encrypt(signed)
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        return json.dumps(outer, separators=(",", ":")).encode("ascii")
+    finally:
+        _wipe(material)
+        del sk
+        del material
+
+
+def read_stdin():
+    try:
+        data = sys.stdin.buffer.read(STDIN_MAX + 1)
+    except Exception:
+        raise Refused()
+    if data is None or len(data) > STDIN_MAX:
+        raise Refused()
+    try:
+        text = data.decode("utf-8")
+    except Exception:
+        raise Refused()
+    if text.endswith("\n"):
+        text = text[:-1]
+    if text.endswith("\r"):
+        text = text[:-1]
+    return text
+
+
+def read_key(slug):
+    path = key_path(slug)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise Refused()
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not access_ok(st, 0o600):
+            raise Refused()
+        raw = os.read(fd, 64)
+    finally:
+        os.close(fd)
+    if len(raw) != 32:
+        raise Refused()
+    return bytearray(raw)
+
+
+def read_config(slug):
+    path = config_path(slug)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise Refused()
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or not access_ok(st, 0o600):
+            raise Refused()
+        raw = os.read(fd, 8192)
+        extra = os.read(fd, 1)
+    finally:
+        os.close(fd)
+    if extra:
+        raise Refused()
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise Refused()
+    if not isinstance(doc, dict) or set(doc) != {"endpoint", "pin", "station_pub"}:
+        raise Refused()
+    pin = doc.get("pin")
+    if _pin(pin) != pin or not station_ok(doc.get("endpoint")):
+        raise Refused()
+    pub = _b64_32(doc.get("station_pub"))
+    if pub is None:
+        raise Refused()
+    return doc["endpoint"], pin, pub
+
+
+class _Pinned(http.client.HTTPSConnection):
+    def __init__(self, host, port, context, pin, timeout):
+        super().__init__(host, port, context=context, timeout=timeout)
+        self._pin = pin
+
+    def connect(self):
+        super().connect()
+        der = None
+        try:
+            der = self.sock.getpeercert(binary_form=True)
+        except Exception:
+            der = None
+        digest = hashlib.sha256(der).hexdigest() if der else ""
+        if not self._pin or digest != self._pin:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            raise ssl.SSLError("pin")
+
+
+def post_once(endpoint, body, pin):
+    """Exactly one POST /voice/reply. Raises on a pin miss. Does not retry."""
+    parts = urlsplit(endpoint)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
+        raise Refused()
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = _Pinned(parts.hostname, parts.port or 443, ctx, pin, 15)
+    try:
+        conn.request("POST", "/voice/reply", body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read(8192)
+        return resp.status
+    finally:
+        conn.close()
+
+
+def _read_capped(fd):
+    chunks = []
+    total = 0
+    while True:
+        block = os.read(fd, 4096)
+        if not block:
+            break
+        chunks.append(block)
+        total += len(block)
+        if total > STDIN_MAX:
+            raise Refused()
+    return b"".join(chunks)
+
+
+def claim_rid(rid):
+    """Record "rid epoch". Drop lines older than 7 days under the same flock."""
+    if fcntl is None:
+        raise Refused()
+    now = int(time.time())
+    fd = _open_private(sent_path())
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        text = _read_capped(fd).decode("ascii", "replace")
+        kept = []
+        duplicate = False
+        for line in text.splitlines():
+            parts = line.split(" ")
+            if len(parts) != 2 or REQUEST_ID.fullmatch(parts[0]) is None:
+                continue
+            try:
+                epoch = int(parts[1])
+            except ValueError:
+                continue
+            if epoch < 0 or now - epoch > SENT_KEEP_SECONDS:
+                continue
+            if parts[0] == rid:
+                duplicate = True
+            kept.append("%s %d" % (parts[0], epoch))
+        if not duplicate:
+            kept.append("%s %d" % (rid, now))
+        payload = ("\n".join(kept) + "\n").encode("ascii")
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.ftruncate(fd, 0)
+        _write_all(fd, payload)
+        os.fsync(fd)
+        if duplicate:
+            raise Refused()
+    finally:
+        os.close(fd)
+
+
+def append_log(rid, persona, status, ms):
+    """One line: request id, persona, status, timing. Nothing else."""
+    if fcntl is None:
+        raise Refused()
+    if not REQUEST_ID.fullmatch(rid) or not slug_ok(persona):
+        raise Refused()
+    line = "request_id=%s persona=%s status=%d ms=%d\n" % (rid, persona, int(status), int(ms))
+    fd = _open_private(log_path())
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_END)
+        _write_all(fd, line.encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def note_lint_reject():
+    """Append lint_rejects=<count>. The reply text is not a parameter and is not written."""
+    if fcntl is None:
+        raise Refused()
+    fd = _open_private(log_path())
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        count = 0
+        for line in _read_capped(fd).decode("ascii", "replace").splitlines():
+            if len(line) > 13 and line.startswith("lint_rejects=") and line[13:].isdigit():
+                count += 1
+        os.lseek(fd, 0, os.SEEK_END)
+        _write_all(fd, ("lint_rejects=%d\n" % (count + 1)).encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _reject_if_secret(text):
+    try:
+        reason = secret_lint(text)
+    except Exception:
+        reason = "error"
+    if reason:
+        note_lint_reject()
+        raise Refused()
+
+
+def _prepare_reply(slug, kind, text):
+    if kind == "bot_list":
+        _reject_if_secret(text)
+        names = parse_names(text)
+        if names is None:
+            raise Refused()
+        for name in names:
+            _reject_if_secret(name)
+        return names
+    if not text or len(text) > ANSWER_MAX:
+        raise Refused()
+    _reject_if_secret(text)
+    return text
+
+
+def cmd_reply(slug, request_id, kind):
+    if not slug_ok(slug) or not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None:
+        raise Refused()
+    if kind not in ("answer", "bot_list"):
+        raise Refused()
+    text = read_stdin()
+    _check_tree()
+    root = root_dir()
+    _require_dir(root, 0o700)
+    _require_dir(keys_dir(), 0o700)
+    _require_file(key_path(slug), 0o600)
+    _require_file(config_path(slug), 0o600)
+    for path in (sent_path(), log_path()):
+        if os.path.lexists(path):
+            _require_file(path, 0o600)
+    payload = _prepare_reply(slug, kind, text)
+    refuse_unsafe_location(root)
+    require_time_machine_exclusion(root)
+    require_same_host()
+    seed = read_key(slug)
+    try:
+        endpoint, pin, station_pub = read_config(slug)
+        try:
+            body = seal_outer(slug, request_id, kind, payload, seed, station_pub)
+        except Refused:
+            raise
+        except Exception:
+            raise Refused()
+        claim_rid(request_id)
+        t0 = time.monotonic()
+        status = 0
+        try:
+            status = post_once(endpoint, body, pin)
+        except Exception:
+            status = 0
+        ms = int((time.monotonic() - t0) * 1000)
+        append_log(request_id, slug, status, ms)
+        if status != 200:
+            raise Refused()
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
+def _parser():
+    p = QuietParser(prog="gs-seal-reply")
+    sub = p.add_subparsers(dest="cmd", required=True, parser_class=QuietParser)
+    reply = sub.add_parser("reply")
+    reply.add_argument("--persona", required=True)
+    reply.add_argument("--request-id", required=True, dest="request_id")
+    reply.add_argument("--kind", default="answer", choices=("answer", "bot_list"))
+    return p
+
+
+def main(argv=None):
+    try:
+        if sys.platform != "darwin":
+            raise Refused()
+        args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
+        if args.cmd == "reply":
+            return cmd_reply(args.persona, args.request_id, args.kind)
+        raise Refused()
+    except Refused:
+        sys.stderr.write("refused\n")
+        return 1
+    except Exception:
+        sys.stderr.write("refused\n")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -289,8 +289,9 @@ class AdminUI(unittest.TestCase):
         cloud = js.split("const BOT_ROUTINE = `", 1)[1].split("`;", 1)[0]
         home = js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0]
         self.assertIn(cloud, fences)
-        self.assertNotIn(home, fences)  # home mode is held back until its review
+        self.assertIn(home, fences)
         self.assertIn("const HOME_MODE = false;", js)
+        self.assertIn("Home machine mode will be enabled after its first validation run.", js)
         self.assertIn("grok-station-reply seal", cloud)
         self.assertNotIn("gs-seal-reply", cloud)
         self.assertIn("gs-seal-reply reply", home)
@@ -302,8 +303,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn("GROK_STATION_BOT_KEY", fn)
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertIn("gs-seal-reply keygen", fn)
-        self.assertIn("gs-seal-reply init", fn)
+        self.assertIn("gs-seal-setup keygen", fn)
+        self.assertIn("gs-seal-setup init", fn)
         self.assertIn("There is no hosted mailbox", cloud)
         self.assertIn("There is no hosted mailbox", home)
         self.assertIn("A key exists on only one machine", cloud)
@@ -343,7 +344,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("accent-color:var(--gs-teal)", css.replace(" ", ""))
         docs = _read(os.path.join("docs", "bots.md"))
         readme = _read("README.md")
-        for text in ("There is no hosted mailbox", "Add your main bot first.", "later update",
+        for text in ("There is no hosted mailbox", "Add your main bot first.", "gs-seal-reply",
                      "A key exists on only one machine"):
             self.assertIn(text, docs, text)
             self.assertIn(text, readme, text)
@@ -355,7 +356,7 @@ class AdminUI(unittest.TestCase):
         blurb = _read("README.md").split("**0.6.0**", 1)[1].split("\n\n", 1)[0]
         for text in ("openwakeword 0.6.0", "onnxruntime 1.31.0", "numpy 2.5.4",
                      "peak sample", "clipped=0.0012", "There is no hosted mailbox",
-                     "later update", "A key exists on only one machine",
+                     "A key exists on only one machine",
                      "Add your main bot first"):
             self.assertIn(text, section, text)
             self.assertIn(text, blurb, text)

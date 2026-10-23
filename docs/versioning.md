@@ -45,10 +45,18 @@ Minor release. Installs over 0.5.0.
 - **Wake dependencies.** The wake virtualenv pins openwakeword 0.6.0 (still with `--no-deps`), onnxruntime 1.31.0, and numpy 2.5.4.
 - **Mic level.** The periodic level line also reports the peak sample in that window and the clipped ratio, the fraction of samples at full scale (`clipped=0.0012`).
 - **No hosted mailbox.** There is no hosted mailbox. Replies are posted by Grok Bot running on a home machine on the station's LAN.
-- **Where the key lives.** Cloud is the default: the bot's cloud computer seals, and the home machine posts. A faster home mode (key, seal and post in one command on the home machine) comes in a later update. A key exists on only one machine. Switching the mode revokes the pinned key and asks for a new public key.
-- **Home key mode** is built but held back until its security review; the Add bot flow offers cloud mode only.
+- **Where the key lives.** Cloud is the default: the bot's cloud computer seals, and the home machine posts. Home mode (macOS) generates the key, seals, and posts in one command on that home machine, about 3 seconds faster. A key exists on only one machine. Switching the mode revokes the pinned key and asks for a new public key.
 - **Main bot first.** Add your main bot first. The add-bot dialog says so on the first step.
 
 ## 0.7.0
 
 Minor: display cards (recipe, sports, calendar, home) on the signed show path. The reply tool still posts a reply when no card is given. See [cards.md](cards.md).
+
+## 0.8.0
+
+Minor release. Installs over 0.7.0.
+
+- **Home key mode scripts.** `scripts/gs-seal-setup` (once: `vendor-install`, `keygen`, `init`) and `scripts/gs-seal-reply` (one `reply` command) seal and post a reply from a Mac home machine. macOS only, bound to that Mac's hardware UUID, key folder excluded from Time Machine and refused inside git, iCloud, CloudStorage, Dropbox or OneDrive. One pinned POST per request id, no retry.
+- **Trusted imports.** Before importing anything, both scripts check the script, its helper and every parent folder, and every standard library folder they put on the path (owned by you or root, no group or world write, no symlinks). PyNaCl comes from a hash-locked vendor folder (`scripts/vendor-lock.txt`, `--require-hashes --only-binary :all:`), checked against a SHA-256 manifest on every run.
+- **Not enabled yet.** The Add bot flow still offers cloud mode only. Home mode will be enabled after its first validation run.
+
