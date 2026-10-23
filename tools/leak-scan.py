@@ -2,9 +2,9 @@
 """leak-scan: block private terms, personal email domains and real LAN IPs.
 
 Called by tools/pii-guard (pre-commit, commit-msg, pre-push and CI). The repo is
-public, so private terms (personal hostnames, family names, the home city) are
-stored only as salted sha256 hashes of lowercased tokens; every token in the
-scanned text is hashed and compared. Generic rules (gmail/aol addresses, private
+public, so private terms (personal hostnames, family names, the home city) live
+only in a private list outside the repo (see TERMS_FILE); every token in the
+scanned text is compared against it. Generic rules (gmail/aol addresses, private
 IPv4 outside the made-up test ranges) are plain.
 
 Usage: leak-scan.py LABEL [FILE...]   (no FILE: read stdin)
@@ -12,25 +12,33 @@ Output names the label/file, line and rule only, never the matching text.
 Exit 1 on any hit. A line containing "leak-guard: allow" or an
 assertNotIn("...") leak-guard assertion is skipped for the private-term rule.
 """
-import hashlib
 import ipaddress
+import os
 import re
 import sys
 
-SALT = 'dde6fccb534a407c6747a1724b28b140'
-PART_HASHES = {'185b5f4f407037254f1b1a32e12522adaa895d5063be2a0567f18bb36327616f',
-    '201e60a85eb98c3ac09cf8228c9df0a3e53c451c51c0795eabcf6585186fb21c',
-    '2eceaf3e9f1e929e0655bc435abf69a6a4c1e563c963411d9d03615bccfa3b27',
-    '44ce1aad7fcdb1da726fac0c0d6d577a9c7261bef45e1df3bcbb0e78293eca95',
-    '51fbd204e2b405bdb2b4d8242b4d6c558ade16f6021fa762b65593b7dd8d6e43',
-    '5993f36d440e2d32ed4b0c17b96ad28a5a35e3c1dedbeca159fbd0d8a43e5e6f',
-    '7c41815da1c09d444cff32eef2fef7e2631e485de306cae6fa5bf8c1e239d3d0',
-    'abecb1d7b589a775157eca2273c571c47a33beef9b006835f146090357344cf4',
-    'ba535b42915e8a5549ded61e49011f892e6c1153e3635204c54494f9a61b7139',
-    'bf1f645a87c61e1f7a25c7eeb8fd29df2b5055bccb84fe7d0c6b08660928d147',
-    'c929d766b8514b60fba8a93d3a624c38d6ace75d4bbbb8c3a0514a39418b32f1',
-    'dcaf1dac9ec94128f7858d4f38910013412361690e186d4880920c0dae775a91'}
-WORD_HASHES = {'9081dfd5334f329fc3d9d8da731e6204169704964374a98c36e213c49d42db69'}
+# Private terms are NOT in this repo. One term per line (lowercased on load):
+#   $LEAK_TERMS (newline-separated, CI secret), else $LEAK_TERMS_FILE,
+#   else ~/.config/grok-station/leak-terms (mode 0600, never committed).
+# Missing list: warning locally, failure in CI (fail closed).
+TERMS_FILE = os.environ.get("LEAK_TERMS_FILE") or os.path.expanduser("~/.config/grok-station/leak-terms")
+# Hostname rule kept in the repo: whole word or dotted hostname piece only,
+# so package names such as libgl1-mesa-dri pass.
+WORDS = {"mesa"}
+
+
+def load_terms():
+    raw = os.environ.get("LEAK_TERMS")
+    if not raw:
+        try:
+            with open(TERMS_FILE, encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+    terms = {t.strip().lower() for t in raw.splitlines()}
+    terms = {t for t in terms if t and not t.startswith("#")}
+    return terms or None
+
 
 # Files that exist to test this guard.
 ALLOW_FILES = {"tools/leak-scan.py", "tests/test_leak_scan.py"}
@@ -50,31 +58,23 @@ IPV4 = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d])")
 ALLOW_LINE = re.compile(r"leak-guard: allow|assertNotIn\(\s*[\'\"][^\'\"]*[\'\"]")
 
 
-def _h(t):
-    return hashlib.sha256((SALT + t).encode()).hexdigest()
-
-
 def _spans(parts):
     for i in range(len(parts)):
         for j in range(i + 1, len(parts) + 1):
             yield ".".join(parts[i:j])
 
 
-def term_hit(line, salt_hash=None, parts_set=None, words_set=None):
-    """True if any token (or dotted/hyphenated piece of one) hashes to a private term."""
-    hf = salt_hash or _h
-    ps = PART_HASHES if parts_set is None else parts_set
-    ws = WORD_HASHES if words_set is None else words_set
+def term_hit(line, terms, words=WORDS):
+    """True if any token (or a dotted/hyphenated piece of one) is a private term."""
     toks = [t.strip("._-").lower() for t in TOKEN.findall(line)]
     toks = [t for t in toks if t]
     for k, t in enumerate(toks):
-        dots = [p for p in t.split(".") if p]
-        whole = set(_spans(dots)) | {t}
-        if any(hf(c) in ps or hf(c) in ws for c in whole):
+        whole = set(_spans([p for p in t.split(".") if p])) | {t}
+        if whole & terms or whole & words:
             return True
-        if any(hf(c) in ps for c in re.split(r"[._-]", t) if c):
+        if any(c in terms for c in re.split(r"[._-]", t) if c):
             return True
-        if k + 1 < len(toks) and hf(t + " " + toks[k + 1]) in ps:
+        if k + 1 < len(toks) and (t + " " + toks[k + 1]) in terms:
             return True
     return False
 
@@ -90,10 +90,10 @@ def ip_hit(line):
     return False
 
 
-def scan_text(text, label):
+def scan_text(text, label, terms=frozenset()):
     hits = []
     for n, line in enumerate(text.splitlines(), 1):
-        if not ALLOW_LINE.search(line) and term_hit(line):
+        if not ALLOW_LINE.search(line) and term_hit(line, terms):
             hits.append((n, "private term"))
         if EMAIL.search(line):
             hits.append((n, "personal email address"))
@@ -109,8 +109,17 @@ def main(argv):
         print("usage: leak-scan.py LABEL [FILE...]", file=sys.stderr)
         return 2
     ok = True
+    terms = load_terms()
+    if terms is None:
+        if os.environ.get("CI"):
+            print("leak-scan: no private terms (set the LEAK_TERMS secret); failing closed", file=sys.stderr)
+            return 1
+        if not os.environ.get("LEAK_SCAN_QUIET"):
+            print("leak-scan: warning: no private terms at %s; checking emails, IPs and hostname rule only"
+                  % TERMS_FILE, file=sys.stderr)
+        terms = set()
     if len(argv) == 2:
-        ok = scan_text(sys.stdin.read(), argv[1])
+        ok = scan_text(sys.stdin.read(), argv[1], terms)
     for f in argv[2:]:
         if f in ALLOW_FILES:
             continue
@@ -119,7 +128,7 @@ def main(argv):
                 text = fh.read()
         except (UnicodeDecodeError, IsADirectoryError, FileNotFoundError):
             continue
-        ok = scan_text(text, f) and ok
+        ok = scan_text(text, f, terms) and ok
     return 0 if ok else 1
 
 

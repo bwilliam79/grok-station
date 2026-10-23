@@ -19,6 +19,8 @@ if [ ! -s "$PAT" ]; then
   else echo "pii-guard: no patterns file at $PAT; see README (pii-guard)." >&2; exit 1; fi
   [ -n "${CI:-}" ] && echo "::warning::pii-guard: no patterns (set the PII_GUARD_PATTERNS secret); running leak-scan only"
 fi
+python3 "$LEAK" probe </dev/null >/dev/null || { echo "pii-guard: leak-scan has no private terms list (CI must set LEAK_TERMS)" >&2; exit 1; }
+export LEAK_SCAN_QUIET=1
 hits=0
 scan() {  # stdin: text; $1: label. Reports "label line N" per hit; returns 1 on any hit.
   local out text rc=0
