@@ -72,3 +72,10 @@ Patch release. Installs over 0.8.0.
 Patch release. Installs over 0.8.1.
 
 - **Home mode available.** After its validation run on a Mac, Add bot (and a bot's key mode) now offers **Home machine** as an opt-in choice. **Cloud computer** stays the default and is pre-selected. No script or station changes.
+
+## 0.8.3
+
+Patch release. Installs over 0.8.2.
+
+- **Plainer Add bot key step.** "Where the bot's key lives": Bot computer (default) or Home computer (replies come back faster), with one note that a computer on your home network must run the Grok Bot app and stay on and reachable 24/7. No commands or mailbox wording.
+- **Shorter setup prompt.** The human-facing background paragraph is gone from both routines and the home setup line; the bot is also asked to reply with its public key. Operative instructions unchanged.
