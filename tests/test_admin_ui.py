@@ -40,7 +40,10 @@ class AdminUI(unittest.TestCase):
     def test_every_input_and_select_uses_the_dark_theme(self):
         """Text, password and number inputs carry .inp and selects carry .sel (dark box, teal focus ring)."""
         import re
-        html = self.js + _read(os.path.join("admin", "web", "index.html"))
+        page = _read(os.path.join("admin", "web", "index.html"))
+        self.assertLess(page.find('src="/deploy-pins.js"'), page.find('src="/app.js"'))
+        self.assertIn("admin/web/deploy-pins.js", _read(os.path.join("tools", "install-files.sh")))
+        html = self.js + page
         for tag in re.findall(r"<input[^>]*>", html):
             if re.search(r'type="(range|checkbox|radio|file|hidden)"', tag):
                 continue
@@ -311,14 +314,42 @@ class AdminUI(unittest.TestCase):
         for token in ("<slug>", "<station public key>", "<station address>", "<fingerprint>"):
             self.assertIn(token, cloud, token)
         fn = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("grok-station-reply keygen", fn)
-        self.assertIn("GROK_STATION_BOT_KEY", fn)
+        self.assertNotIn("Also run grok-station-reply keygen once", fn)
+        self.assertNotIn("On the home machine, once, run gs-seal-setup keygen", fn)
+        self.assertNotIn("Keep the key file out of git, sync, and backups.", fn)
+        self.assertIn("Keep the key file out of git, sync, and backups.", docs)
+        self.assertIn("Deploy bot key setup on system running Grok Bot (one time)", fn)
+        self.assertIn("Deploy bot key setup on system running Grok Bot (one time)", docs)
+        self.assertIn("deployScript(", fn)
+        self.assertIn("DEPLOY_PINS", fn)
+        self.assertIn("stationAddress()", fn)
+        self.assertIn("your own computer", fn)
+        self.assertIn("home computer running Grok Bot", fn)
+        self.assertIn("~/.local/share/grok-station/bin/grok-station-reply", fn)
+        self.assertIn("~/.local/share/grok-station/bin/vendor-lock.txt", fn)
+        self.assertIn("~/.local/share/grok-station/bin/gs-seal-setup", fn)
+        self.assertIn("~/.local/share/grok-station/bin/gs-seal-reply", fn)
+        self.assertIn("~/.local/share/grok-station/bin/gs_seal_common.py", fn)
+        self.assertIn("Ask the user before you run this.", fn)
+        self.assertIn("It is one time.", fn)
+        self.assertIn("never pushes code", fn)
+        self.assertIn("does not ask you to download these files again", fn)
+        self.assertIn("The script:\\n", fn)
+        self.assertIn("public key it printed", fn)
+        self.assertIn("Never send the private key or the seed.", fn)
+        self.assertIn("Replace key", fn)
+        self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("your own computer"))
+        self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("gs-seal-setup"))
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertEqual(fn.count("Reply with the webhook URL, the webhook key, and your public key."), 2)
+        self.assertIn("Reply with the webhook URL, the webhook key, and your public key.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
-        self.assertIn("gs-seal-setup keygen", fn)
-        self.assertIn("gs-seal-setup init", fn)
+        # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
+        installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]
+        self.assertIn('"$stage/grok-station-reply" keygen', installer)
+        self.assertIn("GROK_STATION_BOT_KEY", installer)
+        self.assertIn('"$stage/gs-seal-setup" keygen', installer)
+        self.assertIn('"$stage/gs-seal-setup" init', installer)
         self.assertNotIn("mailbox", cloud.lower())
         self.assertNotIn("mailbox", home.lower())
         self.assertNotIn("mailbox", js.lower())
@@ -327,7 +358,6 @@ class AdminUI(unittest.TestCase):
         self.assertTrue(cloud.startswith("You are this station persona."))
         self.assertTrue(home.startswith("You are this station persona."))
         self.assertNotIn("Home mode is faster and depends", fn)
-        self.assertIn("Keep the key file out of git, sync, and backups.", fn)
         self.assertNotIn("old-hostname", js)
         self.assertIn("printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
         self.assertIn("https://", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
@@ -363,6 +393,11 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Home machine", step2)
         step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
         self.assertIn("Copy the instructions to your Grok Bot, then paste what it sends back below.", step3)
+        self.assertIn(">Deploy bot key setup on system running Grok Bot</div>", step3)
+        self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. It asks you first, and it only happens once.", step3)
+        self.assertNotIn("seal", step3.lower())
+        self.assertNotIn("cortex", step3.lower())
+        self.assertNotIn("mailbox", step3.lower())
         self.assertNotIn("Optional", step3)
         self.assertNotIn("Skip", step3)
         self.assertNotIn("askip", step3)

@@ -270,7 +270,10 @@ class Csrf(unittest.TestCase):
     def test_security_headers(self):
         st, _ = C().req("GET", "/api/state")
         h = C(); h.req("GET", "/", raw=True)
-        self.assertIn("frame-ancestors 'none'", h.last.getheader("Content-Security-Policy"))
+        csp = h.last.getheader("Content-Security-Policy")
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertIn("default-src 'self'", csp)
+        self.assertNotIn("script-src 'none'", csp)
         self.assertEqual(h.last.getheader("X-Frame-Options"), "DENY")
         self.assertEqual(h.last.getheader("Cache-Control"), "no-store")
 
@@ -505,7 +508,7 @@ class Reset(unittest.TestCase):
 
 class Static(unittest.TestCase):
     def test_spa_files_and_traversal(self):
-        for p, t in (("/", "text/html"), ("/app.js", "text/javascript"), ("/admin.css", "text/css"),
+        for p, t in (("/", "text/html"), ("/deploy-pins.js", "text/javascript"), ("/app.js", "text/javascript"), ("/admin.css", "text/css"),
                      ("/assets/mark.svg", "image/svg+xml"), ("/favicon.ico", "image/x-icon"),
                      ("/assets/favicon.ico", "image/x-icon")):
             c = C(); st, body = c.req("GET", p, raw=True)
@@ -534,6 +537,9 @@ class Static(unittest.TestCase):
         self.assertIn(b'name="theme-color" content="#0D0B09"', body)
         for needle in (b"favicon.svg", b"favicon-32.png", b"favicon-16.png", b"favicon-180.png", b"apple-touch-icon"):
             self.assertIn(needle, body)
+        self.assertLess(body.find(b'src="/deploy-pins.js"'), body.find(b'src="/app.js"'))
+        installed = open(os.path.join(ROOT, "tools", "install-files.sh"), encoding="utf-8").read()
+        self.assertIn("admin/web/deploy-pins.js", installed)
         for p, t in (("/assets/favicon.svg", "image/svg+xml"), ("/assets/favicon-32.png", "image/png"),
                      ("/assets/favicon-16.png", "image/png"), ("/assets/favicon-180.png", "image/png")):
             c = C(); st, raw = c.req("GET", p, raw=True)

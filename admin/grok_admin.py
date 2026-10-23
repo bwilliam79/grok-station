@@ -739,7 +739,9 @@ RELAY_ACTOR = "admin"
 BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test|key)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
 _IMPORTED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 _IMPORTED_KEY = re.compile(r"^[a-z0-9][a-z0-9 .'-]{0,31}$")
-STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
+          "/deploy-pins.js": ("deploy-pins.js", "text/javascript; charset=utf-8"),
+          "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/admin.css": ("admin.css", "text/css; charset=utf-8"), "/favicon.ico": ("assets/favicon.ico", "image/x-icon")}
 ASSET_TYPE = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf", "ico": "image/x-icon"}
 

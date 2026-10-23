@@ -16,7 +16,7 @@ fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 # Every module grok_admin.py imports must be installed next to it (a missing one crash-loops the admin page).
 rm -f /opt/grok-station/admin/pairing.py /opt/grok-station/admin/pair_listener.py /opt/grok-station/admin/release.py  # removed (single device)
-install -m644 "$S"/admin/web/index.html "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/
+install -m644 "$S"/admin/web/index.html "$S"/admin/web/deploy-pins.js "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/
 install -m644 "$S"/admin/web/assets/* /opt/grok-station/admin/web/assets/
 install -d /opt/grok-station/assets/brand
 if [ -d "$S/assets/brand" ]; then
