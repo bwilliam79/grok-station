@@ -153,6 +153,45 @@ class ListenerWiring(unittest.TestCase):
         self.assertEqual(self._doc()["words"], [])
         self.assertFalse(os.path.exists(os.path.join(gw.ENROLL_DIR, "hey_finn")))
 
+    def test_marker_cleared_and_stale_build_reported(self):
+        gw.build_fewshot("hey_finn", "finn", "20261023-080000")
+        self.assertFalse(os.path.exists(gw._marker("hey_finn")))
+        self.assertTrue("built_at" in self._doc()["words"][0])
+        json.dump({"session": "s1", "persona": "finn"}, open(gw._marker("hey_finn"), "w"))  # listener died mid-build
+        old = gw.ENROLL_STATE["last"]
+        try:
+            self.assertEqual(gw.stale_build(), "hey_finn")
+            self.assertEqual(gw.ENROLL_STATE["last"]["stage"], "failed")
+            self.assertEqual(gw.ENROLL_STATE["last"]["message"], gw.BUILD_STOPPED)
+            self.assertFalse(os.path.exists(gw._marker("hey_finn")))
+        finally:
+            gw.ENROLL_STATE["last"] = old
+
+    def test_build_error_marks_failed_with_plain_message(self):
+        posted = []
+        old = (gw.build_fewshot, gw.post_state, gw.subprocess.Popen, gw.time.sleep, gw.follow_training)
+        gw.build_fewshot = lambda *a: (_ for _ in ()).throw(RuntimeError("boom"))
+        gw.post_state = lambda *a, **k: None
+        gw.subprocess.Popen = lambda *a, **k: None
+        gw.time.sleep = lambda s: None
+        gw.follow_training = lambda *a, **k: None
+        t = np.arange(30 * 1280) / 16000.0
+        speech = (6000 * np.sin(2 * np.pi * 220 * t)).astype(np.int16); speech[:8000] = 0; speech[-8000:] = 0
+        frames = iter([])
+        def read16(raw=False):
+            return np.zeros(1280, np.int16)
+        oc = gw.np.concatenate
+        gw.np.concatenate = lambda parts, *a, **k: speech if len(parts) == 30 else oc(parts, *a, **k)
+        try:
+            gw.enroll({"phrase": "hey_zed", "persona": "grok", "count": 10}, read16, "default")
+        finally:
+            (gw.build_fewshot, gw.post_state, gw.subprocess.Popen, gw.time.sleep, gw.follow_training) = old
+            gw.np.concatenate = oc
+        last = gw.ENROLL_STATE["last"]
+        self.assertEqual(last["stage"], "failed")
+        self.assertIn("Press Record voice", last["message"])
+        self.assertFalse(gw.ENROLL_STATE["busy"])
+
     def test_hey_grok_collision_blocks(self):
         gw.hey_grok_hears = lambda clips: 0.9
         cal = gw.build_fewshot("hey_finn", "finn")

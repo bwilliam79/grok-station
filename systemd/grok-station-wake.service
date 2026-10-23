@@ -9,7 +9,7 @@ EnvironmentFile=-/etc/grok-station/wake.env
 ExecStart=/opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py
 Restart=always
 RestartSec=3
-MemoryMax=350M
+MemoryMax=450M
 # No CPU quota: on a Pi 3B an 80% cap starved capture (arecord overruns). Audio stays ahead of the display.
 Nice=-5
 IOSchedulingClass=best-effort

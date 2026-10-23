@@ -159,3 +159,13 @@ Minor release. Installs over 0.9.4.
 - `grok_wake.py --bench file.wav` times detection on recorded audio. `tools/fewshot_eval.py` and `tools/fewshot_tts.py` are the offline eval (dev only).
 - Not yet tested on a Pi.
 
+## 0.10.1
+
+Patch release. Installs over 0.10.0.
+
+- **Recorded words stayed off.** Bots get a `hey_<bot>` entry that starts switched off (0.9.2), and deleting a word leaves it hidden. Recording that phrase in 0.10.0 built the word but kept it off, so the listener logged "turned off on the admin page" and never woke on it. Starting a recording now clears the off switch and the hidden flag for that phrase.
+- **The dialog never finished.** The admin page now marks a word Ready as soon as the built word appears in `wakewords.enrolled.json` (new `built_at` field; a 0.10.0 entry without it counts too). The dialog then shows Ready and closes. If building throws an error, the word is marked failed with a plain message. If the listener stops answering for 3 minutes, or restarts during a build (a `building.json` marker is left behind), the word is also marked failed. All three cases are logged.
+- **Unfinished words in the list.** In-progress and failed words show on the Wake words page with Record voice and Delete.
+- **Less memory while building.** The build reuses the listener's loaded feature models and Hey Grok model. Before, it loaded second copies, peaking around 310 MB against the unit's 350 MB cap; now it's about 215 MB. The cap is raised to 450 MB.
+- **Quieter log.** A bot with no portrait no longer logs "relay get portrait failed: HTTPError" every sync. That 404 is normal (the station shows initials), and other errors are still logged with their HTTP code.
+

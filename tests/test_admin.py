@@ -1984,3 +1984,111 @@ class DeleteWakeWord(unittest.TestCase):
         self.assertTrue(self.ov()["hey_finn"]["hidden"])
         self.assertNotIn("hey_finn", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
         self.assertEqual(c.req("DELETE", "/api/wakewords/no_such_word", {})[0], 404)
+
+
+class FewshotEnrollFlow(unittest.TestCase):
+    """0.10.1: the full 10-rep flow through the admin API ends in Ready or a plain failure, never an endless wait,
+    and a word recorded over an old switched-off or deleted entry is on."""
+
+    def setUp(self):
+        reset_state()
+        CLOCK[0] = 1_800_000_000
+        if os.path.exists(ga.ENROLLED):
+            os.remove(ga.ENROLLED)
+        self.wake, self.sent, self.c = ga.wake, [], signed_in()
+        self.ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
+        # what 0.9.2 left behind: a bot's word switched off, and a deleted one hidden
+        json.dump({"hey_ash": {"enabled": False, "persona": "grok"},
+                   "hey_rhea": {"enabled": False, "hidden": True, "persona": "grok"}}, open(self.ov_path, "w"))
+        CLOCK[0] = 1_800_000_000
+
+    def tearDown(self):
+        ga.wake = self.wake
+        if os.path.exists(ga.ENROLLED):
+            os.remove(ga.ENROLLED)
+
+    def listener(self, seq):
+        box = {"i": 0}
+
+        def fake(method, p, body=None, timeout=3):
+            self.sent.append((method, p, body))
+            if p == "/enroll":
+                return 202, {"ok": True}
+            if p != "/status":
+                return 202, {"ok": True}
+            i = min(box["i"], len(seq) - 1); box["i"] += 1
+            return 200, seq[i]
+        ga.wake = fake
+
+    def status(self, phrase):
+        st, j = self.c.req("GET", "/api/enroll/status")
+        self.assertEqual(st, 200)
+        return j["words"].get(phrase) or {}
+
+    def last(self, phrase, stage, msg, busy):
+        return {"enrolling": busy, "last_enroll": {"phrase": phrase, "session": "20261023-080000", "stage": stage,
+                                                   "message": msg, "persona": "grok"}}
+
+    def built(self, name, at=None):
+        os.makedirs(os.path.dirname(ga.ENROLLED), exist_ok=True)
+        w = {"name": name, "persona": "grok", "kind": "fewshot", "threshold": 0.92, "path": "/x",
+             "metrics": {"heard": 10, "count": 10, "templates": 10}}
+        if at is not None:
+            w["built_at"] = at
+        json.dump({"words": [w]}, open(ga.ENROLLED, "w"))
+
+    def test_ten_reps_then_ready_and_on(self):
+        seq = [self.last("hey_ash", "recording", "Say it on the station.", True)] * 10 + \
+              [self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
+               self.last("hey_ash", "published", "Ready. It heard 10 of 10 recordings.", False)]
+        self.listener(seq)
+        st, j = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.assertEqual(st, 202, j)
+        ov = json.load(open(self.ov_path))
+        self.assertNotIn("enabled", ov["hey_ash"])  # the old off switch is cleared when you record it
+        for _ in range(10):
+            self.assertEqual(self.status("hey_ash")["state"], "recording")
+        self.assertEqual(self.status("hey_ash")["state"], "training")
+        self.built("hey_ash", int(CLOCK[0]))
+        row = self.status("hey_ash")
+        self.assertEqual(row["state"], "published")
+        self.assertTrue(row["message"].startswith("Ready"))
+
+    def test_deleted_word_comes_back_when_recorded(self):
+        self.listener([self.last("hey_rhea", "recording", "", True)])
+        st, j = self.c.req("POST", "/api/enroll", {"phrase": "Hey Rhea", "persona": "grok"})
+        self.assertEqual(st, 202, j)
+        ov = json.load(open(self.ov_path))
+        self.assertNotIn("hidden", ov["hey_rhea"]); self.assertNotIn("enabled", ov["hey_rhea"])
+        words = {w["name"]: w for w in self.c.req("GET", "/api/wakewords")[1]["words"]}
+        self.assertIn("hey_rhea", words)
+
+    def test_build_failure_is_shown(self):
+        msg = "Couldn't build the wake word on the station. Press Record voice to try again."
+        self.listener([self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
+                       self.last("hey_ash", "failed", msg, False)])
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.status("hey_ash")
+        row = self.status("hey_ash")
+        self.assertEqual((row["state"], row["message"]), ("failed", msg))
+
+    def test_listener_restart_mid_build_fails_after_a_while(self):
+        self.listener([self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
+                       {"enrolling": False, "last_enroll": None}])
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.assertEqual(self.status("hey_ash")["state"], "training")
+        self.assertEqual(self.status("hey_ash")["state"], "training")  # restarted, but not stale yet
+        CLOCK[0] += ga.ENROLL_STALE_S + 1
+        row = self.status("hey_ash")
+        self.assertEqual(row["state"], "failed")
+        self.assertEqual(row["message"], ga.ENROLL_STALLED)
+        CLOCK[0] -= ga.ENROLL_STALE_S + 1  # keep the sign-in fresh; the failed row stays failed
+        st, _ = self.c.req("DELETE", "/api/wakewords/hey_ash", {})
+        self.assertEqual(st, 200)
+
+    def test_word_built_by_0_10_0_counts_as_done(self):
+        self.listener([self.last("hey_ash", "training", "", True), {"enrolling": False, "last_enroll": None}])
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.status("hey_ash")
+        self.built("hey_ash")  # no built_at: written by 0.10.0
+        self.assertIn(self.status("hey_ash")["state"], ("published", "ready"))

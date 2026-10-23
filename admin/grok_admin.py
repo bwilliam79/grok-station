@@ -938,6 +938,9 @@ def save_phrase_persona(phrase, persona):
         ov = {}
     o = ov.get(phrase) if isinstance(ov.get(phrase), dict) else {}
     o["persona"] = persona
+    o.pop("hidden", None)   # recording a word you deleted earlier brings it back
+    if o.get("enabled") is False:  # and on: a bot's hey_<slug> entry starts off (0.9.2), which kept a word
+        o.pop("enabled")           # recorded in 0.10.0 from ever waking ("turned off on the admin page")
     ov[phrase] = o
     write_json(path("wake-overrides.json"), ov, 0o640)
 
@@ -960,6 +963,10 @@ def write_enroll_status(doc):
 
 def enrolled_phrase_ids():
     return {w.get("name") for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
+
+
+def enrolled_entries():
+    return {w["name"]: w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
 
 
 def set_enroll_state(phrase, state, message, persona=None, session=None, had_model=None):
@@ -1041,6 +1048,10 @@ def map_train_state(state, log="", scores=None):
     return st
 
 
+ENROLL_STALE_S = 180
+ENROLL_STALLED = "The station stopped before this wake word was finished. Press Record voice to try again, or delete it."
+
+
 def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
     """Fold the listener's enroll stage and any published model into the persisted per-phrase status.
 
@@ -1064,6 +1075,7 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
         if st == "failed_quality" and not str(row.get("message") or "").startswith("Not good enough"):
             row["message"] = quality_message(scores)
         out[k] = row
+    built = enrolled_names if isinstance(enrolled_names, dict) else {}
     enrolled = {n for n in (enrolled_names or []) if n}
     last, busy = {}, False
     if isinstance(wake_status, dict):
@@ -1106,6 +1118,25 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
         for name, row in list(out.items()):
             if name in enrolled and row.get("state") in ("uploading", "training") and not row.get("had_model"):
                 out[name] = _status_row(name, "ready", "Ready.", now_ts, out)
+    if not busy:
+        # A word built on the station since this attempt last moved: it's done, whatever the listener reports now
+        # (0.10.0 could leave the dialog waiting after a successful build).
+        for name, row in list(out.items()):
+            b = built.get(name) if isinstance(built.get(name), dict) else {}
+            at = b.get("built_at")
+            fresh = (isinstance(at, (int, float)) and at >= int(row.get("updated_at") or 0) - 5) or \
+                (at is None and b.get("kind") == "fewshot" and not row.get("had_model"))  # built by 0.10.0 (no time)
+            if row.get("state") in ACTIVE_ENROLL and fresh:
+                m = b.get("metrics") if isinstance(b.get("metrics"), dict) else {}
+                msg = f"Ready. It heard {m['heard']} of {m['count']} recordings." if "heard" in m and "count" in m else "Ready."
+                out[name] = _status_row(name, "published", msg, now_ts, out)
+    if isinstance(wake_status, dict) and not busy:
+        # The listener answers and isn't recording or building, yet a word still says it is: the listener restarted
+        # (or an older listener never reports an end). Fail it with a plain message instead of waiting forever.
+        for name, row in list(out.items()):
+            if row.get("state") in ACTIVE_ENROLL and now_ts - int(row.get("updated_at") or 0) >= ENROLL_STALE_S:
+                print(f"enroll {name}: no progress from the wake listener for {ENROLL_STALE_S}s; marked failed", flush=True)
+                out[name] = _status_row(name, "failed", ENROLL_STALLED, now_ts, out)
     return out
 
 
@@ -1114,7 +1145,7 @@ def refresh_enroll_status():
     code, st = wake("GET", "/status")
     wake_status = st if code == 200 and isinstance(st, dict) else None
     prev = read_enroll_status()
-    doc = derive_enroll_status(prev, wake_status, enrolled_phrase_ids(), int(now()))
+    doc = derive_enroll_status(prev, wake_status, enrolled_entries(), int(now()))
     if doc != prev:
         write_enroll_status(doc)
     return doc
@@ -2657,7 +2688,7 @@ class Handler(BaseHTTPRequestHandler):
         ov = read_json(path("wake-overrides.json"), {})
         if not isinstance(ov, dict):
             ov = {}
-        if name not in known and name not in ov:
+        if name not in known and name not in ov and name not in read_enroll_status():
             return self.send(404, {"error": "No such wake word."})
         if not wake_name_ok(name) and name not in ov:
             return self.send(400, {"error": "bad name"})
@@ -2713,6 +2744,8 @@ class Handler(BaseHTTPRequestHandler):
             who = personas.get(mid) or "grok"
             if isinstance(persona, str) and persona and persona != who:
                 return self.send(400, {"error": duplicate_msg(phrase_label(mid))})
+            if mid != BUILTIN_WORD:
+                save_phrase_persona(mid, who)
         code, out = wake("POST", "/enroll", {"phrase": mid, "count": count, "topup": bool(j.get("topup")),
                                               "persona": who})
         if not isinstance(out, dict):
