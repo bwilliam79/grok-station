@@ -1607,6 +1607,27 @@ def stats_view(raw):
     return {"avg_rtt_ms": avg, "timeouts": n}
 
 
+_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._'’-]{0,39}")
+
+
+def host_name_ok(name):
+    """Name of the home computer that posts a bot's replies. Shown only; the station never checks it."""
+    return isinstance(name, str) and _HOST_RE.fullmatch(name) is not None and name == name.strip()
+
+
+def clean_host(raw):
+    """A pasted computer name, trimmed and checked. None when unusable, "" when empty."""
+    if not isinstance(raw, str):
+        return None
+    t = " ".join(raw.split())
+    if t == "":
+        return ""
+    return t if host_name_ok(t) else None
+
+
+HOST_BAD = "Type the computer's name: letters, numbers, spaces, dots or dashes, up to 40."
+
+
 def safe_bot(b):
     """The fields the browser may see. Tokens and webhook secrets are dropped.
 
@@ -1639,6 +1660,7 @@ def safe_bot(b):
         "paired": b.get("paired") is True,
         "public_key": bot_public_key(b),
         "key_mode": b.get("key_mode") if b.get("key_mode") in ("cloud", "home") else "cloud",
+        "reply_host": b.get("reply_host") if host_name_ok(b.get("reply_host")) else None,
         "stats": stats_view(b.get("stats")),
     }
 
@@ -1716,7 +1738,7 @@ def local_bots():
                 "source": "registry",
                 "webhook": {"configured": False, "last4": None, "saved_at": None},
                 "status": {"state": "not_configured", "last_answered_at": None, "last_error": None, "last_error_at": None},
-                "paired": False, "public_key": None, "key_mode": "cloud", "stats": stats_view(None),
+                "paired": False, "public_key": None, "key_mode": "cloud", "reply_host": None, "stats": stats_view(None),
             })
     return out
 
@@ -3104,9 +3126,14 @@ class Handler(BaseHTTPRequestHandler):
             mode = j.get("key_mode")
             if mode not in ("cloud", "home"):
                 return self.send(400, {"error": "Pick where the key lives."})
+        host = clean_host(j.get("reply_host", "")) if isinstance(j, dict) else ""
+        if host is None:
+            return self.send(400, {"error": HOST_BAD})
         if not self.need_password(j):
             return
         body = {"slug": slug, "name": name, "actor": RELAY_ACTOR}
+        if host:
+            body["reply_host"] = host
         if voice:
             body["voice"] = voice
         if mode in ("cloud", "home"):
@@ -3132,8 +3159,12 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(j, dict):
             return self.send(400, {"error": "Type a name."})
         has_name, has_voice, has_mode = "name" in j, "voice" in j, "key_mode" in j
-        if not has_name and not has_voice and not has_mode:
+        has_host = "reply_host" in j
+        if not has_name and not has_voice and not has_mode and not has_host:
             return self.send(400, {"error": "Type a name."})
+        host = clean_host(j.get("reply_host")) if has_host else ""
+        if host is None:
+            return self.send(400, {"error": HOST_BAD})
         name = clean_name(j.get("name")) if has_name else None
         if has_name and not name:
             return self.send(400, {"error": "Type a name."})
@@ -3150,9 +3181,12 @@ class Handler(BaseHTTPRequestHandler):
             mode = j.get("key_mode")
             if mode not in ("cloud", "home"):
                 return self.send(400, {"error": "Pick where the key lives."})
-        if not self.need_password(j):
+        # Only the computer name is a label, not access, so it doesn't ask for the password again.
+        if (has_name or has_voice or has_mode) and not self.need_password(j):
             return
         body = {"actor": RELAY_ACTOR}
+        if has_host:
+            body["reply_host"] = host
         if has_name:
             body["name"] = name
         if has_voice:

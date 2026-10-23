@@ -785,6 +785,38 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("nova", disk.get("added") or {})
 
 
+    async def test_reply_host_is_a_label(self):
+        """Which computer posts replies: stored, listed, changed without touching the key, gone with the bot."""
+        h = self.headers()
+        listed = await (await self.client.get("/admin/bots", headers=h)).json()
+        self.assertIsNone(listed["bots"][0]["reply_host"])
+        bad = await self.client.post("/admin/bots", headers=h, json={"slug": "nova", "name": "Nova", "voice": "rex",
+                                                                    "actor": "admin", "reply_host": "<script>"})
+        self.assertEqual((bad.status, (await bad.json())["error"]), (400, "bad computer name"))
+        made = await self.client.post("/admin/bots", headers=h, json={"slug": "nova", "name": "Nova", "voice": "rex",
+                                                                     "actor": "admin", "reply_host": "Den iMac"})
+        self.assertEqual(made.status, 201, await made.text())
+        self.assertEqual(json.load(open(self.relay.overlay_path()))["reply_host"], {"nova": "Den iMac"})
+        moved = await self.client.patch("/admin/bots/jules", headers=h, json={"reply_host": "Office Mini", "actor": "admin"})
+        self.assertEqual(await moved.json(), {"ok": True})  # no needs_key: the key is untouched
+        body = await (await self.client.get("/admin/bots", headers=h)).json()
+        hosts = {b["slug"]: b["reply_host"] for b in body["bots"]}
+        self.assertEqual((hosts["jules"], hosts["nova"]), ("Office Mini", "Den iMac"))
+        self.assertEqual(self.relay.reply_host_of("jules"), "Office Mini")
+        self.assertRegex(self._audit(), r"admin jules reply-host -\n")
+        cleared = await self.client.patch("/admin/bots/jules", headers=h, json={"reply_host": "", "actor": "admin"})
+        self.assertEqual(cleared.status, 200)
+        self.assertIsNone(self.relay.reply_host_of("jules"))
+        await self.client.delete("/admin/bots/nova", headers=h, json={"actor": "admin"})
+        self.assertNotIn("reply_host", json.load(open(self.relay.overlay_path())))
+
+    def test_timeout_line_names_the_computer(self):
+        self.assertEqual(self.relay.handoff_line("Jules", "timeout", "Den iMac"),
+                         "I couldn't reach Jules. Den iMac may be offline.")
+        self.assertEqual(self.relay.handoff_line("Jules", "timeout"), "I couldn't reach Jules.")
+        self.assertEqual(self.relay.handoff_line("Jules", "reject", "Den iMac"), self.relay.handoff_line("Jules", "reject"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

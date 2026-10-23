@@ -133,6 +133,18 @@ printf '%s' "$ANSWER" | grok-station-reply send \
   --insecure --pin-sha256 '<fingerprint from the System page>'
 ```
 
+## Which computer sends replies
+
+A bot's replies are posted from one home computer on your network. If that computer sleeps or is off, replies stop.
+
+- **Setup.** The Add bot instructions tell the bot to pick the always-on home computer it can run commands on, use it for the setup step and every reply, and send back its name with the webhook URL, webhook key and public key. Paste the name into **Home computer name** on the same screen.
+- **Bots page and Configure** show **Replies from: <name>**, and Configure shows the last reply time. A bot added before 0.10.2 shows **Replies from: not set** until you use Change computer.
+- **No reply.** When a request times out, the station says "I couldn't reach <bot>. <name> may be offline." The bot's row says the same until the next reply arrives.
+- **Change computer** (Configure):
+  - Key on the bot computer: copy the instructions, which set up the new computer only. Then type its name and save. The key and the pairing stay the same.
+  - Key on a home computer: the key is tied to that computer, so moving means **Replace key** and setting it up again on the new one.
+- **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies.
+
 ## Routine prompt
 
 Paste this into the bot's routine. Do not add the key, and do not add any other command.
