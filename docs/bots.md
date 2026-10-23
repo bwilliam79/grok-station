@@ -175,7 +175,7 @@ Single-machine cloud setups can instead run the one `send` command from the sect
 
 ## Home mode: gs-seal-setup and gs-seal-reply
 
-The scripts ship in 0.8.0. The Add bot flow offers home mode only after its first validation run on a real home machine; until then every bot uses cloud mode.
+The scripts ship in 0.8.0. Since 0.8.2 the Add bot flow offers home mode as an opt-in choice; cloud mode stays the default and is pre-selected.
 
 Home mode runs only on macOS. The station installer does not put these scripts on the Pi. Copy `scripts/gs-seal-setup`, `scripts/gs-seal-reply`, `scripts/gs_seal_common.py`, and `scripts/vendor-lock.txt` into the same directory (for example `~/bin`). They need Python 3. Run them by their real path: a symlink to either script, or a symlinked folder anywhere in the path you call them by, is refused. Both commands refuse to run on anything other than macOS. `post` from `grok-station-reply` is not used in this mode.
 

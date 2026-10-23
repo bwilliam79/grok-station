@@ -1076,8 +1076,8 @@ function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
 const BOT_ID_RE = /^[a-z][a-z0-9-]{1,23}$/;
 const BOT_ID_ERROR = "Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. The voice service doesn't allow a longer id.";
 const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.";
-// Home key mode ships (scripts/gs-seal-setup, scripts/gs-seal-reply) but stays off until the first home computer validation run.
-const HOME_MODE = false;
+// Home key mode (scripts/gs-seal-setup, scripts/gs-seal-reply) is available since 0.8.2, after its home computer validation run. Cloud stays the default.
+const HOME_MODE = true;
 function botIdFromName(name) {
   // ASCII only. A non-ASCII letter is a dash, not a lowercase or a transliteration. "" if it is not a bot id.
   let s = "";

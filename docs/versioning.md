@@ -66,3 +66,9 @@ Minor release. Installs over 0.7.0.
 Patch release. Installs over 0.8.0.
 
 - **Symlinked call path refused.** `gs-seal-setup` and `gs-seal-reply` now check the path they were invoked by, before resolving it: if that path or any parent folder is a symlink, they print `refused` and exit 1. Run them from the real install directory. Home mode stays off in Add bot.
+
+## 0.8.2
+
+Patch release. Installs over 0.8.1.
+
+- **Home mode available.** After its validation run on a Mac, Add bot (and a bot's key mode) now offers **Home machine** as an opt-in choice. **Cloud computer** stays the default and is pre-selected. No script or station changes.

@@ -290,7 +290,9 @@ class AdminUI(unittest.TestCase):
         home = js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0]
         self.assertIn(cloud, fences)
         self.assertIn(home, fences)
-        self.assertIn("const HOME_MODE = false;", js)
+        self.assertIn("const HOME_MODE = true;", js)
+        self.assertEqual(js.count('value="cloud"${home ? "" : " checked"}> Cloud computer (default)'), 2)
+        self.assertIn('keyMode: "cloud"', js)
         self.assertIn("Home machine mode will be enabled after its first validation run.", js)
         self.assertIn("grok-station-reply seal", cloud)
         self.assertNotIn("gs-seal-reply", cloud)
