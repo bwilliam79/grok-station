@@ -618,6 +618,19 @@ class Bots(unittest.TestCase):
     def tearDown(self):
         ga.relay_call = self._rc
 
+    def test_reply_host_label(self):
+        """Replies from: a computer name, saved without the password, checked, and listed."""
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"reply_host": "  Den   iMac "})
+        self.assertEqual(st, 200, j)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"actor": "admin", "reply_host": "Den iMac"}))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"reply_host": "rm -rf /; echo"})
+        self.assertEqual(st, 400)
+        self.assertIn("computer's name", j["error"])
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertIsNone(j["bots"][0]["reply_host"])  # existing bots: not set
+        self.assertEqual(ga.safe_bot({"slug": "kai", "name": "Kai", "reply_host": "Den iMac"})["reply_host"], "Den iMac")
+        self.assertIsNone(ga.safe_bot({"slug": "kai", "name": "Kai", "reply_host": "<b>x</b>"})["reply_host"])
+
     def disk_blob(self):
         out = b""
         for d in (os.environ["ADMIN_STATE_DIR"], os.environ["ADMIN_RUN_DIR"]):

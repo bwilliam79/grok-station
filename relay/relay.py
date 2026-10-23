@@ -364,6 +364,26 @@ def _home_modes(raw):
     return out
 
 
+_HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._'’-]{0,39}")
+
+
+def host_name_ok(name):
+    """The home computer a bot's replies come from, as the user or bot named it. Display only, never auth."""
+    return isinstance(name, str) and _HOST_RE.fullmatch(name) is not None and name == name.strip()
+
+
+def _reply_hosts(raw):
+    out = {}
+    for slug, name in (raw.items() if isinstance(raw, dict) else ()):
+        if handoff.bot_slug_ok(slug) and host_name_ok(name):
+            out[slug] = name
+    return out
+
+
+def reply_host_of(slug):
+    return load_overlay_doc()["reply_host"].get(slug)
+
+
 def key_mode_of(doc, slug):
     """cloud or home. Missing and anything other than home are cloud."""
     modes = doc.get("key_mode") if isinstance(doc, dict) else None
@@ -376,7 +396,7 @@ def load_overlay_doc():
     list_source is always present here ("" when unset). key_mode is always a dict (only home entries).
     An empty list_source or key_mode is left out of the file on save.
     """
-    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "key_mode": {}}
+    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "key_mode": {}, "reply_host": {}}
     try:
         with open(overlay_path()) as f:
             doc = json.load(f)
@@ -404,7 +424,7 @@ def load_overlay_doc():
     if not handoff.bot_slug_ok(src):
         src = ""
     return {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices, "list_source": src,
-            "key_mode": _home_modes(doc.get("key_mode"))}
+            "key_mode": _home_modes(doc.get("key_mode")), "reply_host": _reply_hosts(doc.get("reply_host"))}
 
 
 def save_overlay(doc):
@@ -417,6 +437,11 @@ def save_overlay(doc):
         out["key_mode"] = modes
     else:
         out.pop("key_mode", None)
+    hosts = _reply_hosts(out.get("reply_host"))
+    if hosts:
+        out["reply_host"] = hosts
+    else:
+        out.pop("reply_host", None)
     atomic_write(overlay_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
     _personas["mtime"] = None
 
@@ -1036,8 +1061,11 @@ def _record_rtt(bot, rtt_ms=None, timeout=False):
         log("rtt write failed", type(e).__name__)
 
 
-def handoff_line(name, verdict):
-    """The fixed sentence the station speaks. The model does not word it."""
+def handoff_line(name, verdict, host=None):
+    """The fixed sentence the station speaks. The model does not word it.
+    host: the home computer that posts this bot's replies; a timeout names it, since that's what usually sleeps."""
+    if verdict == "timeout" and host:
+        return f"I couldn't reach {name}. {host} may be offline."
     return {"timeout": f"I couldn't reach {name}.",
             "limit": f"{name} has had a lot of questions from the station today; ask in the app.",
             "post-failed": f"Couldn't reach {name} just now; try again or ask in the app.",
@@ -1658,7 +1686,7 @@ async def session(req):
                     return await end_routed_turn()
                 if not text and verdict in ("timeout", "post-failed"):
                     await pi.send_json({"type": "comms_fail"})  # wake plays the fixed fail tone, then the line
-                await play_fixed(text if text else handoff_line(name, verdict), voice, TTS_REPLY_S if text else TTS_SHORT_S)
+                await play_fixed(text if text else handoff_line(name, verdict, reply_host_of(bot)), voice, TTS_REPLY_S if text else TTS_SHORT_S)
                 return await end_routed_turn()
 
             async def pi_to_xai():
@@ -2243,7 +2271,7 @@ def _last4(token):
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
-                  "import", "dismiss", "list-source", "key-mode"}
+                  "import", "dismiss", "list-source", "key-mode", "reply-host"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
 _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 422: "lint", 429: "too many"}
 
@@ -2906,6 +2934,7 @@ async def admin_bots_get(req):
                      "paired": pinned,
                      "public_key": base64.b64encode(raw_key).decode() if pinned else None,
                      "key_mode": "home" if modes.get(slug) == "home" else "cloud",
+                     "reply_host": ov_now["reply_host"].get(slug),
                      "stats": stats.bot_view(slug)})
     if not VOICES:
         kick_voice_fetch()
@@ -2937,6 +2966,9 @@ async def admin_bots_post(req):
         mode = body.get("key_mode")
         if mode not in ("cloud", "home"):
             return web.json_response({"error": "bad key mode"}, status=400)
+    host = body.get("reply_host")
+    if host is not None and not host_name_ok(host):
+        return web.json_response({"error": "bad computer name"}, status=400)
     ov = load_overlay_doc()
     if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
         return web.json_response({"error": "exists"}, status=409)
@@ -2945,6 +2977,8 @@ async def admin_bots_post(req):
         ov["list_source"] = slug
     if mode == "home":
         ov["key_mode"][slug] = "home"
+    if host:
+        ov["reply_host"][slug] = host
     try:
         token = mint_voice_token(slug)
         save_overlay(ov)
@@ -2976,8 +3010,11 @@ async def admin_bots_patch(req):
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
     has_name, has_voice, has_mode = "name" in body, "voice" in body, "key_mode" in body
-    if not has_name and not has_voice and not has_mode:
+    has_host = "reply_host" in body
+    if not has_name and not has_voice and not has_mode and not has_host:
         return web.json_response({"error": "bad request"}, status=400)
+    if has_host and body.get("reply_host") not in (None, "") and not host_name_ok(body.get("reply_host")):
+        return web.json_response({"error": "bad computer name"}, status=400)
     if has_name and not _name_ok(body.get("name")):
         return web.json_response({"error": "bad name"}, status=400)
     voice = body.get("voice")
@@ -3002,6 +3039,11 @@ async def admin_bots_patch(req):
         ov["voices"][slug] = voice
         if slug in ov["added"]:
             ov["added"][slug]["voice"] = voice
+    if has_host:  # which computer posts replies: a label only, it never changes the key or who may post
+        if body.get("reply_host"):
+            ov["reply_host"][slug] = body["reply_host"]
+        else:
+            ov["reply_host"].pop(slug, None)
     switched = False
     if has_mode and mode != key_mode_of(ov, slug):
         switched = True
@@ -3027,6 +3069,8 @@ async def admin_bots_patch(req):
     if has_name or has_voice:
         forget_ack_clips(slug)  # the cache key is sha(name|voice); the next reload renders the new line
         persona_list()
+    if has_host:
+        audit(body["actor"], slug, "reply-host", "-")
     if switched:
         audit(body["actor"], slug, "key-mode", "-")
     resp = {"ok": True}
@@ -3057,6 +3101,7 @@ async def admin_bots_delete(req):
     ov["renamed"].pop(slug, None)
     ov["voices"].pop(slug, None)
     ov["key_mode"].pop(slug, None)
+    ov["reply_host"].pop(slug, None)
     if ov.get("list_source") == slug:  # the main bot is gone: clear it, or pick the only bot left
         left = [s for s in persona_list() if s != slug]
         ov["list_source"] = left[0] if len(left) == 1 else ""

@@ -311,6 +311,21 @@ class AdminUI(unittest.TestCase):
         self.assertLess(auto.find("setTog"), auto.find("withPassword"))
         self.assertIn("Enter the admin password to change the daily check", up)
 
+    def test_replies_from_ui(self):
+        js = self.js
+        self.assertIn('Replies from: not set', js)
+        self.assertIn('Replies from: ${b.reply_host}', js)
+        self.assertIn('may be offline', js)
+        self.assertIn('id="ahost"', js)
+        self.assertIn('id="chcomp"', js)
+        self.assertIn("Change computer", js)
+        self.assertIn("Use Replace key", js)
+        fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
+        self.assertIn("Reply with that computer's name.", fn)
+        self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
+        for word in ("mailbox", "Mailbox"):
+            self.assertNotIn(word, fn)
+
     def test_add_bot_routine_matches_docs(self):
         docs = _read(os.path.join("docs", "bots.md"))
         fences = [part.split("\n```", 1)[0] for part in docs.split("```text\n")[1:]]
@@ -359,7 +374,7 @@ class AdminUI(unittest.TestCase):
         self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("gs-seal-setup"))
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertIn("Reply with the webhook URL, the webhook key, and your public key.", fn)
+        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the name of the home computer you picked.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
         installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]

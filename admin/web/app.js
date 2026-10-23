@@ -1699,6 +1699,21 @@ function confirmRemove(bot, onDone) {
   };
 }
 // Main bot first; every other bot keeps its order.
+// Which home computer posts this bot's replies, and a plain warning when the last request went unanswered.
+function repliesFrom(b) {
+  return b && b.reply_host ? `Replies from: ${b.reply_host}` : "Replies from: not set";
+}
+function replyWarning(b) {
+  const st = (b && b.status) || {};
+  if (!b || !b.reply_host && !(b.webhook && b.webhook.configured)) return "";
+  const missed = st.last_error === "No answer" && st.last_error_at && (!st.last_answered_at || st.last_error_at >= st.last_answered_at);
+  if (missed) return b.reply_host ? `No reply last time. ${b.reply_host} may be offline.` : "No reply last time. The computer that sends its replies may be offline.";
+  return "";
+}
+function lastReplyLine(b) {
+  const at = b && b.status && b.status.last_answered_at;
+  return at ? "Last reply: " + new Date(at * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "";
+}
 function mainFirst(bots) {
   return bots.filter(b => b.main).concat(bots.filter(b => !b.main));
 }
@@ -1716,6 +1731,8 @@ function paintBots(el, bots) {
     return `<div class="botrow">${avatar(b.slug, b.name)}
     <div style="flex:1;min-width:0"><div class="lbl">${b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : ""}${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
     <div class="help">${esc(where)}</div>
+    <div class="help">${esc(repliesFrom(b))}${b.reply_host ? "" : " · use Change computer in Configure"}</div>
+    ${replyWarning(b) ? `<div class="help warn">${esc(replyWarning(b))}</div>` : ""}
     <div class="help">${esc(rttLine(b.stats))}</div></div>
     ${voiceOptions(el._voices, voiceChoice(b, el), "vv-" + b.slug, "", ` data-vsel="${esc(b.slug)}" aria-label="Voice"`)}
     <button class="btn sm" type="button" data-vsave="${esc(b.slug)}" disabled>Save</button>
@@ -1853,6 +1870,12 @@ function openBot(bot, el) {
     ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
     ${keyModeFields(bot.key_mode)}
     ${pairFields(el._stationPub, bot)}
+    <div class="field"><div class="lbl">${esc(repliesFrom(bot))}</div>
+      ${lastReplyLine(bot) ? `<p class="help">${esc(lastReplyLine(bot))}</p>` : ""}
+      ${replyWarning(bot) ? `<p class="help warn">${esc(replyWarning(bot))}</p>` : ""}
+      ${bot.reply_host ? "" : `<p class="note">Use Change computer to set which home computer sends this bot's replies.</p>`}
+      <button class="btn sm" id="chcomp" type="button">Change computer</button>
+      <div id="chbox" hidden></div></div>
     <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
       <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div>
     <div class="botfoot">${bot.main ? "" : `<button class="btn g sm" id="setmain" type="button">Set as Main Bot</button>`}<button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
@@ -1861,6 +1884,7 @@ function openBot(bot, el) {
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
   $("#cpupd", d).onclick = ev => copyText(routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode), ev.currentTarget);
+  $("#chcomp", d).onclick = () => openChangeComputer($("#chbox", d), bot, el);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
   const sync = () => {
     const url = $("#burl", d).value.trim(), key = $("#bkey", d).value, dirty = url.length + key.length > 0;
@@ -2476,6 +2500,47 @@ function routineUpdate(slug, pub, fp, mode) {
   body = fill(body, "<fingerprint>", fp);
   return "Replace this routine's text with the text below. Your key and setup stay the same.\n\n" + body;
 }
+function routineChangeComputer(slug, pub, fp) {
+  let script = "";
+  try {
+    const pins = typeof DEPLOY_PINS === "undefined" ? null : DEPLOY_PINS;
+    script = deployScript("cloud", pins, slug || "", stationAddress(), fp || "", pub || "");
+  } catch (e) {
+    script = "";
+  }
+  return "Move where this bot's replies are sent from. Your key, webhook and routine stay the same.\n\n"
+    + "Pick the home computer that stays on all the time and that you can run commands on. "
+    + "Replies stop when that computer sleeps or is off.\n\n"
+    + "Ask the user before you run this. On that computer, run the script below with home. It installs this file:\n"
+    + "~/.local/share/grok-station/bin/grok-station-reply\n\n"
+    + (script ? "The script:\n" + script : "The setup script could not be filled in yet.\n")
+    + "\nFrom now on, post replies from that computer.\n"
+    + "Reply with that computer's name.";
+}
+function openChangeComputer(box, bot, el) {
+  if (!box) return;
+  box.hidden = false;
+  if (bot.key_mode === "home") {
+    box.innerHTML = `<p class="note">This bot's key lives on ${esc(bot.reply_host || "its home computer")}, so moving to another computer means a new key. Use Replace key, then set it up on the new computer.</p>`;
+    return;
+  }
+  box.innerHTML = `<p class="help">Copy these to your Grok Bot. It sets up the new computer and tells you its name.</p>
+    <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>
+    <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(bot.reply_host || "")}"></div>
+    <div id="chere"></div>
+    <div class="field"><button class="btn p sm" type="button" id="chsave">Save</button></div>`;
+  $("#chcopy", box).onclick = ev => copyText(routineChangeComputer(bot.slug, el._stationPub, el._fingerprint), ev.currentTarget);
+  $("#chsave", box).onclick = async () => {
+    const name = $("#chname", box).value.trim();
+    if (!name) return errBox($("#chere", box), "Type the computer's name.");
+    const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, {reply_host: name});
+    if (!r.ok) return errBox($("#chere", box), (r.data && r.data.error) || "Couldn't save that.");
+    bot.reply_host = name;
+    errBox($("#chere", box), "");
+    toast(`Replies from ${name}.`);
+    if (el) refreshBots(el);
+  };
+}
 function routineForBot(slug, pub, fp, mode) {
   const fill = (text, token, value) => text.split(token).join(value || token);
   const home = mode === "home";
@@ -2511,6 +2576,8 @@ function routineForBot(slug, pub, fp, mode) {
     : "The setup script could not be filled in yet.\n";
   return "Create a webhook-triggered routine and use the text below as that routine.\n\n"
     + body
+    + "\n\nWhich home computer: if you can run commands on more than one, pick the one that stays on all the time. "
+    + "Replies stop when that computer sleeps or is off. Use that same computer for the setup below and for every reply."
     + "\n\nDeploy bot key setup on system running Grok Bot (one time)\n\n"
     + "Ask the user before you run this. It is one time. The station never pushes code, and it does not ask you to download these files again.\n\n"
     + where
@@ -2518,7 +2585,7 @@ function routineForBot(slug, pub, fp, mode) {
     + shown
     + (home ? "" : "\nThe script saves the bot's private key in ~/.local/share/grok-station/bot-seed. Store it as the secret GROK_STATION_BOT_KEY, then tell the user to delete that file.\n")
     + "\nAfter it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.\n"
-    + "Reply with the webhook URL, the webhook key, and your public key.";
+    + "Reply with the webhook URL, the webhook key, your public key, and the name of the home computer you picked.";
 }
 function addBot(voices, el, preset) {
   closeFloats();
@@ -2572,6 +2639,7 @@ function addBot(voices, el, preset) {
       <div class="row"><span>Key</span><span class="right mono">${fp ? esc(fp) : "no"}</span></div>
       <div class="row"><span>Key lives</span><span class="right">${draft.keyMode === "home" ? "Home computer" : "Bot computer"}</span></div>
       <div class="row"><span>Webhook</span><span class="right">${hook ? "yes" : "no"}</span></div>
+      <div class="row"><span>Replies from</span><span class="right">${esc(draft.host || "not set")}</span></div>
       ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
       <div id="ape"></div>
       <div class="field"><button class="btn p" id="ago" type="submit">Add bot</button></div></form>`;
@@ -2594,6 +2662,7 @@ function addBot(voices, el, preset) {
       try {
         if (!created) {
           const body = {name: draft.name, slug: draft.slug, key_mode: draft.keyMode === "home" ? "home" : "cloud"};
+          if (draft.host) body.reply_host = draft.host;
           if (draft.voice) body.voice = draft.voice;
           if (pw) body.password = pw;
           const r = await api("POST", "/api/bots", body);
@@ -2646,9 +2715,12 @@ function addBot(voices, el, preset) {
       <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512" required></div>
       <div class="field"><label for="akey">Webhook key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400" required></div>
       <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120" required></div>
+      <div class="field"><label for="ahost">Home computer name</label><input class="inp" id="ahost" autocomplete="off" spellcheck="false" maxlength="40" required>
+        <p class="help">The computer your bot said it will send replies from.</p></div>
       <div id="awe"></div>
       <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
-    const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d);
+    const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d), hostEl = $("#ahost", d);
+    if (hostEl) hostEl.value = draft.host || "";
     const routine = $("#aroutine", d);
     if (routine) routine.textContent = routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode);
     const view = $("#aview", d);
@@ -2669,6 +2741,9 @@ function addBot(voices, el, preset) {
       const problem = webhookProblem(url, key);
       if (problem) { errBox($("#awe", d), problem); return; }
       if (!pubKeyOk(pub)) { errBox($("#awe", d), "Paste the bot's public key: base64 of 32 bytes."); if (pubEl) pubEl.focus(); return; }
+      const host = hostEl ? hostEl.value.trim().split(/\s+/).join(" ") : "";
+      if (!/^[A-Za-z0-9][A-Za-z0-9 ._'’-]{0,39}$/.test(host)) { errBox($("#awe", d), "Type the home computer's name your bot sent back."); if (hostEl) hostEl.focus(); return; }
+      draft.host = host;
       draft.url = url;
       draft.key = key;
       draft.pub = pub;

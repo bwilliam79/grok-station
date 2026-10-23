@@ -169,3 +169,13 @@ Patch release. Installs over 0.10.0.
 - **Less memory while building.** The build reuses the listener's loaded feature models and Hey Grok model. Before, it loaded second copies, peaking around 310 MB against the unit's 350 MB cap; now it's about 215 MB. The cap is raised to 450 MB.
 - **Quieter log.** A bot with no portrait no longer logs "relay get portrait failed: HTTPError" every sync. That 404 is normal (the station shows initials), and other errors are still logged with their HTTP code.
 
+## 0.10.2
+
+Patch release. Installs over 0.10.1.
+
+- **Replies from.** Each bot stores the name of the home computer that posts its replies (`reply_host` in the relay's bot overlay). The bot row and Configure show it, and older bots show "Replies from: not set".
+- **Setup.** The Add bot instructions ask the bot to pick the always-on home computer it can run commands on and to report its name. The paste screen has a Home computer name field.
+- **Offline notice.** A timed-out request is spoken as "I couldn't reach <bot>. <name> may be offline.", and the row shows the same until the next reply.
+- **Change computer.** In Configure, with the key on the bot computer, this gives the setup step for the new computer only and saves its name. No re-pair is needed, and saving the name doesn't ask for the password again. With the key on a home computer, it explains that moving needs Replace key.
+- The name is display only. Nothing new decides which computer may post replies; the key still does. Posts don't carry the name yet, because that would change the pinned reply tool.
+
