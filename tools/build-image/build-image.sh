@@ -428,7 +428,7 @@ write_wifi() {
 # kernel's binfmt_misc entry for qemu-aarch64 (Debian/Ubuntu package
 # qemu-user-static, plus binfmt-support on older releases).
 check_arm64_exec() {
-  [[ "$(uname -s)" == Linux ]] || die "the image build needs Linux (loop devices, ext4, chroot). See docs/sd-image.md for macOS and Windows."
+  [[ "$(uname -s)" == Linux ]] || die "the image build needs Linux (loop devices, ext4, chroot). Use a Linux PC or a Linux VM."
   [[ "$(uname -m)" == aarch64 ]] && return 0
   local f
   for f in /proc/sys/fs/binfmt_misc/qemu-aarch64 /proc/sys/fs/binfmt_misc/qemu-aarch64-static; do
