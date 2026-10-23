@@ -1,0 +1,21 @@
+[Unit]
+Description=grok-station first boot (install.sh, then reboot into setup)
+# Created by tools/build-image/build-image.sh. Removed by firstboot.sh after
+# install.sh succeeds, so a failed install is tried again on the next boot.
+ConditionPathExists=/var/lib/grok-station-firstboot
+# Packages need a network. This image has no Wi-Fi profile; use Ethernet.
+# userconfig.service is Raspberry Pi OS's own first-boot account prompt.
+# After= waits for it when that unit exists. This unit does not create a user.
+After=network-online.target userconfig.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# First install is apt plus two Python venvs, which is slower than an update.
+TimeoutStartSec=90min
+ExecStart=/usr/local/src/grok-station/tools/build-image/firstboot.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

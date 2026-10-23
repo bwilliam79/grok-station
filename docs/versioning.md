@@ -29,3 +29,7 @@ Minor feature: named station timers (up to eight, countdown rings, an amber ring
 ## 0.4.0
 
 Minor: the display can dim from a light sensor, a clock schedule, or sunrise and sunset computed on the station. Settings are on the Display page. See [dimming.md](dimming.md).
+
+## 0.5.0
+
+Minor: `tools/build-image/build-image.sh` builds an SD image from the official Raspberry Pi OS Lite (64-bit) image. See [sd-image.md](sd-image.md).

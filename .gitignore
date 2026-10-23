@@ -1,6 +1,9 @@
 *.env
 env
 *token*
+# Card images from tools/build-image. The image is built, not committed.
+*.img
+*.img.xz
 __pycache__/
 .env
 relay/no-alerts/

@@ -23,6 +23,9 @@ In Raspberry Pi Imager, choose **Raspberry Pi OS Lite (64-bit)** and open the OS
 
 Write the card, boot the Pi, and SSH in: `ssh <user>@<hostname>.local`.
 
+You can instead build the card from this repository: see [docs/sd-image.md](docs/sd-image.md).
+That downloads the official Lite (64-bit) image and does not set Wi-Fi, SSH, a hostname, or a password.
+
 ## 2. Install
 
 On the Pi, run:
