@@ -22,6 +22,7 @@ FILES = (
     "scripts/gs-seal-reply",
     "scripts/gs_seal_common.py",
     "scripts/vendor-lock.txt",
+    "scripts/install-home.sh",
 )
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 

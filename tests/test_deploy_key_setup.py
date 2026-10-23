@@ -96,8 +96,8 @@ if (typeof fn !== "function") {
 process.stdout.write(fn(mode, pins, persona, station, pin, pub));
 """
 
-# gs-seal-setup is #!/usr/bin/python3 -I and exits unless sys.platform is darwin.
-# The installed bytes stay the pinned blob; this only redirects that exec.
+# gs-seal-setup is #!/usr/bin/python3 -I. The installed bytes stay the pinned
+# blob; this only redirects that exec so the test does not run keygen for real.
 INTERCEPT_C = r"""
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -420,7 +420,7 @@ class DeployKeySetup(unittest.TestCase):
         self.__class__.so = so_path
         self.__class__.setup_stub = stub
 
-    def _prepare(self, mode, alter=None, preexist=None):
+    def _prepare(self, mode, alter=None, preexist=None, script_text=None):
         stage = tempfile.mkdtemp(prefix="gs-stage-")
         home = tempfile.mkdtemp(prefix="gs-home-")
         os.chmod(home, 0o700)
@@ -463,7 +463,7 @@ class DeployKeySetup(unittest.TestCase):
                 planted[name] = os.lstat(path).st_ino
         script = os.path.join(stage, "install.sh")
         with open(script, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(self._script(mode))
+            fh.write(self._script(mode) if script_text is None else script_text)
         os.chmod(script, 0o700)
         return {
             "stage": stage, "home": home, "stub": stub, "fix": fix, "script": script,
@@ -472,8 +472,8 @@ class DeployKeySetup(unittest.TestCase):
             "planted": planted,
         }
 
-    def _run(self, mode, args=(), home_mode=False, curl_404=False, alter=None, upgrade=None, preexist=None, extra_env=None):
-        ctx = self._prepare(mode, alter=alter, preexist=preexist)
+    def _run(self, mode, args=(), home_mode=False, curl_404=False, alter=None, upgrade=None, preexist=None, extra_env=None, script_text=None):
+        ctx = self._prepare(mode, alter=alter, preexist=preexist, script_text=script_text)
         env = {
             "HOME": ctx["home"],
             "PATH": ctx["stub"] + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
@@ -489,8 +489,6 @@ class DeployKeySetup(unittest.TestCase):
         }
         if upgrade is not None:
             env["UPGRADE"] = upgrade
-        if extra_env:
-            env.update(extra_env)
         if home_mode:
             self._ensure_setup_stub()
             env["FAKE_UNAME_S"] = "Darwin"
@@ -498,6 +496,9 @@ class DeployKeySetup(unittest.TestCase):
             env["GS_SETUP_STUB"] = self.setup_stub
             env["GS_HOME_SEED"] = HOME_SEED
             env["GS_HOME_PUB"] = HOME_PUB
+        # Callers override the Darwin default (Linux, FreeBSD) and GS_FAIL_INIT.
+        if extra_env:
+            env.update(extra_env)
         proc = subprocess.run(
             ["sh", ctx["script"], *args], env=env, capture_output=True,
             text=True, encoding="utf-8", errors="replace", timeout=60)
@@ -733,6 +734,68 @@ class DeployKeySetup(unittest.TestCase):
         self.assertEqual(home_pips, [])
         self.assertEqual(cloud.count("pip install"), 1)
 
+    def _install_home_text(self):
+        path = os.path.join(ROOT, "scripts", "install-home.sh")
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def _home_args(self):
+        return ["--persona", PERSONA, "--station", STATION, "--pin-sha256", PIN, "--station-pub", STATION_PUB]
+
+    def _secret_hidden(self, proc):
+        if HOME_SEED in proc.stdout or HOME_SEED in proc.stderr:
+            self.fail("seed appeared in install output")
+
+    def test_home_script_allows_linux_and_refuses_other_os(self):
+        linux = self._run("home", home_mode=True, extra_env={"FAKE_UNAME_S": "Linux"})
+        self.assertEqual(linux["proc"].returncode, 0, linux["proc"].stderr)
+        self.assertEqual(linux["proc"].stdout.strip(), HOME_PUB)
+        self._secret_hidden(linux["proc"])
+        script = self._script("home")
+        self.assertIn("macOS or Linux", script)
+        self.assertNotIn("Home mode runs on macOS only.", script)
+        other = self._run("home", home_mode=True, extra_env={"FAKE_UNAME_S": "FreeBSD"})
+        self.assertNotEqual(other["proc"].returncode, 0)
+        self.assertIn("Home mode runs on macOS or Linux.", other["proc"].stderr)
+        self.assertFalse(os.path.isdir(self._bin(other["home"])))
+
+    def test_install_home_sh_writes_a_wrapper_and_only_the_public_key(self):
+        text = self._install_home_text()
+        syntax = subprocess.run(["sh", "-n", os.path.join(ROOT, "scripts", "install-home.sh")], capture_output=True, text=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        self.assertIn("7cf268ec448f6fad7c900a8c9ad828fedcfad97d", text)
+        for rel in ("scripts/gs-seal-setup", "scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/vendor-lock.txt"):
+            self.assertIn(self.pins["files"][rel], text)
+        self.assertNotIn("ln -s", text)
+        ran = self._run("home", args=self._home_args(), home_mode=True, script_text=text,
+                        extra_env={"FAKE_UNAME_S": "Linux"})
+        self.assertEqual(ran["proc"].returncode, 0, ran["proc"].stderr)
+        self.assertEqual(ran["proc"].stdout, HOME_PUB + "\n")
+        self._secret_hidden(ran["proc"])
+        self._assert_files(ran["home"], HOME_FILES)
+        wrap = os.path.join(ran["home"], ".local", "bin", "gs-seal-reply")
+        self._assert_mode(wrap, 0o700, "file")
+        with open(wrap, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        self.assertEqual(lines, [
+            "#!/bin/sh",
+            "exec '%s' \"$@\"" % os.path.join(self._bin(ran["home"]), "gs-seal-reply"),
+        ])
+        key = os.path.join(ran["home"], ".config", "grok-station", "keys", PERSONA + ".key")
+        with open(key, "rb") as fh:
+            stored = fh.read()
+        if stored != (HOME_SEED + "\n").encode():
+            self.fail("key file was not written")
+        refused = self._run("home", args=self._home_args(), home_mode=True, script_text=text,
+                            extra_env={"FAKE_UNAME_S": "FreeBSD"})
+        self.assertNotEqual(refused["proc"].returncode, 0)
+        self.assertIn("Home mode runs on macOS or Linux.", refused["proc"].stderr)
+        bad = self._run("home", args=["--persona", "ka$i", "--station", STATION, "--pin-sha256", PIN, "--station-pub", STATION_PUB],
+                        home_mode=True, script_text=text, extra_env={"FAKE_UNAME_S": "Linux"})
+        self.assertNotEqual(bad["proc"].returncode, 0)
+        self.assertIn("refusing unsafe characters", bad["proc"].stderr)
+        self.assertEqual(bad["curl_log"], "")
+
     def test_pins_match_git_show(self):
         commit = self.pins["commit"]
         probe = subprocess.run(
@@ -775,8 +838,30 @@ class DeployPinsReleaseCheck(unittest.TestCase):
         commit, _files = mod.load_pins()
         if subprocess.run(["git", "-C", ROOT, "cat-file", "-e", commit + "^{commit}"]).returncode != 0:
             self.skipTest("pinned commit not in this clone")
-        _c, _f, problems = mod.check(remote=False)
+        _c, _f, problems, notes = mod.check(remote=False)
         self.assertEqual(problems, [])
+        for note in notes:
+            self.assertTrue(
+                "differs at" in note or "not pinned yet" in note or "missing at" in note,
+                note)
+        gen_path = os.path.join(ROOT, "tools", "gen-deploy-pins.py")
+        spec = importlib.util.spec_from_file_location("gen_deploy_pins_files", gen_path)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        self.assertEqual(tuple(gen.FILES), tuple(mod.FILES))
+        self.assertIn("scripts/install-home.sh", mod.FILES)
+        sample = next(iter(_f))
+        raw = (
+            "var DEPLOY_PINS = {\n  commit: \"%s\",\n  files: {\n    \"%s\": \"%s\"\n  }\n};\n"
+            % (_c, sample, "ab" * 32)
+        )
+        fd, dest = tempfile.mkstemp(suffix="-pins.js")
+        os.close(fd)
+        self.addCleanup(lambda: os.remove(dest))
+        with open(dest, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+        _c2, _f2, hard, _pending = mod.check(remote=False, pins_path=dest)
+        self.assertTrue(any("pin does not match" in item for item in hard), hard)
 
 
 class SealShow(unittest.TestCase):
