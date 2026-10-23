@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Create the home-mode key and station config. macOS only.
+"""Create the home-mode key and station config. macOS or Linux.
 
   gs-seal-setup vendor-install --lock <vendor-lock.txt>
   gs-seal-setup keygen --persona <slug>
@@ -143,16 +143,19 @@ sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
 
-import base64, json, subprocess
+import base64, hashlib, io, json, re, shutil, subprocess, zipfile
+from urllib.parse import urlsplit
+from urllib.request import Request, build_opener, HTTPRedirectHandler
 
 from gs_seal_common import (
-    Refused, QuietParser, slug_ok,
+    Refused, Unsupported, QuietParser, slug_ok,
     root_dir, keys_dir, key_path, config_path,
     _require_dir, _require_file, _check_tree, _write_all, access_ok,
     _pin, _b64_32, station_ok,
-    refuse_unsafe_location, _command_root,
+    refuse_unsafe_location, refuse_musl, _command_root,
     hardware_uuid, host_id_path, _read_host_uuid, _same_uuid,
     vendor_dir, vendor_manifest_path, vendor_file_hashes, load_nacl,
+    CACHEDIR_TAG, CACHEDIR_SIGNATURE, NOBACKUP_NAME,
 )
 
 
@@ -193,9 +196,140 @@ def _write_private(path, data):
         os.close(fd)
 
 
+def _gvariant_escape(text):
+    out = []
+    for ch in text:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == "'":
+            out.append("\\'")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ord(ch) < 0x20:
+            return None
+        else:
+            out.append(ch)
+    return "'" + "".join(out) + "'"
+
+
+def _parse_gvariant_strings(text):
+    """Parse a gsettings array of strings. None when the text is not that shape."""
+    if not isinstance(text, str):
+        return None
+    body = text.strip()
+    if body.startswith("@as "):
+        body = body[4:].strip()
+    if len(body) < 2 or not body.startswith("[") or not body.endswith("]"):
+        return None
+    inner = body[1:-1].strip()
+    if not inner:
+        return []
+    items = []
+    i = 0
+    n = len(inner)
+    while i < n:
+        while i < n and inner[i] in " \t\r\n,":
+            i += 1
+        if i >= n:
+            break
+        if inner[i] != "'":
+            return None
+        i += 1
+        buf = []
+        closed = False
+        while i < n:
+            ch = inner[i]
+            if ch == "\\":
+                if i + 1 >= n:
+                    return None
+                nxt = inner[i + 1]
+                mapped = {"\\": "\\", "'": "'", "n": "\n", "r": "\r", "t": "\t"}.get(nxt)
+                if mapped is None:
+                    return None
+                buf.append(mapped)
+                i += 2
+                continue
+            if ch == "'":
+                i += 1
+                closed = True
+                break
+            if ord(ch) < 0x20:
+                return None
+            buf.append(ch)
+            i += 1
+        if not closed:
+            return None
+        items.append("".join(buf))
+    return items
+
+
+def _format_gvariant_strings(items):
+    parts = []
+    for item in items:
+        escaped = _gvariant_escape(item)
+        if escaped is None:
+            return None
+        parts.append(escaped)
+    return "[" + ", ".join(parts) + "]"
+
+
+def _deja_dup_exclude(root):
+    """Add root to Déjà Dup's exclude-list when that schema exists. Failure is ignored."""
+    try:
+        binary = shutil.which("gsettings")
+        if not isinstance(binary, str) or not binary.startswith("/") or "\x00" in binary:
+            return
+        listed = subprocess.run(
+            [binary, "list-schemas"],
+            capture_output=True, timeout=15)
+        out = listed.stdout or b""
+        if listed.returncode != 0 or not isinstance(out, (bytes, bytearray)) or len(out) > 1024 * 1024:
+            return
+        schemas = out.decode("utf-8", "replace").splitlines()
+        if "org.gnome.DejaDup" not in schemas:
+            return
+        current = subprocess.run(
+            [binary, "get", "org.gnome.DejaDup", "exclude-list"],
+            capture_output=True, timeout=15)
+        raw = current.stdout or b""
+        if current.returncode != 0 or not isinstance(raw, (bytes, bytearray)) or len(raw) > 65536:
+            return
+        items = _parse_gvariant_strings(raw.decode("utf-8", "replace"))
+        if items is None or root in items:
+            return
+        encoded = _format_gvariant_strings(items + [root])
+        if not encoded:
+            return
+        subprocess.run(
+            [binary, "set", "org.gnome.DejaDup", "exclude-list", encoded],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except Exception:
+        return
+
+
+def _write_linux_backup_markers(root):
+    """CACHEDIR.TAG (cache-directory signature) and an empty .nobackup, both mode 0600."""
+    tag = os.path.join(root, CACHEDIR_TAG)
+    body = (
+        CACHEDIR_SIGNATURE + "\n"
+        "# This file is a cache directory tag.\n"
+        "# https://bford.info/cachedir/\n"
+    ).encode("ascii")
+    _write_private(tag, body)
+    _write_private(os.path.join(root, NOBACKUP_NAME), b"")
+
+
 def exclude_from_time_machine(root):
-    """Ask Time Machine to skip the key directory. Fixed argv, no shell."""
+    """Keep the key directory out of backups. Fixed argv, no shell.
+
+    macOS asks Time Machine to skip it. Linux writes the cache-directory tag and .nobackup,
+    and updates Déjà Dup when that setting is present (a failure there does not stop keygen).
+    """
     root = _command_root(root)
+    if sys.platform == "linux":
+        _write_linux_backup_markers(root)
+        _deja_dup_exclude(root)
+        return
     subprocess.run(
         ["/usr/bin/tmutil", "addexclusion", root],
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -299,8 +433,354 @@ def cmd_init(slug, station, pin_text, station_pub):
     return 0
 
 
+_LOCK_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+_LOCK_VER = re.compile(r"^[A-Za-z0-9_.!+-]{1,64}$")
+_LOCK_HASH = re.compile(r"^--hash=sha256:([0-9a-f]{64})$")
+_MACOSX_TAG = re.compile(r"^macosx_\d+_\d+_(universal2|arm64|x86_64)$")
+_WHEEL_BYTES = 32 * 1024 * 1024
+
+
+def parse_vendor_lock(text):
+    """name==version plus one or more --hash=sha256 lines. Anything else is refused."""
+    if not isinstance(text, str) or len(text) > 1024 * 1024:
+        raise Refused()
+    logical = []
+    buf = ""
+    for line in text.splitlines():
+        if line.endswith("\\"):
+            buf += line[:-1].rstrip() + " "
+            continue
+        buf += line
+        logical.append(buf)
+        buf = ""
+    if buf:
+        raise Refused()
+    reqs = []
+    for line in logical:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2 or "==" not in parts[0]:
+            raise Refused()
+        name, version = parts[0].split("==", 1)
+        name = name.lower()
+        if _LOCK_NAME.fullmatch(name) is None or _LOCK_VER.fullmatch(version) is None:
+            raise Refused()
+        hashes = []
+        for tok in parts[1:]:
+            match = _LOCK_HASH.fullmatch(tok)
+            if match is None:
+                raise Refused()
+            hashes.append(match.group(1))
+        if not hashes:
+            raise Refused()
+        reqs.append((name, version, hashes))
+    if not reqs:
+        raise Refused()
+    return reqs
+
+
+def _linux_arch():
+    mach = os.uname().machine.lower()
+    if mach in ("x86_64", "amd64"):
+        return "x86_64"
+    if mach in ("aarch64", "arm64"):
+        return "aarch64"
+    raise Refused()
+
+
+def _darwin_archs():
+    mach = os.uname().machine.lower()
+    if mach in ("arm64", "aarch64"):
+        return ("arm64", "universal2")
+    if mach in ("x86_64", "amd64"):
+        return ("x86_64", "universal2")
+    raise Refused()
+
+
+def _platform_ok(plat):
+    if plat == "any":
+        return True
+    if sys.platform == "linux":
+        arch = _linux_arch()
+        return plat in ("manylinux_2_17_%s" % arch, "manylinux2014_%s" % arch)
+    if sys.platform == "darwin":
+        match = _MACOSX_TAG.fullmatch(plat)
+        return match is not None and match.group(1) in _darwin_archs()
+    return False
+
+
+def _python_abi_ok(py_tag, abi_tag):
+    major, minor = sys.version_info[:2]
+    cp = "cp%d%d" % (major, minor)
+    if py_tag in ("py3", "py%d" % major, "py%d%d" % (major, minor)) and abi_tag == "none":
+        return True
+    if py_tag == cp and abi_tag in (cp, "none", "abi3"):
+        return True
+    # abi3 wheels are tagged with the oldest CPython they support (cp36-abi3, and so on).
+    if abi_tag == "abi3" and py_tag.startswith("cp") and py_tag[2:].isdigit() and major == 3:
+        try:
+            wheel_minor = int(py_tag[3:])
+        except ValueError:
+            return False
+        return py_tag.startswith("cp3") and wheel_minor <= minor
+    return False
+
+
+def wheel_compatible(filename):
+    """True when this interpreter can load the wheel. musl tags are not accepted."""
+    if not isinstance(filename, str) or not filename.endswith(".whl") or "/" in filename or "\\" in filename:
+        return False
+    parts = filename[:-4].split("-")
+    if len(parts) < 5:
+        return False
+    py_tags = parts[-3].split(".")
+    abi_tags = parts[-2].split(".")
+    plat_tags = parts[-1].split(".")
+    if any("musl" in tag.lower() for tag in plat_tags):
+        return False
+    for py_tag in py_tags:
+        for abi_tag in abi_tags:
+            if not _python_abi_ok(py_tag, abi_tag):
+                continue
+            for plat in plat_tags:
+                if _platform_ok(plat):
+                    return True
+    return False
+
+
+def choose_wheel(candidates, hashes):
+    """Pick one locked, compatible wheel. Prefer an exact abi over abi3 over none."""
+    if not isinstance(hashes, (list, tuple, set)) or not hashes:
+        raise Refused()
+    allowed = set(hashes)
+    ranked = []
+    cp = "cp%d%d" % sys.version_info[:2]
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        filename = item.get("filename")
+        digest = item.get("sha256")
+        if not isinstance(filename, str) or not isinstance(digest, str):
+            continue
+        if digest not in allowed or not wheel_compatible(filename):
+            continue
+        abi = filename[:-4].split("-")[-2]
+        if abi == cp:
+            rank = 0
+        elif abi == "abi3" or abi.endswith(".abi3") or ".abi3" in abi:
+            rank = 1
+        else:
+            rank = 2
+        ranked.append((rank, filename, item))
+    if not ranked:
+        raise Refused()
+    ranked.sort(key=lambda row: (row[0], row[1]))
+    return ranked[0][2]
+
+
+class _HttpsOnly(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        parts = urlsplit(newurl)
+        if parts.scheme != "https":
+            return None
+        allowed = getattr(req, "gs_hosts", None)
+        if allowed is not None and parts.hostname not in allowed:
+            return None
+        return HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+
+
+def _https_bytes(url, hosts, limit):
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in hosts or parts.username or parts.password:
+        raise Refused()
+    if parts.query or parts.fragment:
+        raise Refused()
+    req = Request(url, method="GET")
+    req.gs_hosts = hosts
+    opener = build_opener(_HttpsOnly)
+    try:
+        with opener.open(req, timeout=60) as resp:
+            raw = resp.read(limit + 1)
+    except Refused:
+        raise
+    except Exception:
+        raise Refused()
+    if len(raw) > limit:
+        raise Refused()
+    return raw
+
+
+def _pypi_wheels(name, version):
+    url = "https://pypi.org/pypi/%s/%s/json" % (name, version)
+    raw = _https_bytes(url, ("pypi.org",), 4 * 1024 * 1024)
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise Refused()
+    urls = doc.get("urls") if isinstance(doc, dict) else None
+    if not isinstance(urls, list):
+        raise Refused()
+    found = []
+    for item in urls:
+        if not isinstance(item, dict) or item.get("packagetype") != "bdist_wheel":
+            continue
+        filename = item.get("filename")
+        file_url = item.get("url")
+        digests = item.get("digests") if isinstance(item.get("digests"), dict) else {}
+        digest = digests.get("sha256")
+        if not isinstance(filename, str) or not isinstance(file_url, str) or not isinstance(digest, str):
+            continue
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            continue
+        host = urlsplit(file_url).hostname
+        if urlsplit(file_url).scheme != "https" or host != "files.pythonhosted.org":
+            continue
+        found.append({"filename": filename, "url": file_url, "sha256": digest})
+    return found
+
+
+def _network_fetch_wheel(name, version, hashes):
+    """Download one locked wheel from files.pythonhosted.org. Tests replace this."""
+    chosen = choose_wheel(_pypi_wheels(name, version), hashes)
+    data = _https_bytes(chosen["url"], ("files.pythonhosted.org",), _WHEEL_BYTES)
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != chosen["sha256"] or digest not in set(hashes):
+        raise Refused()
+    return data
+
+
+# Replaced in tests with a function that reads local wheel files. No network then.
+fetch_wheel = _network_fetch_wheel
+
+
+def _zip_parts(name):
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise Refused()
+    if name.startswith("/") or name.startswith("\\") or re.match(r"^[A-Za-z]:", name):
+        raise Refused()
+    text = name.replace("\\", "/")
+    if text.startswith("/"):
+        raise Refused()
+    parts = text.split("/")
+    if any(part == ".." for part in parts):
+        raise Refused()
+    return [part for part in parts if part]
+
+
+def _zip_is_link(info):
+    mode = info.external_attr >> 16
+    return stat.S_ISLNK(mode)
+
+
+def extract_wheel(data, dest):
+    """Unzip a wheel into dest. Refuse absolute paths, .., and symlinks."""
+    if not isinstance(data, (bytes, bytearray)) or len(data) > _WHEEL_BYTES:
+        raise Refused()
+    dest_real = os.path.realpath(dest)
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(bytes(data)))
+    except Exception:
+        raise Refused()
+    try:
+        infos = zf.infolist()
+        if len(infos) > 5000:
+            raise Refused()
+        for info in infos:
+            if _zip_is_link(info):
+                raise Refused()
+            parts = _zip_parts(info.filename)
+            if not parts:
+                continue
+            if info.file_size < 0 or info.file_size > _WHEEL_BYTES:
+                raise Refused()
+        for info in infos:
+            if _zip_is_link(info):
+                raise Refused()
+            parts = _zip_parts(info.filename)
+            if not parts:
+                continue
+            cursor = dest
+            for part in parts[:-1]:
+                cursor = os.path.join(cursor, part)
+                if os.path.lexists(cursor):
+                    st = os.lstat(cursor)
+                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+                        raise Refused()
+                else:
+                    os.mkdir(cursor, 0o700)
+                    os.chmod(cursor, 0o700)
+            if info.filename.endswith("/"):
+                leaf = os.path.join(cursor, parts[-1])
+                if os.path.lexists(leaf):
+                    st = os.lstat(leaf)
+                    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+                        raise Refused()
+                else:
+                    os.mkdir(leaf, 0o700)
+                    os.chmod(leaf, 0o700)
+                continue
+            leaf = os.path.join(cursor, parts[-1])
+            if not os.path.realpath(leaf).startswith(dest_real + os.sep):
+                raise Refused()
+            try:
+                fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
+            except OSError:
+                raise Refused()
+            try:
+                os.fchmod(fd, 0o644)
+                src = zf.open(info, "r")
+                try:
+                    left = _WHEEL_BYTES
+                    while True:
+                        block = src.read(min(1024 * 1024, left))
+                        if not block:
+                            break
+                        left -= len(block)
+                        if left < 0:
+                            raise Refused()
+                        view = block
+                        while view:
+                            n = os.write(fd, view)
+                            if not n:
+                                raise Refused()
+                            view = view[n:]
+                finally:
+                    src.close()
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+    finally:
+        zf.close()
+
+
+def _read_lock(path):
+    if not isinstance(path, str) or not path or "\x00" in path:
+        raise Refused()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        raise Refused()
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            raise Refused()
+        raw = os.read(fd, 1024 * 1024 + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > 1024 * 1024:
+        raise Refused()
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Refused()
+
+
 def cmd_vendor_install(lock):
-    """Install hash-locked dependencies into the private vendor directory. No shell."""
+    """Install hash-locked wheels into the private vendor directory. No shell and no pip."""
+    refuse_musl()
     if not isinstance(lock, str) or not lock or "\x00" in lock:
         raise Refused()
     root = root_dir()
@@ -308,17 +788,10 @@ def cmd_vendor_install(lock):
     _ensure_private_dir(root)
     vendor = vendor_dir()
     _ensure_private_dir(vendor)
-    argv = [
-        sys.executable, "-I", "-m", "pip", "install",
-        "--require-hashes", "--no-deps", "--only-binary", ":all:",
-        "--target", vendor, "-r", lock,
-    ]
-    try:
-        proc = subprocess.run(argv, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except OSError:
-        raise Refused()
-    if getattr(proc, "returncode", 1) != 0:
-        raise Refused()
+    reqs = parse_vendor_lock(_read_lock(lock))
+    for name, version, hashes in reqs:
+        blob = fetch_wheel(name, version, hashes)
+        extract_wheel(blob, vendor)
     mapping = vendor_file_hashes(vendor, os.geteuid())
     raw = (json.dumps(mapping, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     _write_private(vendor_manifest_path(), raw)
@@ -342,8 +815,9 @@ def _parser():
 
 def main(argv=None):
     try:
-        if sys.platform != "darwin":
+        if sys.platform not in ("darwin", "linux"):
             raise Refused()
+        refuse_musl()
         args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
         if args.cmd == "vendor-install":
             return cmd_vendor_install(args.lock)
@@ -352,6 +826,9 @@ def main(argv=None):
         if args.cmd == "init":
             return cmd_init(args.persona, args.station, args.pin, args.station_pub)
         raise Refused()
+    except Unsupported as exc:
+        sys.stderr.write(exc.message + "\n")
+        return 1
     except Refused:
         sys.stderr.write("refused\n")
         return 1

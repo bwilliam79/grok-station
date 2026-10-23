@@ -76,7 +76,7 @@ Add your main bot first.
 Each bot is **cloud** or **home**. Cloud is the default. Either way, posting is from the home Grok Bot machine on the station's LAN.
 
 - **Cloud computer (default).** The key is generated on the bot's cloud computer. That computer seals. The home machine posts the sealed line with `post`. The key never goes to the home machine.
-- **Home machine.** macOS only. Run `gs-seal-setup` once (`vendor-install`, then `keygen`, then `init`), then `gs-seal-reply` seals and posts. That is about 3 seconds faster. It depends on the home machine being online. The key is a file on that disk. Keep the key file out of git, sync, and backups. Time Machine must exclude the key directory, and the key is bound to that Mac. See [Home mode](#home-mode-gs-seal-setup-and-gs-seal-reply).
+- **Home machine.** macOS or Linux. Run `gs-seal-setup` once (`vendor-install`, then `keygen`, then `init`), then `gs-seal-reply` seals and posts. That is about 3 seconds faster. It depends on the home machine being online. The key is a file on that disk. Keep the key file out of git, sync, and backups. On a Mac, Time Machine must exclude the key directory, and the key is bound to that Mac. On Linux, the key directory is marked with a cache-directory tag and an empty `.nobackup` file (backup tools that honor those skip it; btrfs and snapper snapshots do not), and the key is bound to that computer's machine id. Alpine (musl) is not supported. See [Home mode](#home-mode-gs-seal-setup-and-gs-seal-reply).
 
 A key exists on only one machine. Switching the mode in **Configure** revokes the pinned key and asks for a new public key from a new keypair. The bot row shows "Key on cloud computer" or "Key on home machine".
 
@@ -168,7 +168,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 Cloud mode is the default (seal on the cloud computer, post from the home machine):
 
 ```text
-You are this station persona. When a webhook arrives, read only these fields from the JSON body: request_id, persona, question, reply_by, and kind when it is present. Ignore anything else.
+Answer as the bot named in the request's persona field, in that bot's voice.
 
 If kind is bot_list, do not answer a question and do not invent names. The names you send are the bots you know, one per line. Otherwise answer the question in the persona's voice, as plain speech, in 400 characters or fewer. No secrets, no keys, no passwords, no codes.
 
@@ -203,7 +203,7 @@ printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --stati
 Home mode (gs-seal-setup once, then one reply command on the home machine):
 
 ```text
-You are this station persona. When a webhook arrives, read only these fields from the JSON body: request_id, persona, question, reply_by, and kind when it is present. Ignore anything else.
+Answer as the bot named in the request's persona field, in that bot's voice.
 
 If kind is bot_list, do not answer a question and do not invent names. The names you send are the bots you know, one per line. Otherwise answer the question in the persona's voice, as plain speech, in 400 characters or fewer. No secrets, no keys, no passwords, no codes.
 
@@ -244,7 +244,7 @@ When the key lives on the bot computer, run that script on your own computer and
 - Your own computer (run the script with `bot`): `grok-station-reply` and `vendor-lock.txt` in `~/.local/share/grok-station/bin`.
 - The home computer running Grok Bot (run the script with `home`): `grok-station-reply` in `~/.local/share/grok-station/bin`.
 
-When the key lives on the home computer, run the script there. Home setup is macOS only. It installs `gs-seal-setup`, `gs-seal-reply`, `gs_seal_common.py`, and `vendor-lock.txt` in `~/.local/share/grok-station/bin`.
+When the key lives on the home computer, run the script there. Home setup is macOS or Linux (not Alpine). It installs `gs-seal-setup`, `gs-seal-reply`, `gs_seal_common.py`, and `vendor-lock.txt` in `~/.local/share/grok-station/bin`. The copied instructions are labeled macOS or Linux.
 
 After it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.
 
@@ -254,23 +254,23 @@ Nothing is moved into place until every file checks out and the key setup succee
 
 ### Release step: deploy pins
 
-`admin/web/deploy-pins.js` pins the commit the script downloads from and the sha256 of each file. A commit cannot name itself, so the pins name the release commit's parent, and the release must not change the five pinned files. At ship time:
+`admin/web/deploy-pins.js` pins the commit the script downloads from and the sha256 of each file. A commit cannot name itself, so the pins name the release commit's parent, and that release must not change the pinned files. At ship time:
 
 1. `python3 tools/gen-deploy-pins.py $(git rev-parse origin/main)` on the branch rebased onto `origin/main`.
-2. `python3 tools/check-deploy-pins.py` (pins match the pinned commit and HEAD has the same bytes).
+2. `python3 tools/check-deploy-pins.py` (each pin matches that commit; HEAD has the same bytes, or the check prints a pending re-pin note).
 3. After the push, `python3 tools/check-deploy-pins.py --remote` (GitHub serves the same bytes).
 
-If a release does change a pinned file, ship it first, then re-pin in the next release.
+If a release does change a pinned file, ship it first, then re-pin in the next release. 0.11.0 changes the home-mode scripts and adds `scripts/install-home.sh`, so `deploy-pins.js` still names `7cf268ec448f6fad7c900a8c9ad828fedcfad97d`. A pin that does not match that commit is a failure. A file that differs at HEAD, and `scripts/install-home.sh` not being pinned yet, are pending notes. `scripts/install-home.sh` embeds those same previous hashes and says so: until the next re-pin, a GitHub download from that script is still the previous macOS-only copy. The admin page's generated script has the same limit.
 
 ## Home mode: gs-seal-setup and gs-seal-reply
 
 The scripts ship in 0.8.0. Since 0.8.2 the Add bot flow offers home mode as an opt-in choice; cloud mode stays the default and is pre-selected.
 
-Home mode runs only on macOS. The station installer does not put these scripts on the Pi. Copy `scripts/gs-seal-setup`, `scripts/gs-seal-reply`, `scripts/gs_seal_common.py`, and `scripts/vendor-lock.txt` into the same directory (for example `~/bin`). They need Python 3. Run them by their real path: a symlink to either script, or a symlinked folder anywhere in the path you call them by, is refused. Both commands refuse to run on anything other than macOS. `post` from `grok-station-reply` is not used in this mode.
+Home mode runs on macOS and Linux. It does not run on Alpine (musl) or on any other operating system. The station installer does not put these scripts on the Pi. Copy `scripts/gs-seal-setup`, `scripts/gs-seal-reply`, `scripts/gs_seal_common.py`, and `scripts/vendor-lock.txt` into the same directory (for example `~/bin`), or run `scripts/install-home.sh` (it checks the pinned sha256, installs into `~/.local/share/grok-station/bin`, and adds a two-line `~/.local/bin/gs-seal-reply` wrapper that execs the real file; the wrapper is not a symlink). They need Python 3. Run them by their real path: a symlink to either script, or a symlinked folder anywhere in the path you call them by, is refused. Both commands refuse to run on anything other than macOS or Linux, and they refuse musl with the message "Alpine/musl is not supported." `post` from `grok-station-reply` is not used in this mode.
 
-The scripts run Python isolated (`python3 -I`): user site-packages and `PYTHONPATH` are ignored. PyNaCl comes from `vendor-lock.txt`, which pins the packages and the SHA-256 of every published file. `vendor-install` installs those pins into `~/.config/grok-station/vendor` (mode 0700) and writes `vendor-manifest.json` (mode 0600). Every `keygen` and every `reply` checks that tree before importing PyNaCl. From your home directory down through each vendor file, the path must be owned by you, must not be a symlink, and must not be group- or world-writable. The manifest must list exactly those files with the same SHA-256. A missing, extra, or changed file is refused.
+The scripts run Python isolated (`python3 -I`): user site-packages and `PYTHONPATH` are ignored. PyNaCl comes from `vendor-lock.txt`, which pins the packages and the SHA-256 of every published file. `vendor-install` downloads the matching wheel itself (no pip) from `files.pythonhosted.org`, requires the sha256 to be in the lock, and unpacks it into `~/.config/grok-station/vendor` (mode 0700). It writes `vendor-manifest.json` (mode 0600). It refuses a wheel path that is absolute, contains `..`, or is a symlink, and it refuses a musl wheel. Every `keygen` and every `reply` checks that tree before importing PyNaCl. From your home directory down through each vendor file, the path must be owned by you, must not be a symlink, and must not be group- or world-writable. The manifest must list exactly those files with the same SHA-256. A missing, extra, or changed file is refused.
 
-`gs-seal-setup` is once: `vendor-install`, then `keygen`, then `init`. `gs-seal-reply` is the reply command. The key file stays out of git, sync, and backups. A key exists on only one machine. Do not put `~/.config/grok-station` inside a git checkout, iCloud (`~/Library/Mobile Documents`), `~/Library/CloudStorage`, `~/Dropbox`, or any `~/OneDrive*` folder. A parent directory that contains a `.git` entry is refused, and so is a key directory under one of those sync folders.
+`gs-seal-setup` is once: `vendor-install`, then `keygen`, then `init`. `gs-seal-reply` is the reply command. The key file stays out of git, sync, and backups. A key exists on only one machine. Do not put `~/.config/grok-station` inside a git checkout, iCloud (`~/Library/Mobile Documents`), `~/Library/CloudStorage`, `~/Dropbox`, or any `~/OneDrive*` folder. On Linux, also keep it out of `~/Nextcloud`, `~/ownCloud`, `~/pCloudDrive`, `~/MEGA`, `~/Insync`, `~/Sync`, and `~/Google Drive`. A parent directory that contains a `.git` entry is refused, and so is a key directory under one of those sync folders. On Linux the key directory is also refused when its mount (the longest prefix in `/proc/self/mountinfo`) is `fuse*`, `nfs*`, `cifs`, `smb3`, `9p`, `drvfs`, or `virtiofs`.
 
 ```bash
 gs-seal-setup vendor-install --lock ~/bin/vendor-lock.txt
@@ -280,11 +280,15 @@ gs-seal-setup init --persona <slug> --station https://<station-ip> \
 printf '%s' "$ANSWER" | gs-seal-reply reply --persona <slug> --request-id "$REQUEST_ID"
 ```
 
-`keygen` creates `~/.config/grok-station/` (mode 0700), asks Time Machine to skip it (`tmutil addexclusion`), creates `keys/` (mode 0700), and writes this Mac's hardware UUID to `~/.config/grok-station/host-id` (mode 0600). It then writes `keys/<slug>.key` (mode 0600) and prints only the public key. Paste that into the station. A second persona on the same Mac keeps the host file. A mismatch is refused and the file is not overwritten.
+`keygen` creates `~/.config/grok-station/` (mode 0700), keeps that directory out of backups, creates `keys/` (mode 0700), and writes this computer's id to `~/.config/grok-station/host-id` (mode 0600). It then writes `keys/<slug>.key` (mode 0600) and prints only the public key. Paste that into the station. A second persona on the same computer keeps the host file. A mismatch is refused and the file is not overwritten.
+
+On a Mac, backup exclusion is Time Machine (`tmutil addexclusion`), and the id is that Mac's hardware UUID. `reply` refuses unless `tmutil isexcluded` still prints `[Excluded]`.
+
+On Linux, `keygen` writes `CACHEDIR.TAG` (the cache-directory signature line `Signature: 8a477f597d28d172789f06886806bc55`, mode 0600) and an empty `.nobackup` (mode 0600). Tools that honor a cache-directory tag or `.nobackup` skip the folder. btrfs and snapper snapshots are not excluded by those markers. If `gsettings` is installed and the `org.gnome.DejaDup` schema is present, the directory is added to Déjà Dup's exclude list; a failure there does not stop `keygen`. `reply` refuses unless `CACHEDIR.TAG` still starts with that signature and `.nobackup` is still empty. The id is `/etc/machine-id` (32 hex digits, read from that fixed path, not followed if it is a symlink). When `/sys/class/dmi/id/product_uuid` is readable, the id is a UUID made from the sha256 of the machine id and that product id. An unreadable product file uses the machine id alone. A product file that opens but is not a UUID is refused.
 
 `init` writes `~/.config/grok-station/<slug>.json` (mode 0600) with the station address, the certificate pin, and the station public key. It refuses if that file already exists, including when the path is a symlink. It does not overwrite.
 
-`reply` reads the answer on stdin only (names, one per line, with `--kind bot_list`). It does not take the text as an argument. The address and the pin come from that config file, not from flags on `reply`. Before it reads the key, Time Machine must still report the directory excluded (`tmutil isexcluded` prints `[Excluded]`), the directory must still be outside git and those sync folders, and `host-id` must match this Mac. A missing or mismatched host file is refused. It makes one pinned HTTPS POST and does not retry. A request id is remembered for 7 days; a second send of the same id in that window is refused. The log records the request id, the persona, the HTTP status, and the timing. It does not record the answer or the key. A reply rejected by the secret check is counted only (`lint_rejects=<n>`), with no text. If the key directory is wider than 0700, or the key file is wider than 0600, or either is owned by someone else, the command refuses to run.
+`reply` reads the answer on stdin only (names, one per line, with `--kind bot_list`). It does not take the text as an argument. The address and the pin come from that config file, not from flags on `reply`. Before it reads the key, backups must still be excluded (Time Machine on a Mac, the two marker files on Linux), the directory must still be outside git and those sync folders, and `host-id` must match this computer. A missing or mismatched host file is refused. It makes one pinned HTTPS POST and does not retry. A request id is remembered for 7 days; a second send of the same id in that window is refused. The log records the request id, the persona, the HTTP status, and the timing. It does not record the answer or the key. A reply rejected by the secret check is counted only (`lint_rejects=<n>`), with no text. If the key directory is wider than 0700, or the key file is wider than 0600, or either is owned by someone else, the command refuses to run.
 
 ## Security
 

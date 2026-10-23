@@ -18,6 +18,37 @@ class Refused(Exception):
     """Fail closed. The message is never shown."""
 
 
+class Unsupported(Exception):
+    """A clear refusal. The message is safe to show."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
+
+# Fixed paths. Callers do not pass these in.
+MACHINE_ID_PATH = "/etc/machine-id"
+PRODUCT_UUID_PATH = "/sys/class/dmi/id/product_uuid"
+MOUNTINFO_PATH = "/proc/self/mountinfo"
+CACHEDIR_TAG = "CACHEDIR.TAG"
+CACHEDIR_SIGNATURE = "Signature: 8a477f597d28d172789f06886806bc55"
+NOBACKUP_NAME = ".nobackup"
+
+# Linux sync folders under $HOME, in addition to Dropbox and OneDrive*.
+_LINUX_SYNC_DIRS = (
+    "Nextcloud",
+    "ownCloud",
+    "pCloudDrive",
+    "MEGA",
+    "Insync",
+    "Sync",
+    "Google Drive",
+)
+_UNSAFE_EXACT_FS = ("cifs", "smb3", "9p", "drvfs", "virtiofs")
+_PRODUCT_UUID = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+
+
 class QuietParser(argparse.ArgumentParser):
     def error(self, message):
         sys.stderr.write("refused\n")
@@ -190,8 +221,128 @@ def _is_under(path, parent):
     return path_f.startswith(parent_f)
 
 
+def _read_nofollow(path, limit, optional=False):
+    """Read a regular file. O_NOFOLLOW, size-capped. optional: missing or unreadable is None."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        if optional:
+            return None
+        raise Refused()
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused()
+        raw = os.read(fd, limit + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > limit:
+        raise Refused()
+    return raw
+
+
+def _running_musl():
+    """True when this process is linked against musl. glibc maps do not contain ld-musl."""
+    if sys.platform != "linux":
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open("/proc/self/maps", flags)
+    except OSError:
+        return False
+    try:
+        blob = b""
+        while len(blob) < 1024 * 1024:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            blob += chunk
+            if b"ld-musl" in blob or b"libc.musl" in blob:
+                return True
+        return b"ld-musl" in blob or b"libc.musl" in blob
+    finally:
+        os.close(fd)
+
+
+def refuse_musl():
+    if _running_musl():
+        raise Unsupported("Alpine/musl is not supported.")
+
+
+def _unescape_mount(text):
+    out = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 3 < len(text):
+            octal = text[i + 1:i + 4]
+            if len(octal) == 3 and all(c in "01234567" for c in octal):
+                out.append(chr(int(octal, 8)))
+                i += 4
+                continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def _mount_covers(path, mount):
+    path = os.path.normpath(path)
+    mount = os.path.normpath(mount)
+    if path == mount:
+        return True
+    prefix = mount if mount.endswith(os.sep) else mount + os.sep
+    return path.startswith(prefix)
+
+
+def _fstype_unsafe(fstype):
+    if not isinstance(fstype, str) or not fstype:
+        return True
+    kind = fstype.lower()
+    if kind.startswith("fuse") or kind.startswith("nfs"):
+        return True
+    return kind in _UNSAFE_EXACT_FS
+
+
+def _mount_fstype(path):
+    """Filesystem type of the longest mountpoint prefix. Fail closed if unknown."""
+    raw = _read_nofollow(MOUNTINFO_PATH, 1024 * 1024)
+    try:
+        text = raw.decode("utf-8", "replace")
+    except Exception:
+        raise Refused()
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        raise Refused()
+    best_len = -1
+    best = None
+    for line in text.splitlines():
+        parts = line.split(" ")
+        try:
+            sep = parts.index("-")
+        except ValueError:
+            continue
+        if sep < 5 or sep + 1 >= len(parts):
+            continue
+        mount = _unescape_mount(parts[4])
+        if not mount.startswith("/"):
+            continue
+        if not _mount_covers(real, mount):
+            continue
+        length = len(os.path.normpath(mount))
+        if length > best_len:
+            best_len = length
+            best = parts[sep + 1]
+    if best is None:
+        raise Refused()
+    return best
+
+
 def refuse_unsafe_location(root):
-    """Refuse a key directory inside git, iCloud, CloudStorage, Dropbox, or OneDrive."""
+    """Refuse a key directory inside git, iCloud, CloudStorage, Dropbox, or OneDrive.
+
+    On Linux, also refuse other sync folders, and a network or FUSE mount.
+    """
     real = os.path.realpath(root)
     parent = os.path.dirname(real)
     while True:
@@ -207,6 +358,9 @@ def refuse_unsafe_location(root):
         os.path.join(home, "Library", "CloudStorage"),
         os.path.join(home, "Dropbox"),
     ]
+    if sys.platform == "linux":
+        for name in _LINUX_SYNC_DIRS:
+            banned.append(os.path.join(home, name))
     try:
         names = os.listdir(home)
     except OSError:
@@ -220,6 +374,10 @@ def refuse_unsafe_location(root):
     for base in banned:
         if _is_under(real, base):
             raise Refused()
+    if sys.platform != "linux":
+        return
+    if _fstype_unsafe(_mount_fstype(real)):
+        raise Refused()
 
 
 def _command_root(root):
@@ -228,9 +386,42 @@ def _command_root(root):
     return root
 
 
-def require_time_machine_exclusion(root):
-    """Refuse unless tmutil reports this directory excluded. Fixed argv, no shell."""
+def _marker_path(root, name):
     root = _command_root(root)
+    if name not in (CACHEDIR_TAG, NOBACKUP_NAME):
+        raise Refused()
+    return os.path.join(root, name)
+
+
+def linux_backup_markers_ok(root):
+    """True only when CACHEDIR.TAG starts with the cache-directory signature and .nobackup is empty."""
+    tag = _read_nofollow(_marker_path(root, CACHEDIR_TAG), 4096, optional=True)
+    if tag is None:
+        return False
+    try:
+        text = tag.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    line = text.split("\n", 1)[0]
+    if line.endswith("\r"):
+        line = line[:-1]
+    if line != CACHEDIR_SIGNATURE:
+        return False
+    body = _read_nofollow(_marker_path(root, NOBACKUP_NAME), 1, optional=True)
+    return body == b""
+
+
+def require_time_machine_exclusion(root):
+    """Refuse unless this directory is kept out of backups.
+
+    macOS: tmutil isexcluded prints [Excluded]. Fixed argv, no shell.
+    Linux: CACHEDIR.TAG has the cache-directory signature and .nobackup exists and is empty.
+    """
+    root = _command_root(root)
+    if sys.platform == "linux":
+        if not linux_backup_markers_ok(root):
+            raise Refused()
+        return
     proc = subprocess.run(
         ["/usr/bin/tmutil", "isexcluded", root],
         capture_output=True)
@@ -245,7 +436,52 @@ def require_time_machine_exclusion(root):
         raise Refused()
 
 
-def hardware_uuid():
+def _format_uuid(hex32):
+    h = hex32.lower()
+    if len(h) != 32 or any(c not in "0123456789abcdef" for c in h):
+        raise Refused()
+    text = "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+    uuid = text.upper()
+    if _UUID.fullmatch(uuid) is None:
+        raise Refused()
+    return uuid
+
+
+def _one_line(raw, limit_ok):
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        raise Refused()
+    if text.endswith("\n"):
+        text = text[:-1]
+    if text.endswith("\r"):
+        text = text[:-1]
+    if "\n" in text or "\r" in text or not limit_ok(text):
+        raise Refused()
+    return text
+
+
+def _linux_hardware_uuid():
+    """machine-id, mixed with the DMI product UUID when that file can be read.
+
+    The mix is sha256(machine-id + newline + product uuid), lowercase, first 32 hex digits,
+    shown as a UUID. machine-id alone is used when the product file cannot be opened.
+    """
+    raw = _read_nofollow(MACHINE_ID_PATH, 64)
+    machine = _one_line(raw, lambda text: len(text) == 32 and all(c in "0123456789abcdefABCDEF" for c in text))
+    machine = machine.lower()
+    product_raw = _read_nofollow(PRODUCT_UUID_PATH, 128, optional=True)
+    if product_raw is None:
+        return _format_uuid(machine)
+    product = _one_line(product_raw, lambda text: _PRODUCT_UUID.fullmatch(text) is not None)
+    digest = hashlib.sha256()
+    digest.update(machine.encode("ascii"))
+    digest.update(b"\n")
+    digest.update(product.lower().encode("ascii"))
+    return _format_uuid(digest.hexdigest()[:32])
+
+
+def _darwin_hardware_uuid():
     """Hardware UUID from IOPlatformExpertDevice. Fixed argv, no shell. Nothing is logged."""
     proc = subprocess.run(_IOREG, check=True, capture_output=True)
     raw = proc.stdout or b""
@@ -261,6 +497,15 @@ def hardware_uuid():
     if _UUID.fullmatch(uuid) is None:
         raise Refused()
     return uuid
+
+
+def hardware_uuid():
+    """This computer's id. macOS: IOPlatformUUID. Linux: machine-id, plus the DMI uuid when readable."""
+    if sys.platform == "darwin":
+        return _darwin_hardware_uuid()
+    if sys.platform == "linux":
+        return _linux_hardware_uuid()
+    raise Refused()
 
 
 def _read_host_uuid():

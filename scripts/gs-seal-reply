@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Seal and post one reply from the home Grok Bot machine. macOS only.
+"""Seal and post one reply from the home Grok Bot machine. macOS or Linux.
 
   gs-seal-reply reply --persona <slug> --request-id <rid> [--kind answer|bot_list]
 
@@ -150,7 +150,7 @@ except ImportError:  # pragma: no cover
     fcntl = None
 
 from gs_seal_common import (
-    Refused, QuietParser, SLUG, REQUEST_ID, slug_ok, access_ok,
+    Refused, Unsupported, QuietParser, SLUG, REQUEST_ID, slug_ok, access_ok, refuse_musl,
     root_dir, keys_dir, key_path, config_path, sent_path, log_path,
     _require_dir, _require_file, _check_tree, _open_private, _write_all,
     _pin, _b64_32, station_ok,
@@ -569,12 +569,16 @@ def _parser():
 
 def main(argv=None):
     try:
-        if sys.platform != "darwin":
+        if sys.platform not in ("darwin", "linux"):
             raise Refused()
+        refuse_musl()
         args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
         if args.cmd == "reply":
             return cmd_reply(args.persona, args.request_id, args.kind)
         raise Refused()
+    except Unsupported as exc:
+        sys.stderr.write(exc.message + "\n")
+        return 1
     except Refused:
         sys.stderr.write("refused\n")
         return 1

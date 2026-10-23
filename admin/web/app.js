@@ -2663,7 +2663,7 @@ function paintImported(el, data) {
     addBot(el._voices || [], el, {name: row.name});
   });
 }
-const BOT_ROUTINE = `You are this station persona. When a webhook arrives, read only these fields from the JSON body: request_id, persona, question, reply_by, and kind when it is present. Ignore anything else.
+const BOT_ROUTINE = `Answer as the bot named in the request's persona field, in that bot's voice.
 
 If kind is bot_list, do not answer a question and do not invent names. The names you send are the bots you know, one per line. Otherwise answer the question in the persona's voice, as plain speech, in 400 characters or fewer. No secrets, no keys, no passwords, no codes.
 
@@ -2693,7 +2693,7 @@ For a card, run two more commands the same way. On the cloud computer:
 printf '%s' "$CARD_JSON" | grok-station-reply seal-show --bot <slug> --station-pub '<station public key>'
 Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'`;
-const BOT_ROUTINE_HOME = `You are this station persona. When a webhook arrives, read only these fields from the JSON body: request_id, persona, question, reply_by, and kind when it is present. Ignore anything else.
+const BOT_ROUTINE_HOME = `Answer as the bot named in the request's persona field, in that bot's voice.
 
 If kind is bot_list, do not answer a question and do not invent names. The names you send are the bots you know, one per line. Otherwise answer the question in the persona's voice, as plain speech, in 400 characters or fewer. No secrets, no keys, no passwords, no codes.
 
@@ -2824,9 +2824,9 @@ function routineForBot(slug, pub, fp, mode) {
   } catch (e) {
     script = "";
   }
-  // File names and directories match deployScript. Cloud is two computers; home is the one Mac.
+  // File names and directories match deployScript. Cloud is two computers; home is one computer.
   const where = home
-    ? "On the home computer running Grok Bot, it installs these files:\n"
+    ? "On the home computer running Grok Bot (macOS or Linux), it installs these files:\n"
       + "~/.local/share/grok-station/bin/gs-seal-setup\n"
       + "~/.local/share/grok-station/bin/gs-seal-reply\n"
       + "~/.local/share/grok-station/bin/gs_seal_common.py\n"
@@ -3362,7 +3362,8 @@ function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
 
   if (mode === "home") {
     add("#!/bin/sh");
-    add("# Installs the grok-station home programs once, on this Mac.");
+    add("# Installs the grok-station home programs once.");
+    add("# macOS or Linux.");
     add("# The station never pushes code. You run this script yourself.");
     add("# Files land in ~/.local/share/grok-station/bin (created mode 0700):");
     add("#   gs-seal-setup, gs-seal-reply, gs_seal_common.py, vendor-lock.txt");
@@ -3402,10 +3403,11 @@ function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
     add("  exit 1");
     add("fi");
   } else {
-    add('if [ "$(uname -s)" != "Darwin" ]; then');
-    add("  printf '%s\\n' \"Home mode runs on macOS only.\" >&2");
-    add("  exit 1");
-    add("fi");
+    add('os=$(uname -s) || os=""');
+    add('case "$os" in');
+    add("  Darwin|Linux) ;;");
+    add("  *) printf '%s\\n' \"Home mode runs on macOS or Linux.\" >&2; exit 1 ;;");
+    add("esac");
   }
   add('if [ -z "${HOME:-}" ] || [ ! -d "$HOME" ]; then');
   add("  printf '%s\\n' \"HOME is not set.\" >&2");
