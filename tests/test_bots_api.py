@@ -273,6 +273,30 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         p = self.relay.audit_path()
         return open(p).read() if os.path.exists(p) else ""
 
+    async def test_rename_and_voice_drop_stale_asking_clips(self):
+        r = self.relay
+        old = r.ACK_DIR
+        r.ACK_DIR = os.path.join(self.tmp, "ack")
+        os.makedirs(r.ACK_DIR)
+        try:
+            h = self.headers()
+            named = r.ack_cache_path("jules", "Jules", "ara")
+            with open(named, "wb") as f:
+                f.write(b"old-name")
+            st = await self.client.patch("/admin/bots/jules", headers=h, json={"name": "Julie", "actor": "admin"})
+            self.assertEqual(st.status, 200)
+            self.assertFalse(os.path.exists(named))
+            voiced = r.ack_cache_path("jules", "Julie", "ara")
+            with open(voiced, "wb") as f:
+                f.write(b"old-voice")
+            st = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "rex", "actor": "admin"})
+            self.assertEqual(st.status, 200)
+            self.assertFalse(os.path.exists(voiced))
+            self.assertEqual(r.persona_list()["jules"]["name"], "Julie")
+            self.assertEqual(r.persona_list()["jules"]["voice"], "rex")
+        finally:
+            r.ACK_DIR = old
+
     async def test_patch_voice_validates_persists_and_audits(self):
         h = self.headers()
         reg = open(self.relay.PERSONAS_FILE).read()

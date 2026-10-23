@@ -130,7 +130,7 @@ st_users() {
   run chown root:grok /etc/grok-station/env   # every run: an older admin save left it root:root 0600 (relay can't read the location)
   run chmod 0640 /etc/grok-station/env
   sh_ "[ -e /etc/grok-station/wake.env ] || { install -m 0640 -o root -g grok /dev/null /etc/grok-station/wake.env; }"
-  for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/audit $V/personas \
+  for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/voice/ack $V/audit $V/personas \
            $V/portraits $V/alerts $V/wakewords; do
     run install -d -o grok-relay -g grok-admin -m 0770 "$d"
   done

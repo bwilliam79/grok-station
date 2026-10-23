@@ -30,7 +30,7 @@ The webhook body is exactly:
 
 The reply body is exactly `{"v":1,"bot":"<slug>","sealed":"<base64>"}`, at most 8 KiB. `sealed` is a NaCl sealed box to the station public key. Inside it is an Ed25519 signature (attached, 64-byte signature plus the message) over the reply JSON `{"request_id","text","tier":0,"action_class":"answer"}`.
 
-The station waits `REPLY_WAIT` seconds (default 30, environment override) and then says `I couldn't reach <Name>.` A thinking ring is always shown. The spoken "Asking <Name>…" line is used only when Grok was asked by name ("Hey Grok, ask <bot> …"). A direct wake ("Hey <bot>") and a model `check_notes` call stay quiet.
+The station waits `REPLY_WAIT` seconds (default 30, environment override) and then says `I couldn't reach <Name>.` A thinking ring is always shown. It also says "Asking <Name>…" from a cached clip on every handoff. See [handoff.md](handoff.md).
 
 ## Setup
 

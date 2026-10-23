@@ -165,5 +165,98 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay.latest_utterance([q1, q1 + " " + q2], q1 + " " + q2 + " thanks"), "thanks")
 
 
+class AckClip(unittest.IsolatedAsyncioTestCase):
+    """Asking-line cache: hit, miss, TTS failure, and invalidation when the name or voice changes."""
+
+    async def asyncSetUp(self):
+        import handoff
+        self.handoff = handoff
+        self.tmp = tempfile.mkdtemp()
+        self.old = (relay.ACK_DIR, relay.tts_pcm, relay.WEBHOOKS_FILE, relay._limits, relay.HANDOFF)
+        self.hooks = {"mtime": relay._hooks.get("mtime"), "map": dict(relay._hooks.get("map") or {})}
+        relay.ACK_DIR = os.path.join(self.tmp, "ack")
+        relay.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
+        relay._hooks.update(mtime=None, map={})
+        relay.HANDOFF = True  # webhooks() is empty while handoff is off; another test leaves it off
+        relay._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), relay.today)
+        self.calls = []
+        self.fail = False
+
+        async def fake(http, text, voice, max_s=relay.TTS_SHORT_S):
+            self.calls.append((text, voice, max_s))
+            if self.fail:
+                return None
+            return b"PCM:" + str(text).encode()
+
+        relay.tts_pcm = fake
+
+    async def asyncTearDown(self):
+        relay.ACK_DIR, relay.tts_pcm, relay.WEBHOOKS_FILE, relay._limits, relay.HANDOFF = self.old
+        relay._hooks.clear()
+        relay._hooks.update(self.hooks)
+        relay._ACK_INFLIGHT.clear()
+
+    def _webhook(self, slug="jules"):
+        with open(relay.WEBHOOKS_FILE, "w") as f:
+            json.dump({slug: {"url": "https://api2.cursor.sh/hook", "token": "t"}}, f)
+        relay._hooks["mtime"] = None
+
+    async def test_miss_then_hit_and_file_mode(self):
+        line = relay.asking_line("Jules")
+        pcm = await relay.ack_clip(None, "jules", "Jules", "ara")
+        self.assertEqual(pcm, b"PCM:" + line.encode())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0][2], relay.TTS_SHORT_S)
+        again = await relay.ack_clip(None, "jules", "Jules", "ara")
+        self.assertEqual(again, pcm)
+        self.assertEqual(len(self.calls), 1)
+        names = os.listdir(relay.ACK_DIR)
+        self.assertEqual(names, [f"jules-{relay.ack_digest('Jules', 'ara')}.pcm"])
+        self.assertEqual(os.stat(os.path.join(relay.ACK_DIR, names[0])).st_mode & 0o777, 0o640)
+
+    async def test_rename_and_voice_change_the_key(self):
+        await relay.ack_clip(None, "jules", "Jules", "ara")
+        self.assertNotEqual(relay.ack_digest("Jules", "ara"), relay.ack_digest("Julie", "ara"))
+        self.assertNotEqual(relay.ack_digest("Jules", "ara"), relay.ack_digest("Jules", "rex"))
+        relay.prune_ack_clips("jules", "Julie", "ara")  # rename: old digest goes
+        self.assertEqual(os.listdir(relay.ACK_DIR), [])
+        await relay.ack_clip(None, "jules", "Julie", "ara")
+        await relay.ack_clip(None, "jules", "Jules", "rex")  # a second voice, not pruned yet
+        self.assertEqual(len(os.listdir(relay.ACK_DIR)), 2)
+        relay.prune_ack_clips("jules", "Jules", "rex")
+        self.assertEqual(os.listdir(relay.ACK_DIR), [f"jules-{relay.ack_digest('Jules', 'rex')}.pcm"])
+        relay.forget_ack_clips("jules")
+        self.assertEqual(os.listdir(relay.ACK_DIR), [])
+        n = len(self.calls)
+        await relay.ack_clip(None, "jules", "Jules", "rex")
+        self.assertEqual(len(self.calls), n + 1)  # forgotten clip is rendered again
+
+    async def test_tts_failure_is_not_cached(self):
+        self.fail = True
+        self.assertIsNone(await relay.ack_clip(None, "jules", "Jules", "ara"))
+        self.assertFalse(os.path.isdir(relay.ACK_DIR) and os.listdir(relay.ACK_DIR))
+        self.fail = False
+        pcm = await relay.ack_clip(None, "jules", "Jules", "ara")
+        self.assertTrue(pcm)
+
+    def test_bad_slug_does_not_escape_the_cache_dir(self):
+        self.assertFalse(relay.write_ack_cache("../x", "Jules", "ara", b"nope"))
+        self.assertFalse(relay.write_ack_cache("Jules", "Jules", "ara", b"nope"))  # slug must be lowercase
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "x-anything.pcm")))
+        self.assertEqual(relay._ack_names("../jules"), [])
+
+    def test_withheld_without_a_webhook_or_over_the_cap(self):
+        self.assertTrue(relay.ack_withheld("jules", "what time is it"))  # no webhook: will not wait
+        self.assertTrue(relay.ack_withheld("jules", "   "))  # empty question
+        self._webhook()
+        relay._hooks["mtime"] = None
+        self.assertFalse(relay.ack_withheld("jules", "what time is it"))
+        self.assertFalse(relay.ack_withheld("jules"))  # words not known yet, route exists
+        relay._limits.take("jules", "out")
+        self.assertTrue(relay.ack_withheld("jules", "what time is it"))
+        self.assertTrue(relay.ack_withheld("jules"))  # cap, even before the transcript
+        self.assertEqual(relay._limits.block_reason("jules"), "outstanding")
+
+
 if __name__ == "__main__":
     unittest.main()

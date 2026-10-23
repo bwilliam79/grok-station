@@ -263,6 +263,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         with open(relay.WEBHOOKS_FILE, "w") as f:
             json.dump({"jules": {"url": str(self.srv.make_url("/hook")), "token": "t"}}, f)
         relay._hooks["mtime"] = None
+        self._handoff = relay.HANDOFF
         relay.HANDOFF = True
         self.lines = []
         self._log = relay.log
@@ -270,6 +271,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         relay.log = self._log
+        relay.HANDOFF = self._handoff
         await self.srv.close()
 
     async def test_answer_spoken_and_logs_have_no_text(self):

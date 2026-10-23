@@ -91,6 +91,8 @@ Or use **Updates** on the admin page: **Check now** compares this station's vers
 
 **Bots** on the admin page adds a bot in steps (name and ID, key, webhook, then a summary). Voice is optional: leave it on **Station default** and change it later on the bot's row. The admin password is asked once, on the summary, and not again during the grace period (**System**, default 10 minutes, 0 always asks; signing out ends it). The relay icon is always on the station display. Until the first bot is paired it shows dim grey with a broken link; after that it is green, or red (crossed out) only after the last bot request timed out or its webhook failed.
 
+A handoff says "Asking <name>…" from a clip cached for that bot's name and voice: at the end of speech on a direct wake, and when the handoff starts if Grok routes the question. The wait for the answer is unchanged. See [docs/handoff.md](docs/handoff.md).
+
 ## Troubleshooting
 
 If a stage fails, the installer shows the failed stage, the last 20 log lines and the log path. The full log is `/var/log/grok-station-install.log`; re-run with `--verbose` to watch every command.

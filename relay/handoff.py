@@ -325,6 +325,21 @@ class Limits:
         self._save(s)
         return None
 
+    def block_reason(self, bot, now=None):
+        """Why the next take() would refuse, or None. Does not reserve a slot."""
+        now = time.time() if now is None else now
+        s = self._load()
+        b = (s.get("bots") or {}).get(bot) or {"n": 0, "last": 0.0}
+        if (s.get("out") or {}).get(bot):
+            return "outstanding"
+        if self.per_bot_day > 0 and b.get("n", 0) >= self.per_bot_day:
+            return "bot daily cap"
+        if self.global_day > 0 and s.get("total", 0) >= self.global_day:
+            return "global daily cap"
+        if self.gap_s > 0 and now - b.get("last", 0.0) < self.gap_s:
+            return "too soon"
+        return None
+
     def release(self, bot):
         s = self._load()
         s["out"].pop(bot, None)

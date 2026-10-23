@@ -1079,6 +1079,24 @@ def handoff_wait_text(ev):
     return f"Checking with {name}…"
 
 
+CUE_B64_MAX = 400000  # same cap the old still-asking clip used
+
+
+def decode_cue_audio(ev):
+    """PCM from an ack or handoff_still message, or empty bytes. Invalid base64 is empty."""
+    try:
+        return base64.b64decode(str(ev.get("audio", ""))[:CUE_B64_MAX], validate=True)
+    except ValueError:
+        return b""
+
+
+def ack_played_line(t_end_speech, now):
+    """Journal line. t_end_speech is time.time() when speech_stopped arrived."""
+    if not t_end_speech:
+        return None
+    return f"ack played {now - t_end_speech:.2f}s after end of speech"
+
+
 def handoff_keepalive_due(s):
     return bool(getattr(s, "active", False) and getattr(s, "handoff_text", None) and not getattr(s, "t_first_audio", None))
 
@@ -1161,6 +1179,7 @@ class Session:
         self.card = None  # last tool card; attached to later state posts until the session ends
         self.ws, self.t1_card = None, None
         self._connected, self._end_played = False, False
+        self._cue_q, self._cue_thread, self.t_ack = None, None, None  # ack and handoff_still share one player
         CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
 
@@ -1179,6 +1198,37 @@ class Session:
             return
         self._end_played = True
         play_file(self.play_dev, configured_wav("END_TONE"), block=True)
+
+    def play_cue(self, pcm):
+        """Queue one 24 kHz PCM clip. ack and handoff_still share this player, so they never overlap.
+        Does not mark the screen as speaking. The next clip starts only after this one finishes."""
+        if not pcm:
+            return
+        if self._cue_q is None:
+            self._cue_q = queue.Queue()
+            self._cue_thread = threading.Thread(target=self._cue_loop, args=(self._cue_q,), daemon=True)
+            self._cue_thread.start()
+        self._cue_q.put(bytes(pcm))
+
+    def _cue_loop(self, q):
+        while True:
+            pcm = q.get()
+            if not pcm:
+                return
+            try:
+                p = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000", "-c", "1",
+                                      "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                p.communicate(pcm)
+            except Exception:
+                pass
+
+    def close_cue(self):
+        q = self._cue_q
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
 
     def start_handoff_keepalive(self):
         """The display drops a "thinking" screen after VOICE_HOLDS["thinking"] (20 s) without a new post,
@@ -1322,20 +1372,17 @@ class Session:
                         self.t1_card = None
                         print(f"t1: {'confirmed' if ev.get('ok') else 'not saved'}", flush=True)
                         self.state("thinking", heard=self.heard, text="Saving…" if ev.get("ok") else "Not saved.")
+                    elif t == "ack":
+                        # Cached "Asking <name>". Same player as handoff_still; the screen stays where it is.
+                        line = ack_played_line(self.t_end_speech, time.time())
+                        if line:
+                            print(line, flush=True)
+                        self.t_ack = time.monotonic()
+                        self.play_cue(decode_cue_audio(ev))
                     elif t == "handoff_still":
-                        # "Still asking <bot>": play the short line, keep the thinking/wait screen as it is
+                        # A still-asking clip waits until the ack on this player has finished.
                         print("relay: handoff still", flush=True)
-                        try:
-                            pcm = base64.b64decode(str(ev.get("audio", ""))[:400000], validate=True)
-                        except ValueError:
-                            pcm = b""
-                        if pcm:
-                            try:
-                                p = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000", "-c", "1",
-                                                      "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                                threading.Thread(target=p.communicate, args=(pcm,), daemon=True).start()
-                            except OSError:
-                                pass
+                        self.play_cue(decode_cue_audio(ev))
                     elif t in ("timer_set", "timer_cancel"):
                         timer_event(ev)
                     elif t == "card":
@@ -1411,6 +1458,7 @@ class Session:
                 self.play_end_tone()
             except Exception:
                 pass
+            self.close_cue()
             self.active = False
             SESSION_OPEN.clear()
 

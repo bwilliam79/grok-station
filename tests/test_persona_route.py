@@ -42,7 +42,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.snap = {k: getattr(relay, k) for k in (
             "HANDOFF", "URL", "log", "tts_pcm", "VOICES", "PERSONAS_FILE", "WEBHOOKS_FILE",
             "PENDING_DIR", "REPLIES_DIR", "REPLY_WAIT", "ALERT_DIR", "_limits",
-            "MINTED_FILE")}
+            "MINTED_FILE", "ACK_DIR")}
         self.personas_snap = dict(relay._personas)
         self.hooks_snap = {"mtime": relay._hooks.get("mtime"), "map": dict(relay._hooks.get("map") or {})}
         self.alerted_snap = set(relay.alerted)
@@ -61,8 +61,10 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
         relay.PENDING_DIR = os.path.join(self.tmp, "pending")
         relay.REPLIES_DIR = os.path.join(self.tmp, "replies")
+        relay.ACK_DIR = os.path.join(self.tmp, "ack")
         os.makedirs(relay.PENDING_DIR)
         os.makedirs(relay.REPLIES_DIR)
+        os.makedirs(relay.ACK_DIR)
         with open(relay.PERSONAS_FILE, "w") as f:
             json.dump(_personas_doc(), f)
         relay.VOICES = {"ara", "rex", "luna"}
@@ -73,10 +75,14 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         relay.log = lambda *a: self.lines.append(" ".join(map(str, a)))
 
         self.tts_caps = []
+        self.fail_asking = False
+        self.ack_before_post = False
 
         async def fake_tts(http, text, voice, max_s=relay.TTS_SHORT_S):
             self.tts.append((text, voice))
             self.tts_caps.append((text, max_s))
+            if self.fail_asking and str(text).startswith("Asking"):
+                return None
             return b"TTS:" + str(text).encode()
 
         relay.tts_pcm = fake_tts
@@ -145,12 +151,19 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
     def _pin(self, slug="jules"):
         botreply.pin_key(botreply.keys_path(self.tmp), slug, base64.b64encode(b"\x33" * 32).decode())
 
-    async def drive(self, transcript, persona=None, t1=None, function_call=False, tool_first=False, timeout=8):
+    async def drive(self, transcript, persona=None, t1=None, function_call=False, tool_first=False, timeout=8,
+                    call=None, expect_ack=False):
         """One station turn against the fake upstream. Returns station events, binary frames and upstream JSON."""
-        upstream, events, binaries = [], [], []
+        upstream, events, binaries, order = [], [], [], []
+        self.ack_before_post = False
         token = TOKEN
+        spec = call
+        if spec is None and function_call:
+            spec = {"name": "check_notes", "arguments": {"question": TOOL_Q}}
 
         async def hook(req):
+            # The ack is logged before ask_teammate posts. Recorded here, before this handler awaits.
+            self.ack_before_post = any(l.startswith("ack clip ") for l in self.lines)
             body = await req.json()
             self.calls.append(body)
             pend_path = os.path.join(relay.PENDING_DIR, body["request_id"] + ".json")
@@ -196,17 +209,17 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                     await s.send_json({"type": "input_audio_buffer.speech_started"})
                     await s.send_json({"type": "input_audio_buffer.speech_stopped"})
                     await s.send_json({"type": "response.created"})
-                    if function_call and tool_first:
-                        await s.send_json({"type": "response.function_call_arguments.done", "name": "check_notes",
-                                           "call_id": "c1", "arguments": json.dumps({"question": TOOL_Q})})
+                    if spec and tool_first:
+                        await s.send_json({"type": "response.function_call_arguments.done", "name": spec["name"],
+                                           "call_id": "c1", "arguments": json.dumps(spec.get("arguments") or {})})
                     await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
                                        "transcript": transcript})
                     await s.send_json({"type": "response.audio.delta", "delta": AUDIO})
                     await s.send_json({"type": "response.text", "text": PRE})
                     await s.send_json({"type": "response.output_audio.delta", "delta": AUDIO})
-                    if function_call and not tool_first:
-                        await s.send_json({"type": "response.function_call_arguments.done", "name": "check_notes",
-                                           "call_id": "c1", "arguments": json.dumps({"question": TOOL_Q})})
+                    if spec and not tool_first:
+                        await s.send_json({"type": "response.function_call_arguments.done", "name": spec["name"],
+                                           "call_id": "c1", "arguments": json.dumps(spec.get("arguments") or {})})
                     await s.send_json({"type": "response.done"})
             return s
 
@@ -246,9 +259,12 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
             def take(msg):
                 if msg.type == WSMsgType.BINARY:
+                    order.append("bin")
                     binaries.append(bytes(msg.data))
                 elif msg.type == WSMsgType.TEXT:
-                    events.append(json.loads(msg.data))
+                    ev = json.loads(msg.data)
+                    order.append(ev.get("type"))
+                    events.append(ev)
 
             async def read():
                 async for msg in ws:
@@ -272,7 +288,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                 kinds = [e.get("type") for e in events]
                 ups = [e.get("type") for e in upstream]
                 raise AssertionError(f"no end event in {timeout}s; station={kinds} upstream={ups} log={self.lines[-6:]}")
-            return {"events": events, "binaries": binaries, "upstream": upstream, "url": url}
+            if expect_ack and not self.ack_before_post:
+                raise AssertionError(f"ack was not logged before the webhook; log={self.lines[-8:]}")
+            return {"events": events, "binaries": binaries, "upstream": upstream, "url": url, "order": order}
         finally:
             if mic:
                 mic.cancel()
@@ -290,6 +308,27 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
     def _replies(self, events):
         return [e.get("text", "") for e in events if e.get("type") == "reply"]
+
+    def _acks(self, events):
+        return [e for e in events if e.get("type") == "ack"]
+
+    def _assert_one_ack(self, out, name="Jules", before_post=True):
+        acks = self._acks(out["events"])
+        self.assertEqual(len(acks), 1, [e.get("type") for e in out["events"]])
+        self.assertEqual(acks[0].get("name"), name)
+        self.assertEqual(acks[0].get("slug"), name.lower())
+        line = relay.asking_line(name)
+        self.assertEqual(base64.b64decode(acks[0]["audio"]), b"TTS:" + line.encode())
+        self.assertEqual(out["order"].count("ack"), 1)
+        self.assertLess(out["order"].index("speech_stopped"), out["order"].index("ack"))
+        self.assertLess(out["order"].index("ack"), out["order"].index("handoff_wait"))
+        if "bin" in out["order"]:
+            self.assertLess(out["order"].index("ack"), out["order"].index("bin"))
+        self.assertNotIn(MODEL_PCM, out["binaries"])
+        if before_post:
+            self.assertTrue(self.ack_before_post)
+        self.assertNotIn(line, self._replies(out["events"]))  # clip, not a reply line that flips the screen
+        return acks[0]
 
     def _assert_routed_silence(self, out):
         types = [e.get("type") for e in out["upstream"]]
@@ -318,7 +357,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("xai error" in l for l in self.lines))
 
     async def test_wake_route_drops_model_and_speaks_webhook(self):
-        out = await self.drive(DINNER, persona="jules", function_call=True)
+        out = await self.drive(DINNER, persona="jules", function_call=True, expect_ack=True)
         updates = self._updates(out["upstream"])
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0]["turn_detection"],
@@ -329,7 +368,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("shared family room", updates[0]["instructions"])
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
-        self.assertNotIn("Asking Jules\u2026", replies)  # woken as Jules: no filler
+        self._assert_one_ack(out)  # woken as Jules: one clip at end of speech, not a second from check_notes
         self.assertEqual(replies[-1], TACOS)
         self.assertNotIn("Still asking Jules.", [t for t, _ in self.tts])
         self.assertEqual(self.tts[-1], (TACOS, "ara"))
@@ -352,25 +391,29 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self._quiet(DINNER, TACOS, TOKEN, out["url"], PRE, TOOL_Q)
 
     async def test_a_slow_reply_does_not_say_still(self):
-        """Direct session: thinking ring, no spoken cue, and no "still asking" line while the bot answers."""
+        """The ack replaces the old cue. A slow reply still does not speak "still asking"; the wait itself is unchanged."""
         self.reply_delay = 0.45
-        out = await self.drive(DINNER, persona="jules")
+        out = await self.drive(DINNER, persona="jules", expect_ack=True)
         self._assert_routed_silence(out)
-        self.assertEqual([t for t, v in self.tts], [TACOS])
+        self._assert_one_ack(out)
+        self.assertEqual([t for t, _v in self.tts if t.startswith("Still ")], [])
         self.assertFalse(any(e.get("type") == "handoff_still" for e in out["events"]))
-        self.assertNotIn("Asking Jules\u2026", self._replies(out["events"]))
         self.assertTrue(any(e.get("type") == "handoff_wait" and e.get("direct") is True for e in out["events"]))
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
+        # The reply still arrives inside the wait. Nothing is inserted between the ack and handoff_wait.
+        self.assertEqual([t for t in out["order"] if t in ("ack", "handoff_still", "handoff_wait")],
+                         ["ack", "handoff_wait"])
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"])
 
-    async def test_check_notes_has_no_spoken_cue(self):
-        """Model-initiated check_notes asks the webhook with the ring and no "Asking" line."""
-        out = await self.drive(DINNER, persona="jules", function_call=True, tool_first=True)
+    async def test_check_notes_acks_once(self):
+        """check_notes is a route: one ack. Speech already ended on this persona, so the tool does not play a second."""
+        out = await self.drive(DINNER, persona="jules", function_call=True, tool_first=True, expect_ack=True)
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
-        self.assertNotIn("Asking Jules\u2026", replies)
-        self.assertFalse(any(t.startswith("Asking ") or t.startswith("Still ") for t, _ in self.tts))
+        self._assert_one_ack(out)
+        self.assertEqual([t for t, _ in self.tts if t.startswith("Asking ")], [relay.asking_line("Jules")])
+        self.assertFalse(any(t.startswith("Still ") for t, _ in self.tts))
         self.assertEqual(replies[-1], TACOS)
         self.assertEqual(self.calls[0]["question"], TOOL_Q)
         self.assertTrue(any(e.get("type") == "handoff_wait" for e in out["events"]))
@@ -443,13 +486,14 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         types = [e.get("type") for e in out["events"]]
         self.assertLess(types.index("comms_fail"), types.index("reply"))
         self.assertFalse(relay.icon_view()["ok"])
-        self.assertFalse(any(t.startswith("Still ") or t.startswith("Asking ") for t, _ in self.tts))
+        self._assert_one_ack(out)  # the wait started, so the ack played; the timeout line is the reply
+        self.assertFalse(any(t.startswith("Still ") for t, _ in self.tts))
         self.assertEqual(self.tts[-1][0], line)
         self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
         self._quiet(DINNER, TOKEN, out["url"])
 
     async def test_spoken_name_routes_mid_session(self):
-        out = await self.drive(ASK_JULES)  # Grok, until the name
+        out = await self.drive(ASK_JULES, expect_ack=True)  # Grok, until the name
         updates = self._updates(out["upstream"])
         self.assertGreaterEqual(len(updates), 2)
         self.assertTrue(updates[0]["turn_detection"]["create_response"])
@@ -458,7 +502,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(updates[1]["turn_detection"]["interrupt_response"])
         self.assertEqual(updates[1]["voice"], "ara")
         self._assert_routed_silence(out)
-        self.assertEqual(self._replies(out["events"])[0], "Asking Jules\u2026")
+        self._assert_one_ack(out)
         self.assertTrue(all(e.get("direct") is False for e in out["events"] if e.get("type") == "handoff_wait"))
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self.assertEqual(len(self.calls), 1)
@@ -472,9 +516,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_single_wake_word_hands_off_to_a_bot(self):
         """Single device: only "Hey Grok" is enabled. "Hey Grok, ask Jules X" still hands off to Jules."""
-        out = await self.drive(ASK_JULES, persona="grok")
+        out = await self.drive(ASK_JULES, persona="grok", expect_ack=True)
         self._assert_routed_silence(out)
-        self.assertEqual(self._replies(out["events"])[0], "Asking Jules\u2026")
+        self._assert_one_ack(out)
         self.assertEqual(self.calls[0]["persona"], "jules")
         self.assertEqual(self.pendings[0]["question"], DINNER)
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
@@ -487,6 +531,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertIn(PRE, self._replies(out["events"]))
         self.assertIn(MODEL_PCM, out["binaries"])
         self.assertFalse(any(t.startswith("Asking ") for t, _ in self.tts))
+        self.assertEqual(self._acks(out["events"]), [])
         self.assertEqual(self.calls, [])
         self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
         self._canary(False)
@@ -499,7 +544,62 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(b == MODEL_PCM for b in out["binaries"]))
         self.assertEqual(self.calls, [])
         self.assertFalse(any("Asking " in (e.get("text") or "") for e in out["events"]))
+        self.assertEqual(self._acks(out["events"]), [])
         self._canary(False)
+
+    async def test_talk_to_route_acks_once(self):
+        """The talk_to tool is a route. The ack is at the top of the handoff, before the webhook."""
+        out = await self.drive(
+            "what's for dinner",
+            call={"name": "talk_to", "arguments": {"persona": "jules", "question": DINNER}},
+            tool_first=True, expect_ack=True)
+        self._assert_routed_silence(out)
+        self._assert_one_ack(out)
+        self.assertEqual(self.calls[0]["persona"], "jules")
+        self.assertEqual(self.calls[0]["question"], DINNER)
+        self.assertTrue(all(e.get("direct") is True for e in out["events"] if e.get("type") == "handoff_wait"))
+        self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
+
+    async def test_limit_and_direct_cap_do_not_ack(self):
+        """A handoff that will not wait (cap) does not say Asking, including a woken persona."""
+        relay._limits.take("jules", "already-out")
+        out = await self.drive(ASK_JULES)
+        self.assertEqual(self._acks(out["events"]), [])
+        self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
+        self.assertEqual(self.calls, [])
+        self.assertIn("lot of questions", self._replies(out["events"])[-1])
+        relay._limits = handoff.Limits(os.path.join(self.tmp, "limits-direct.json"), relay.today)
+        relay._limits.take("jules", "already-out")
+        self.tts.clear()
+        self.calls.clear()
+        out = await self.drive(DINNER, persona="jules")
+        self.assertEqual(self._acks(out["events"]), [])
+        self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
+        self.assertEqual(self.calls, [])
+
+    async def test_cached_clip_is_not_rendered_again(self):
+        relay.write_ack_cache("jules", "Jules", "ara", b"CACHED-PCM")
+        out = await self.drive(DINNER, persona="jules", expect_ack=True)
+        self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
+        self.assertEqual(base64.b64decode(self._acks(out["events"])[0]["audio"]), b"CACHED-PCM")
+        self.assertEqual(self._replies(out["events"])[-1], TACOS)
+        self.assertLess(out["order"].index("ack"), out["order"].index("bin"))
+
+    async def test_ack_tts_failure_still_hands_off(self):
+        self.fail_asking = True
+        out = await self.drive(DINNER, persona="jules")
+        self.assertEqual(self._acks(out["events"]), [])
+        self.assertFalse(self.ack_before_post)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["question"], DINNER)
+        self.assertEqual(self._replies(out["events"])[-1], TACOS)
+        self.assertEqual(os.listdir(relay.ACK_DIR), [])
+
+    async def test_grok_noise_does_not_ack(self):
+        """No transcript worth routing: Grok does not say Asking. A woken bot cannot see that yet."""
+        out = await self.drive("")
+        self.assertEqual(self._acks(out["events"]), [])
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

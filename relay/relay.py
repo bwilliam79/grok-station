@@ -5,7 +5,8 @@ The station opens ws://127.0.0.1:8790/ws with "Authorization: Bearer <local toke
 as binary PCM16 24 kHz mono frames. The relay opens one xAI realtime session per connection
 (server VAD) and sends back binary frames of reply audio (PCM16 24 kHz mono) plus small JSON events:
   {"type":"ready"} {"type":"speech_started"} {"type":"speech_stopped"} {"type":"heard","text":...}
-  {"type":"response_started"} {"type":"reply_delta","text":...} {"type":"reply","text":...} {"type":"done"}
+  {"type":"ack","audio":...} {"type":"response_started"} {"type":"reply_delta","text":...} {"type":"reply","text":...}
+  {"type":"done"}
   {"type":"timeout","speech":bool} {"type":"xai_error","message":...} (non-fatal) {"type":"error","message":...}
 Multi-turn (MULTI_TURN=1, default; docs/multiturn.md): after each answer the relay sends {"type":"turn_done"}; the Pi
 plays it, then sends {"type":"listening"} and a follow-up turn opens with no wake word. "thanks"/"that's all" ends it
@@ -202,6 +203,7 @@ def webhooks():
     return _hooks["map"]
 PENDING_DIR = E("HANDOFF_PENDING", os.path.join(STATE_DIR, "voice", "pending"))
 REPLIES_DIR = E("HANDOFF_REPLIES", os.path.join(STATE_DIR, "voice", "replies"))
+ACK_DIR = E("ACK_DIR", os.path.join(STATE_DIR, "voice", "ack"))  # cached "Asking <name>" clips
 REPLY_WAIT = float(E("REPLY_WAIT", "30"))           # seconds the station waits for a teammate's answer
 _limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "handoff.json")), lambda: today())
 _seen_rids = set()
@@ -468,8 +470,12 @@ def persona_list():
     for slug, voice in ov["voices"].items():
         if slug in out and voice.lower() in offered:
             out[slug] = dict(out[slug], voice=voice.lower())
-    _personas.update(mtime=key, map=out, voices=True)
+    sig = tuple(sorted((s, p.get("name"), p.get("voice")) for s, p in out.items()))
+    prev = _personas.get("ack_sig")
+    _personas.update(mtime=key, map=out, voices=True, ack_sig=sig)
     log(f"personas: {len(out)} on voice: {' '.join(out)}")
+    if prev != sig:
+        sync_ack_cache(out)  # drop a stale clip after a rename or voice change; warm when not under test
     return out
 
 
@@ -682,12 +688,170 @@ def asking_line(name):
     return f"Asking {name}\u2026"
 
 
+_ACK_TASKS = set()
+_ACK_INFLIGHT = {}
+TTS_SHORT_S, TTS_REPLY_S = 6, 90  # fillers/fixed lines vs a teammate's whole spoken reply
+_ACK_PCM_MAX = 24000 * 2 * TTS_SHORT_S  # same cap as a live short TTS render
+
+
+def ack_slug_ok(slug):
+    return bool(SLUG.match(str(slug or "")) or handoff.bot_slug_ok(slug))
+
+
+def ack_digest(name, voice):
+    """Cache key: sha256 of the spoken name and the voice id. A rename or a voice change misses."""
+    return hashlib.sha256(f"{name}|{voice}".encode()).hexdigest()
+
+
+def ack_cache_path(slug, name, voice):
+    return os.path.join(ACK_DIR, f"{slug}-{ack_digest(name, voice)}.pcm")
+
+
+def _ack_names(slug):
+    if not ack_slug_ok(slug):
+        return []
+    rx = re.compile(rf"^{re.escape(slug)}-[0-9a-f]{{64}}\.pcm$")
+    try:
+        names = os.listdir(ACK_DIR)
+    except OSError:
+        return []
+    return [n for n in names if rx.fullmatch(n)]
+
+
+def read_ack_cache(slug, name, voice):
+    """Cached PCM, or None. Over-long or unreadable files are a miss."""
+    if not ack_slug_ok(slug):
+        return None
+    try:
+        with open(ack_cache_path(slug, name, voice), "rb") as f:
+            data = f.read(_ACK_PCM_MAX + 1)
+    except OSError:
+        return None
+    if not data or len(data) > _ACK_PCM_MAX:
+        return None
+    return data
+
+
+def write_ack_cache(slug, name, voice, pcm):
+    """Store one clip. False on a bad slug or a write error; the caller can still play the bytes."""
+    if not ack_slug_ok(slug) or not pcm:
+        return False
+    try:
+        atomic_write(ack_cache_path(slug, name, voice), bytes(pcm)[:_ACK_PCM_MAX], 0o640)
+    except OSError:
+        return False
+    return True
+
+
+def forget_ack_clips(slug):
+    """Delete every cached clip for this slug."""
+    for name in _ack_names(slug):
+        try:
+            os.unlink(os.path.join(ACK_DIR, name))
+        except OSError:
+            pass
+
+
+def prune_ack_clips(slug, name, voice):
+    """Keep only the clip for this name and voice. Other digests for the slug are stale."""
+    if not name:
+        return
+    keep = f"{slug}-{ack_digest(name, voice)}.pcm"
+    for fn in _ack_names(slug):
+        if fn != keep:
+            try:
+                os.unlink(os.path.join(ACK_DIR, fn))
+            except OSError:
+                pass
+
+
+def ack_eager_ok():
+    """Background renders hit xAI. Skip them under pytest and when the key is a test placeholder."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    if not KEY or KEY in ("test-key", "test"):
+        return False
+    return True
+
+
+def ack_withheld(bot, question=None):
+    """True when Asking must not play: the ask will not reach the wait.
+
+    question is None at end of speech, before the words are known. An empty question, a missing
+    webhook, or a cap that would refuse the ask all withhold the clip.
+    """
+    if question is not None and not handoff.clean(question, handoff.Q_MAX):
+        return True
+    if handoff.route(webhooks(), bot) is None:
+        return True
+    try:
+        return _limits.block_reason(bot) is not None
+    except Exception:
+        return False
+
+
+async def render_ack_clip(http, slug, name, voice):
+    """One live TTS of asking_line. Stores it when the render works. None on failure."""
+    pcm = await tts_pcm(http, asking_line(name), voice)
+    if pcm:
+        write_ack_cache(slug, name, voice, pcm)
+    return pcm
+
+
+async def ack_clip(http, slug, name, voice):
+    """Cached PCM of asking_line(name), else one live render. None when TTS fails. Never raises."""
+    try:
+        cached = read_ack_cache(slug, name, voice)
+        if cached:
+            return cached
+        key = (slug, name, voice)
+        task = _ACK_INFLIGHT.get(key)
+        if task is None or task.done():
+            task = asyncio.get_running_loop().create_task(render_ack_clip(http, slug, name, voice))
+            _ACK_INFLIGHT[key] = task
+
+            def _done(_t, k=key):
+                if _ACK_INFLIGHT.get(k) is _t:
+                    _ACK_INFLIGHT.pop(k, None)
+
+            task.add_done_callback(_done)
+        return await task
+    except Exception:
+        return None
+
+
+def sync_ack_cache(roster):
+    """After a persona reload: drop clips that no longer match, and render the current lines when allowed."""
+    snap = {}
+    for slug, p in (roster or {}).items():
+        name, voice = p.get("name"), p.get("voice") or VOICE
+        if not name:
+            continue
+        prune_ack_clips(slug, name, voice)
+        snap[slug] = (name, voice)
+    if not snap or not ack_eager_ok():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _warm():
+        try:
+            async with ClientSession() as http:
+                for slug, (name, voice) in snap.items():
+                    await ack_clip(http, slug, name, voice)
+        except Exception:
+            return
+
+    task = loop.create_task(_warm())
+    _ACK_TASKS.add(task)
+    task.add_done_callback(_ACK_TASKS.discard)
+
+
 def handoff_error(name, verdict):
     """Honest tool result for a handoff that produced no answer."""
     return f'Say exactly: "{handoff_line(name, verdict)}" Don\'t guess the answer.'
-
-
-TTS_SHORT_S, TTS_REPLY_S = 6, 90  # fillers/fixed lines vs a teammate's whole spoken reply
 
 
 async def tts_pcm(http, text, voice, max_s=TTS_SHORT_S):
@@ -1046,23 +1210,54 @@ async def session(req):
                 await pi.send_json({"type": "done"})
                 return "response done" + who
 
+            async def emit_ack(bot, question=None):
+                """One 'Asking <name>' for this utterance. Cache, else live TTS. A miss does not raise.
+
+                Sent as JSON audio, not reply PCM, so the Pi does not flip to speaking. The wake player
+                is the same one used for a still-asking clip, so the two cannot overlap.
+                """
+                if not st.get("utt") or st.get("acked_utt") == st.get("utt") or st.get("t1"):
+                    return
+                if ack_withheld(bot, question):
+                    return
+                p = roster.get(bot)
+                if not p:
+                    return
+                st["acked_utt"] = st.get("utt")  # one attempt, even when TTS returns nothing
+                name, voice = p["name"], p.get("voice") or VOICE
+                try:
+                    pcm = await ack_clip(http, bot, name, voice)
+                except Exception:
+                    return
+                if not pcm or pi.closed:
+                    return
+                try:
+                    await pi.send_json({"type": "ack", "slug": bot, "name": name,
+                                        "audio": base64.b64encode(pcm).decode()})
+                except Exception:
+                    return
+                st["ack_at"] = time.monotonic()  # a following cue is measured from here; the wait clock is not
+                log(f"ack clip {bot}")  # slug only; no audio, no question
+
             async def routed_turn(bot, question, cue=False):
-                """Relay-owned handoff. The thinking ring always; the spoken cue only for a name route from Grok."""
+                """Relay-owned handoff. Ack once for every route, then the bot's reply or a fixed error.
+
+                cue only picks the wait-screen label (a Grok name route names the bot). It does not gate the ack.
+                """
                 if st.get("answered_utt") == st.get("utt"):
                     return None
                 st["answered_utt"] = st.get("utt")
-                st["drop_model"] = True
+                st["drop_model"] = True  # before any model audio is forwarded for this turn
                 name = roster[bot]["name"]
                 voice = roster[bot].get("voice") or VOICE
+                # Before the ask, so a cap or a missing webhook never plays Asking.
+                await emit_ack(bot, question)
                 st.update(hold=True, responding=True)
                 h0 = time.monotonic()
 
                 async def waiting():
+                    # Ring only. The ack already played; do not TTS again and do not re-send to undo "speaking".
                     await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": not cue})
-                    if cue:
-                        await play_fixed(asking_line(name), voice)
-                        # the filler line flips the Pi to "speaking"; put it back on the spinning wait ring
-                        await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": False})
 
                 try:
                     text, verdict = await ask_teammate(http, bot, question, waiting)
@@ -1207,9 +1402,16 @@ async def session(req):
                         await pi.send_json({"type": "speech_started"})
                     elif t == "input_audio_buffer.speech_stopped":
                         st.update(speaking=False, quiet_since=time.monotonic())
-                        if st.get("drop_model"):
+                        # A woken webhook persona is always a handoff. Mute the model before its first audio.
+                        if persona_routed(st["persona"]):
+                            st["drop_model"] = True
+                            st["responding"] = True
+                        elif st.get("drop_model"):
                             st["responding"] = True  # no auto response: wait for the transcript, not NO_SPEECH
-                        await pi.send_json({"type": "speech_stopped"})
+                        await pi.send_json({"type": "speech_stopped"})  # wake stamps end-of-speech before the ack
+                        # Words are not known yet. Skip a cap refusal; an empty transcript cannot be seen from here.
+                        if persona_routed(st["persona"]) and st.get("utt") and not st.get("hold") and not st.get("t1"):
+                            await emit_ack(st["persona"])
                     elif t == "response.created":
                         st.update(responding=True, audio=False)
                         await pi.send_json({"type": "response_started"})
@@ -1248,7 +1450,7 @@ async def session(req):
                             continue
                         if addr and addr != st["persona"] and persona_routed(addr):
                             log(f"persona route -> {addr}")  # slug only; the question is not logged
-                            # Spoken cue only when Grok was asked by name ("ask <bot>"). A direct session stays quiet.
+                            # The wait screen names the bot only on a Grok name route. The ack plays for every route.
                             end = await route_to(addr, rest, heard, cue=(st["persona"] == "grok"))
                             if end:
                                 return end
@@ -1269,7 +1471,7 @@ async def session(req):
                         target = backup_target(heard, roster) if not st["switched"] else None
                         if target and target != st["persona"] and persona_routed(target):
                             log(f"persona route -> {target}")
-                            end = await route_to(target, "", heard, cue=(st["persona"] == "grok"))
+                            end = await route_to(target, "", heard, cue=(st["persona"] == "grok"))  # label only; ack is not gated
                             if end:
                                 return end
                             continue
@@ -2102,6 +2304,8 @@ async def admin_bots_post(req):
             pass
         return web.json_response({"error": "unavailable"}, status=500)
     audit(body["actor"], slug, "add", "-")
+    forget_ack_clips(slug)
+    persona_list()  # new name and voice: prune and warm the asking clip
     return web.json_response({"ok": True, "slug": slug, "voice_token": token}, status=201)
 
 
@@ -2147,6 +2351,9 @@ async def admin_bots_patch(req):
         audit(body["actor"], slug, "rename", tail)
     if has_voice:
         audit(body["actor"], slug, "voice", "-")
+    if has_name or has_voice:
+        forget_ack_clips(slug)  # the cache key is sha(name|voice); the next reload renders the new line
+        persona_list()
     return web.json_response({"ok": True})
 
 
@@ -2182,6 +2389,8 @@ async def admin_bots_delete(req):
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
     audit(body["actor"], slug, "remove", tail)
+    forget_ack_clips(slug)
+    persona_list()
     return web.json_response({"ok": True})
 
 

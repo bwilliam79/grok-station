@@ -1,6 +1,6 @@
 import re
 """Wake client: persona events keep the listening phase, 16 kHz capture upsampling, patience. No network, no audio."""
-import io, json, os, sys, tempfile, types, unittest
+import base64, io, json, os, sys, tempfile, time, types, unittest
 from contextlib import redirect_stdout
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "wake"))
@@ -448,6 +448,74 @@ class HandoffWaitScreen(unittest.TestCase):
         self.assertFalse(gw.handoff_keepalive_due(s))
         s.handoff_text, s.active = "…", False
         self.assertFalse(gw.handoff_keepalive_due(s))
+
+
+class AckPlayback(unittest.TestCase):
+    def test_line_is_seconds_after_speech(self):
+        self.assertEqual(gw.ack_played_line(100.0, 100.12), "ack played 0.12s after end of speech")
+        self.assertEqual(gw.ack_played_line(100.0, 100.0), "ack played 0.00s after end of speech")
+        self.assertIsNone(gw.ack_played_line(None, 100.0))
+
+    def test_ack_logs_and_shares_the_still_player(self):
+        played = []
+        old = gw.Session.play_cue
+        gw.Session.play_cue = lambda self, pcm: played.append(bytes(pcm))
+        audio = base64.b64encode(b"\x01\x02").decode()
+        still = base64.b64encode(b"\x03\x04").decode()
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                posted = run_session([
+                    {"type": "ready"},
+                    {"type": "speech_stopped"},
+                    {"type": "ack", "audio": audio},
+                    {"type": "handoff_still", "audio": still},
+                    {"type": "done"},
+                ])
+        finally:
+            gw.Session.play_cue = old
+        log = buf.getvalue()
+        self.assertRegex(log, r"ack played \d+\.\d\ds after end of speech")
+        self.assertIn("relay: handoff still", log)
+        self.assertNotIn("first audio", log)  # the clip is not model audio and does not flip to speaking
+        self.assertEqual(played, [b"\x01\x02", b"\x03\x04"])
+        states = [p[0] for p in posted if isinstance(p, tuple) and p[0] != "url"]
+        self.assertNotIn("speaking", states)
+
+    def test_invalid_ack_audio_is_empty(self):
+        self.assertEqual(gw.decode_cue_audio({"audio": "!!!!"}), b"")
+        self.assertEqual(gw.decode_cue_audio({}), b"")
+
+    def test_cue_player_never_overlaps(self):
+        """ack and a still-asking clip share one player. The second starts only after the first finishes."""
+        order = []
+
+        class P:
+            def __init__(self, *a, **k):
+                order.append("start")
+
+            def communicate(self, pcm):
+                order.append(("pcm", pcm))
+                time.sleep(0.04)
+                order.append("end")
+                return b"", b""
+
+        old = gw.subprocess.Popen
+        gw.subprocess.Popen = P
+        s = gw.Session.__new__(gw.Session)
+        s.play_dev = "null"
+        s._cue_q = None
+        s._cue_thread = None
+        try:
+            s.play_cue(b"A")
+            s.play_cue(b"B")
+            s.close_cue()
+            self.assertIsNotNone(s._cue_thread)
+            s._cue_thread.join(timeout=2)
+        finally:
+            gw.subprocess.Popen = old
+        self.assertFalse(s._cue_thread.is_alive())
+        self.assertEqual(order, ["start", ("pcm", b"A"), "end", "start", ("pcm", b"B"), "end"])
 
 
 class SingleWakeWordDefault(unittest.TestCase):

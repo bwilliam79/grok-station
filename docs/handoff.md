@@ -10,7 +10,15 @@ A paired bot can answer on the station. Handoff is on unless `HANDOFF_ENABLED=0`
 4. The bot answers with `POST /voice/reply` on the admin HTTPS port: `{"v":1,"bot","sealed"}`. The relay unseals, checks the pinned signature before parsing, then checks the schema, the open pending request, and the lint. The text is written for the waiting ask. Duplicate and expired requests are rejected.
 5. The station waits `REPLY_WAIT` seconds (default 30). The pending file stays valid for two minutes so a skewed clock does not fail a reply the station is still waiting for. On timeout the station says `I couldn't reach <Name>.`
 
-The screen always shows the thinking ring. The spoken cue "Asking <Name>…" is only for a name route from Grok. A direct wake and `check_notes` do not speak that cue.
+The screen shows the thinking ring during that wait. The spoken asking clip is separate and is described below.
+
+## Asking line
+
+The station speaks `Asking <Name>…` once per utterance, on every handoff: a direct wake, a spoken name from Grok, `talk_to`, and `check_notes`. It does not speak that line for Grok's own answers, for a bot with no webhook, or when a cap would refuse the ask (nothing is waiting).
+
+The clip is one xAI TTS render of that fixed line, stored as `voice/ack/<slug>-<sha256 of name|voice>.pcm` under the state directory (`ACK_DIR`, mode 0640). The installer creates the directory. The relay unit already has the state directory on `ReadWritePaths`, so no new path is opened. A rename or a voice change deletes the old file; the next persona reload renders the new line when an xAI key is set. A missing file is rendered on first use. If TTS fails, nothing is cached and the handoff still runs.
+
+A woken webhook persona sends the cached clip when speech stops, before model audio and before the webhook. A Grok route sends it at the start of the handoff, before the webhook, unless this utterance already played it. The Pi plays it on the same one-clip-at-a-time player as a `handoff_still` message, so the two cannot overlap, and logs `ack played X.XXs after end of speech`. The clip is not model audio, so the screen does not flip to speaking. The wait no longer makes a second live TTS of the same line. `REPLY_WAIT` is unchanged: it starts when the webhook POST succeeds, not when the ack plays. A direct wake cannot see an empty transcript at the moment speech stops, so a cough can play the clip. Grok does not play it until the turn is actually a route.
 
 ## Reply lint
 
@@ -29,3 +37,17 @@ A bare link, a short digit run, money, a VIN, medical wording, or the word "pass
 ## T1
 
 Off unless `T1_ENABLED=1`. The relay does not authorize a write. It can show a proposed note and listen for a confirm at the station (`relay/t1.py`). Bots still may not send anything but a tier-0 answer on `/voice/reply`.
+
+## Validation on the Pi
+
+What changed: a handoff says "Asking <name>…" from a clip cached for that bot's name and voice. A direct wake plays it at the end of speech. A question Grok routes (spoken name, `talk_to`, or `check_notes`) plays it when the handoff starts. The wait for the answer is the same length as before. No new listening port.
+
+How to test, after an update (the installer creates `voice/ack` on a re-run):
+
+1. Restart `grok-station-relay` and `grok-station-wake`, or reboot.
+2. Ask a paired bot directly, for example "Hey <bot>, what time is it".
+3. In `journalctl -u grok-station-wake -n 80 --no-pager`, expect `ack played 0.XXs after end of speech` (a cached clip is about 0.3 s or less) and then `relay: handoff wait`.
+4. Ask Grok to hand off, for example "Hey Grok, ask <bot> what time it is". The same ack line should show after the route, still before the reply.
+5. Rename the bot, or change its voice, and ask again. The spoken name and voice should match the new settings. The previous `*.pcm` under `/var/lib/grok-station/voice/ack/` for that bot should be gone.
+
+Expected result: one "Asking <name>", with no second copy and no overlap with the reply. The round trip stays about the same length. `ss -tlnp` shows no new listener; the relay is still loopback port 8790 only.
