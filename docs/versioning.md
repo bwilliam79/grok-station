@@ -20,4 +20,8 @@ The installed copy is `/opt/grok-station/VERSION`, written by the installer from
 
 ## 0.2.0
 
-Minor feature: a cached "Asking <name>…" clip plays as soon as a handoff is known. See [handoff.md](handoff.md). A later merge may renumber this.
+Minor feature: a cached "Asking <name>…" clip plays as soon as a handoff is known. See [handoff.md](handoff.md).
+
+## 0.3.0
+
+Minor feature: named station timers (up to eight, countdown rings, an amber ringing screen). See [timers.md](timers.md).

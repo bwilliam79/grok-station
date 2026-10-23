@@ -4,8 +4,11 @@
 POST /show {"text": "...", "from": "Grok", "heard": "..."} with "Authorization: Bearer $GROK_STATION_TOKEN".
 Screens: idle (clock, date, weather), message/session, night clock, weather offline.
 A tool card (weather, time, unit conversion) sits in the session text column and holds 4 s after the
-session ends. Timers are a bottom strip of chips on the idle clock and in sessions; the strip rect
-repaints once a second, and the wake listener pushes the list only when it changes.
+session ends. On the idle screen, timers are up to four countdown rings (overflow as chips); a ringing
+timer takes the screen with an amber pulse. During a conversation they stay a bottom chip strip so the
+reply stays visible. The strip or the rings repaint locally; the wake listener pushes the list only
+when it changes. The countdown follows a monotonic anchor taken when the list arrives, so a wall-clock
+step does not jump the digits.
 Renders with pygame off-screen into a 16bpp surface written straight to /dev/fb0.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
@@ -1313,7 +1316,7 @@ def clean_timers(items):
     if not isinstance(items, list):
         return None
     out, seen = [], set()
-    for t in items[:10]:
+    for t in items[:8]:
         if not isinstance(t, dict):
             continue
         tid = str(t.get("id", ""))
@@ -1325,17 +1328,142 @@ def clean_timers(items):
         if not 1_000_000_000 <= float(ends) <= 20_000_000_000:
             continue
         label = " ".join(re.sub(r"[^\w '\-]", " ", str(t.get("label") or "")).split())[:24] or "timer"
-        out.append({"id": tid, "label": label, "ends_at_epoch": float(ends), "ringing": bool(t.get("ringing"))})
+        rec = {"id": tid, "label": label, "ends_at_epoch": float(ends), "ringing": bool(t.get("ringing"))}
+        dur = t.get("duration")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not math.isfinite(float(dur)):
+            dur = None
+        elif not 1 <= float(dur) <= 86400:
+            dur = None
+        if dur is not None:
+            rec["duration"] = float(dur)
+        out.append(rec)
         seen.add(tid)
     return out
 
 
 def fmt_remaining(sec):
-    """mm:ss, or h:mm:ss once an hour is left. Counts down; never negative."""
+    """mm:ss with a leading zero, or h:mm:ss once an hour is left. Counts down; never negative."""
     sec = max(0, int(sec))
     h, rem = divmod(sec, 3600)
     m, s = divmod(rem, 60)
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def fmt_timer_clock(sec):
+    """Ring digits: 7:42, not 07:42. Hours stay h:mm:ss. Never negative."""
+    sec = max(0, int(round(sec)))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def timer_title(label):
+    """Display name. Word characters only are already enforced; this only fixes caps."""
+    parts = []
+    for w in str(label or "timer").split():
+        parts.append(w[:1].upper() + w[1:] if w else w)
+    return " ".join(parts)[:24] or "Timer"
+
+
+TIMER_HINT = "Say \u201cstop\u201d to dismiss"
+RING_SLOTS = 4  # s05: up to four rings; the rest are chips. A ringing timer is the only ring (s06).
+
+
+def anchor_timer_chips(chips, wall=None, mono=None):
+    """Stamp each chip with the remaining time and a monotonic anchor.
+
+    Later ticks use the anchor, so a wall-clock step does not move the digits. `wall` and `mono`
+    are injectable for tests.
+    """
+    wall = time.time() if wall is None else wall
+    mono = time.monotonic() if mono is None else mono
+    for t in chips:
+        t["_left"] = float(t.get("ends_at_epoch", wall)) - wall
+        t["_mono"] = mono
+    return chips
+
+
+def chip_left(t, epoch=None):
+    """Seconds left. An explicit epoch or TIMER_EPOCH (render and tests) wins over the anchor."""
+    if epoch is not None or TIMER_EPOCH is not None:
+        base = epoch if epoch is not None else TIMER_EPOCH
+        return float(t.get("ends_at_epoch", 0)) - base
+    if isinstance(t.get("_left"), (int, float)) and isinstance(t.get("_mono"), (int, float)):
+        return t["_left"] - (time.monotonic() - t["_mono"])
+    return float(t.get("ends_at_epoch", 0)) - time.time()
+
+
+def _pinned_epoch(epoch):
+    """None means 'live': chip_left uses the monotonic anchor. A number is a frozen clock."""
+    if epoch is not None:
+        return epoch
+    return TIMER_EPOCH
+
+
+def _shown_ringing(t, left):
+    """The ringing flag, or the countdown has already reached zero.
+
+    The chime can wait until a conversation ends. The screen still shows the timer as done,
+    and "stop" can dismiss it.
+    """
+    return bool(t.get("ringing")) or left <= 0
+
+
+def any_timer_ringing():
+    """True when a chip is flagged ringing or its anchored countdown has reached zero."""
+    for t in TIMER_CHIPS:
+        if _shown_ringing(t, chip_left(t, None)):
+            return True
+    return False
+
+
+def timer_screen(timers, now=None):
+    """Display payload for the timers screen.
+
+    `now` is an epoch. None uses chip_left (monotonic anchor, or TIMER_EPOCH).
+    Running: up to RING_SLOTS rings, soonest first, overflow as chips.
+    Ringing: the first ringing timer is one amber ring; every other timer is a chip.
+    A countdown that has reached zero is ringing even before the chime post arrives.
+    """
+    def left_of(t):
+        if now is not None:
+            return float(t.get("ends_at_epoch", 0)) - now
+        return chip_left(t, None)
+
+    ordered = sorted(timers or [], key=lambda t: (not _shown_ringing(t, left_of(t)), float(t.get("ends_at_epoch", 0)), str(t.get("label", ""))))
+
+    def fraction(t, left, ringing):
+        if ringing:
+            return 1.0
+        dur = t.get("duration")
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+            return max(0.0, min(1.0, left / float(dur)))
+        return 1.0 if left > 0 else 0.0
+
+    def ring_row(t, left, ringing):
+        return {"id": t.get("id"), "label": t.get("label") or "timer", "title": timer_title(t.get("label")),
+                "remaining": 0 if ringing else max(0, int(round(left))),
+                "text": "0:00" if ringing else fmt_timer_clock(left),
+                "fraction": round(fraction(t, left, ringing), 4), "ringing": ringing,
+                "color": "amber" if ringing else "teal"}
+
+    def chip_row(t, left):
+        ringing = bool(t.get("ringing"))
+        return {"id": t.get("id"), "label": t.get("label") or "timer", "title": timer_title(t.get("label")),
+                "remaining": 0 if ringing else max(0, int(round(left))),
+                "text": "0:00" if ringing else fmt_timer_clock(left), "ringing": ringing}
+
+    if any(_shown_ringing(t, left_of(t)) for t in ordered):
+        hero = next(t for t in ordered if _shown_ringing(t, left_of(t)))
+        rest = [t for t in ordered if t is not hero]
+        return {"mode": "ringing", "rings": [ring_row(hero, 0, True)],
+                "chips": [chip_row(t, left_of(t)) for t in rest],
+                "headline": timer_title(hero.get("label")) + "\nis done", "hint": TIMER_HINT}
+    rings, chips = ordered[:RING_SLOTS], ordered[RING_SLOTS:]
+    return {"mode": "rings",
+            "rings": [ring_row(t, left_of(t), False) for t in rings],
+            "chips": [chip_row(t, left_of(t)) for t in chips],
+            "headline": None, "hint": None}
 
 
 def _epoch(epoch):
@@ -1373,15 +1501,15 @@ def draw_timer_chips(surf, rect, timers, epoch):
     pad_x = max(8, round(0.012 * se))
     gap = max(6, round(0.008 * se))
     inner = max(6, round(0.008 * se))
-    ordered = sorted(timers, key=lambda t: (not t.get("ringing"), t.get("ends_at_epoch", 0)))[:10]
+    ordered = sorted(timers, key=lambda t: (not _shown_ringing(t, chip_left(t, epoch)), t.get("ends_at_epoch", 0)))[:10]
     shown, extra = ordered[:4], max(0, len(ordered) - 4)
 
     def right_of(t):
-        if t.get("ringing"):
+        if _shown_ringing(t, chip_left(t, epoch)):
             return "Done"
-        return fmt_remaining(t.get("ends_at_epoch", epoch) - epoch)
+        return fmt_remaining(chip_left(t, epoch))
 
-    labels = [t.get("label") or "timer" for t in shown]
+    labels = [timer_title(t.get("label") or "timer") for t in shown]
     times = [right_of(t) for t in shown]
     plus = f"+{extra}" if extra else ""
 
@@ -1410,7 +1538,8 @@ def draw_timer_chips(surf, rect, timers, epoch):
         widths.append(plus_w)
     row = sum(widths) + gap * max(0, len(widths) - 1)
     x = rect.x + max(0, (rect.w - row) // 2)
-    phase = int(epoch) % 2 == 0
+    phase_at = time.time() if epoch is None else epoch
+    phase = int(phase_at) % 2 == 0
     prev = surf.get_clip()
     surf.set_clip(rect)
     amber_bg = hexc("33270F")
@@ -1418,14 +1547,14 @@ def draw_timer_chips(surf, rect, timers, epoch):
         w = widths[i]
         box = pygame.Rect(x, rect.y, w, rect.h)
         rad = min(box.w, box.h) // 2
-        if t.get("ringing"):
+        if _shown_ringing(t, chip_left(t, epoch)):
             bg = AMBER if phase else amber_bg
             fg = BG if phase else AMBER
             lc = BG if phase else SPEAKING
         else:
             bg, fg, lc = SURFACE2, TEXT, MUTED
         pygame.draw.rect(surf, bg, box, border_radius=rad)
-        if t.get("ringing"):
+        if _shown_ringing(t, chip_left(t, epoch)):
             pygame.draw.rect(surf, AMBER, box, max(2, round(0.002 * se)), border_radius=rad)
         li, ni = fl.render(lab, True, lc), fn.render(tim, True, fg)
         surf.blit(li, (x + pad_x, rect.y + (rect.h - li.get_height()) // 2))
@@ -1447,7 +1576,7 @@ def draw_timer_strip(surf, L, epoch=None):
         return None
     rect = timer_strip_rect(L)
     surf.fill(BG, rect)
-    draw_timer_chips(surf, rect, TIMER_CHIPS, _epoch(epoch))
+    draw_timer_chips(surf, rect, TIMER_CHIPS, _pinned_epoch(epoch))
     LAST_TIMER_RECT = rect
     return rect
 
@@ -1458,8 +1587,137 @@ def repaint_timer_strip(disp, epoch=None):
     if not rect or not TIMER_CHIPS:
         return
     disp.screen.fill(BG, rect)
-    draw_timer_chips(disp.screen, rect, TIMER_CHIPS, _epoch(epoch))
+    draw_timer_chips(disp.screen, rect, TIMER_CHIPS, _pinned_epoch(epoch))
     disp.flush_rect(rect)
+
+
+def _ring_pulse(epoch):
+    """0 at the whole second, 1 halfway through. One cycle per second, no red."""
+    src = time.time() if epoch is None else epoch
+    return 0.5 - 0.5 * math.cos(2 * math.pi * (src % 1.0))
+
+
+def _paint_countdown_ring(diameter, fraction, color, pulse):
+    """Teal or amber arc on a rule track, clockwise from the top. pulse 0..1 grows an amber glow."""
+    d = max(16, int(diameter))
+    pulse = 0.0 if pulse < 0 else (1.0 if pulse > 1 else pulse)
+    pad = max(4, int(d * (0.06 + 0.04 * pulse)))
+    canvas = d + 2 * pad
+    k = 2
+    surf = pygame.Surface((canvas * k, canvas * k), pygame.SRCALPHA)
+    cx = cy = surf.get_width() // 2
+    width = max(k * 3, int(d * 0.055) * k)
+    r = (d * k) // 2 - width
+    pygame.draw.circle(surf, RULE, (cx, cy), r, width)
+    frac = max(0.0, min(1.0, float(fraction)))
+    if frac >= 0.999:
+        pygame.draw.circle(surf, color, (cx, cy), r, width)
+    elif frac > 0:
+        steps = max(12, int(360 * frac))
+        start = -math.pi / 2
+        rad = max(1, int(width / 2))
+        for i in range(steps + 1):
+            a = start + 2 * math.pi * frac * (i / steps)
+            pygame.draw.circle(surf, color, (int(cx + r * math.cos(a)), int(cy + r * math.sin(a))), rad)
+    if pulse > 0.04:
+        glow = (*AMBER[:3], int(90 * pulse))
+        pygame.draw.circle(surf, glow, (cx, cy), int(r + width * (0.6 + pulse)), max(2, int(width * 0.45)))
+    out = pygame.transform.smoothscale(surf, (canvas, canvas))
+    return out, pad
+
+
+def _blit_ring_block(surf, ring, cx, cy, row):
+    """Center a countdown ring on (cx, cy). Returns the ring's rect."""
+    img, _pad = ring
+    rect = img.get_rect(center=(cx, cy))
+    surf.blit(img, rect.topleft)
+    time_px = max(14, int(rect.w * 0.20))
+    name_px = max(14, int(rect.w * 0.08))
+    color = AMBER if row.get("color") == "amber" else TEXT
+    name_color = AMBER if row.get("color") == "amber" else MUTED
+    tr = text_at(surf, "display", time_px, row["text"], color, rect.center, "center")
+    nf = font("display", name_px)
+    title = row["title"] if nf.size(row["title"])[0] <= rect.w else ellipsize(nf, row["title"], rect.w)
+    text_at(surf, "display", name_px, title, name_color, (rect.centerx, tr.bottom + max(4, rect.w // 40)), "midtop")
+    return rect
+
+
+def draw_timers(surf, L, now, epoch=None):
+    """Idle timers (s05) or one ringing timer (s06). No red: ringing is amber.
+
+    `now` is a struct_time for the corner clock. `epoch` pins the countdown in tests.
+    """
+    global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+    global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT, LAST_TIMER_RECT
+    LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
+    LAST_WEATHER_RECT = LAST_OFFLINE_RECT = LAST_DATE_RECT = LAST_CLOCK_RECT = None
+    surf.fill(BG)
+    pinned = _pinned_epoch(epoch)
+    payload = timer_screen(TIMER_CHIPS, pinned)
+    side, top, bot = safe_insets(L.w, L.h)
+    se = min(L.w, L.h)
+    # Same top-bar center line as the other station screens (mockup y = 34 + 72/2).
+    bar_y = L(34) + L(72) // 2
+    lab = text_at(surf, "body", max(14, L(40)), "Timers", MUTED, (side, bar_y), "midleft")
+    hhmm, ampm = clock_parts(now)
+    clk = text_at(surf, "display", max(14, L(52)), f"{hhmm} {ampm}", TEXT, (L.w - side, bar_y), "midright")
+    LAST_CLOCK_RECT = clk
+    icons = draw_status_icons(surf, L, right=clk.left - max(8, L(16)), cy=bar_y)
+    LAST_TOPBAR_RECT = lab.union(clk).union(icons)
+    chip_h = timer_strip_height(se) if payload["chips"] else 0
+    gap = max(8, L(24))
+    content_top = max(LAST_TOPBAR_RECT.bottom + gap, top)
+    content_bot = L.h - bot - (chip_h + gap if chip_h else 0)
+    avail_w = max(1, L.w - 2 * side)
+    avail_h = max(1, content_bot - content_top)
+    pulse = _ring_pulse(time.time() if pinned is None else pinned)
+    ring_rects = []
+    if payload["mode"] == "ringing" and payload["rings"]:
+        row = payload["rings"][0]
+        text_min = max(L(280), int(avail_w * 0.34))
+        d = min(L(640), avail_h, int(avail_w * 0.48))
+        d = max(48, d)
+        stack = d + gap + text_min > avail_w or avail_w < L(900)
+        if stack:
+            d = max(48, min(d, avail_w, int(avail_h * 0.55)))
+            cx, cy = L.w // 2, content_top + d // 2
+        else:
+            cx = side + d // 2
+            cy = content_top + avail_h // 2
+        ring_rects.append(_blit_ring_block(surf, _paint_countdown_ring(d, 1.0, AMBER, pulse), cx, cy, row))
+        if stack:
+            tx, ty, tw = side, ring_rects[0].bottom + gap, avail_w
+        else:
+            tx = ring_rects[0].right + gap
+            tw = max(1, L.w - side - tx)
+            ty = cy - L(160)
+        head = payload["headline"] or ""
+        f, lines, step = fit_text("display", head, tw, max(L(80), avail_h // 3), max(14, L(120)), 14, max_lines=2)
+        ty = draw_lines(surf, f, lines, step, AMBER, tx, max(content_top, ty), align="left", width=tw)
+        hint = font("body", max(14, L(40))).render(payload["hint"] or "", True, MUTED)
+        surf.blit(hint, (tx, ty + gap))
+    else:
+        n = len(payload["rings"])
+        if n:
+            gap_r = L(80) if n <= 2 else L(28)
+            d = min(L(620), avail_h, int((avail_w - gap_r * (n - 1)) / n))
+            d = max(48, d)
+            row_w = n * d + gap_r * (n - 1)
+            x = side + max(0, (avail_w - row_w) // 2) + d // 2
+            cy = content_top + avail_h // 2
+            for row in payload["rings"]:
+                color = AMBER if row["color"] == "amber" else LISTENING
+                ring_rects.append(_blit_ring_block(surf, _paint_countdown_ring(d, row["fraction"], color, 0.0), x, cy, row))
+                x += d + gap_r
+    if payload["chips"]:
+        wanted = {c["id"] for c in payload["chips"]}
+        chip_timers = [t for t in TIMER_CHIPS if t.get("id") in wanted]
+        rect = pygame.Rect(side, L.h - bot - chip_h, max(1, L.w - 2 * side), chip_h)
+        draw_timer_chips(surf, rect, chip_timers, pinned)
+        LAST_TIMER_RECT = rect
+    else:
+        LAST_TIMER_RECT = ring_rects[0].unionall(ring_rects[1:]) if len(ring_rects) > 1 else (ring_rects[0] if ring_rects else None)
+    return payload
 
 
 def card_icon(kind, px):
@@ -2180,19 +2438,25 @@ def draw_hotspot(surf, L, now, d):
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
-def screen_for(setup_doc, busy, msg, night):
+def screen_for(setup_doc, busy, msg, night, timers=False):
     """Which screen paint() shows. Setup (or hotspot) until setup is done; after that a conversation, the night
-    clock, or the idle clock with date and weather. Nothing else (no certificate or pairing screen) can take over."""
+    clock, the timer rings when any timer is up, or the idle clock with date and weather.
+    Nothing else (no certificate or pairing screen) can take over. Night hides timers."""
     if setup_doc:
         return "hotspot" if setup_doc.get("mode") == "hotspot" else "setup"
     if busy:
         return "thinking"
     if msg:
         return "session"
-    return "night" if night else "idle"
+    if night:
+        return "night"
+    if timers:
+        return "timers"
+    return "idle"
 
 
-SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot}
+SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot,
+           "timers": draw_timers}
 
 
 # ---------------------------------------------------------------- output
@@ -2305,7 +2569,7 @@ def main():
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
-        view = screen_for(sd, thinking(), msg, is_night(now))
+        view = screen_for(sd, thinking(), msg, is_night(now), bool(TIMER_CHIPS))
         if view == "thinking":
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -2315,6 +2579,9 @@ def main():
         elif view == "night":
             disp.show(draw_night, now, on, fade=fade, snapshot=snapshot)
             key = ("night", now.tm_min)
+        elif view == "timers":
+            disp.show(draw_timers, now, fade=fade, snapshot=snapshot)
+            key = ("timers", now.tm_min, len(TIMER_CHIPS))
         else:
             disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
             key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data))
@@ -2356,14 +2623,21 @@ def main():
         disp.flush_rect(LAST_COLON_RECT)
 
     def maybe_strip():
-        """Countdown tick: redraw the timer strip only, and not on the night clock."""
+        """Countdown tick. The timers screen repaints in full; a session only repaints the chip strip."""
         nonlocal strip_at
         if not TIMER_CHIPS or setup["doc"] or (last_key and last_key[0] == "night"):
             return
         now = time.time()
-        if now - strip_at < 0.9:
+        on_timers = last_key and last_key[0] == "timers"
+        gap = 0.12 if on_timers and any_timer_ringing() else 0.9
+        if now - strip_at < gap:
             return
         strip_at = now
+        if on_timers:
+            disp.screen.fill(BG)
+            draw_timers(disp.screen, disp.L, time.localtime())
+            disp.flush()
+            return
         if not LAST_TIMER_RECT:
             paint(snapshot=False)
         else:
@@ -2371,7 +2645,7 @@ def main():
 
     def apply_chips(ev):
         if getattr(ev, "has_timers", False) and ev.timers is not None:
-            TIMER_CHIPS[:] = [dict(t) for t in ev.timers]
+            TIMER_CHIPS[:] = anchor_timer_chips([dict(t) for t in ev.timers])
             return True
         return False
 
@@ -2405,10 +2679,14 @@ def main():
         if setup["doc"]:
             wait = min(wait, 2.0)
         if TIMER_CHIPS and not setup["doc"] and not (last_key and last_key[0] == "night"):
-            delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss and the ringing pulse step together
-            if delay < 0.05:
-                delay += 1.0
-            wait = min(wait, delay)
+            on_timers = last_key and last_key[0] == "timers"
+            if on_timers and any_timer_ringing():
+                wait = min(wait, 0.12)  # amber pulse is 1 Hz; a few frames show the swell
+            else:
+                delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss steps together
+                if delay < 0.05:
+                    delay += 1.0
+                wait = min(wait, delay)
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW):
             continue  # nothing else is shown until setup is done
@@ -2484,7 +2762,7 @@ def main():
 
 def demo(out, size):
     """Render every screen to PNG with fixed sample data (no framebuffer, no network)."""
-    global WX_CACHE
+    global WX_CACHE, TIMER_EPOCH
     pygame.display.init()
     pygame.font.init()
     os.makedirs(out, exist_ok=True)
@@ -2539,6 +2817,24 @@ def demo(out, size):
         painter(disp.screen, disp.L, *args)
         pygame.image.save(disp.full, os.path.join(out, f"{name}.png"))
         print(os.path.join(out, f"{name}.png"))
+    epoch = 1_700_000_000.0
+    TIMER_EPOCH = epoch
+    TIMER_CHIPS[:] = [
+        {"id": "aaaa01", "label": "pasta", "ends_at_epoch": epoch + 462, "duration": 600, "ringing": False},
+        {"id": "aaaa02", "label": "oven", "ends_at_epoch": epoch + 810, "duration": 1800, "ringing": False},
+    ]
+    disp.screen.fill(BG)
+    draw_timers(disp.screen, disp.L, now, epoch)
+    pygame.image.save(disp.full, os.path.join(out, "timers.png"))
+    print(os.path.join(out, "timers.png"))
+    TIMER_CHIPS[0]["ringing"] = True
+    TIMER_CHIPS[0]["ends_at_epoch"] = epoch - 1
+    disp.screen.fill(BG)
+    draw_timers(disp.screen, disp.L, now, epoch)
+    pygame.image.save(disp.full, os.path.join(out, "timer-ringing.png"))
+    print(os.path.join(out, "timer-ringing.png"))
+    TIMER_CHIPS[:] = []
+    TIMER_EPOCH = None
 
 
 if __name__ == "__main__":

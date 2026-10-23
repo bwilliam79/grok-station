@@ -33,17 +33,24 @@ def run_session(msgs, persona="kai"):
     return posted
 
 
+def _relay_base(url):
+    """Drop the t1 and timers query params the wake client always appends."""
+    url = re.sub(r"[?&](?:t1|timers)=[^&]*", "", url)
+    return url.rstrip("?&").replace("?&", "?")
+
+
 class TestWake(unittest.TestCase):
     def test_persona_event_keeps_listening(self):
         p = run_session([{"type": "ready"}, {"type": "persona", "slug": "kai", "name": "Kai"}, {"type": "timeout"}])
-        self.assertEqual(re.sub(r"[?&]t1=[^&]*$", "", p[0][1]), "ws://relay.test/ws?persona=kai")
+        self.assertEqual(_relay_base(p[0][1]), "ws://relay.test/ws?persona=kai")
+        self.assertIn("timers=", p[0][1])
         self.assertIn(("listening", "Kai"), p)
         self.assertNotIn("thinking", [x[0] for x in p])
 
     def test_persona_event_while_responding_is_thinking(self):
         p = run_session([{"type": "response_started"}, {"type": "persona", "slug": "rhea", "name": "Rhea"}, {"type": "done"}],
                         persona="grok")
-        self.assertEqual(re.sub(r"[?&]t1=[^&]*$", "", p[0][1]), "ws://relay.test/ws")
+        self.assertEqual(_relay_base(p[0][1]), "ws://relay.test/ws")
         self.assertIn(("thinking", "Rhea"), p)
 
     def test_up24(self):
@@ -408,6 +415,7 @@ class ToolCardForward(unittest.TestCase):
                 gw.timers_tick()
                 with gw.TIMERS_LOCK:
                     gw.TIMERS["ee33ff"]["ring_until"] = gw.time.time() - 1
+                    gw.TIMERS["ee33ff"]["ring_mono"] = gw.time.monotonic() - 1
                 gw.timers_tick()
         finally:
             gw.subprocess.run, gw.time.sleep = old_run, old_sleep

@@ -6,8 +6,10 @@ On a wake it plays the listen tone, shows "listening", and opens one session to 
 127.0.0.1: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
 `aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
 A tool card (`{"type":"card",...}`) is forwarded on that same POST. Timers post their full list
-(`{"timers":[{id,label,ends_at_epoch,ringing}]}`) when the set changes — set, cancel, ring, clear —
-and the display counts down locally. Logs name the event type only, never a temperature, label or duration.
+(`{"timers":[{id,label,ends_at_epoch,ringing,duration?}]}`) when the set changes — set, cancel, ring, clear —
+and the display counts down locally. While this process is up the deadline is monotonic, so a wall-clock
+step does not fire a timer early; the file stores a wall deadline so a restart still knows when it ends.
+Logs name the event type only, never a temperature, label or duration.
 The wake detector is paused during a session so the reply can't re-trigger it.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
 `grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
@@ -149,6 +151,7 @@ LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None, "capture": None
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
 RING_HOLD = 60.0  # ringing chip stays up this long after the chimes and the spoken notice
+MAX_STATION_TIMERS = 8
 # T1 voice notes (relay t1.py): physical taps on the station (touchscreen or the speakerphone's call button) for
 # "recent tap" and tap-to-confirm. A stale guest-mode flag in t1.json is honored for this one read, then removed.
 # Taps are read here from evdev (grok is in input).
@@ -229,21 +232,97 @@ def tap_loop():
                     on_tap(code)
 
 
+def _timer_left(v):
+    """Seconds left. A mono_due (set while this process is up) ignores wall-clock steps."""
+    mono = v.get("mono_due")
+    if isinstance(mono, (int, float)) and not isinstance(mono, bool):
+        return mono - time.monotonic()
+    due = v.get("due")
+    if isinstance(due, (int, float)) and not isinstance(due, bool):
+        return due - time.time()
+    return 0.0
+
+
+def _hold_done(v, now):
+    mono = v.get("ring_mono")
+    if isinstance(mono, (int, float)) and not isinstance(mono, bool):
+        return time.monotonic() >= mono
+    until = v.get("ring_until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool):
+        return now >= until
+    return False
+
+
+def _persist_timer(v):
+    """File record. due and ring_until are wall times matching the monotonic remaining, so a restart agrees."""
+    due = v.get("due")
+    if isinstance(v.get("mono_due"), (int, float)) and not isinstance(v.get("mono_due"), bool):
+        due = time.time() + (v["mono_due"] - time.monotonic())
+    out = {"label": v.get("label") or "timer", "due": due}
+    dur = v.get("duration")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+        out["duration"] = dur
+    if v.get("ringing"):
+        out["ringing"] = True
+        if isinstance(v.get("ring_mono"), (int, float)) and not isinstance(v.get("ring_mono"), bool):
+            out["ring_until"] = time.time() + (v["ring_mono"] - time.monotonic())
+        elif isinstance(v.get("ring_until"), (int, float)) and not isinstance(v.get("ring_until"), bool):
+            out["ring_until"] = v["ring_until"]
+    return out
+
+
+def _anchor_timer(v, now_w, now_m):
+    """Re-base a loaded record onto this process's monotonic clock."""
+    due = float(v["due"])
+    rec = {"label": _clean_timer_label(v.get("label")), "due": due, "mono_due": now_m + (due - now_w)}
+    dur = v.get("duration")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+        rec["duration"] = float(dur)
+    if v.get("ringing"):
+        rec["ringing"] = True
+        until = v.get("ring_until")
+        if isinstance(until, (int, float)) and not isinstance(until, bool):
+            rec["ring_until"] = float(until)
+            rec["ring_mono"] = now_m + (float(until) - now_w)
+    return rec
+
+
 def timers_load():
     try:
-        d = json.load(open(TIMERS_FILE))
-        with TIMERS_LOCK:
-            TIMERS.update({k: v for k, v in d.items() if re.fullmatch(r"[a-z0-9]{4,12}", k) and isinstance(v, dict)
-                           and isinstance(v.get("due"), (int, float))})
-    except (OSError, ValueError, AttributeError):
-        pass
+        with open(TIMERS_FILE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(d, dict):
+        return
+    now_w, now_m = time.time(), time.monotonic()
+    keep = {}
+    for k, v in d.items():
+        if not re.fullmatch(r"[a-z0-9]{4,12}", str(k)) or not isinstance(v, dict):
+            continue
+        due = v.get("due")
+        if isinstance(due, bool) or not isinstance(due, (int, float)):
+            continue
+        keep[str(k)] = _anchor_timer(v, now_w, now_m)
+        if len(keep) >= MAX_STATION_TIMERS:
+            break
+    with TIMERS_LOCK:
+        TIMERS.clear()
+        TIMERS.update(keep)
 
 
 def timers_save():
     try:
+        snap = {}
+        for k, v in TIMERS.items():
+            if re.fullmatch(r"[a-z0-9]{4,12}", str(k)) and isinstance(v, dict) and isinstance(v.get("due"), (int, float)) and not isinstance(v.get("due"), bool):
+                snap[str(k)] = _persist_timer(v)
+        parent = os.path.dirname(TIMERS_FILE)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         tmp = TIMERS_FILE + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(TIMERS, f)
+            json.dump(snap, f)
         os.replace(tmp, TIMERS_FILE)
     except OSError as e:
         print(f"timers save failed: {type(e).__name__}", flush=True)
@@ -254,10 +333,23 @@ def _clean_timer_label(s):
 
 
 def timer_rows():
-    """Full timer list for the display. Ringing chips sort first, then soonest deadline."""
+    """Full timer list for the display. Ringing chips sort first, then soonest deadline.
+
+    ends_at_epoch is wall-now plus the monotonic remaining, so the display's first tick matches
+    this process even if the wall clock stepped after the timer was set.
+    """
     with TIMERS_LOCK:
-        rows = [{"id": k, "label": v.get("label") or "timer", "ends_at_epoch": float(v["due"]),
-                 "ringing": bool(v.get("ringing"))} for k, v in TIMERS.items() if isinstance(v.get("due"), (int, float))]
+        rows = []
+        wall = time.time()
+        for k, v in TIMERS.items():
+            if not isinstance(v, dict) or isinstance(v.get("due"), bool) or not isinstance(v.get("due"), (int, float)):
+                continue
+            row = {"id": k, "label": v.get("label") or "timer", "ends_at_epoch": wall + _timer_left(v),
+                   "ringing": bool(v.get("ringing"))}
+            dur = v.get("duration")
+            if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+                row["duration"] = float(dur)
+            rows.append(row)
     rows.sort(key=lambda r: (not r["ringing"], r["ends_at_epoch"]))
     return rows
 
@@ -276,8 +368,19 @@ def timer_event(ev):
     with TIMERS_LOCK:
         if ev.get("type") == "timer_set":
             sec = ev.get("seconds")
-            if isinstance(sec, int) and 1 <= sec <= 86400 and len(TIMERS) < 10:
-                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": time.time() + sec}
+            # Same id replaces (extend, or a restored timer). A new id stops at the cap.
+            # seconds 0 is a restored ringing timer: show it, do not start a countdown or chime again.
+            room = tid in TIMERS or len(TIMERS) < MAX_STATION_TIMERS
+            if isinstance(sec, int) and not isinstance(sec, bool) and room and sec == 0:
+                now_w, now_m = time.time(), time.monotonic()
+                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": now_w, "mono_due": now_m,
+                               "duration": 1, "ringing": True, "ring_until": now_w + RING_HOLD,
+                               "ring_mono": now_m + RING_HOLD}
+                changed = True
+                print("timer ringing", flush=True)
+            elif isinstance(sec, int) and not isinstance(sec, bool) and room and 1 <= sec <= 86400:
+                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": time.time() + sec,
+                               "mono_due": time.monotonic() + sec, "duration": sec}
                 changed = True
                 print("timer set", flush=True)
         elif TIMERS.pop(tid, None):
@@ -290,10 +393,28 @@ def timer_event(ev):
 
 
 def timers_query():
+    """Quoted JSON for the relay. Ringing timers are included so 'stop' can dismiss them."""
     with TIMERS_LOCK:
-        now = time.time()
-        items = [{"id": k, "label": v["label"], "left": int(v["due"] - now)}
-                 for k, v in TIMERS.items() if v["due"] > now and not v.get("ringing")]
+        items = []
+        for k, v in TIMERS.items():
+            if not isinstance(v, dict):
+                continue
+            left = _timer_left(v)
+            ringing = bool(v.get("ringing"))
+            if not ringing and left <= 0:
+                if left < -3600:  # the station drops a timer this late without chiming
+                    continue
+                # Still stored, chime not started (a conversation may be using the speaker).
+                # Report it ringing so the next session can dismiss it instead of forgetting it.
+                ringing = True
+                left = 0
+            item = {"id": k, "label": v.get("label") or "timer", "left": int(round(left))}
+            if ringing:
+                item["ringing"] = True
+            dur = v.get("duration")
+            if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+                item["duration"] = int(round(dur))
+            items.append(item)
     return urllib.parse.quote(json.dumps(items, separators=(",", ":"))) if items else ""
 
 
@@ -304,10 +425,11 @@ def _expire_rings(now):
         for k, v in list(TIMERS.items()):
             if not v.get("ringing"):
                 continue
-            if not v.get("ring_until"):
+            if not v.get("ring_until") and not v.get("ring_mono"):
                 v["ring_until"] = now + RING_HOLD
+                v["ring_mono"] = time.monotonic() + RING_HOLD
                 dirty = True
-            elif now >= v["ring_until"]:
+            elif _hold_done(v, now):
                 TIMERS.pop(k, None)
                 removed = dirty = True
         if dirty:
@@ -402,7 +524,9 @@ def on_comms_fail(dev):
 
 
 def _notice_and_chime(label):
-    post_state("speaking", who="grok", text=("Your timer is done." if label == "timer" else f"Your {label} timer is done."), done=True)
+    name = label or "timer"
+    text = "Your timer is done." if str(name).strip().lower() == "timer" else f"Your {name} timer is done."
+    post_state("speaking", who="grok", text=text, done=True)
     dev = LIVE.get("play")
     wav = configured_wav("ALARM_SOUND")
     for _ in range(3):
@@ -413,7 +537,7 @@ def _notice_and_chime(label):
 
 def _ring_one(k, v):
     """Mark the chip ringing, chime, then keep it up for RING_HOLD. Late by over an hour: drop quietly."""
-    late = time.time() - v["due"]
+    late = -_timer_left(v)
     with TIMERS_LOCK:
         cur = TIMERS.get(k)
         if not cur or cur.get("ringing"):
@@ -439,6 +563,7 @@ def _ring_one(k, v):
             cur = TIMERS.get(k)
             if cur and cur.get("ringing"):
                 cur["ring_until"] = time.time() + RING_HOLD
+                cur["ring_mono"] = time.monotonic() + RING_HOLD
                 timers_save()
 
 
@@ -446,7 +571,7 @@ def timers_tick():
     """One pass: clear finished rings, start due ones when the speaker is free."""
     _expire_rings(time.time())
     with TIMERS_LOCK:
-        due = [(k, dict(v)) for k, v in TIMERS.items() if not v.get("ringing") and v["due"] <= time.time()]
+        due = [(k, dict(v)) for k, v in TIMERS.items() if not v.get("ringing") and _timer_left(v) <= 0]
     if not due or LIVE["session"] or not LIVE["play"]:
         return
     for k, v in due:
@@ -1276,8 +1401,8 @@ class Session:
                 try:
                     q = [f"persona={self.persona}"] if self.persona != "grok" else []
                     tq = timers_query()
-                    if tq:
-                        q.append("timers=" + tq)
+                    # Always present, even when empty, so the relay can tell "none" from "not sent".
+                    q.append("timers=" + (tq if tq else urllib.parse.quote("[]")))
                     q.append("t1=" + t1_query())
                     url = RELAY_URL + ("?" + "&".join(q) if q else "")
                     ws = connect(url, additional_headers={"Authorization": f"Bearer {relay_token()}"},

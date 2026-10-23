@@ -3,13 +3,14 @@ Nothing here sends, posts, buys, books or changes anything outside the station, 
   get_time       local date/time (TZ_NAME), or the time in another IANA zone
   get_weather    Open-Meteo (no key) for the configured location WEATHER_LAT/WEATHER_LON (WEATHER_PLACE names it)
   convert_units  length, weight, volume (incl. cooking), temperature, speed, area
-  set_timer / list_timers / cancel_timer   the station rings; the relay only passes the request along
+  set_timer / list_timers / cancel_timer / extend_timer
+      the station rings; the relay keeps a copy so a relay restart can restore them
 
 run() returns (tool output, message for the Pi). A successful time, weather or unit lookup also sends a small
 display card ({"type":"card",...}); timers still send timer_set / timer_cancel. A failed tool sends nothing.
 The weather card has no place name and no coordinates — those stay in the tool output for the spoken answer only.
 """
-import datetime, json, os, re, secrets, sys, urllib.parse
+import datetime, json, os, re, secrets, sys, time, urllib.parse
 from zoneinfo import ZoneInfo, available_timezones
 
 E = os.environ.get
@@ -53,7 +54,7 @@ def location():
     if not (re.fullmatch(r"-?\d{1,2}(\.\d+)?", lat or "") and re.fullmatch(r"-?\d{1,3}(\.\d+)?", lon or "")):
         lat = lon = ""
     return lat, lon, units if units in ("fahrenheit", "celsius") else "fahrenheit"
-MAX_TIMERS, MAX_TIMER_S = 10, 24 * 3600
+MAX_TIMERS, MAX_TIMER_S = 8, 24 * 3600
 
 WMO = {0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "cloudy", 45: "foggy", 48: "foggy", 51: "light drizzle",
        53: "drizzle", 55: "heavy drizzle", 56: "freezing drizzle", 57: "freezing drizzle", 61: "light rain", 63: "rain",
@@ -90,10 +91,18 @@ SPECS = [
         ("value", "from_unit", "to_unit")),
     _fn("set_timer", "Start a timer on the station; it rings when done, even after this conversation ends.",
         {"seconds": {"type": "integer", "description": "Length in seconds (1 to 86400)."},
-         "label": {"type": "string", "description": "Short name, e.g. pasta. Optional."}}, ("seconds",)),
-    _fn("list_timers", "List the station's running timers and the time left on each."),
-    _fn("cancel_timer", "Cancel a running timer by its label, or the only one running.",
-        {"label": {"type": "string", "description": "Which timer. Omit when only one is running."}}),
+         "label": {"type": "string", "description": "Optional short name, e.g. pasta. 'pasta timer' is stored as pasta."}},
+        ("seconds",)),
+    _fn("list_timers", "List running and ringing timers. Index 1 is the one ringing, or the one finishing soonest."),
+    _fn("cancel_timer", "Cancel a running timer or dismiss one that is ringing. Match by name "
+        "(pasta, the pasta timer) or by index (1, second). With no name, stop dismisses the ringing timer, or the only one.",
+        {"label": {"type": "string", "description": "Name, index, or stop. Omit to dismiss the ringing timer or the only one."},
+         "index": {"type": "integer", "description": "1-based index from list_timers. Optional."}}),
+    _fn("extend_timer", "Add time to a timer by name or index. A ringing timer starts running again.",
+        {"seconds": {"type": "integer", "description": "Seconds to add (1 to 86400)."},
+         "label": {"type": "string", "description": "Name or index. Omit when only one timer exists."},
+         "index": {"type": "integer", "description": "1-based index from list_timers. Optional."}},
+        ("seconds",)),
 ]
 NAMES = {s["name"] for s in SPECS}
 
@@ -333,17 +342,65 @@ def convert_result(args):
     return out, card
 
 
-# ---------------------------------------------------------------- timers (state lives on the station)
+# ---------------------------------------------------------------- timers
+# The station rings and shows them. The relay keeps the same book in a state file so a relay
+# restart still knows the names, and a session whose station sent no list can hand them back.
+# `now` is the caller's clock. Production passes MonoClock.now() so a wall-clock step does not
+# shrink or stretch a running timer; across a process restart the file uses wall time, because
+# the monotonic clock resets.
+_ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8}
+# A bare "stop" (no following word) is the dismiss command, not a timer name.
+_LEADING_REF = re.compile(r"^(?:please\s+)?(?:stop|dismiss|cancel|clear|end|silence)(?:\s+|$)")
+_ARTICLE = re.compile(r"^(?:the|a|an|my)\s+")
+_ID_RE = re.compile(r"[a-z0-9]{4,12}")
+
+
+def timer_state_path():
+    """Relay timer book. GROK_TIMER_STATE wins; otherwise under GROK_STATE_DIR."""
+    return E("GROK_TIMER_STATE", os.path.join(E("GROK_STATE_DIR", "/var/lib/grok-station"), "state", "timers.json"))
+
+
+class MonoClock:
+    """Wall-shaped clock that advances with time.monotonic(), not time.time().
+
+    A NTP step moves time.time() and leaves this clock alone. Construct with callables in tests.
+    """
+
+    def __init__(self, wall=None, mono=None):
+        self._wall = time.time if wall is None else wall
+        self._mono = time.monotonic if mono is None else mono
+        self._m0 = self._mono()
+        self._w0 = self._wall()
+
+    def now(self):
+        return self._w0 + (self._mono() - self._m0)
+
+
 def parse_timers(raw, now):
-    """Pi query ?timers=<json [{id,label,left}]> -> {id: {label, due}}; anything malformed is dropped."""
+    """Pi query ?timers=<json [{id,label,left,ringing?,duration?}]> -> {id: record}.
+
+    Malformed entries are dropped. A ringing timer is kept even when left is 0.
+    """
     out = {}
     try:
         items = json.loads(raw or "[]")
     except ValueError:
         return out
     for t in items[:MAX_TIMERS] if isinstance(items, list) else []:
-        if isinstance(t, dict) and re.fullmatch(r"[a-z0-9]{4,12}", str(t.get("id", ""))) and isinstance(t.get("left"), (int, float)):
-            out[t["id"]] = {"label": clean_label(t.get("label")), "due": now + max(0, min(MAX_TIMER_S, t["left"]))}
+        if not isinstance(t, dict) or not _ID_RE.fullmatch(str(t.get("id", ""))):
+            continue
+        left = t.get("left")
+        if isinstance(left, bool) or not isinstance(left, (int, float)):
+            continue
+        left = max(-MAX_TIMER_S, min(MAX_TIMER_S, float(left)))
+        ringing = bool(t.get("ringing"))
+        if left <= 0 and not ringing:
+            continue
+        dur = t.get("duration")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
+            dur = max(left, 1.0)
+        out[t["id"]] = {"label": clean_label(t.get("label")), "due": now + max(0.0, left),
+                        "duration": float(dur), "ringing": ringing}
     return out
 
 
@@ -353,49 +410,367 @@ def clean_label(s):
 
 
 def say_left(sec):
-    sec = int(round(sec))
+    sec = max(0, int(round(sec)))
     h, m, s = sec // 3600, sec % 3600 // 60, sec % 60
     parts = [f"{h} hour{'s' * (h != 1)}"] * bool(h) + [f"{m} minute{'s' * (m != 1)}"] * bool(m) + [f"{s} second{'s' * (s != 1)}"] * bool(s and not h)
     return ", ".join(parts) or "0 seconds"
 
 
+def _default_name(timers):
+    """First unnamed timer is Timer; the next are Timer 2, Timer 3, ..."""
+    used = {str(t.get("label", "")).lower() for t in timers.values() if isinstance(t, dict)}
+    if "timer" not in used:
+        return "Timer"
+    n = 2
+    while f"timer {n}" in used and n < 100:
+        n += 1
+    return f"Timer {n}"
+
+
+def _stored_label(raw, timers):
+    """Blank or plain 'timer' gets a unique default. 'pasta timer' is stored as pasta."""
+    if raw is None or not str(raw).strip():
+        return _default_name(timers)
+    label = clean_label(raw)
+    stripped = re.sub(r"\s+timer$", "", label, flags=re.I).strip()
+    if not stripped or stripped.lower() == "timer":
+        return _default_name(timers)
+    return stripped[:24]
+
+
+def _seconds(args, key="seconds"):
+    v = args.get(key) if isinstance(args, dict) else None
+    if isinstance(v, bool):
+        return None
+    try:
+        sec = int(v)
+    except (TypeError, ValueError):
+        return None
+    return sec
+
+
+def _index_arg(args):
+    if not isinstance(args, dict) or "index" not in args or args.get("index") in (None, ""):
+        return None
+    v = args.get("index")
+    if isinstance(v, bool):
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _core_phrase(text):
+    """Lowercased ref with leading stop/dismiss/the stripped. '#' is dropped so '#2' is '2'."""
+    raw = " ".join(re.sub(r"[^\w '\-#]", " ", str(text or "")).split()).lower().replace("#", "")
+    while True:
+        nxt = _ARTICLE.sub("", _LEADING_REF.sub("", raw)).strip()
+        if nxt == raw:
+            return raw
+        raw = nxt
+
+
+def parse_timer_ref(text):
+    """('any', None), ('index', n), or ('name', core).
+
+    'stop' and 'stop the timer' are any. '2', 'timer 2', 'second' and 'the second one' are indexes.
+    'stop the pasta timer' is the name pasta. Matching prefers an exact label over an index.
+    """
+    raw = _core_phrase(text)
+    if raw in ("", "it", "that", "this", "timer", "alarm", "one"):
+        return ("any", None)
+    if raw in _ORDINALS:
+        return ("index", _ORDINALS[raw])
+    m = re.fullmatch(r"(first|second|third|fourth|fifth|sixth|seventh|eighth)\s+(?:one|timer)", raw)
+    if m:
+        return ("index", _ORDINALS[m.group(1)])
+    m = re.fullmatch(r"(?:timer|number)?\s*(\d+)", raw)
+    if m:
+        return ("index", int(m.group(1)))
+    name = re.sub(r"\s+timer$", "", raw).strip()
+    name = _ARTICLE.sub("", name).strip()
+    if not name or name == "timer":
+        return ("any", None)
+    return ("name", name)
+
+
+def _names_match(label, name):
+    a = str(label or "").lower().strip()
+    b = str(name or "").lower().strip()
+    if not a or not b:
+        return False
+    a2 = re.sub(r"\s+timer$", "", a).strip()
+    b2 = re.sub(r"\s+timer$", "", b).strip()
+    return a == b or a2 == b or a == b2 or bool(a2) and a2 == b2
+
+
+def note_due(timers, now):
+    """Mark a timer ringing once its deadline has passed, so stop and list still find it.
+
+    The station may be mid-conversation and not have chimed yet. More than an hour late matches
+    the station's quiet drop. Returns (dropped ids, whether any record changed).
+    """
+    dropped, changed = [], False
+    for k, t in list(timers.items()):
+        if not isinstance(t, dict):
+            continue
+        due = t.get("due")
+        if isinstance(due, bool) or not isinstance(due, (int, float)):
+            continue
+        late = float(now) - float(due)
+        if late < 0:
+            continue
+        if late > 3600:
+            timers.pop(k, None)
+            dropped.append(str(k))
+            changed = True
+            continue
+        if not t.get("ringing"):
+            t["ringing"] = True
+            changed = True
+    return dropped, changed
+
+
+def live_rows(timers, now):
+    """Ringing first, then soonest deadline. note_due runs first, so a just-finished timer stays listed."""
+    note_due(timers, now)
+    rows = []
+    for k, t in timers.items():
+        if not isinstance(t, dict) or isinstance(t.get("due"), bool) or not isinstance(t.get("due"), (int, float)):
+            continue
+        left = t["due"] - now
+        ringing = bool(t.get("ringing"))
+        if left <= 0 and not ringing:
+            continue
+        rows.append((0 if ringing else 1, t["due"], str(t.get("label", "")).lower(), str(k)))
+    rows.sort()
+    return [(k, timers[k]) for *_, k in rows]
+
+
+def _exact_ids(rows, text):
+    return [k for k, t in rows if _names_match(t.get("label", ""), text)]
+
+
+def resolve_timer(args, timers, now):
+    """([ids], error or None). One id is a hit. Several ids means the caller should ask which."""
+    rows = live_rows(timers, now)
+    if not rows:
+        return [], "No timer is running."
+    idx = _index_arg(args)
+    if idx is not None:
+        if 1 <= idx <= len(rows):
+            return [rows[idx - 1][0]], None
+        return [], "No timer like that is running."
+    kind, val = parse_timer_ref(args.get("label") if isinstance(args, dict) else None)
+    if kind == "any":
+        ringing = [k for k, t in rows if t.get("ringing")]
+        if ringing:
+            return [ringing[0]], None
+        if len(rows) == 1:
+            return [rows[0][0]], None
+        return [k for k, _t in rows], "Several are running; ask which one."
+    if kind == "index":
+        named = _exact_ids(rows, _core_phrase(args.get("label")))
+        if named:
+            return named, None
+        if 1 <= val <= len(rows):
+            return [rows[val - 1][0]], None
+        return [], "No timer like that is running."
+    hits = _exact_ids(rows, val)
+    if not hits:
+        hits = [k for k, t in rows if val in str(t.get("label", "")).lower()]
+    return hits, None
+
+
+def _one_hit(hits, timers, err):
+    labels = [timers[k].get("label", "timer") for k in hits if k in timers]
+    if len(hits) > 1:
+        return None, {"ok": False, "error": err or "Several are running; ask which one.", "labels": labels}, None
+    if err and not hits:
+        return None, {"ok": False, "error": err}, None
+    if not hits:
+        return None, {"ok": False, "error": "No timer like that is running."}, None
+    return hits[0], None, None
+
+
 def set_timer(args, timers, now):
     """Returns (tool output, message for the Pi or None)."""
-    try:
-        sec = int(args.get("seconds"))
-    except (TypeError, ValueError):
+    if not isinstance(args, dict):
+        args = {}
+    sec = _seconds(args)
+    if sec is None:
         return {"ok": False, "error": "How long should the timer be?"}, None
     if not 1 <= sec <= MAX_TIMER_S:
         return {"ok": False, "error": "Timers can be 1 second to 24 hours."}, None
+    note_due(timers, now)
     if len(timers) >= MAX_TIMERS:
-        return {"ok": False, "error": "Ten timers are already running."}, None
-    label = clean_label(args.get("label"))
+        return {"ok": False, "error": "Eight timers are already running."}, None
+    label = _stored_label(args.get("label") if isinstance(args, dict) else None, timers)
     tid = secrets.token_hex(3)
-    timers[tid] = {"label": label, "due": now + sec}
+    timers[tid] = {"label": label, "due": now + sec, "duration": sec, "ringing": False}
     return {"ok": True, "label": label, "length": say_left(sec)}, {"type": "timer_set", "id": tid, "seconds": sec, "label": label}
 
 
 def list_timers(timers, now):
-    live = sorted(((t["due"] - now, t["label"]) for t in timers.values() if t["due"] > now))
-    return {"ok": True, "timers": [{"label": l, "left": say_left(s)} for s, l in live]}
+    rows = live_rows(timers, now)
+    out = []
+    for i, (k, t) in enumerate(rows, 1):
+        left = t["due"] - now
+        ringing = bool(t.get("ringing"))
+        out.append({"index": i, "label": t.get("label") or "timer",
+                    "left": "ringing" if ringing else say_left(left), "ringing": ringing})
+    return {"ok": True, "timers": out}
 
 
 def cancel_timer(args, timers, now):
-    live = {k: t for k, t in timers.items() if t["due"] > now}
-    want = clean_label(args.get("label")) if args.get("label") else None
-    hits = [k for k, t in live.items() if want is None or t["label"].lower() == want.lower()]
-    if not hits:
-        return {"ok": False, "error": "No timer like that is running."}, None
-    if len(hits) > 1:
-        return {"ok": False, "error": "Several are running; ask which one.", "labels": [live[k]["label"] for k in hits]}, None
-    t = timers.pop(hits[0])
-    return {"ok": True, "cancelled": t["label"]}, {"type": "timer_cancel", "id": hits[0]}
+    hits, err = resolve_timer(args if isinstance(args, dict) else {}, timers, now)
+    tid, bad, _ = _one_hit(hits, timers, err)
+    if bad:
+        return bad, None
+    t = timers.pop(tid)
+    return {"ok": True, "cancelled": t.get("label") or "timer"}, {"type": "timer_cancel", "id": tid}
+
+
+def extend_timer(args, timers, now):
+    """Add seconds. The station message is timer_set for the new remaining length, same id."""
+    sec = _seconds(args)
+    if sec is None or not 1 <= sec <= MAX_TIMER_S:
+        return {"ok": False, "error": "How much time should I add?"}, None
+    hits, err = resolve_timer(args if isinstance(args, dict) else {}, timers, now)
+    tid, bad, _ = _one_hit(hits, timers, err)
+    if bad:
+        return bad, None
+    t = timers[tid]
+    left = max(0.0, t["due"] - now)
+    new_left = left + sec
+    if new_left > MAX_TIMER_S:
+        return {"ok": False, "error": "Timers can be 1 second to 24 hours."}, None
+    whole = max(1, int(round(new_left)))
+    t["due"] = now + whole
+    t["duration"] = whole
+    t["ringing"] = False
+    return ({"ok": True, "label": t.get("label") or "timer", "added": say_left(sec), "left": say_left(whole)},
+            {"type": "timer_set", "id": tid, "seconds": whole, "label": t.get("label") or "timer"})
+
+
+def save_timer_state(path, timers, now, wall_now=None):
+    """Write the book. Remaining time is `due - now` (the caller's clock) stamped with wall_now.
+
+    An empty book does not create a file that was not already there. Returns False on OSError.
+    """
+    wall_now = time.time() if wall_now is None else wall_now
+    doc_timers = {}
+    for tid, t in timers.items():
+        if not _ID_RE.fullmatch(str(tid)) or not isinstance(t, dict):
+            continue
+        due = t.get("due")
+        if isinstance(due, bool) or not isinstance(due, (int, float)):
+            continue
+        remain = float(due) - float(now)
+        ringing = bool(t.get("ringing"))
+        if remain <= 0 and not ringing:
+            continue
+        if ringing and remain < -3600:
+            continue
+        dur = t.get("duration")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
+            dur = max(remain, 1.0)
+        doc_timers[str(tid)] = {"label": clean_label(t.get("label")), "remain": remain,
+                                "duration": float(dur), "ringing": ringing}
+    if not doc_timers and not os.path.exists(path):
+        return True
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"saved_wall": float(wall_now), "timers": doc_timers}, f)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def load_timer_state(path, wall_now):
+    """{id: {label, remain, duration, ringing}} at wall_now, or {} if the file is missing or bad.
+
+    Remaining shrinks by the wall time since the save. The monotonic clock does not survive a
+    restart, so this is the restart rule; MonoClock covers a running process.
+    """
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict):
+        return {}
+    saved = doc.get("saved_wall")
+    if isinstance(saved, bool) or not isinstance(saved, (int, float)):
+        return {}
+    elapsed = float(wall_now) - float(saved)
+    out = {}
+    items = doc.get("timers")
+    if not isinstance(items, dict):
+        return {}
+    for tid, t in items.items():
+        if len(out) >= MAX_TIMERS:
+            break
+        if not _ID_RE.fullmatch(str(tid)) or not isinstance(t, dict):
+            continue
+        remain = t.get("remain")
+        if isinstance(remain, bool) or not isinstance(remain, (int, float)):
+            continue
+        remain = float(remain) - elapsed
+        ringing = bool(t.get("ringing"))
+        if remain <= 0 and not ringing:
+            continue
+        if ringing and remain < -3600:
+            continue
+        dur = t.get("duration")
+        if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
+            dur = max(remain, 1.0)
+        out[str(tid)] = {"label": clean_label(t.get("label")), "remain": remain,
+                         "duration": float(dur), "ringing": ringing}
+    return out
+
+
+def restore_timers(path, now, wall_now):
+    """In-memory book from the state file, with deadlines on `now` (a MonoClock in production)."""
+    out = {}
+    for tid, t in load_timer_state(path, wall_now).items():
+        out[tid] = {"label": t["label"], "due": now + t["remain"], "duration": t["duration"], "ringing": t["ringing"]}
+    return out
+
+
+def timer_restore_messages(timers, now):
+    """timer_set messages that hand a restored book to a station which sent no list of its own.
+
+    seconds 0 means already ringing: the station shows it and does not start a new countdown.
+    """
+    msgs = []
+    for tid, rec in timers.items():
+        if not isinstance(rec, dict):
+            continue
+        due = rec.get("due")
+        if isinstance(due, bool) or not isinstance(due, (int, float)):
+            left = 0
+        else:
+            left = int(round(float(due) - float(now)))
+        label = rec.get("label") or "timer"
+        if rec.get("ringing") or left < 1:
+            msgs.append({"type": "timer_set", "id": tid, "seconds": 0, "label": label})
+        else:
+            msgs.append({"type": "timer_set", "id": tid, "seconds": left, "label": label})
+    return msgs
 
 
 async def run(name, args, http, timers, now):
     """Dispatch one tool call -> (output dict, optional message for the Pi).
 
     The Pi message is a display card for time / weather / units, or timer_set / timer_cancel.
+    extend_timer reuses timer_set with the same id and the new remaining seconds.
     Failed calls return None for the message, so the station shows nothing.
     """
     if name == "get_time":
@@ -410,4 +785,6 @@ async def run(name, args, http, timers, now):
         return list_timers(timers, now), None
     if name == "cancel_timer":
         return cancel_timer(args, timers, now)
+    if name == "extend_timer":
+        return extend_timer(args, timers, now)
     return {"ok": False, "error": "unknown tool"}, None

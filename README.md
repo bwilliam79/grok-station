@@ -93,6 +93,8 @@ Or use **Updates** on the admin page: **Check now** compares this station's vers
 
 A handoff says "Asking <name>…" from a clip cached for that bot's name and voice: at the end of speech on a direct wake, and when the handoff starts if Grok routes the question. The wait for the answer is unchanged. See [docs/handoff.md](docs/handoff.md).
 
+Say "set a pasta timer for ten minutes" to start one. Up to eight can run at once. They show as countdown rings, and a finished one pulses amber until you say "stop" or "stop the pasta timer". See [docs/timers.md](docs/timers.md).
+
 ## Troubleshooting
 
 If a stage fails, the installer shows the failed stage, the last 20 log lines and the log path. The full log is `/var/log/grok-station-install.log`; re-run with `--verbose` to watch every command.

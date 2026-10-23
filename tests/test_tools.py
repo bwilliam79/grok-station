@@ -79,7 +79,8 @@ class Timers(unittest.TestCase):
         self.assertEqual(msg["type"], "timer_set"); self.assertEqual(msg["seconds"], 600)
         T.set_timer({"seconds": 90}, timers, now)
         lst = T.list_timers(timers, now + 30)["timers"]
-        self.assertEqual(lst, [{"label": "timer", "left": "1 minute"}, {"label": "pasta script", "left": "9 minutes, 30 seconds"}])
+        self.assertEqual([(t["label"], t["left"], t["index"], t["ringing"]) for t in lst],
+                         [("Timer", "1 minute", 1, False), ("pasta script", "9 minutes, 30 seconds", 2, False)])
         self.assertFalse(T.cancel_timer({}, timers, now)[0]["ok"])  # two running: ask which
         out, msg = T.cancel_timer({"label": "Pasta Script"}, timers, now)
         self.assertEqual(out["cancelled"], "pasta script"); self.assertEqual(msg["type"], "timer_cancel")
@@ -89,9 +90,10 @@ class Timers(unittest.TestCase):
         timers = {}
         self.assertFalse(T.set_timer({"seconds": 0}, timers, 0)[0]["ok"])
         self.assertFalse(T.set_timer({"seconds": 90000}, timers, 0)[0]["ok"])
-        for _ in range(10):
-            T.set_timer({"seconds": 60}, timers, 0)
+        for _ in range(T.MAX_TIMERS):
+            self.assertTrue(T.set_timer({"seconds": 60}, timers, 0)[0]["ok"])
         self.assertFalse(T.set_timer({"seconds": 60}, timers, 0)[0]["ok"])
+        self.assertIn("Eight", T.set_timer({"seconds": 60}, timers, 0)[0]["error"])
 
     def test_parse_from_pi(self):
         q = json.dumps([{"id": "abc123", "label": "eggs", "left": 120}, {"id": "../x", "left": 5}, {"id": "zz", "left": "x"}])
