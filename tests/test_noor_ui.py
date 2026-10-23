@@ -33,8 +33,10 @@ class NoRedInAdmin(unittest.TestCase):
 class BotsCopy(unittest.TestCase):
     def test_bots_page_intro(self):
         js = read("admin", "web", "app.js")
-        self.assertIn("Teammates the station can talk to. Webhooks are saved on the station and never shown again.", js)
         self.assertIn("You can connect other bots from your Grok Bot account.", js)
+        self.assertIn("No other bots yet", js)
+        self.assertIn("Hey Grok", js)
+        self.assertNotIn("Teammates the station can talk to.", js)
 
 
 class RefreshSizes(unittest.TestCase):

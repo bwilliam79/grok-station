@@ -1270,6 +1270,105 @@ def talk_tool(roster):
                  "required": ["persona"]}}] if roster else []) + station_tools.SPECS  # time, weather, units, timers: every persona
 
 
+def _spoken_label(spoken):
+    return " ".join((w[:1].upper() + w[1:]) for w in str(spoken).split() if w) or "that"
+
+
+def _bot_tail(bots):
+    """'Your bots are Kai, Mira and Sol.' or the empty-list sentence."""
+    names = []
+    for b in bots or []:
+        n = " ".join(str(b.get("name") or "").split())
+        if n and n not in names:
+            names.append(n)
+    if not names:
+        return "You don't have any other bots yet."
+    if len(names) == 1:
+        listed = names[0]
+    elif len(names) == 2:
+        listed = f"{names[0]} and {names[1]}"
+    else:
+        listed = ", ".join(names[:-1]) + " and " + names[-1]
+    return f"Your bots are {listed}."
+
+
+def _connect_target(spoken, bots):
+    """The bot dict this phrase names, a Grok sentinel, a missing-main sentinel, or None."""
+    if spoken in ("grok", "hey grok"):
+        return {"slug": "grok", "name": "Grok"}
+    if spoken in ("main bot", "the main bot", "my main bot"):
+        for b in bots:
+            if b.get("main"):
+                return b
+        return {"slug": "", "missing_main": True}
+    keys = []
+    for b in bots:
+        for k in (b.get("slug"), b.get("name"), *(b.get("aliases") or [])):
+            key = " ".join(str(k or "").lower().split())
+            if key:
+                keys.append((key, b))
+    for key, b in sorted(keys, key=lambda kv: len(kv[0]), reverse=True):
+        if spoken == key:
+            return b
+    return None
+
+
+def connect_request(text, bots, current="grok"):
+    """Match a local "connect me with <bot>" handoff. None when the sentence is not that request.
+
+    Tolerates a leading "hey grok", one or two of "can you" / "could you" / "please",
+    "connect me with", "connect me to", or "put me through to", and trailing punctuation.
+    bots: dicts with slug, name, and optional aliases and main. current is the slug already speaking.
+    A match is a dict: kind (switch, same, unknown), slug, name, and lines of (sentence, "current"|"bot").
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return None
+    t = raw.lower().replace("\u2019", "'")
+    for ch in ",?!.":
+        t = t.replace(ch, " ")
+    t = " ".join(t.split())
+    m = re.match(
+        r"^(?:hey grok )?(?:(?:can you|could you|please) ){0,2}"
+        r"(?:connect me (?:with|to)|put me through to) (.+)$",
+        t)
+    if not m:
+        return None
+    spoken = m.group(1).strip()
+    if spoken.endswith(" please"):
+        spoken = spoken[: -len(" please")].strip()
+    if not spoken:
+        return None
+    bots = [b for b in (bots or []) if isinstance(b, dict)]
+    target = _connect_target(spoken, bots)
+    if not target:
+        label = _spoken_label(spoken)
+        return {"kind": "unknown", "slug": "", "name": label,
+                "lines": [(f"I don't see a bot called {label}. {_bot_tail(bots)}", "current")]}
+    if target.get("missing_main"):
+        return {"kind": "unknown", "slug": "", "name": "a main bot",
+                "lines": [(f"I don't see a main bot. {_bot_tail(bots)}", "current")]}
+    name = " ".join(str(target.get("name") or "Grok").split()) or "Grok"
+    slug = str(target.get("slug") or "grok")
+    if slug == (current or "grok"):
+        return {"kind": "same", "slug": slug, "name": name,
+                "lines": [(f"You're already talking to {name}.", "current")]}
+    who = "bot" if slug != "grok" else "current"
+    return {"kind": "switch", "slug": slug, "name": name,
+            "lines": [(f"Connecting you with {name}.", "current"),
+                      (f"Hey, this is {name}. How can I help you?", who)]}
+
+
+def connect_bots(roster, main=""):
+    """Roster entries shaped for connect_request. main is the list-source slug, if any."""
+    out = []
+    for slug, p in (roster or {}).items():
+        out.append({"slug": slug, "name": (p or {}).get("name") or slug,
+                    "aliases": list((p or {}).get("aliases") or []),
+                    "main": bool(main) and slug == main})
+    return out
+
+
 def addressed_persona(text, roster):
     """(slug, remainder) when the utterance addresses grok or a roster persona, else (None, None).
 
@@ -1775,6 +1874,9 @@ async def session(req):
                         st.update(xai_active=True, cancel_sent=False)
                     elif t == "response.done":
                         st.update(xai_active=False, cancel_sent=False)
+                        # A local connect to Grok (or a bot that is not routed) must not keep the model muted.
+                        if st.pop("release_model", None):
+                            st["drop_model"] = persona_routed(st["persona"])
                     if t not in QUIET:
                         log("xai", t)  # event type only; no content, no key
                     # A routed turn: cancel and drop model speech. Never forward it, never response.create for it.
@@ -1845,6 +1947,30 @@ async def session(req):
                                 await cancel_response()
                             await pi.send_json({"type": "done"})
                             return "user ended"
+                        hit = connect_request(heard, connect_bots(roster, list_source_slug()), st["persona"])
+                        if hit:
+                            # Local handoff: do not let the model answer, and do not ask the bot this phrase.
+                            before = st["persona"]
+                            voice_now = (roster.get(before) or {}).get("voice") or VOICE
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
+                            if hit["kind"] == "switch" and hit.get("slug") and hit["slug"] != before:
+                                await switch(hit["slug"])
+                            st["drop_model"] = True
+                            target = st["persona"]
+                            st["release_model"] = not persona_routed(target)
+                            bot_voice = VOICE
+                            if hit.get("slug") and hit["slug"] != "grok":
+                                bot_voice = (roster.get(hit["slug"]) or {}).get("voice") or VOICE
+                            log(f"connect -> {hit['slug'] or hit['kind']}")  # slug only
+                            for line, who in hit["lines"]:
+                                await play_fixed(line, bot_voice if who == "bot" else voice_now, TTS_SHORT_S)
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         if st.get("answered_utt") == st.get("utt"):
                             count_buf()  # a tool call already took this turn to a webhook
                             continue

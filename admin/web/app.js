@@ -707,246 +707,387 @@ async function audioPanel(el) {
   };
 }
 
-const BUILTIN_TIP = "Hey Grok is the built-in wake word. It is always on.";
-const SENS_TIP = "Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.";
-function wordLabel(w) { return w.label || WORD(w.name); }
-function enrollStatusText(row) {
+const ICO_WAVE = '<svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12h2l2-5 4 10 3-7 2 2h5"/></svg>';
+const ICO_LOCK = '<svg class="ico" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+const ICO_MICOFF = '<svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 9v2a3 3 0 0 0 5 2M15 10V6a3 3 0 0 0-6 0M12 18v3M5 11a7 7 0 0 0 12 4M4 4l16 16"/></svg>';
+const ICO_TRI = '<svg class="ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4"/></svg>';
+const ICO_CHEV = '<svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>';
+function wordLabel(w) { return (w && w.label) || WORD(w && w.name); }
+function openVoiceStatus(bot, el) { // recording status lives on the bot's Configure drawer
+  openBot(bot, el);
+}
+function botWord(bot, words) {
+  const mine = (words || []).filter(w => w && !w.builtin && bot && (w.persona === bot.slug || w.name === "hey_" + bot.slug));
+  return mine.find(w => w.enabled) || mine.find(w => w.name === "hey_" + bot.slug) || mine[0] || null;
+}
+function wordExists(word, train) {
+  if (!word) return false;
+  const row = train && train[word.name];
+  return !!(word.has_model || word.enrolled || (row && row.state === "failed_quality"));
+}
+function needsAttention(b) {
+  if (!b) return false;
+  if (!b.reply_host) return true;
+  return !!replyWarning(b);
+}
+function trainOf(bot, words, train) {
+  const w = botWord(bot, words);
+  const row = w && train ? train[w.name] : null;
   if (!row) return "";
-  if (row.state === "processing" || ENROLL_ACTIVE.includes(row.state)) return "Processing…";
-  if (row.state === "published" || row.state === "ready") return "Ready";
-  if (row.state === "failed_quality") return row.message && row.message.startsWith("Not good enough") ? row.message : "Not good enough yet. Train more to add 10 more recordings.";
-  if (row.state === "failed") return row.message || "Didn't work. Press Record voice to try again.";
+  if (row.state === "processing" || ENROLL_ACTIVE.indexOf(row.state) >= 0) return "training";
+  if (row.state === "failed_quality") return "weak";
   return "";
 }
-async function wakePanel(el, opts = {}) {
-  const [r, st] = await Promise.all([api("GET", "/api/wakewords"), api("GET", "/api/enroll/status")]);
-  const words = (r.data || {}).words || [];
-  const train = (st.data && st.data.words) || {};
-  el.innerHTML = `<div class="card"><div class="inline"><h2>Wake words</h2><button class="btn p sm right" id="rec">Record a wake word</button></div>
-    <p class="sub">Each word opens one teammate. Built-in words work right away; new ones need about a minute of your voice.</p>
-    ${words.map(w => {
-      const label = wordLabel(w);
-      const tog = w.builtin
-        ? `<span class="tipwrap" tabindex="0" role="note" aria-label="${esc(BUILTIN_TIP)}"><button class="tog on" role="switch" aria-checked="true" aria-label="${esc(label)} on" disabled aria-disabled="true"></button><span class="tip">${esc(BUILTIN_TIP)}</span></span>`
-        : `<button class="tog${w.enabled ? " on" : ""}" role="switch" aria-checked="${w.enabled}" aria-label="${esc(label)} on" data-tog="${esc(w.name)}"${!w.has_model ? " disabled" : ""}></button>`;
-      const job = enrollStatusText(train[w.name]);
-      return `<div class="row" style="flex-wrap:wrap">
-      ${tog}
-      <div style="min-width:160px"><div class="lbl">${esc(label)}</div><div class="help">Opens ${esc(PERSONA(w.persona))}${w.builtin ? " · built in, always on" : ""}</div></div>
-      <span class="pill ${w.builtin ? "ok" : w.enrolled ? "ok" : w.has_model ? (w.provisional ? "busy" : "ok") : "warn"}"><i></i>${w.builtin ? "Built in" : w.enrolled ? "Your voice" : w.has_model ? (w.provisional ? "Starter model" : "Ready") : "Needs your voice"}</span>
-      ${job ? `<span class="help">${esc(job)}</span>` : ""}
-      ${w.metrics ? `<span class="help mono">recall ${esc(w.metrics.recall)} · ${esc(w.metrics.fa_per_hour)}/h false</span>` : ""}
-      ${`<label class="inline right help tipwrap" tabindex="0" style="min-width:220px">Sensitivity<span class="tip">${esc(SENS_TIP)}</span> <input type="range" min="5" max="95" value="${Math.round(w.sensitivity * 100)}" data-sens="${esc(w.name)}"${w.has_model ? "" : " disabled"}></label>
-      <button class="btn sm" type="button" data-sens-save="${esc(w.name)}" disabled>Save</button>
-      <button class="btn sm" data-enroll="${esc(w.name)}">Record voice</button>
-      ${(train[w.name] || {}).state === "failed_quality" ? `<button class="btn p sm" data-more="${esc(w.name)}">Train more</button>` : ""}
-      ${w.builtin ? "" : `<button class="btn d sm" data-del="${esc(w.name)}">Delete</button>`}`}</div>`;
-    }).join("")}
-    ${Object.entries(train).filter(([n, t]) => n !== "hey_grok" && !words.some(w => w.name === n) && t && t.state && t.state !== "idle").map(([n, t]) => `<div class="row" style="flex-wrap:wrap">
-      <div style="min-width:160px"><div class="lbl">${esc(WORD(n))}</div><div class="help">Opens ${esc(PERSONA(t.persona || "grok"))}</div></div>
-      <span class="pill ${t.state === "failed" || t.state === "failed_quality" ? "warn" : "busy"}"><i></i>${t.state === "failed" || t.state === "failed_quality" ? "Not finished" : "In progress"}</span>
-      <span class="help">${esc(enrollStatusText(t))}</span>
-      <button class="btn sm right" data-enroll="${esc(n)}">Record voice</button>
-      <button class="btn d sm" data-del="${esc(n)}">Delete</button></div>`).join("")}
-    <div id="we"></div></div>`;
-  el.querySelectorAll("[data-tog]").forEach(b => b.onclick = async () => {
-    const was = b.classList.contains("on");
-    const on = !was;
-    setTog(b, on);
-    markSaving();
-    const res = await api("PUT", "/api/wakewords/" + b.dataset.tog, {enabled: on});
-    if (res.ok) {
-      attn($("#we", el), "");
-      markSaved();
-      toast(`${wordLabel({name: b.dataset.tog})} ${on ? "on" : "off"}.`);
-    } else {
-      setTog(b, was);
-      markUnsaved();
-      attn($("#we", el), (res.data && res.data.error) || "Couldn't save that.");
-    }
-  });
-  el.querySelectorAll("[data-sens]").forEach(s => {
-    s.dataset.saved = String(s.value);
-    const btn = [...el.querySelectorAll("[data-sens-save]")].find(b => b.dataset.sensSave === s.dataset.sens);
-    const sync = () => { if (btn) btn.disabled = s.disabled || String(s.value) === s.dataset.saved; };
-    s.addEventListener("input", sync);
-    s.addEventListener("change", sync);
-    sync();
-    if (!btn) return;
-    btn.onclick = async () => {
-      markSaving();
-      const res = await api("PUT", "/api/wakewords/" + s.dataset.sens, {sensitivity: +s.value / 100});
-      if (!res.ok) { markUnsaved(); return attn($("#we", el), (res.data && res.data.error) || "Couldn't save that."); }
-      s.dataset.saved = String(s.value);
-      sync();
-      attn($("#we", el), "");
-      markSaved();
-    };
-  });
-  el.querySelectorAll("[data-more]").forEach(b => b.onclick = async () => {  // another 10, added to the earlier ones
-    busyBtn(b, true, "Starting…");
-    const r = await api("POST", "/api/enroll", {phrase: b.dataset.more, topup: true});
-    if (!(r.status === 202 || r.ok)) { busyBtn(b, false, "Train more"); return attn($("#we", el), (r.data && r.data.error) || "The station couldn't start recording."); }
-    toast("Recording 10 more on the station.");
-    wakePanel(el, opts);
-  });
-  el.querySelectorAll("[data-del]").forEach(b => b.onclick = () => confirmDeleteWord(b.dataset.del, wordLabel(words.find(w => w.name === b.dataset.del) || {name: b.dataset.del}), () => wakePanel(el, opts)));
-  const names = words.filter(w => !w.builtin).map(w => w.name);
-  el.querySelectorAll("[data-enroll]").forEach(b => b.onclick = () => enrollDrawer(b.dataset.enroll, names, () => wakePanel(el, opts)));
-  $("#rec", el).onclick = () => enrollDrawer(null, names, () => wakePanel(el, opts));
+function rowNeeds(b, words, train) {
+  if (needsAttention(b)) return true;
+  return trainOf(b, words, train) === "weak";
 }
-
-function confirmDeleteWord(name, label, onDone) {
+function fieldCheckSentence(err, words, bots) {
+  const text = String(err || "");
+  const close = text.match(/^Too close to “([^”]+)”/);
+  if (close) return "Needs attention: that sounds too close to " + close[1] + ". Try another.";
+  const dup = text.match(/^“([^”]+)” is already a wake word/);
+  if (dup) {
+    const label = dup[1];
+    const found = (words || []).filter(w => wordLabel(w) === label)[0];
+    let who = "";
+    if (found && found.persona && found.persona !== "grok") {
+      const other = (bots || []).filter(b => b.slug === found.persona)[0];
+      who = other && other.name ? other.name : found.persona.charAt(0).toUpperCase() + found.persona.slice(1);
+    } else if (label.indexOf("Hey ") === 0 && label !== "Hey Grok") who = label.slice(4);
+    if (who) return "Needs attention: already used by " + who + ".";
+    return "Needs attention: that sounds too close to " + label + ". Try another.";
+  }
+  if (!text) return "";
+  if (text.indexOf("Needs attention") === 0) return text;
+  return "Needs attention: " + text;
+}
+function clipWhy(why) {
+  if (why === "loud") return "Too loud. Step back a little.";
+  if (why === "quiet") return "Too quiet. Move closer.";
+  if (why === "noise") return "Too much background noise. Try again when it’s quieter.";
+  if (why === "cut" || why === "cutoff") return "Cut off. Say it all after the chime.";
+  return "Didn’t hear it. Speak after the chime.";
+}
+function clipSquares(kept, recording, rejected) {
+  const k = typeof kept === "number" ? kept : 0;
+  let html = "";
+  for (let i = 1; i <= 10; i++) {
+    let cls = "", mark = "";
+    if (i <= k) { cls = "ok"; mark = "✓"; }
+    else if (rejected && i === k + 1) { cls = "bad"; mark = "!"; }
+    else if (recording && i === k + 1) cls = "now";
+    html += `<i class="${cls}">${mark}</i>`;
+  }
+  return `<div class="clips">${html}</div>`;
+}
+function levelMeter(db) {
+  const n = typeof db === "number" ? Math.max(0, Math.min(20, Math.round((db + 60) / 60 * 20))) : 0;
+  let html = "";
+  for (let i = 0; i < 20; i++) {
+    const hot = i >= 16 ? " hot" : "";
+    const on = i < n ? " on" : "";
+    html += `<i class="${(hot + on).trim()}"></i>`;
+  }
+  return `<div class="lvl" id="lvl" aria-hidden="true">${html}</div>`;
+}
+function barHTML(pct, lav) {
+  const w = Math.max(0, Math.min(100, Math.round(pct)));
+  return `<div class="ebar${lav ? " lav" : ""}"><i style="width:${w}%"></i></div>`;
+}
+function clipFeed(recent) {
+  if (!recent || !recent.length) return "";
+  const lines = recent.map(item => {
+    if (item.ok) return `<div class="help" style="color:var(--gs-teal)">✓ Clip ${esc(item.n)} · Got it</div>`;
+    return `<div class="need">${esc(clipWhy(item.why))}</div><div class="help">We’ll record it again at the end.</div>`;
+  }).join("");
+  return `<div class="feed"><div class="help">Last few</div>${lines}</div>`;
+}
+function confirmSheet(opts) {
   const d = document.createElement("div");
   d.className = "sheet";
-  d.innerHTML = `<form class="card" role="dialog" aria-label="Delete wake word" style="width:min(400px,100%)">
+  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" aria-label="${esc(opts.title)}" style="width:min(440px,100%)">
     ${dialogX()}
-    <h2>Delete ${esc(label)}?</h2>
-    <p class="sub">This deletes its recordings and its trained model. The station stops listening for it right away.</p>
-    <div id="dwe"></div>
-    <div class="field"><button class="btn d" id="dwgo" type="submit">Delete wake word</button></div></form>`;
+    <div class="acon" aria-hidden="true">!</div>
+    <h2>${esc(opts.title)}</h2>
+    <p class="sub">${esc(opts.text)}</p>
+    ${opts.note ? `<p class="note">${esc(opts.note)}</p>` : ""}
+    <div id="cfe"></div>
+    <div class="acts"><button class="btn g" type="button" id="cfno">Cancel</button>
+      <button class="btn d" id="cfgo" type="submit">${esc(opts.action)}</button></div></form>`;
   document.body.appendChild(d);
   const close = () => d.remove();
   bindSheet(d, close);
-  d.querySelector("form").onsubmit = async ev => {
+  const no = $("#cfno", d);
+  if (no) no.onclick = close;
+  const form = d.querySelector("form");
+  if (form) form.onsubmit = async ev => {
     ev.preventDefault();
-    busyBtn($("#dwgo", d), true);
-    const r = await api("DELETE", "/api/wakewords/" + encodeURIComponent(name), {});
-    if (!r.ok) { busyBtn($("#dwgo", d), false, "Delete wake word"); return errBox($("#dwe", d), (r.data && r.data.error) || "Couldn't delete that."); }
-    close();
-    toast(`${label} deleted.`);
-    if (onDone) onDone();
-  };
-}
-
-function enrollProgressHTML(word, id) {
-  const label = {recording: "Recording", uploading: "Uploading", training: "Training", processing: "Processing…", ready: "Ready", published: "Ready", failed: "Didn't work", failed_quality: "Not good enough yet"}[word.state] || "Waiting";
-  const kind = word.state === "failed" || word.state === "failed_quality" ? "bad" : word.state === "ready" || word.state === "published" ? "ok" : "busy";
-  const msg = word.message ? ` · ${esc(word.message)}` : "";
-  return `<div class="banner ${kind}"><span class="pill ${kind}"><i></i>${label}</span> ${esc(word.label || WORD(id))}${msg}</div>`;
-}
-
-function watchEnroll(d, id, box) {
-  const tick = async () => {
-    if (!document.body.contains(d)) { clearInterval(d.t); return; }
-    const s = await api("GET", "/api/enroll/status");
-    const w = ((s.data && s.data.words) || {})[id];
-    if (!w) return;
-    box.innerHTML = enrollProgressHTML(w, id);
-    if (w.state === "ready" || w.state === "published" || w.state === "failed" || w.state === "failed_quality") {
-      clearInterval(d.t);
-      const go = $("#dgo", d);
-      if (w.state === "ready" || w.state === "published") {
-        // Done: say so, then close the dialog and refresh the list behind it.
-        toast(`${w.label || WORD(id)} is ready.`);
-        if (go) { go.textContent = "Done"; go.disabled = false; go.onclick = () => { const x = $("#dx", d); if (x) x.click(); else d.remove(); }; }
-        setTimeout(() => { if (document.body.contains(d)) { const x = $("#dx", d); if (x) x.click(); else d.remove(); } }, 2500);
-      } else if (go) { go.textContent = "Try again"; go.disabled = false; }
+    const btn = $("#cfgo", d);
+    if (btn) busyBtn(btn, true);
+    const r = await opts.go();
+    if (!r || !r.ok) {
+      if (btn && btn.isConnected) busyBtn(btn, false, opts.action);
+      const box = $("#cfe", d);
+      if (box) box.innerHTML = `<div class="need">${esc((r && r.data && r.data.error) || "Couldn't do that.")}</div>`;
+      return;
     }
-  };
-  tick();
-  d.t = setInterval(tick, 2000);
-}
-
-async function enrollDrawer(phrase, names, done, persona) {
-  if (!phrase) return enrollNew(done, persona || "");
-  return enrollExisting(phrase, names, done);
-}
-
-async function enrollNew(done, persona) {  // free-text phrase + which bot it opens
-  const botR = await api("GET", "/api/bots");
-  const bots = [{slug: "grok", name: "Grok"}].concat(((botR.data || {}).bots) || []);
-  if (persona && !bots.some(b => b.slug === persona)) bots.push({slug: persona, name: persona});
-  const d = document.createElement("div");
-  d.className = "sheet";
-  d.innerHTML = `<div class="drawer" role="dialog" aria-label="Record a wake word"><div class="inline"><h2 style="font:600 22px var(--disp)">Record a wake word</h2><button class="btn g sm right" id="dx">Close</button></div>
-    <div class="field"><label for="ph">Wake word</label><input class="inp" id="ph" maxlength="48" placeholder="hey kitchen" autocomplete="off" spellcheck="false">
-      <p class="note" id="phnote">Two to four words. It doesn't have to contain the bot's name — one bot can have several.</p></div>
-    <div class="field"><label for="bot">Opens</label><select class="sel" id="bot">${bots.map(b => `<option value="${esc(b.slug)}"${b.slug === (persona || "grok") ? " selected" : ""}>${esc(b.name)}</option>`).join("")}</select></div>
-    <p class="note">You say it 10 times (about a minute).</p>
-    <div id="de"></div>
-    <div class="field"><button class="btn p" id="dgo">Start on the station</button></div>
-    <div id="prog"></div>
-    <p class="note">The station guides you: say the word after each chime, at normal volume, from where you usually stand.</p></div>`;
-  document.body.appendChild(d);
-  const close = () => { clearInterval(d.t); d.remove(); done && done(); };
-  $("#dx", d).onclick = close;
-  let checkTimer = 0, phraseBad = false;
-  $("#ph", d).oninput = () => {
-    clearTimeout(checkTimer);
-    const v = $("#ph", d).value;
-    checkTimer = setTimeout(async () => {
-      if (!$("#ph", d) || $("#ph", d).value !== v) return;
-      if (!v.trim()) { phraseBad = false; errBox($("#de", d), ""); $("#phnote", d).textContent = "Two to four words. It doesn't have to contain the bot's name — one bot can have several."; return; }
-      const r = await api("POST", "/api/enroll/check", {phrase: v});
-      if (!$("#ph", d) || $("#ph", d).value !== v) return;
-      phraseBad = !r.ok;
-      if (r.ok) { errBox($("#de", d), ""); $("#phnote", d).textContent = `Saves as ${r.data.id}.`; }
-      else { errBox($("#de", d), (r.data && r.data.error) || "That phrase won't work."); $("#phnote", d).textContent = ""; }
-    }, 300);
-  };
-  $("#dgo", d).onclick = async () => {
-    if (phraseBad) return;
-    busyBtn($("#dgo", d), true, "Starting…");
-    const r = await api("POST", "/api/enroll", {phrase: $("#ph", d).value, persona: $("#bot", d).value});
-    if (!(r.status === 202 || r.ok)) { busyBtn($("#dgo", d), false, "Start on the station"); return errBox($("#de", d), r.data.error || "The station couldn't start recording."); }
-    errBox($("#de", d), ""); $("#dgo", d).textContent = "Recording on the station…";
-    watchEnroll(d, (r.data && r.data.id) || "", $("#prog", d));
+    close();
   };
 }
-
-async function enrollExisting(phrase, names, done) {  // record more clips of a word already on the station
-  const d = document.createElement("div");
-  d.className = "sheet";
-  d.innerHTML = `<div class="drawer" role="dialog" aria-label="Record a wake word"><div class="inline"><h2 style="font:600 22px var(--disp)">Record a wake word</h2><button class="btn g sm right" id="dx">Close</button></div>
-    <div class="field"><label for="ph">Wake word</label><select class="sel" id="ph">${names.map(n => `<option value="${esc(n)}"${n === phrase ? " selected" : ""}>${esc(WORD(n))}</option>`).join("")}</select></div>
-    <p class="note">You say it 10 times (about a minute).</p>
-    <div id="de"></div>
-    <div class="field"><button class="btn p" id="dgo">Start on the station</button></div>
-    <div id="prog"></div>
-    <p class="note">The station guides you: say the word after each chime, at normal volume, from where you usually stand.</p></div>`;
-  document.body.appendChild(d);
-  const close = () => { clearInterval(d.t); d.remove(); done && done(); };
-  $("#dx", d).onclick = close;
-  $("#dgo", d).onclick = async () => {
-    busyBtn($("#dgo", d), true, "Starting…");
-    const r = await api("POST", "/api/enroll", {phrase: $("#ph", d).value});
-    if (!(r.status === 202 || r.ok)) { busyBtn($("#dgo", d), false, "Start on the station"); return errBox($("#de", d), r.data.error || "The station couldn't start recording."); }
-    errBox($("#de", d), ""); $("#dgo", d).textContent = "Recording on the station…";
-    watchEnroll(d, (r.data && r.data.id) || $("#ph", d).value, $("#prog", d));
-  };
+function wakeControlHTML(bot, word, st) {
+  if (st === "training") return `<div class="ww"><span class="pill busy">Training…</span></div>`;
+  if (st === "weak") return `<div class="ww"><span class="pill warn">Not good enough yet</span></div>`;
+  if (!word || !word.has_model) {
+    return `<div class="ww">${ICO_MICOFF.replace('class="ico"', 'class="ico faint"')} <span class="muted">No wake word</span></div>`;
+  }
+  const label = wordLabel(word);
+  const on = !!word.enabled;
+  return `<div class="ww"><button class="tog${on ? " on" : ""}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-wtog="${esc(word.name)}" data-wlabel="${esc(label)}"></button>
+    <span class="${on ? "" : "muted"}">${esc(label)}</span>${on ? "" : ` <span class="pill off">Off</span>`}</div>`;
 }
-
-function openVoiceStatus(bot, el) {  // reopen the in-progress (or failed) attempt; does not start a new recording
-  const d = document.createElement("div");
-  d.className = "sheet";
-  d.innerHTML = `<div class="drawer" role="dialog" aria-label="Wake word status"><div class="inline"><h2 style="font:600 22px var(--disp)">${esc(bot.name || "Wake word")}</h2><button class="btn g sm right" id="dx">Close</button></div>
-    <div id="vbox"></div>
-    <div class="field"><button class="btn" id="again" type="button" hidden>Record again</button></div>
-    <p class="note">Closing this leaves the recording running. The button keeps its place after a reload.</p></div>`;
-  document.body.appendChild(d);
-  const tick = async () => {
-    if (!document.body.contains(d)) { clearInterval(d.t); return; }
-    const s = await api("GET", "/api/enroll/status");
-    const words = (s.data && s.data.words) || {};
-    const rows = Object.entries(words).filter(([, w]) => (w.persona || "grok") === bot.slug);
-    const active = rows.filter(([, w]) => w.state === "processing" || ENROLL_ACTIVE.includes(w.state));
-    const failed = rows.filter(([, w]) => w.state === "failed" || w.state === "failed_quality");
-    const show = active[0] || failed[failed.length - 1];
-    const box = $("#vbox", d);
-    if (!box) return;
-    if (!show) { box.innerHTML = `<p class="note">Nothing in progress.</p>`; $("#again", d).hidden = true; return; }
-    const [id, w] = show;
-    box.innerHTML = enrollProgressHTML(w, id);
-    const again = $("#again", d);
-    again.hidden = w.state !== "failed" && w.state !== "failed_quality";
-    again.onclick = () => { clearInterval(d.t); d.remove(); enrollDrawer(null, [], () => refreshBots(el), bot.slug); };
-  };
-  tick();
-  d.t = setInterval(tick, 2000);
-  $("#dx", d).onclick = () => { clearInterval(d.t); d.remove(); if (el) refreshBots(el); };
+function bindWakeToggles(root, el) {
+  if (!root) return;
+  root.querySelectorAll("[data-wtog]").forEach(b => b.onclick = async ev => {
+    ev.stopPropagation();
+    const was = b.classList.contains("on");
+    const on = !was;
+    const label = b.dataset.wlabel || "Wake word";
+    setTog(b, on);
+    if (el) el._holdPaint = true;
+    const res = await api("PUT", "/api/wakewords/" + encodeURIComponent(b.dataset.wtog), {enabled: on});
+    if (el) el._holdPaint = false;
+    if (res.ok) {
+      toast(label + (on ? " is on." : " is off."));
+      if (el) refreshBots(el);
+    } else {
+      setTog(b, was);
+      toast("Needs attention: couldn’t change " + label + ". Try again.", "bad");
+    }
+  });
 }
-
+function openSetWake(bot, el, d, opts) {
+  opts = opts || {};
+  const body = $("#bdbody", d);
+  if (!body) return;
+  if (d._wakeStop) d._wakeStop();
+  let timer = 0, finished = false, toasted = false, sawServer = false;
+  const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
+  d._wakeStop = stop;
+  let phraseId = opts.phrase || "";
+  const back = () => { finished = true; stop(); openBot(bot, el); };
+  const setErr = msg => {
+    const box = $("#wwe", body);
+    if (box) box.innerHTML = msg ? `<div class="need">${esc(msg)}</div>` : "";
+  };
+  const showIdle = () => {
+    body.dataset.sig = "";
+    const offline = !!stationOffline;
+    const busy = !!(el && el._session);
+    const preset = "Hey " + (bot.name || "");
+    body.innerHTML = `<h2 style="font:600 22px var(--disp)">Set wake word for ${esc(bot.name || "")}</h2>
+      <p>You’ll say it 10 times at the station. It takes about a minute.</p>
+      <div class="field"><label for="wwphrase">Wake word</label>
+        <input class="inp" id="wwphrase" maxlength="48" autocomplete="off" spellcheck="false" value="${esc(preset)}">
+        <p class="help">Two or three syllables works best. Avoid words you say a lot.</p></div>
+      <p class="note">Stand where you usually talk to the station. Speak normally. Wait for the chime each time.</p>
+      <div id="wwe"></div>
+      ${offline ? `<p class="note">Can’t reach the station.</p>` : busy ? `<p class="note">The station is busy in a conversation. Try again in a minute.</p>` : ""}
+      <div class="acts"><button class="btn p" id="wwstart" type="button"${offline || busy ? " disabled" : ""}>Start recording</button>
+        <button class="btn g" id="wwcancel" type="button">Cancel</button></div>`;
+    const cancel = $("#wwcancel", body);
+    if (cancel) cancel.onclick = back;
+    const start = $("#wwstart", body);
+    if (start) start.onclick = () => begin(false);
+  };
+  const showError = kind => {
+    finished = true;
+    stop();
+    body.dataset.sig = "";
+    let text = "Couldn’t reach the station’s microphone. Your recordings so far are saved.";
+    let note = "Check that the mic is on at the station, then try again. If it keeps happening, restart the station from System.";
+    if (kind === "busy") {
+      text = "The station is busy in a conversation. Try again in a minute.";
+      note = "";
+    } else if (kind === "train") {
+      text = "Training didn’t finish. Your recordings are saved. Try again.";
+      note = "";
+    }
+    body.innerHTML = `<div class="acon" aria-hidden="true">!</div>
+      <h2 style="font:600 22px var(--disp)">Needs attention</h2>
+      <p>${esc(text)}</p>
+      ${note ? `<p class="note">${esc(note)}</p>` : ""}
+      <div class="acts"><button class="btn p" id="wwagain" type="button">Try again</button>
+        <button class="btn g" id="wwcancel" type="button">Cancel</button></div>`;
+    const again = $("#wwagain", body);
+    if (again) again.onclick = () => { finished = false; if (opts.topup && phraseId) begin(true); else showIdle(); };
+    const cancel = $("#wwcancel", body);
+    if (cancel) cancel.onclick = back;
+  };
+  const paintRow = (row, level, fromServer) => {
+    row = row || {};
+    const state = row.state || "";
+    if (fromServer && (!state || state === "idle")) {
+      if (sawServer) { finished = true; stop(); back(); }
+      return;
+    }
+    if (fromServer && state) sawServer = true;
+    const label = wordLabel({name: phraseId}) || ("Hey " + (bot.name || ""));
+    const topup = !!(opts.topup || row.topup);
+    const progress = typeof row.kept === "number" && typeof row.index === "number";
+    let recSig = "";
+    const recent = row.recent && row.recent.length ? row.recent : null;
+    if (recent) {
+      for (let i = 0; i < recent.length; i++) recSig += recent[i].n + (recent[i].ok ? "y" : "n") + (recent[i].why || "") + ";";
+    }
+    const next = state + "|" + (progress ? row.kept + ":" + row.index : "-") + "|" + (topup ? "t" : "") + "|" + recSig;
+    if (body.dataset.sig === next) {
+      if ((state === "recording" || state === "") && $("#lvl", body)) {
+        $("#lvl", body).outerHTML = levelMeter(level);
+        return;
+      }
+      if ((state === "training" || state === "processing" || state === "uploading") && $("#wwclose", body)) return;
+      if ((state === "ready" || state === "published") && $("#wwdone", body)) return;
+      if (state === "failed_quality" && $("#wwnot", body)) return;
+    }
+    body.dataset.sig = next;
+    if (state === "ready" || state === "published") {
+      finished = true;
+      stop();
+      if (!toasted) { toasted = true; toast(label + " is ready."); }
+      const m = String(row.message || "").match(/(\d+) of (\d+)/);
+      const note = m ? "It woke on " + m[1] + " of " + m[2] + " test clips. That’s good." : "";
+      body.innerHTML = `<h2 style="font:600 22px var(--disp)">${esc(label)} is ready</h2>
+        <p>Say “${esc(label)}” at the station to try it. It’s on now.</p>
+        ${note ? `<p class="note">${esc(note)}</p>` : ""}
+        <div class="acts"><button class="btn p" id="wwdone" type="button">Done</button>
+          <button class="btn" id="wwmore" type="button">Train more</button></div>`;
+      const done = $("#wwdone", body);
+      if (done) done.onclick = back;
+      const more = $("#wwmore", body);
+      if (more) more.onclick = () => { finished = false; opts.topup = true; begin(true); };
+      return;
+    }
+    if (state === "failed_quality") {
+      finished = true;
+      stop();
+      const m = String(row.message || "").match(/(\d+) of (\d+)/);
+      const heard = m
+        ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs 8. Ten more recordings should get it there."
+        : esc(label) + " needs 8 of 10 test clips. Ten more recordings should get it there.";
+      body.innerHTML = `<h2 style="font:600 22px var(--disp)">Not good enough yet</h2>
+        <p>${heard}</p>
+        <p class="note">${esc(label)} stays off until it’s ready. Other wake words keep working.</p>
+        <div class="acts"><button class="btn p" id="wwmore" type="button">Train more</button>
+          <button class="btn g" id="wwnot" type="button">Not now</button></div>`;
+      const more = $("#wwmore", body);
+      if (more) more.onclick = () => { finished = false; opts.topup = true; begin(true); };
+      const notNow = $("#wwnot", body);
+      if (notNow) notNow.onclick = back;
+      return;
+    }
+    if (state === "failed") {
+      const msg = String(row.message || "");
+      if (/mic|microphone/i.test(msg)) return showError("mic");
+      if (/busy|conversation/i.test(msg)) return showError("busy");
+      return showError("train");
+    }
+    if (state === "training" || state === "processing" || state === "uploading") {
+      body.innerHTML = `<h2 style="font:600 22px var(--disp)">Training ${esc(label)}…</h2>
+        <p>All 10 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
+        ${barHTML(100, true)}
+        <p class="help">Training · about 3 min left</p>
+        <div class="acts"><button class="btn g" id="wwclose" type="button">Close</button></div>`;
+      const close = $("#wwclose", body);
+      if (close) close.onclick = back;
+      return;
+    }
+    const kept = progress ? row.kept : 0;
+    const index = progress ? row.index : 1;
+    const rejected = !!(recent && recent[0] && recent[0].ok === false);
+    const lead = !progress
+      ? "Recording. Speak after the chime."
+      : topup
+        ? "Recording " + Math.max(1, index) + " of 10 more. Your first 10 are kept."
+        : "Recording " + Math.max(1, index) + " of 10. Speak after the chime.";
+    const grid = progress ? clipSquares(kept, true, rejected) : clipSquares(0, false, false);
+    const first = topup ? `<div class="help">First 10</div>${clipSquares(10, false, false)}<div class="help">10 more</div>` : "";
+    const title = topup ? "Train more: say “" + label + "”" : "Say “" + label + "”";
+    body.innerHTML = `<h2 style="font:600 22px var(--disp)">${esc(title)}</h2>
+      <p>${esc(lead)}</p>
+      ${first}${grid}
+      ${levelMeter(level)}
+      ${barHTML(progress ? (kept / 10) * 100 : 0, false)}
+      ${clipFeed(recent)}
+      <div class="acts"><button class="btn" id="wwpause" type="button">Pause</button>
+        <button class="btn g" id="wwstop" type="button">Stop and discard</button></div>`;
+    const pause = $("#wwpause", body);
+    if (pause) pause.onclick = async () => {
+      const op = pause.dataset.paused === "1" ? "resume" : "pause";
+      const r = await api("POST", "/api/enroll/control", {op: op});
+      if (!r.ok) return;
+      pause.dataset.paused = op === "pause" ? "1" : "";
+      pause.textContent = op === "pause" ? "Resume" : "Pause";
+    };
+    const stopBtn = $("#wwstop", body);
+    if (stopBtn) stopBtn.onclick = () => confirmSheet({
+      title: "Stop recording?",
+      text: "The recordings from this session are thrown away. " + label + " stays as it was.",
+      action: "Stop and discard",
+      go: async () => {
+        const r = await api("POST", "/api/enroll/control", {op: "discard"});
+        if (r && r.ok) back();
+        return r;
+      }
+    });
+  };
+  const begin = async topup => {
+    const field = $("#wwphrase", body);
+    const typed = field ? field.value.trim() : "";
+    if (!topup) {
+      const check = await api("POST", "/api/enroll/check", {phrase: typed});
+      if (!check.ok) {
+        setErr(fieldCheckSentence((check.data && check.data.error) || "That wake word won’t work.", el && el._words, el && el._bots));
+        return;
+      }
+      phraseId = (check.data && check.data.id) || typed;
+    }
+    const payload = {phrase: phraseId || typed, persona: bot.slug};
+    if (topup) payload.topup = true;
+    const r = await api("POST", "/api/enroll", payload);
+    if (r.status === 409) return showError("busy");
+    if (r.status === 503 || netDown(r.status)) return showError("mic");
+    if (!(r.ok || r.status === 202)) {
+      const msg = String((r.data && r.data.error) || "");
+      if (/mic|microphone/i.test(msg)) return showError("mic");
+      if (/busy|conversation/i.test(msg)) return showError("busy");
+      return showError("train");
+    }
+    phraseId = (r.data && r.data.id) || phraseId;
+    body.dataset.sig = "";
+    paintRow({state: "recording", kept: 0, index: 1, recent: [], topup: !!topup}, null);
+    poll();
+  };
+  const poll = async () => {
+    stop();
+    const tick = async () => {
+      if (finished || !document.body.contains(d)) { stop(); return; }
+      const s = await api("GET", "/api/enroll/status");
+      if (finished) return;
+      if (!s.ok && netDown(s.status)) { showError("mic"); return; }
+      const words = (s.data && s.data.words) || {};
+      const row = words[phraseId] || {};
+      const level = s.data ? s.data.level_dbfs : null;
+      if (!row.state && s.data && s.data.enrolling) paintRow({state: "recording"}, level, true);
+      else paintRow(row, level, true);
+    };
+    await tick();
+    if (!finished && document.body.contains(d)) timer = setInterval(() => { tick(); }, 1000);
+  };
+  if (opts.resume && phraseId) poll();
+  else if (opts.topup && phraseId) begin(true);
+  else showIdle();
+}
 async function displayPanel(el) {
   const g = await api("GET", "/api/settings/display");
   const cards = await api("GET", "/api/cards");
@@ -1138,7 +1279,8 @@ async function wizard(step) {
   } else if (step === 5) {
     await timePanel(wp, {onOk: () => {}});
   } else if (step === 6) {
-    await wakePanel(wp, {skip: true});
+    wp.innerHTML = `<div class="card"><h2>Wake words</h2>
+      <p class="sub">Hey Grok is built in and always on. Set a wake word for each other bot on the Bots page, after setup.</p></div>`;
   } else if (step === 7) {
     await audioPanel(wp);
   }
@@ -1156,19 +1298,20 @@ const ICON = {
   updates: '<path d="M21 12a9 9 0 1 1-2.6-6.3L21 8"/><path d="M21 3v5h-5"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
-const PAGES = {home: ["Home", pageHome], voice: ["Voice", pageVoice], wake: ["Wake words", el => wakePanel(el)], bots: ["Bots", pageBots],
+const PAGES = {home: ["Home", pageHome], voice: ["Voice", pageVoice], bots: ["Bots", pageBots],
   privacy: ["Privacy", pagePrivacy],
   audio: ["Audio", el => audioPanel(el)], display: ["Display", el => displayPanel(el)], time: ["Time and location", el => timePanel(el)],
   network: ["Network", el => wifiPanel(el)], updates: ["Updates", pageUpdates], system: ["System", pageSystem], more: ["More", pageMore]};
 const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "Voice"]]],
-  ["Station", [["wake", "Wake words"], ["bots", "Bots"], ["privacy", "Privacy"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
+  ["Station", [["bots", "Bots"], ["privacy", "Privacy"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
   ["System", [["updates", "Updates"], ["system", "System"]]]];
-const TABS = [["home", "Home", "home"], ["wake", "Voice", "wake"], ["audio", "Station", "audio"], ["system", "System", "system"], ["more", "More", "more"]];
+const TABS = [["home", "Home", "home"], ["bots", "Bots", "bots"], ["voice", "Voice", "voice"], ["system", "System", "system"], ["more", "More", "more"]];
 
 function closeFloats() {
   document.querySelectorAll("body > .drawer, body > .sheet").forEach(n => { if (n._cancel) n._cancel(); n.remove(); });
 }
 function shell() {
+  if (location.hash === "#wake") { location.replace("#bots"); return; }
   closeFloats();
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
@@ -1209,7 +1352,7 @@ async function pageHome(el) {
       ["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "voice"],
       ["Network", n.wifi ? `Wi-Fi ${esc(n.wifi.ssid)} · ${n.wifi.signal}%` : n.wired ? "Wired" : "Offline", "network"],
       ["Services", up ? "All running" : Object.entries(svc).filter(([, v]) => v !== "active").map(([k]) => esc(k.replace("grok-station-", ""))).join(", ") + " stopped", "system"],
-      ["Wake words", `${(h.words || []).length} on`, "wake"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
+      ["Bots", `${(h.words || []).length} on`, "bots"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
   };
   every(10000, load);
   every(5000, () => { const p = $("#pv", el); if (p) { p.src = "/api/preview?t=" + Date.now(); $("#pva", el).textContent = "Updated " + new Date().toLocaleTimeString(); } });
@@ -1657,16 +1800,20 @@ function confirmRemove(bot, onDone) {
   const d = document.createElement("div");
   d.className = "sheet";
   const open = stepupOpen();
-  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" aria-label="Remove bot" style="width:min(400px,100%)">
+  d.innerHTML = `<form class="card" role="dialog" autocomplete="off" aria-label="Delete bot" style="width:min(440px,100%)">
     ${dialogX()}
-    <h2>Remove ${esc(bot.name)}?</h2>
-    <p class="sub">This removes the bot from the station. A registry teammate is hidden. An added bot is deleted.</p>
+    <div class="acon" aria-hidden="true">!</div>
+    <h2>Delete ${esc(bot.name)}?</h2>
+    <p class="sub">${esc(bot.name)} is removed from this station and its wake word stops working. ${esc(bot.name)} itself keeps running in your Grok Bot account.</p>
+    <p class="note">Hey ${esc(bot.name)} moves to Unused wake words, so you can reuse or delete it.</p>
     ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="rmpw">Admin password</label><input class="inp" type="password" id="rmpw" autocomplete="current-password" required></div>`}
     <div id="rme"></div>
-    <div class="field"><button class="btn d" id="rmgo" type="submit">Remove bot</button></div></form>`;
+    <div class="acts"><button class="btn g" type="button" id="rmno">Cancel</button><button class="btn d" id="rmgo" type="submit">Delete bot</button></div></form>`;
   document.body.appendChild(d);
   const close = () => d.remove();
   bindSheet(d, close);
+  const rmno = $("#rmno", d);
+  if (rmno) rmno.onclick = close;
   d.querySelector("form").onsubmit = async ev => {
     ev.preventDefault();
     const pwEl = $("#rmpw", d);
@@ -1680,7 +1827,7 @@ function confirmRemove(bot, onDone) {
     const r = await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
     body.password = "";
     if (!r.ok) {
-      if (btn && btn.isConnected) busyBtn(btn, false, "Remove bot");
+      if (btn && btn.isConnected) busyBtn(btn, false, "Delete bot");
       if (r.status === 403 && !$("#rmpw", d) && $("#rme", d)) {
         const holder = document.createElement("div");
         holder.className = "field";
@@ -1705,9 +1852,9 @@ function repliesFrom(b) {
 }
 function replyWarning(b) {
   const st = (b && b.status) || {};
-  if (!b || !b.reply_host && !(b.webhook && b.webhook.configured)) return "";
+  if (!b || !b.reply_host) return "";
   const missed = st.last_error === "No answer" && st.last_error_at && (!st.last_answered_at || st.last_error_at >= st.last_answered_at);
-  if (missed) return b.reply_host ? `No reply last time. ${b.reply_host} may be offline.` : "No reply last time. The computer that sends its replies may be offline.";
+  if (missed) return `${b.reply_host} is offline. Replies will wait until it’s back.`;
   return "";
 }
 function lastReplyLine(b) {
@@ -1717,50 +1864,82 @@ function lastReplyLine(b) {
 function mainFirst(bots) {
   return bots.filter(b => b.main).concat(bots.filter(b => !b.main));
 }
+function paintSummary(el, bots) {
+  const sum = $("#bsum", el);
+  if (!sum) return;
+  const n = (bots || []).length + 1;
+  let attn = 0;
+  (bots || []).forEach(b => { if (rowNeeds(b, el._words, el._train)) attn += 1; });
+  sum.textContent = attn ? n + " bots · " + attn + " needs attention" : n + " bots";
+}
+function paintUnused(el) {
+  const wrap = $("#unusedwrap", el);
+  const list = $("#unused", el);
+  const rows = (el && el._unused) || [];
+  if (!wrap || !list) return;
+  wrap.hidden = !rows.length;
+  list.innerHTML = rows.map(w => {
+    const why = w.reason === "deleted" ? "Its bot was deleted" : "Not linked to a bot";
+    const n = typeof w.recordings === "number" ? w.recordings : 0;
+    const rec = n === 1 ? "1 recording" : n + " recordings";
+    const label = w.label || wordLabel(w);
+    return `<div class="urow"><div><div>${esc(label)}</div><div class="help">${esc(why)} · ${esc(rec)}</div></div>
+      <button class="btn dg sm right" type="button" data-udel="${esc(w.name)}" data-ulabel="${esc(label)}" data-ucount="${n}">Delete</button></div>`;
+  }).join("");
+  list.querySelectorAll("[data-udel]").forEach(btn => btn.onclick = () => {
+    const label = btn.dataset.ulabel || "this wake word";
+    const n = btn.dataset.ucount || "0";
+    confirmSheet({
+      title: "Delete " + label + "?",
+      text: "This deletes its " + n + " recordings and its trained model. You can’t undo this.",
+      action: "Delete",
+      go: async () => {
+        const r = await api("DELETE", "/api/wakewords/" + encodeURIComponent(btn.dataset.udel), {});
+        if (r && r.ok) { toast(label + " deleted."); refreshBots(el); }
+        return r;
+      }
+    });
+  });
+}
 function paintBots(el, bots) {
   bots = mainFirst(bots || []);
-  const n = s => bots.filter(b => (b.status || {}).state === s).length;
-  const count = $("#bcount", el);
-  if (count) count.textContent = `${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured`;
+  el._bots = bots;
+  paintSummary(el, bots);
+  const empty = $("#emptybot", el);
+  if (empty) empty.hidden = bots.length > 0;
   const list = $("#blist", el);
   if (!list) return;
-  const voice = el._voice || {};
-  list.innerHTML = bots.map(b => {
-    const info = voice[b.slug] || {};
-    const where = b.key_mode === "home" ? "Key on home machine" : "Key on cloud computer";
-    return `<div class="botrow">${avatar(b.slug, b.name)}
-    <div style="flex:1;min-width:0"><div class="lbl">${b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : ""}${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
-    <div class="help">${esc(where)}</div>
-    <div class="help">${esc(repliesFrom(b))}${b.reply_host ? "" : " · use Change computer in Configure"}</div>
-    ${replyWarning(b) ? `<div class="help warn">${esc(replyWarning(b))}</div>` : ""}
-    <div class="help">${esc(rttLine(b.stats))}</div></div>
-    ${voiceOptions(el._voices, voiceChoice(b, el), "vv-" + b.slug, "", ` data-vsel="${esc(b.slug)}" aria-label="Voice"`)}
-    <button class="btn sm" type="button" data-vsave="${esc(b.slug)}" disabled>Save</button>
-    <button class="btn sm" type="button" data-voice="${esc(b.slug)}">${esc(info.label || "Record voice")}</button>
-    ${(b.webhook && b.webhook.configured) ? "" : `<button class="btn sm" type="button" data-hook="${esc(b.slug)}">Connect webhook</button>`}
-    <button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div>`;
-  }).join("") || `<p class="help">No bots yet.</p>`;
+  const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
+    <div><div class="lbl">Grok</div><div class="help">Built in, always on</div></div>
+    <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span>Hey Grok</span> <span class="pill ok">Always on</span></div>
+    <div class="cfg"><span class="lock" aria-hidden="true">${ICO_LOCK}</span></div></div>`;
+  list.innerHTML = hey + bots.map(b => {
+    const word = botWord(b, el._words);
+    const st = trainOf(b, el._words, el._train);
+    const warn = !b.reply_host ? "Choose a computer in Configure." : replyWarning(b);
+    const star = b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : "";
+    const pill = b.main ? ` <span class="pill off mainpill">Main bot</span>` : "";
+    return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name)}
+      <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
+        <div class="help">${esc(repliesFrom(b))}</div>
+        ${warn ? `<div class="need">${ICO_TRI}${esc(warn)}</div>` : ""}</div>
+      ${wakeControlHTML(b, word, st)}
+      <div class="cfg"><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
+  }).join("");
   bindAvatars(list);
-  list.querySelectorAll("[data-vsel]").forEach(sel => {
-    sel.dataset.saved = sel.value;
-    const btn = [...list.querySelectorAll("[data-vsave]")].find(b => b.dataset.vsave === sel.dataset.vsel);
-    const sync = () => { if (btn) btn.disabled = sel.value === (sel.dataset.saved || ""); };
-    sel.addEventListener("change", sync);
-    sync();
+  bindWakeToggles(list, el);
+  list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = ev => {
+    ev.stopPropagation();
+    openBot(bots.filter(x => x.slug === btn.dataset.bot)[0], el);
   });
-  list.querySelectorAll("[data-vsave]").forEach(btn => btn.onclick = () => {
-    if (btn.disabled) return;
-    const sel = [...list.querySelectorAll("[data-vsel]")].find(s => s.dataset.vsel === btn.dataset.vsave);
-    saveRowVoice(sel, bots.find(b => b.slug === btn.dataset.vsave), el);
+  list.querySelectorAll(".botrow").forEach(row => row.onclick = ev => {
+    if (row.getAttribute("data-fixed")) return;
+    const t = ev.target;
+    if (t && t.closest && t.closest("button, a, .tog")) return;
+    if (!window.matchMedia || !window.matchMedia("(max-width: 767px)").matches) return;
+    openBot(bots.filter(x => x.slug === row.getAttribute("data-slug"))[0], el);
   });
-  list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = () => openBot(bots.find(b => b.slug === btn.dataset.bot), el));
-  list.querySelectorAll("[data-hook]").forEach(btn => btn.onclick = () => connectWebhookWizard(bots.find(b => b.slug === btn.dataset.hook), el));
-  list.querySelectorAll("[data-voice]").forEach(btn => btn.onclick = () => {
-    const bot = bots.find(b => b.slug === btn.dataset.voice);
-    const info = voice[bot.slug] || {};
-    if (info.processing || info.state === "failed" || info.state === "failed_quality") openVoiceStatus(bot, el);
-    else enrollDrawer(null, [], () => refreshBots(el), bot.slug);
-  });
+  paintUnused(el);
 }
 function saveRowVoice(sel, bot, el) {
   if (!bot || !sel) return;
@@ -1795,20 +1974,26 @@ function saveRowVoice(sel, bot, el) {
   else askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send, stop);
 }
 async function refreshBots(el) {
-  const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
+  const [r, s, w] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status"), api("GET", "/api/wakewords")]);
   if (!r.ok || !$("#blist", el)) return null;
   noteStepup(r.data);
   el._voices = (r.data && r.data.voices) || [];
   el._defaultVoice = (r.data && r.data.default_voice) || "";
   el._voice = (s.data && s.data.buttons) || {};
+  el._train = (s.data && s.data.words) || {};
+  el._level = s.data ? s.data.level_dbfs : null;
+  el._session = !!(s.data && s.data.session);
+  el._words = (w.ok && w.data && w.data.words) || el._words || [];
+  el._unused = (w.ok && w.data && w.data.unused) || [];
+  el._bots = (r.data && r.data.bots) || [];
   applyBotMeta(el, r.data);
   if (!importedBusy(el)) paintImported(el, r.data);
-  const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.vsel;
-  const voiceDirty = [...(($("#blist", el) && $("#blist", el).querySelectorAll("[data-vsel]")) || [])].some(s => s.value !== (s.dataset.saved || ""));
-  if (el._holdPaint || focused || voiceDirty) return r.data;
+  const voiceSel = document.getElementById("bvoice");
+  const voiceDirty = !!(voiceSel && voiceSel.value !== (voiceSel.dataset.saved || ""));
+  if (el._holdPaint || voiceDirty) return r.data;
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
-  paintBots(el, r.data.bots || []);
+  paintBots(el, el._bots);
   return r.data;
 }
 function bustPortraits(el) {
@@ -1843,42 +2028,64 @@ function openBot(bot, el) {
     testId = null;
     if (id) await api("DELETE", `/api/bots/${encodeURIComponent(bot.slug)}/test/${encodeURIComponent(id)}`, {});
   };
-  d._cancel = cancelTest;
+  d._cancel = async () => { if (d._wakeStop) d._wakeStop(); await cancelTest(); };
   const saved = !!(bot.webhook && bot.webhook.configured);
+  const word = botWord(bot, el && el._words);
+  const wst = trainOf(bot, el && el._words, el && el._train);
+  const wexists = wordExists(word, el && el._train);
+  const hey = (word && wordLabel(word)) || ("Hey " + (bot.name || ""));
+  const star = bot.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : "";
+  const mpill = bot.main ? ` <span class="pill off mainpill">Main bot</span>` : "";
+  const keyKind = bot.key_mode === "home" ? "Home key" : "Cloud key";
+  const compWarn = !bot.reply_host ? "Choose a computer in Configure." : replyWarning(bot);
   d.innerHTML = `<div class="inline">${avatar(bot.slug, bot.name, true)}
-      <div style="min-width:0"><div class="lbl">${esc(bot.name)}</div><div style="margin-top:4px">${botPill(bot)}</div></div>
-      <button class="btn g sm right" id="dx">Close</button></div>
-    <div class="field"><label for="bvoice">Voice</label>
-      <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<button class="btn sm" id="vsave" type="button" disabled>Save</button></div>
-      <div id="ve"></div></div>
-    <div class="field inline">
-      <label class="btn sm" for="photo">Upload photo</label>
-      <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
-      <button class="btn sm" id="refav" type="button">Refresh avatar</button>
-    </div>
-    <p class="note">png, jpeg, or webp, up to 2 MB.</p>
-    <p class="note">Copy these from the bot's routine panel in Grok Bot.</p>
-    <div id="saved"${saved ? "" : " hidden"} class="secret"><span class="dots">•••• ${esc((bot.webhook && bot.webhook.last4) || "")}</span>
-      <span class="pill ok"><i></i>Saved</span><button class="btn sm" id="repl" type="button">Replace</button></div>
-    <div id="fields"${saved ? " hidden" : ""}>
-      <div class="field"><label for="burl">Webhook URL</label><input class="inp" id="burl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
-      <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
-      <p class="note" id="pasted" hidden>Pasted · not saved</p>
-    </div>
-    <div class="field inline"><button class="btn" id="test" type="button">Test relay</button><button class="btn p" id="save" type="button">Save</button></div>
-    <div id="tbox"></div>
-    ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
-    ${keyModeFields(bot.key_mode)}
-    ${pairFields(el._stationPub, bot)}
-    <div class="field"><div class="lbl">${esc(repliesFrom(bot))}</div>
+      <div style="min-width:0"><div class="lbl">${star}${esc(bot.name)}${mpill}</div><div class="help">${esc(repliesFrom(bot))}</div></div>
+      <button class="btn g sm right" id="dx" type="button">Close</button></div>
+    <div id="bdbody">
+    <section class="dsec"><h3>Wake word</h3>
+      ${wakeControlHTML(bot, word, wst)}
+      <p class="help">Say “${esc(hey)}” and the station hands the question to ${esc(bot.name)}.</p>
+      <div class="inline">
+        <button class="btn sm" id="wset" type="button">${wexists ? "Set a new wake word" : "Set wake word"}</button>
+        ${wexists ? `<button class="btn sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button>` : ""}
+        ${wexists ? `<button class="btn g sm" id="wrem" type="button">Remove wake word</button>` : ""}
+      </div></section>
+    <section class="dsec"><h3>Computer</h3>
+      <div class="lbl">${esc(repliesFrom(bot))} · ${keyKind}</div>
       ${lastReplyLine(bot) ? `<p class="help">${esc(lastReplyLine(bot))}</p>` : ""}
-      ${replyWarning(bot) ? `<p class="help warn">${esc(replyWarning(bot))}</p>` : ""}
-      ${bot.reply_host ? "" : `<p class="note">Use Change computer to set which home computer sends this bot's replies.</p>`}
-      <button class="btn sm" id="chcomp" type="button">Change computer</button>
-      <div id="chbox" hidden></div></div>
-    <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
-      <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div>
-    <div class="botfoot">${bot.main ? "" : `<button class="btn g sm" id="setmain" type="button">Set as Main Bot</button>`}<button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
+      ${compWarn ? `<div class="need">${ICO_TRI}${esc(compWarn)}</div>` : ""}
+      <div class="field"><button class="btn sm" id="chcomp" type="button">Change computer</button></div>
+      <div id="chbox" hidden></div></section>
+    <section class="dsec"><h3>Voice and photo</h3>
+      <div class="field"><label for="bvoice">Voice</label>
+        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<button class="btn sm" id="vsave" type="button" disabled>Save</button></div>
+        <div id="ve"></div></div>
+      <div class="field inline">
+        <label class="btn sm" for="photo">Upload photo</label>
+        <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
+        <button class="btn sm" id="refav" type="button">Refresh avatar</button>
+      </div>
+      <p class="note">png, jpeg, or webp, up to 2 MB.</p></section>
+    <section class="dsec"><h3>Connection</h3>
+      <p class="note">Copy these from the bot's routine panel in Grok Bot.</p>
+      <div id="saved"${saved ? "" : " hidden"} class="secret"><span class="dots">•••• ${esc((bot.webhook && bot.webhook.last4) || "")}</span>
+        <span class="pill ok"><i></i>Saved</span><button class="btn sm" id="repl" type="button">Replace</button></div>
+      <div id="fields"${saved ? " hidden" : ""}>
+        <div class="field"><label for="burl">Webhook URL</label><input class="inp" id="burl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+        <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+        <p class="note" id="pasted" hidden>Pasted · not saved</p>
+      </div>
+      <div class="field inline"><button class="btn" id="test" type="button">Test relay</button><button class="btn p" id="save" type="button">Save</button></div>
+      <div id="tbox"></div>
+      ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
+      ${keyModeFields(bot.key_mode)}
+      ${pairFields(el._stationPub, bot)}
+      <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
+        <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div></section>
+    <section class="dsec"><h3>Main bot and removal</h3>
+      ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<button class="btn sm" id="setmain" type="button">Set as Main Bot</button>`}
+      <div class="inline"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm right" id="delbot" type="button">Delete bot</button></div>
+    </section></div>`;
   document.body.appendChild(d);
   bindAvatars(d);
   wirePair(d, bot, el);
@@ -1897,7 +2104,31 @@ function openBot(bot, el) {
   $("#repl", d) && ($("#repl", d).onclick = () => { $("#burl", d).value = ""; $("#bkey", d).value = ""; fieldsOn(); sync(); });
   $("#burl", d).oninput = $("#bkey", d).oninput = sync;
   sync();
-  $("#dx", d).onclick = async () => { await cancelTest(); d.remove(); };
+  $("#dx", d).onclick = async () => { if (d._wakeStop) d._wakeStop(); await cancelTest(); d.remove(); };
+  bindWakeToggles(d, el);
+  const trainRow = word && el && el._train ? el._train[word.name] : null;
+  const live = !!(trainRow && (trainRow.state === "recording" || ENROLL_ACTIVE.indexOf(trainRow.state) >= 0 || trainRow.state === "processing"));
+  const wset = $("#wset", d);
+  if (wset) wset.onclick = () => {
+    if (live && word) openSetWake(bot, el, d, {phrase: word.name, resume: true, topup: !!trainRow.topup});
+    else openSetWake(bot, el, d, {});
+  };
+  const wmore = $("#wmore", d);
+  if (wmore && word) wmore.onclick = () => {
+    if (live) openSetWake(bot, el, d, {phrase: word.name, resume: true, topup: true});
+    else openSetWake(bot, el, d, {topup: true, phrase: word.name});
+  };
+  const wrem = $("#wrem", d);
+  if (wrem && word) wrem.onclick = () => confirmSheet({
+    title: "Remove " + wordLabel(word) + "?",
+    text: "The station stops listening for " + wordLabel(word) + ". " + bot.name + " still answers through Hey Grok.",
+    action: "Remove wake word",
+    go: async () => {
+      const r = await api("PUT", "/api/wakewords/" + encodeURIComponent(word.name), {unlink: true});
+      if (r && r.ok) { toast(wordLabel(word) + " removed."); d.remove(); refreshBots(el); }
+      return r;
+    }
+  });
   const voiceSel = $("#bvoice", d), vsave = $("#vsave", d);
   if (voiceSel && vsave) {
     voiceSel.dataset.saved = voiceSel.value;
@@ -2123,7 +2354,7 @@ function openBot(bot, el) {
       return toast((r.data && r.data.error) || "Couldn't set the main bot.");
     }
     markSaved();
-    toast(`${bot.name} is now the main bot.`);
+    toast(`${bot.name} is now the Main Bot.`);
     d.remove();
     refreshBots(el);
   };
@@ -2520,25 +2751,61 @@ function routineChangeComputer(slug, pub, fp) {
 function openChangeComputer(box, bot, el) {
   if (!box) return;
   box.hidden = false;
-  // Home mode: the key is tied to one computer, so moving needs Replace key. The name can still be set, so a bot
-  // from before 0.10.2 isn't stuck at "not set" (0.10.2 showed only the note here, with nothing to save).
   const home = bot.key_mode === "home";
-  box.innerHTML = (home
-    ? `<p class="note">This bot's key lives on ${esc(bot.reply_host || "its home computer")}. To move to another computer, use Replace key, then set it up on the new one. To name the computer it uses now, type its name below.</p>`
-    : `<p class="help">Copy these to your Grok Bot. It sets up the new computer and tells you its name.</p>
-    <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>`)
-    + `<div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(bot.reply_host || "")}"></div>
-    <div id="chere"></div>
-    <div class="field"><button class="btn p sm" type="button" id="chsave">Save</button></div>`;
-  if ($("#chcopy", box)) $("#chcopy", box).onclick = ev => copyText(routineChangeComputer(bot.slug, el._stationPub, el._fingerprint), ev.currentTarget);
-  $("#chsave", box).onclick = async () => {
-    const name = $("#chname", box).value.trim();
-    if (!name) return errBox($("#chere", box), "Type the computer's name.");
-    const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, {reply_host: name});
-    if (!r.ok) return errBox($("#chere", box), (r.data && r.data.error) || "Couldn't save that.");
-    bot.reply_host = name;
-    errBox($("#chere", box), "");
-    toast(`Replies from ${name}.`);
+  const host = bot.reply_host || "";
+  const who = bot.name || "This bot";
+  const hide = () => { box.hidden = true; box.innerHTML = ""; };
+  if (home && host) {
+    box.innerHTML = `<div class="note amber"><div class="lbl">This needs a new key</div>
+      <p>${esc(who)}’s key is kept on ${esc(host)}, and a key works on only one computer. To move ${esc(who)}, use Replace key, then set it up on the new computer.</p>
+      <div class="inline"><button class="btn sm" type="button" id="chrepl">Replace key</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
+    const repl = $("#chrepl", box);
+    if (repl) repl.onclick = () => {
+      const b = document.getElementById("bpubrepl");
+      if (b && b.click) b.click();
+      hide();
+    };
+    const cancel = $("#chcancel", box);
+    if (cancel) cancel.onclick = hide;
+    return;
+  }
+  if (home) {
+    box.innerHTML = `<div class="note amber"><div class="lbl">This needs a new key</div>
+      <p>${esc(who)}’s key is kept on this computer, and a key works on only one computer. To move ${esc(who)}, use Replace key, then set it up on the new computer. The computer name isn’t set yet. Type it below.</p></div>
+      <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value=""></div>
+      <div id="chere"></div>
+      <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div>`;
+  } else {
+    box.innerHTML = `<div class="chpanel"><div class="lbl">Move replies to another computer</div>
+      <p class="help">Copy these instructions and paste them to ${esc(who)} in your Grok Bot.</p>
+      <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>
+      <p class="help">${esc(who)} sets up the new computer and tells you its name. Type it here.</p>
+      <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="">
+        <p class="help">No new key or pairing needed.</p></div>
+      <div id="chere"></div>
+      <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
+  }
+  const copy = $("#chcopy", box);
+  if (copy) copy.onclick = ev => copyText(routineChangeComputer(bot.slug, el && el._stationPub, el && el._fingerprint), ev.currentTarget);
+  const cancel = $("#chcancel", box);
+  if (cancel) cancel.onclick = hide;
+  const save = $("#chsave", box);
+  if (save) save.onclick = async () => {
+    const field = $("#chname", box);
+    const typed = field ? field.value.trim() : "";
+    const ere = $("#chere", box);
+    if (!typed) {
+      if (ere) ere.innerHTML = `<div class="need">Needs attention: type the computer’s name.</div>`;
+      return;
+    }
+    if (ere) ere.innerHTML = "";
+    const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, {reply_host: typed});
+    if (!r.ok) {
+      if (ere) ere.innerHTML = `<div class="need">${esc((r.data && r.data.error) || "Couldn't save that.")}</div>`;
+      return;
+    }
+    bot.reply_host = typed;
+    toast("Replies from " + typed + ".");
     if (el) refreshBots(el);
   };
 }
@@ -2813,24 +3080,37 @@ function addBot(voices, el, preset) {
   step1();
 }
 async function pageBots(el) {
-  const [r, s] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status")]);
+  el.classList.add("bots");
+  const [r, s, w] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status"), api("GET", "/api/wakewords")]);
   const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
   const bots = data.bots || [];
-  const n = st => bots.filter(b => (b.status || {}).state === st).length;
   const slot = $("#topr");
-  if (slot) slot.innerHTML = `<button class="btn sm" id="avatars" type="button">Refresh avatars</button>`;
+  if (slot) slot.innerHTML = `<button class="btn g sm" id="avatars" type="button">Refresh avatars</button>`;
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
   el._defaultVoice = data.default_voice || "";
+  el._train = (s.data && s.data.words) || {};
+  el._level = s.data ? s.data.level_dbfs : null;
+  el._session = !!(s.data && s.data.session);
+  el._words = (w.ok && w.data && w.data.words) || [];
+  el._unused = (w.ok && w.data && w.data.unused) || [];
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
-    <div class="card"><h2>Bots</h2><p class="sub">Teammates the station can talk to. Webhooks are saved on the station and never shown again. You can connect other bots from your Grok Bot account.</p>
-      <div class="inline" style="margin-top:12px"><span class="lbl" id="bcount">${n("connected")} connected · ${n("error")} errors · ${n("not_configured")} not configured</span>
-      <span class="stepup" id="sulock" hidden></span>
-      <button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button>
-      <button class="btn p sm right" id="add">Add bot</button></div>
-      <p class="note" id="rttall"></p>
-      <div id="blist"></div><div id="vere"></div></div>
+    <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
+      <button class="btn p sm right" id="add" type="button">Add bot</button></div>
+    <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
+    <p class="help">You can connect other bots from your Grok Bot account.</p>
+    <div class="card emptybot" id="emptybot" hidden>
+      <div class="ring">+</div>
+      <div class="lbl">No other bots yet</div>
+      <p class="help">Hey Grok always works. You can connect other bots from your Grok Bot account, each with its own wake word.</p>
+      <button class="btn p sm" id="addempty" type="button">Add bot</button></div>
+    <div id="unusedwrap" hidden>
+      <div class="seclab">Unused wake words</div>
+      <div class="card botsheet" id="unused"></div>
+      <p class="help">The station doesn’t listen for these. Delete them to free space, or set one again from a bot’s Configure.</p></div>
+    <p class="note" id="rttall"></p>
+    <div class="inline"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button></div>
     <div id="iere"></div>
     <div class="card" id="imported"></div>`;
   applyBotMeta(el, data);
@@ -2849,7 +3129,10 @@ async function pageBots(el) {
     setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 2000);
   };
   every(3000, () => { if (document.body.contains(el) && $("#blist", el)) refreshBots(el); });
-  $("#add", el).onclick = () => addBot(el._voices || data.voices || [], el);
+  const openAdd = () => addBot(el._voices || data.voices || [], el);
+  $("#add", el).onclick = openAdd;
+  const addEmpty = $("#addempty", el);
+  if (addEmpty) addEmpty.onclick = openAdd;
   const kill = $("#revokeall", el);
   if (kill) kill.onclick = () => askPassword("Revoke all bots?", "This drops every pinned key. Replies are rejected until a key is paired again.", "Revoke all bots", async pw => {
     const r = await api("POST", "/api/bots/revoke-all", {password: pw});

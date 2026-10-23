@@ -160,7 +160,7 @@ DROP_DIR = E("WAKE_DROP_DIR", "/var/lib/grok-station/wakewords")  # onnx + json 
 DROP_POLL_S = 60
 CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0.1 only
 ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
-ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None}
+ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "discard": False}
 # Admin page (admin/grok_admin.py): until setup is done the station connects no one. The admin service writes
 # SETUP_FILE ({"mode": "setup"|"reset"|"hotspot", ...}) while setup is pending and removes it when a password is set.
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
@@ -849,6 +849,25 @@ def control_server():
                     path = CHIME
                 play_file(LIVE["play"], path)
                 return self._r(202, {"ok": True})
+            if self.path == "/enroll/control":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except (ValueError, TypeError):
+                    return self._r(400, {"error": "bad json"})
+                if not isinstance(body, dict) or body.get("op") not in ("pause", "resume", "discard"):
+                    return self._r(400, {"error": "bad op"})
+                if not ENROLL_STATE["busy"]:
+                    return self._r(409, {"error": "Nothing is recording."})
+                op = body["op"]
+                if op == "pause":
+                    ENROLL_STATE["pause"] = True
+                elif op == "resume":
+                    ENROLL_STATE["pause"] = False
+                else:
+                    ENROLL_STATE["discard"] = True
+                    ENROLL_STATE["pause"] = False
+                return self._r(200, {"ok": True, "op": op})
             if self.path != "/enroll":
                 return self._r(404, {"error": "not found"})
             try:
@@ -1109,6 +1128,27 @@ def _build_fewshot(phrase, persona):
     return cal
 
 
+def _note_clip(i, kept, phase, why, topup, n):
+    """Per-clip progress on the enroll status. Does not post a display state."""
+    last = ENROLL_STATE.get("last")
+    if not isinstance(last, dict):
+        return
+    recent = last.get("recent") if isinstance(last.get("recent"), list) else []
+    recent = [{"n": int(i), "ok": why == "", "why": str(why)[:24]}] + recent
+    last["recent"] = recent[:6]
+    last["index"] = int(i)
+    last["kept"] = int(kept)
+    last["count"] = int(n)
+    last["phase"] = phase
+    last["topup"] = bool(topup)
+
+
+def _enroll_hold():
+    """Pause between clips. Discard clears the pause so this returns."""
+    while ENROLL_STATE.get("pause") and not ENROLL_STATE.get("discard"):
+        time.sleep(0.2)
+
+
 def enroll(req, read16, play):
     """Record req["count"] clips onto this Pi. Training does not run here."""
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
@@ -1119,9 +1159,12 @@ def enroll(req, read16, play):
     d = os.path.join(ENROLL_DIR, phrase, ses)
     os.makedirs(d, exist_ok=True)
     ENROLL_STATE["busy"] = True
+    ENROLL_STATE["pause"] = False
+    ENROLL_STATE["discard"] = False
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
     ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time(),
-                             "persona": persona, "stage": "recording", "message": "Say it on the station."}
+                             "persona": persona, "stage": "recording", "message": "Say it on the station.",
+                             "index": 0, "kept": 0, "phase": "prompt", "topup": bool(prior), "recent": []}
     print(f"enroll start {phrase} x{n} session {ses}{f' (top-up of {prior})' if prior else ''}", flush=True)
     sent, i, tries = 0, 1, 0
     try:
@@ -1133,6 +1176,11 @@ def enroll(req, read16, play):
         except OSError:
             pass
         while i <= n:
+            if ENROLL_STATE.get("discard"):
+                break
+            _enroll_hold()
+            if ENROLL_STATE.get("discard"):
+                break
             show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
                 read16()
@@ -1146,8 +1194,10 @@ def enroll(req, read16, play):
             clip = trim_clip(pcm)
             if clip is None or clipped:
                 tries += 1
+                why = "loud" if clipped else "quiet"
                 print(f"enroll clip {i} rejected ({'clipped' if clipped else 'quiet'})", flush=True)
-                show(i, "loud" if clipped else "quiet")
+                show(i, why)
+                _note_clip(i, sent, why, why, bool(prior), n)
                 for _ in range(int(RETRY_S / 0.08)):
                     read16()
                 if tries >= 3 * n:
@@ -1157,11 +1207,18 @@ def enroll(req, read16, play):
             with wave.open(path, "wb") as w:
                 w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(clip.astype("<i2").tobytes())
             sent += 1
+            _note_clip(i, sent, "saved", "", bool(prior), n)
             if i < n:
                 show(i, "saved")
                 for _ in range(int(0.6 / 0.08)):
                     read16()
             i += 1
+        if ENROLL_STATE.get("discard"):
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+            enroll_stage("cancelled", "Stopped.", phrase, ses)
+            print(f"enroll discarded {phrase} session {ses}", flush=True)
+            return
         ok = sent >= (5 if prior else 10)
         body = {"phrase": phrase, "persona": persona, "count": sent, **({"prior": prior} if prior else {})}
         try:

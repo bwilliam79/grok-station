@@ -179,3 +179,11 @@ Patch release. Installs over 0.10.1.
 - **Change computer.** In Configure, with the key on the bot computer, this gives the setup step for the new computer only and saves its name. No re-pair is needed, and saving the name doesn't ask for the password again. With the key on a home computer, it explains that moving needs Replace key.
 - The name is display only. Nothing new decides which computer may post replies; the key still does. Posts don't carry the name yet, because that would change the pinned reply tool.
 
+## 0.10.3
+
+Patch release. Installs over 0.10.2.
+
+- **Wake words on Bots.** The Wake words item is gone. `#wake` opens Bots. Hey Grok is a fixed row (built in, always on). Each other bot shows its wake word. Configure is where you set it, train more, or remove it. Removing a word, or deleting the bot, moves it to Unused wake words and keeps the recordings until that row is deleted.
+- **Change computer.** A cloud key asks for the new computer's name in the drawer. A home key says this needs a new key and offers Replace key, with no name field. A home-key bot that still has no computer name (the 0.10.2 case) can set the name there.
+- **Connect me with a bot.** "Hey Grok, can you connect me with Kai" (also "connect me to" and "put me through to") is handled on the station. It is not answered by the Grok model and it is not sent to the bot. The station says "Connecting you with Kai.", switches the session to Kai, and speaks "Hey, this is Kai. How can I help you?" in Kai's voice. Follow-ups in that session go to Kai without Kai's wake word. An unknown name is spoken back with the bots on this station.
+
