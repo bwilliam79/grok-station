@@ -1,7 +1,16 @@
 #!/bin/sh
 # Install pii-guard as this clone's pre-commit, commit-msg and pre-push hooks.
+# If a global core.hooksPath dispatcher is in use (hooks are symlinks to a shared
+# _dispatch), do nothing: that dispatcher already runs this repo's tools/pii-guard
+# (with leak-scan) because the repo contains tools/leak-scan.py. Never write
+# through those symlinks, or every repo on the home machine gets these hooks.
 set -e
 top="$(git rev-parse --show-toplevel)"; hooks="$(git rev-parse --git-path hooks)"
+if { [ -L "$hooks/pre-commit" ] || [ -n "$(git config --global core.hooksPath 2>/dev/null)" ]; } \
+   && [ -z "$(git config --local core.hooksPath 2>/dev/null)" ]; then
+  echo "pii-guard: global hooks dispatcher in use ($hooks); it opts this repo in via tools/leak-scan.py. Nothing installed."
+  exit 0
+fi
 mkdir -p "$hooks"
 printf '#!/bin/sh\nexec "%s/tools/pii-guard" staged\n' "$top" > "$hooks/pre-commit"
 printf '#!/bin/sh\nexec "%s/tools/pii-guard" msg "$1"\n' "$top" > "$hooks/commit-msg"
