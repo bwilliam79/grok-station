@@ -44,7 +44,7 @@ Minor release. Installs over 0.5.0.
 - **Audio gain.** The mic boost sliders show the gain the listener actually uses for the saved device (2 for an EMEET speakerphone, 4 otherwise; voice follows wake when voice has no line of its own). Save writes a gain only when that slider was moved.
 - **Wake dependencies.** The wake virtualenv pins openwakeword 0.6.0 (still with `--no-deps`), onnxruntime 1.31.0, and numpy 2.5.4.
 - **Mic level.** The periodic level line also reports the peak sample in that window and the clipped ratio, the fraction of samples at full scale (`clipped=0.0012`).
-- **No hosted mailbox.** There is no hosted mailbox. Replies are posted by Grok Bot running on a home machine on the station's LAN.
+- **Replies come from home.** Replies are posted by Grok Bot running on a home machine on the station's LAN.
 - **Where the key lives.** Cloud is the default: the bot's cloud computer seals, and the home machine posts. Home mode (macOS) generates the key, seals, and posts in one command on that home machine, about 3 seconds faster. A key exists on only one machine. Switching the mode revokes the pinned key and asks for a new public key.
 - **Main bot first.** Add your main bot first. The add-bot dialog says so on the first step.
 
@@ -73,9 +73,15 @@ Patch release. Installs over 0.8.1.
 
 - **Home mode available.** After its validation run on a Mac, Add bot (and a bot's key mode) now offers **Home machine** as an opt-in choice. **Cloud computer** stays the default and is pre-selected. No script or station changes.
 
+## 0.8.4
+
+Patch release. Installs over 0.8.3.
+
+- **Simpler Add bot.** Plainer Add bot: the key step only asks where the key lives; the webhook step is required and collects the webhook URL, webhook key and bot public key; the instructions sit behind View instructions and Copy instructions; station key, fingerprint and technical notes are gone from the flow; README lists any USB speaker and microphone and the supported screen sizes (docs/display.md).
+
 ## 0.8.3
 
 Patch release. Installs over 0.8.2.
 
-- **Plainer Add bot key step.** "Where the bot's key lives": Bot computer (default) or Home computer (replies come back faster), with one note that a computer on your home network must run the Grok Bot app and stay on and reachable 24/7. No commands or mailbox wording.
+- **Plainer Add bot key step.** "Where the bot's key lives": Bot computer (default) or Home computer (replies come back faster), with one note that a computer on your home network must run the Grok Bot app and stay on and reachable 24/7. No commands or technical wording.
 - **Shorter setup prompt.** The human-facing background paragraph is gone from both routines and the home setup line; the bot is also asked to reply with its public key. Operative instructions unchanged.

@@ -135,7 +135,7 @@ class PairingUi(unittest.TestCase):
 
     def test_station_key_is_static_text_with_copy(self):
         self.assertIn('staticValue("spub", stationPub, "station public key", STATION_KEY_MISSING)', self.js)
-        self.assertIn('staticValue("astapub", el._stationPub, "station public key", STATION_KEY_MISSING)', self.js)
+        self.assertNotIn('staticValue("astapub"', self.js)
         self.assertIn('staticValue("tlsfp"', self.js)
         self.assertNotRegex(self.js, r'<input[^>]*readonly')
         self.assertIn('Station key unavailable, see logs', self.js)

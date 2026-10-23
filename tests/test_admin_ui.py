@@ -145,13 +145,12 @@ class AdminUI(unittest.TestCase):
         self.assertIn("Avg round trip", js)
         self.assertIn("No round trips yet", js)
         self.assertIn("Overall · ", js)
-        self.assertEqual(js.count("Never open the admin port to the internet."), 2)
+        self.assertNotIn("Never open the admin port", js)
         self.assertNotIn("Never port-forward", js)
         self.assertNotIn("The bot seals replies", js)
         self.assertIn("All bots are revoked. Pair a key again to accept replies.", js)
         self.assertIn("Base64, 32 bytes", js)
-        self.assertIn("Your bot gives you this key. Its private half never leaves your bot.", js)
-        self.assertIn("Your bot gives you this key. Its private half stays on your home computer.", js)
+        self.assertNotIn("function keyNote", js)
         self.assertNotIn("From grok-station-reply keygen.", js)
         self.assertNotIn("From gs-seal-setup keygen", js)
         self.assertIn("Gives up after 30 seconds.", js)
@@ -297,11 +296,10 @@ class AdminUI(unittest.TestCase):
         self.assertIn(cloud, fences)
         self.assertIn(home, fences)
         self.assertIn("const HOME_MODE = true;", js)
-        self.assertEqual(js.count('value="cloud"${home ? "" : " checked"}> Bot computer (default)'), 1)
-        self.assertEqual(js.count('value="cloud"${home ? "" : " checked"}> Cloud computer (default)'), 1)
+        self.assertEqual(js.count('value="cloud"${home ? "" : " checked"}> Bot computer (default)'), 2)
+        self.assertNotIn("Cloud computer (default)", js)
         self.assertIn('keyMode: "cloud"', js)
-        self.assertIn("Home machine mode will be enabled after its first validation run.", js)
-        self.assertEqual(js.count("Home computer will be available after it's been tested."), 1)
+        self.assertEqual(js.count("Home computer will be available after it's been tested."), 2)
         self.assertIn("grok-station-reply seal", cloud)
         self.assertNotIn("gs-seal-reply", cloud)
         self.assertIn("gs-seal-reply reply", home)
@@ -349,18 +347,32 @@ class AdminUI(unittest.TestCase):
         self.assertIn("> Bot computer (default)</label>", step2)
         self.assertIn("> Home computer</label>", step2)
         self.assertIn('<span class="help">Replies come back faster.</span>', step2)
-        self.assertEqual(step2.count("A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station."), 1)
+        self.assertEqual(step2.count("esc(HOME_24_7)"), 1)
+        self.assertEqual(js.count("A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station."), 1)
         self.assertNotIn("old-hostname", step2.lower())
-        self.assertIn("Paste your bot's key here.", step2)
+        self.assertNotIn('id="apairskip"', step2)
         self.assertNotIn("keygen", step2)
         self.assertNotIn("seal", step2.lower())
         self.assertNotIn("mailbox", step2.lower())
         self.assertNotIn("Cloud computer", step2)
         self.assertNotIn("Home machine", step2)
         step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
-        self.assertIn("Optional. Copy this setup prompt and send it to your bot. Paste the webhook address and key it replies with below.", step3)
-        self.assertIn("The key stays on your home computer. That computer must be running the Grok Bot app, and be on and reachable 24/7.", step3)
-        self.assertIn("The key stays on your bot's computer. A computer on your home network must still be running the Grok Bot app, and be on and reachable 24/7.", step3)
+        self.assertIn("Copy the instructions to your Grok Bot, then paste what it sends back below.", step3)
+        self.assertNotIn("Optional", step3)
+        self.assertNotIn("Skip", step3)
+        self.assertNotIn("askip", step3)
+        self.assertIn(">View instructions<", step3)
+        self.assertIn('>Copy instructions<', step3)
+        self.assertIn('data-copy="aroutine"', step3)
+        self.assertIn('<pre class="static-val" id="aroutine" hidden>', step3)
+        for fid in ('id="aurl"', 'id="akey"', 'id="apub"'):
+            self.assertIn(fid, step3)
+        self.assertIn("pubKeyOk(pub)", step3)
+        self.assertIn("draft.pub = pub", step3)
+        self.assertNotIn('class="note"', step3)
+        add_l = add.lower()
+        for text in ("secret store", "station address is this page", "never open the admin port", "station's lan", " seed"):
+            self.assertNotIn(text, add_l, text)
         self.assertNotIn("mailbox", step3.lower())
         self.assertIn("key_mode", add)
         self.assertIn("Key lives", add)
@@ -382,7 +394,10 @@ class AdminUI(unittest.TestCase):
             self.assertIn(text, docs, text)
             self.assertIn(text, readme, text)
         self.assertIn("A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station.", readme)
-        self.assertIn("There is no hosted mailbox", docs)
+        self.assertNotIn("mailbox", docs.lower())
+        self.assertNotIn("mailbox", readme.lower())
+        self.assertNotIn("emeet", readme.lower())
+        self.assertIn("docs/display.md", readme)
         self.assertNotIn("mailbox", js.lower())
 
     def test_0_2_0_notes_cover_wake_pins_level_and_home_key(self):
@@ -391,7 +406,7 @@ class AdminUI(unittest.TestCase):
         section = notes.split("## 0.6.0", 1)[1].split("\n## ", 1)[0]
         blurb = _read("README.md").split("**0.6.0**", 1)[1].split("\n\n", 1)[0]
         for text in ("openwakeword 0.6.0", "onnxruntime 1.31.0", "numpy 2.5.4",
-                     "peak sample", "clipped=0.0012", "There is no hosted mailbox",
+                     "peak sample", "clipped=0.0012",
                      "A key exists on only one machine",
                      "Add your main bot first"):
             self.assertIn(text, section, text)
@@ -399,7 +414,9 @@ class AdminUI(unittest.TestCase):
 
     def test_add_bot_shows_certificate_fingerprint(self):
         step2 = self.js.split("const step2 = ", 1)[1].split("const step1 = ", 1)[0]
-        self.assertIn("Certificate fingerprint", step2)
+        self.assertNotIn("Certificate fingerprint", step2)
+        self.assertNotIn("Station public key", step2)
+        self.assertNotIn('id="apub"', step2)
         self.assertIn("botKeyState", self.js)
         state = _fn(self.js, "botKeyState")
         self.assertIn("public_key", state)
@@ -418,10 +435,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn("bpubrepl", wire)
         self.assertIn("/key", wire)
         self.assertIn("public_key: pub", wire)
-        self.assertIn('staticValue("afp", el._fingerprint, "certificate fingerprint", "n/a")', step2)
-        self.assertIn('staticValue("astapub"', step2)
-        between = step2.split("Certificate fingerprint", 1)[1].split("Bot public key", 1)[0]
-        self.assertNotIn("<input", between)
+        self.assertNotIn('staticValue("afp"', self.js)
+        self.assertNotIn('staticValue("astapub"', self.js)
         self.assertIn('data-copy', self.js.split("function staticValue", 1)[1].split("function clearTimers", 1)[0])
         admin = _read(os.path.join("admin", "grok_admin.py"))
         self.assertIn('"fingerprint": tls_info()["fingerprint"]', admin)

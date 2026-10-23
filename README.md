@@ -17,12 +17,16 @@ grok-station is a voice station you keep at home. It runs on a Raspberry Pi, lis
 ## What you need
 
 - A Raspberry Pi 4 with 2 GB of memory or more. A Pi 5 is the one to get. A Pi 3B is only for a small test.
-- A display plugged into the Pi.
-- An EMEET speakerphone. That is the USB microphone and speaker.
+- A display plugged into the Pi, from 800x480 up to 4K (3840x2160). See **Screens** below.
+- Any USB speaker and microphone, or a combined USB speakerphone.
 - A microSD card, 16 GB or larger.
 - A power supply for the Pi.
 - 64-bit Raspberry Pi OS Lite (Trixie).
 - An xAI API key.
+
+### Screens
+
+The station draws straight to the Pi's screen, in landscape. Sizes from 800x480 to 3840x2160 fill the whole screen, and the layout scales to fit. Bigger screens get a centered 3840x2160 picture with black borders. Smaller ones still work, but things may not fit. The automated tests check layouts at 800x480, 1024x600, 1280x720, 1280x800, 1920x1080, 2560x1706 and 3840x2160. Not every size has been tried on a real screen. Portrait (rotated) screens are untested. Touch isn't used, so a touchscreen works as a plain screen. Details are in [docs/display.md](docs/display.md).
 
 ## Put it on the Pi
 
@@ -61,9 +65,9 @@ When a fresh install finishes, it asks you to press Enter to reboot. After that,
 
 Other notes in `docs/` cover the design, handoff between bots, and longer plans.
 
-**0.8.3** plainer Add bot key step (Bot computer or Home computer, one note on what must stay on) and a shorter setup prompt. **0.8.2** turns on home mode in Add bot as an opt-in choice; cloud stays the default. **0.8.0** ships the Mac home-mode scripts (`gs-seal-setup`, `gs-seal-reply`) with hash-locked PyNaCl. Add bot keeps offering cloud mode only until home mode's first validation run. See [docs/bots.md](docs/bots.md).
+**0.8.4** plainer Add bot: the key step only asks where the key lives; the webhook step is required and collects the webhook URL, webhook key and bot public key; the instructions sit behind View instructions and Copy instructions; station key, fingerprint and technical notes are gone from the flow; README lists any USB speaker and microphone and the supported screen sizes (docs/display.md). **0.8.3** plainer Add bot key step (Bot computer or Home computer, one note on what must stay on) and a shorter setup prompt. **0.8.2** turns on home mode in Add bot as an opt-in choice; cloud stays the default. **0.8.0** ships the Mac home-mode scripts (`gs-seal-setup`, `gs-seal-reply`) with hash-locked PyNaCl. Add bot keeps offering cloud mode only until home mode's first validation run. See [docs/bots.md](docs/bots.md).
 
-**0.6.0** adds bot list import, saves switches immediately (other fields keep a Save button), shows an add-bot routine to paste into the bot along with this station's certificate fingerprint, and leaves mic gain alone until that slider is moved. It also pins the wake packages (openwakeword 0.6.0, onnxruntime 1.31.0, numpy 2.5.4) and adds the peak sample and clipped ratio (`clipped=0.0012`) to the mic level line. There is no hosted mailbox: Grok Bot on a home machine on the station's LAN posts replies. The key lives on the cloud computer (default) or, on a Mac, on that home machine (`gs-seal-reply`, one command, about 3 seconds faster; enabled in Add bot after its first validation run). A key exists on only one machine; switching mode revokes the pinned key. Add your main bot first. Notes are in [docs/versioning.md](docs/versioning.md).
+**0.6.0** adds bot list import, saves switches immediately (other fields keep a Save button), shows an add-bot routine to paste into the bot along with this station's certificate fingerprint, and leaves mic gain alone until that slider is moved. It also pins the wake packages (openwakeword 0.6.0, onnxruntime 1.31.0, numpy 2.5.4) and adds the peak sample and clipped ratio (`clipped=0.0012`) to the mic level line. Grok Bot on a home computer on the station's network posts replies. The key lives on the cloud computer (default) or, on a Mac, on that home machine (`gs-seal-reply`, one command, about 3 seconds faster; enabled in Add bot after its first validation run). A key exists on only one machine; switching mode revokes the pinned key. Add your main bot first. Notes are in [docs/versioning.md](docs/versioning.md).
 
 **Cards.** A paired bot can put a recipe, sports, calendar, or home card on the display. It uses the same sealed signature as a reply, on `POST /voice/show`. See [docs/cards.md](docs/cards.md).
 

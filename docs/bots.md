@@ -2,7 +2,7 @@
 
 A paired bot answers from its own home Grok Bot machine. The station posts one webhook. The bot signs an answer, seals it to the station's public key, and posts it to the **existing** admin HTTPS port. That port forwards the body to the loopback relay. There is no new listener, and the admin port must never be port-forwarded.
 
-There is no hosted mailbox. The bot needs Grok Bot running on a home machine on the station's LAN to post replies. Posting is from that home machine either way.
+The bot needs Grok Bot running on a home machine on the station's LAN to post replies. Posting is from that home machine either way.
 
 Bots only produce spoken answer text (tier 0, `action_class` `answer`). A bot message never runs a command.
 
@@ -62,7 +62,7 @@ Add your main bot first.
 
 ## Where the key lives
 
-Each bot is **cloud** or **home**. Cloud is the default. Either way, posting is from the home Grok Bot machine on the station's LAN. There is no hosted mailbox.
+Each bot is **cloud** or **home**. Cloud is the default. Either way, posting is from the home Grok Bot machine on the station's LAN.
 
 - **Cloud computer (default).** The key is generated on the bot's cloud computer. That computer seals. The home machine posts the sealed line with `post`. The key never goes to the home machine.
 - **Home machine.** macOS only. Run `gs-seal-setup` once (`vendor-install`, then `keygen`, then `init`), then `gs-seal-reply` seals and posts. That is about 3 seconds faster. It depends on the home machine being online. The key is a file on that disk. Keep the key file out of git, sync, and backups. Time Machine must exclude the key directory, and the key is bound to that Mac. See [Home mode](#home-mode-gs-seal-setup-and-gs-seal-reply).

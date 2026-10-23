@@ -1133,18 +1133,13 @@ function applyBotMeta(el, data) {
   const overall = $("#rttall", el);
   if (overall) overall.textContent = "Overall · " + rttLine(el._stats);
 }
-function keyNote(mode) {
-  return mode === "home"
-    ? "Your bot gives you this key. Its private half stays on your home computer."
-    : "Your bot gives you this key. Its private half never leaves your bot.";
-}
 function keyModeFields(mode) {
   const home = mode === "home";
   return `<fieldset class="field" id="kmlive">
       <legend>Where the bot's key lives</legend>
-      <label class="choice"><input type="radio" name="blives" value="cloud"${home ? "" : " checked"}> Cloud computer (default)</label>
-      ${HOME_MODE ? `<label class="choice"><input type="radio" name="blives" value="home"${home ? " checked" : ""}> Home machine</label>` : `<span class="help">Home machine mode will be enabled after its first validation run.</span>`}
-      <p class="note">A key exists on only one machine. Switching this revokes the pinned key and asks for a new public key.</p>
+      <label class="choice"><input type="radio" name="blives" value="cloud"${home ? "" : " checked"}> Bot computer (default)</label>
+      ${HOME_MODE ? `<label class="choice"><input type="radio" name="blives" value="home"${home ? " checked" : ""}> Home computer</label>` : `<span class="help">Home computer will be available after it's been tested.</span>`}
+      <p class="note">Switching this removes the current key. Your bot will need to send a new one.</p>
       <div id="kmnote" class="note" hidden></div>
       <div id="kme"></div>
     </fieldset>`;
@@ -1167,11 +1162,10 @@ function pairFields(stationPub, bot) {
       <input class="inp mono" id="bpub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes">
       ${pairBtn}</div>`;
   return `<div class="field"><label>Station public key</label>
-      ${staticValue("spub", stationPub, "station public key", STATION_KEY_MISSING)}
-      <p class="note">Your bot uses this to lock its replies so only this station can read them. Never open the admin port to the internet.</p></div>
+      ${staticValue("spub", stationPub, "station public key", STATION_KEY_MISSING)}</div>
     <div class="field"><label for="bpub">Bot public key</label>
       ${shown}${editor}
-      <p class="note" id="bpubnote">${esc(keyNote(mode))}</p></div>
+      </div>
     <div id="perr"></div>
     <div class="field inline">${paired ? `<button class="btn dg" id="revoke" type="button">Revoke</button>` : ""}</div>`;
 }
@@ -1279,8 +1273,6 @@ function wireKeyMode(root, bot, el) {
       if (res && res.ok) {
         bot.key_mode = next;
         setChecked(next);
-        const noteEl = $("#bpubnote", root);
-        if (noteEl) noteEl.textContent = keyNote(next);
         if (res.data && res.data.needs_key) {
           bot.paired = false;
           bot.public_key = null;
@@ -1933,6 +1925,7 @@ function openBot(bot, el) {
     refreshBots(el);
   });
 }
+const HOME_24_7 = "A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station.";
 const ADD_STEP_LABEL = "1 Bot · 2 Connect · 3 Webhook · 4 Done";
 const HOOK_LATER = "Not connected yet - use Connect webhook on the Bots page";
 function addStepper(n) {
@@ -2374,7 +2367,7 @@ function addBot(voices, el, preset) {
       <div class="row"><span>ID</span><span class="right mono">${esc(draft.slug)}</span></div>
       <div class="row"><span>Voice</span><span class="right">${esc(draft.voice ? draft.voice : stationVoiceLabel(el))}</span></div>
       <div class="row"><span>Key</span><span class="right mono">${fp ? esc(fp) : "no"}</span></div>
-      <div class="row"><span>Key lives</span><span class="right">${draft.keyMode === "home" ? "Home machine" : "Cloud computer"}</span></div>
+      <div class="row"><span>Key lives</span><span class="right">${draft.keyMode === "home" ? "Home computer" : "Bot computer"}</span></div>
       <div class="row"><span>Webhook</span><span class="right">${hook ? "yes" : "no"}</span></div>
       ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="apw">Admin password</label><input class="inp" type="password" id="apw" autocomplete="current-password" required></div>`}
       <div id="ape"></div>
@@ -2438,38 +2431,43 @@ function addBot(voices, el, preset) {
   const step3 = () => {
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Connect webhook">${dialogX()}${addStepper(3)}
       <h2>Connect webhook</h2>
-      <p class="sub">Optional. Copy this setup prompt and send it to your bot. Paste the webhook address and key it replies with below.</p>
-      <div class="field"><label>Paste this into your Grok Bot</label>
-        <div class="static"><pre class="static-val" id="aroutine"></pre>
-          <button type="button" class="iconbtn" data-copy="aroutine" title="Copy routine" aria-label="Copy routine">${COPY_ICON}</button>
+      <p class="sub">Copy the instructions to your Grok Bot, then paste what it sends back below.</p>
+      <div class="field"><div class="inline">
+          <button type="button" class="btn sm" id="aview" aria-expanded="false" aria-controls="aroutine">View instructions</button>
+          <button type="button" class="btn sm" id="acopy" data-copy="aroutine">Copy instructions</button>
           <span class="copied" role="status" hidden></span></div>
-        <p class="note" id="anote"></p></div>
-      <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512"></div>
-      <div class="field"><label for="akey">Key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400"></div>
+        <pre class="static-val" id="aroutine" hidden></pre></div>
+      <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512" required></div>
+      <div class="field"><label for="akey">Webhook key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400" required></div>
+      <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120" required></div>
       <div id="awe"></div>
-      <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div>
-      <div class="field"><a href="#" class="skipnow" id="askip">Skip for now</a></div></form>`;
-    const urlEl = $("#aurl", d), keyEl = $("#akey", d);
+      <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
+    const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d);
     const routine = $("#aroutine", d);
     if (routine) routine.textContent = routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode);
-    const note = $("#anote", d);
-    if (note) note.textContent = draft.keyMode === "home"
-      ? "The key stays on your home computer. That computer must be running the Grok Bot app, and be on and reachable 24/7."
-      : "The key stays on your bot's computer. A computer on your home network must still be running the Grok Bot app, and be on and reachable 24/7.";
+    const view = $("#aview", d);
+    if (view && routine) view.onclick = () => {
+      routine.hidden = !routine.hidden;
+      view.setAttribute("aria-expanded", routine.hidden ? "false" : "true");
+      view.textContent = routine.hidden ? "View instructions" : "Hide instructions";
+    };
     if (urlEl) urlEl.value = draft.url;
+    if (pubEl) pubEl.value = draft.pub;
     bindSheet(d, shut);
-    const skip = $("#askip", d);
-    if (skip) skip.onclick = ev => { ev.preventDefault(); draft.url = ""; draft.key = ""; step4(); };
     d.querySelector("form").onsubmit = ev => {
       ev.preventDefault();
       const url = urlEl ? urlEl.value.trim() : "";
-      const key = keyEl ? keyEl.value : "";
-      if (!url && !String(key).trim()) { draft.url = ""; draft.key = ""; if (keyEl) keyEl.value = ""; step4(); return; }
-      const problem = webhookProblem(url, String(key).trim());
+      const key = String(keyEl ? keyEl.value : "").trim();
+      const pub = pubEl ? pubEl.value.trim() : "";
+      if (!url || !key) { errBox($("#awe", d), "Paste the webhook URL and webhook key your bot sent back."); return; }
+      const problem = webhookProblem(url, key);
       if (problem) { errBox($("#awe", d), problem); return; }
+      if (!pubKeyOk(pub)) { errBox($("#awe", d), "Paste the bot's public key: base64 of 32 bytes."); if (pubEl) pubEl.focus(); return; }
       draft.url = url;
-      draft.key = String(key).trim();
+      draft.key = key;
+      draft.pub = pub;
       if (keyEl) keyEl.value = "";
+      if (pubEl) pubEl.value = "";
       step4();
     };
   };
@@ -2479,58 +2477,21 @@ function addBot(voices, el, preset) {
   };
   const step2 = () => {
     const home = draft.keyMode === "home";
-    const connectSub = "Paste your bot's key here. Don't have it yet? Tap Skip for now. The next step gives you a setup prompt to send your bot; it replies with its key, which you can add afterward with Replace key.";
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Connect your bot">${dialogX()}${addStepper(2)}
       <h2>Connect your bot</h2>
-      <p class="sub" id="asub">${esc(connectSub)}</p>
       <fieldset class="field">
         <legend>Where the bot's key lives</legend>
         <label class="choice"><input type="radio" name="alives" value="cloud"${home ? "" : " checked"}> Bot computer (default)</label>
         ${HOME_MODE ? `<label class="choice"><input type="radio" name="alives" value="home"${home ? " checked" : ""}> Home computer</label><span class="help">Replies come back faster.</span>` : `<span class="help">Home computer will be available after it's been tested.</span>`}
-        <p class="note">A computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station.</p>
+        <p class="note">${esc(HOME_24_7)}</p>
       </fieldset>
-      <div class="field"><label>Station public key</label>
-        ${staticValue("astapub", el._stationPub, "station public key", STATION_KEY_MISSING)}
-        <p class="note">Your bot uses this to lock its replies so only this station can read them. Never open the admin port to the internet.</p></div>
-      <div class="field"><label>Certificate fingerprint</label>
-        ${staticValue("afp", el._fingerprint, "certificate fingerprint", "n/a")}
-        <p class="note">Same as on the System page. Your bot uses it to make sure it's talking to this station.</p></div>
-      <div class="field"><label for="apub">Bot public key</label>
-        <input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120">
-        <p class="note" id="apubnote">${esc(keyNote(draft.keyMode))}</p></div>
-      <div id="ape2"></div>
-      <div class="field"><button class="btn p" id="apairnext" type="submit">Next</button></div>
-      <div class="field"><a href="#" class="skipnow" id="apairskip">Skip for now</a></div></form>`;
-    const syncLive = () => {
-      readLive();
-      const sub = $("#asub", d);
-      const pubNote = $("#apubnote", d);
-      if (sub) sub.textContent = connectSub;
-      if (pubNote) pubNote.textContent = keyNote(draft.keyMode);
-    };
-    d.querySelectorAll('input[name="alives"]').forEach(r => r.onchange = syncLive);
+      <div class="field"><button class="btn p" id="apairnext" type="submit">Next</button></div></form>`;
     bindSheet(d, shut);
-    const skip = $("#apairskip", d);
-    if (skip) skip.onclick = ev => { ev.preventDefault(); readLive(); draft.pub = ""; step3(); };
-    d.querySelector("form").onsubmit = ev => {
-      ev.preventDefault();
-      const inp = $("#apub", d);
-      const pub = inp ? inp.value.trim() : "";
-      if (!pub) { readLive(); draft.pub = ""; step3(); return; }
-      if (!pubKeyOk(pub)) {
-        errBox($("#ape2", d), "Paste the bot's public key: base64 of 32 bytes.");
-        if (inp) inp.focus();
-        return;
-      }
-      readLive();
-      draft.pub = pub;
-      if (inp) inp.value = "";
-      step3();
-    };
+    d.querySelector("form").onsubmit = ev => { ev.preventDefault(); readLive(); step3(); };
   };
   const step1 = () => {
     d.innerHTML = `<form class="card wizcard" role="dialog" autocomplete="off" aria-label="Add bot">${dialogX()}${addStepper(1)}
-      <h2>Add bot</h2><p class="sub">A new teammate. Next you'll pair its key, then connect its webhook.</p>
+      <h2>Add bot</h2><p class="sub">A new teammate. Next you'll choose where its key lives, then connect it.</p>
       <p class="note">Add your main bot first.</p>
       <div class="field"><label for="aname">Name</label><input class="inp" id="aname" maxlength="40" required autocomplete="off"></div>
       <div class="field"><label for="aslug">Bot ID <span class="tipwrap info" tabindex="0" role="note" aria-label="${esc(BOT_ID_HELP)}">i<span class="tip">${esc(BOT_ID_HELP)}</span></span></label>
