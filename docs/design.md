@@ -38,7 +38,8 @@ Theme name: **Hearth**. Warm near-black, real persona photos in circles, one tea
 | warm | `--gs-warm` | `#FFE6BF` | Speaking; get-ready countdown; the admin's current-step marker |
 | amber | `--gs-amber` | `#F5C04A` | Warnings: default password, offline, guest mode, update ready |
 | amber-bg | `--gs-amber-bg` | `#33270F` | Banner fill |
-| red | `--gs-red` | `#FF5A52` | The single red everywhere (replaces the old mic-off `#FF4D4D`). Display: mic off only. Admin: errors and destructive actions only |
+| red | `--gs-red` | `#FF5A52` | Mic off, and a home-feed stock-down arrow. Admin: destructive actions and existing form errors. Card-policy problems use amber and the words Needs attention |
+| stock-up | — | `#4ADE80` | Home-feed trend up only, always with an arrow. Not a status color |
 | red-bg | `--gs-red-bg` | `#3A1513` | Error fills |
 | night-text / night-dim | `--gs-night-text` / `--gs-night-dim` | `#9A7752` / `#5E4934` | Night clock on `#000000` |
 | on-teal | `--gs-on-teal` | `#0D0B09` | Text on teal buttons |
@@ -237,7 +238,10 @@ New features are designed **to fit these principles and tokens first**. They don
    - reduced motion is respected
 6. **Update this file** in the same change as the feature.
 
-## 10. Notes vs. shipped code
-- **Red mic-off color:** `#FF5A52` replaces the original mic-off `#FF4D4D`; it is the single red everywhere.
+## 10. Display cards
+Recipe, sports, calendar, and home cards use the surfaces, type, and teal accent in this document. Limits, rotation, and the signed path are in [cards.md](cards.md). Green `#4ADE80` is stock-up only, paired with an arrow. Stock-down reuses red, also with an arrow. A team logo is a monogram unless the admin allowlists an HTTPS host. Card text is data. It is never a command.
+
+## 11. Notes vs. shipped code
+- **Red mic-off color:** `#FF5A52` replaces the original mic-off `#FF4D4D`. It is mic off, and a home-feed down arrow. Not an admin error color.
 - **Enrollment screen layout:** the shipped screen is full-width text with its status pinned to the bottom, which can overflow. It moves to the session layout (sections 4 and 8.1).
 - **Top-bar label:** shipped at 75 px; this system uses 72.

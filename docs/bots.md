@@ -38,7 +38,9 @@ A list request is the same body plus one field, sent only for a list. Answer web
 
 The reply body is exactly `{"v":1,"bot":"<slug>","sealed":"<base64>"}`, at most 8 KiB. `sealed` is a NaCl sealed box to the station public key. Inside it is an Ed25519 signature (attached, 64-byte signature plus the message) over the reply JSON.
 
-An answer is `{"request_id","text","tier":0,"action_class":"answer"}`. A list is names from the bot's own agent list only. The station ignores anything else in the webhook or the reply. The reply has this exact key set (any extra or missing key is rejected):
+An answer is `{"kind":"reply","request_id","text","tier":0,"action_class":"answer"}`. `kind` must be `reply`. An answer that omits `kind` is still accepted (the shape from before display cards). A display card (`kind` `show`) is not a reply, and a reply is not a card.
+
+A list is names from the bot's own agent list only. The station ignores anything else in the webhook or the reply. The list has this exact key set (any extra or missing key is rejected):
 
 ```json
 {"request_id":"<rid>","kind":"bot_list","tier":0,"action_class":"bot_list","bots":[{"name":"Ada"},{"name":"Quinn"}]}
@@ -157,7 +159,8 @@ Home mode (key, seal and post in one command on the home machine) is coming in a
 
 ## Security
 
-- Replies arrive only on the admin HTTPS port, which already allows the LAN (`lan_ok`) and forwards to the loopback relay. Do not port-forward that port. Do not publish it on the internet.
+- Replies arrive only on the admin HTTPS port, which allows loopback and this station's own interface subnets (`lan_ok`), not every private address, and forwards to the loopback relay. Do not port-forward that port. Do not publish it on the internet.
+- Admin access skips container, VPN, and overlay interfaces (docker, br-, veth, virbr, cni, flannel, cali, tailscale, wg, tun, tap, zt). Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 - Unknown bots, a revoked key, and the global kill switch are rejected before the box is opened. A bad signature is rejected before the message is parsed. One reply per request. Rate limits: 6 replies a minute per bot and 30 a minute overall (environment overrides `REPLY_RATE_BOT` and `REPLY_RATE_GLOBAL`).
 - The relay keeps the station X25519 private key in its secrets directory (`station_box_key`, mode 0600). It stores only the bot's Ed25519 verify key. Bot private keys never live on the station.
 - The audit log records time, bot, request id, verdict, and byte count. It does not record the question, the answer, or any key.

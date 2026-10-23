@@ -34,7 +34,7 @@ def _seal(station, signer, message, bot="jules", station_pub=None):
 
 
 def _reply_bytes(rid=RID, text="Tacos on Tuesday.", **extra):
-    body = {"action_class": "answer", "request_id": rid, "text": text, "tier": 0}
+    body = {"action_class": "answer", "kind": "reply", "request_id": rid, "text": text, "tier": 0}
     body.update(extra)
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
 
@@ -144,6 +144,12 @@ class Check(unittest.TestCase):
             self._go(raw)
         self.assertEqual(cm.exception.verdict, "schema")
         self.assertEqual(self._ok("  hello   there ")["text"], "hello there")
+        swapped = json.loads(_reply_bytes())
+        swapped["kind"] = "show"
+        raw = _seal(self.station, self.signer, json.dumps(swapped, separators=(",", ":"), sort_keys=True).encode())
+        with self.assertRaises(botreply.Reject) as cm:
+            self._go(raw)
+        self.assertEqual(cm.exception.verdict, "schema")
 
     def test_lint_blocks_a_token_and_fails_closed(self):
         raw = _seal(self.station, self.signer, _reply_bytes(text="token is abcdefghijklmnop"))
@@ -405,8 +411,8 @@ class SealPost(unittest.TestCase):
         self.assertEqual(set(json.loads(out)), {"v", "bot", "sealed"})
         sent = {}
 
-        def fake_post(origin, body, insecure=False, pin=""):
-            sent.update(origin=origin, body=body, insecure=insecure, pin=pin)
+        def fake_post(origin, body, insecure=False, pin="", path="/voice/reply"):
+            sent.update(origin=origin, body=body, insecure=insecure, pin=pin, path=path)
             return 200, "ok"
 
         real = helper.post_reply
@@ -417,6 +423,7 @@ class SealPost(unittest.TestCase):
             helper.post_reply = real
         self.assertEqual((rc, pout.strip()), (0, "200 ok"))
         self.assertEqual(sent["pin"], "ab" * 32)
+        self.assertEqual(sent["path"], "/voice/reply")
         got = self._go(sent["body"])
         self.assertEqual(got["text"], "Tacos on Tuesday.")
         self.assertEqual(got["request_id"], RID)

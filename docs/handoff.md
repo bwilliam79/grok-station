@@ -36,7 +36,7 @@ A bare link, a short digit run, money, a VIN, medical wording, or the word "pass
 
 ## T1
 
-Off unless `T1_ENABLED=1`. The relay does not authorize a write. It can show a proposed note and listen for a confirm at the station (`relay/t1.py`). Bots still may not send anything but a tier-0 answer on `/voice/reply`.
+Off unless `T1_ENABLED=1`. The relay does not authorize a write. It can show a proposed note and listen for a confirm at the station (`relay/t1.py`). Bots still may not send anything but a tier-0 answer on `/voice/reply`. Display cards are not replies: a bot posts them to `POST /voice/show` with the same sealed signature. See [cards.md](cards.md).
 
 ## Validation on the Pi
 

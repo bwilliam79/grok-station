@@ -634,15 +634,88 @@ def model_note(raw):
 
 
 # ------------------------------------------------------------------ request handling
-PRIVATE_NETS = None
+def _ipv4_hex(text):
+    return ipaddress.IPv4Address(int.from_bytes(bytes.fromhex(text), "little"))
 
 
-def lan_ok(ip):
+# Container, VPN, and overlay interfaces are not the home network. Loopback is allowed separately.
+VIRTUAL_IFACE_RE = re.compile(r"^(docker\d*|br-.*|veth.*|virbr.*|cni.*|flannel.*|cali.*|tailscale\d*|wg.*|tun.*|tap.*|zt.*)$")
+
+
+def _connected_v4(text):
+    """Directly connected IPv4 prefixes from /proc/net/route. Default routes are skipped."""
+    nets = []
+    for line in (text or "").splitlines()[1:]:
+        parts = line.split()
+        if len(parts) < 8:
+            continue
+        if VIRTUAL_IFACE_RE.match(parts[0]):
+            continue
+        dest, gateway, mask = parts[1], parts[2], parts[7]
+        if len(dest) != 8 or len(gateway) != 8 or len(mask) != 8:
+            continue
+        try:
+            network, gw, m = _ipv4_hex(dest), _ipv4_hex(gateway), _ipv4_hex(mask)
+        except ValueError:
+            continue
+        if int(m) == 0 or int(gw) != 0:
+            continue
+        try:
+            nets.append(ipaddress.ip_network((network, bin(int(m)).count("1")), strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def _v6_prefixes(text):
+    """IPv6 prefixes from /proc/net/if_inet6 (address, index, prefix length, scope, flags, name)."""
+    nets = []
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 4 or len(parts[0]) != 32:
+            continue
+        if len(parts) >= 6 and VIRTUAL_IFACE_RE.match(parts[5]):
+            continue
+        try:
+            ip = ipaddress.IPv6Address(bytes.fromhex(parts[0]))
+            nets.append(ipaddress.ip_network((ip, int(parts[2], 16)), strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def home_subnets(v4=None, v6=None):
+    """Subnets on this station's interfaces, plus loopback. Not every private range."""
+    nets = [ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")]
+    if v4 is None:
+        try:
+            with open("/proc/net/route") as f:
+                v4 = f.read()
+        except OSError:
+            v4 = ""
+    if v6 is None:
+        try:
+            with open("/proc/net/if_inet6") as f:
+                v6 = f.read()
+        except OSError:
+            v6 = ""
+    for net in _connected_v4(v4) + _v6_prefixes(v6):
+        if net not in nets:
+            nets.append(net)
+    return nets
+
+
+def lan_ok(ip, nets=None):
+    """True for loopback or an address on one of this station's interface subnets."""
     try:
-        a = ipaddress.ip_address(ip.removeprefix("::ffff:"))
-        return a.is_private or a.is_loopback or a.is_link_local
+        a = ipaddress.ip_address(str(ip).removeprefix("::ffff:"))
     except ValueError:
         return False
+    if a.is_loopback:
+        return True
+    if nets is None:
+        nets = home_subnets()
+    return any(a in net for net in nets)
 
 
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
@@ -1381,6 +1454,25 @@ def _pinned_connection(pin):
                 finally:
                     raise ssl.SSLCertVerificationError("pin mismatch")
     return Conn
+
+
+def load_cards():
+    """app/cards.py in a checkout, or ../cards.py when admin is installed under /opt/grok-station/admin."""
+    import importlib.util
+    mod = getattr(load_cards, "_mod", None)
+    if mod is not None:
+        return mod
+    here = os.path.dirname(os.path.abspath(__file__))
+    for rel in (os.path.join(here, "..", "app", "cards.py"), os.path.join(here, "..", "cards.py")):
+        path = os.path.abspath(rel)
+        if not os.path.isfile(path):
+            continue
+        spec = importlib.util.spec_from_file_location("gs_cards_admin", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        load_cards._mod = mod
+        return mod
+    raise ImportError("cards.py")
 
 
 def relay_call(method, path, payload=None, timeout=10, raw=None, content_type=None):
@@ -2130,14 +2222,14 @@ class Handler(BaseHTTPRequestHandler):
         self.route("PATCH")
 
     def voice_ingress(self, method, p):
-        """POST /voice/reply on this HTTPS port, forwarded to the loopback relay. LAN only. No admin session.
+        """POST /voice/reply and POST /voice/show on this HTTPS port, forwarded to the loopback relay.
 
-        The body is a sealed box. There is no reply token. The question rides on the webhook, so this port
-        has no request route. This port must never be port-forwarded.
+        LAN only. No admin session. The body is a sealed box. There is no reply token. The question rides
+        on the webhook, so this port has no request route. This port must never be port-forwarded.
         """
         if not lan_ok(self.client_address[0]):
             return self.send(403, {"error": "LAN only"})
-        ok = method == "POST" and p == "/voice/reply"
+        ok = method == "POST" and p == "/voice/reply" or method == "POST" and p == "/voice/show"
         if not ok:
             return self.send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
@@ -2378,6 +2470,30 @@ class Handler(BaseHTTPRequestHandler):
         if tz:
             body["timezone"] = tz
         return self.send(200, body)
+
+    def api_get_cards(self, p, q, j):
+        """Logo host allowlist. A relay miss is an empty list so the rest of the display page still loads."""
+        got = relay_call("GET", "/admin/cards")
+        hosts = []
+        if got and got[0] == 200 and isinstance(got[1], dict) and isinstance(got[1].get("hosts"), list):
+            hosts = [h for h in got[1]["hosts"] if isinstance(h, str)]
+        return self.send(200, {"hosts": hosts})
+
+    def api_put_cards(self, p, q, j):
+        """Save hosts on the relay, then the display env. The helper is not the only check."""
+        try:
+            norm = load_cards().parse_hosts(j.get("hosts"))
+        except Exception:
+            norm = None
+        if norm is None:
+            return self.send(400, {"error": "Use public HTTPS host names only, up to 8."})
+        got = relay_call("PUT", "/admin/cards", {"hosts": norm, "actor": RELAY_ACTOR})
+        if not got or got[0] != 200:
+            return self.send(503, {"error": "Couldn't save logo hosts."})
+        ok, _out = helper("settings-set", "display", stdin={"GROK_STATION_LOGO_HOSTS": ",".join(norm)})
+        if not ok:
+            return self.send(503, {"error": "Couldn't apply logo hosts on the display."})
+        return self.send(200, {"ok": True, "hosts": norm})
 
     def api_get_geocode(self, p, q, j):
         name = str(q.get("q", ""))[:60]

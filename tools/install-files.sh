@@ -7,6 +7,7 @@ id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G adm -M -d /nonexistent -s
 install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets /usr/local/lib/grok-station
 install -m755 "$S/app/grok_station.py" /opt/grok-station/grok_station.py.new && mv /opt/grok-station/grok_station.py.new /opt/grok-station/grok_station.py
 install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
+install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py
 if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
   install -o grok -g grok -m644 "$S/wake/grok_wake.py" /opt/grok-station/wake/grok_wake.py.new && mv /opt/grok-station/wake/grok_wake.py.new /opt/grok-station/wake/grok_wake.py
   install -o grok -g grok -m644 "$S/wake/gain.py" /opt/grok-station/wake/gain.py.new && mv /opt/grok-station/wake/gain.py.new /opt/grok-station/wake/gain.py

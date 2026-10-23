@@ -8,7 +8,7 @@
 
 The seed is never taken from an argument or a file. This does not import the station relay.
 """
-import argparse, base64, hashlib, http.client, json, os, re, ssl, sys, unicodedata
+import argparse, base64, hashlib, http.client, json, os, re, secrets, ssl, sys, time, unicodedata
 from urllib.parse import urlsplit
 
 MAX_BODY = 8192
@@ -19,7 +19,7 @@ _LIST_MAX = 24
 
 
 def canonical(request_id, text):
-    body = {"action_class": "answer", "request_id": request_id, "text": text, "tier": 0}
+    body = {"action_class": "answer", "kind": "reply", "request_id": request_id, "text": text, "tier": 0}
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
 
 
@@ -175,8 +175,35 @@ class _Conn(http.client.HTTPSConnection):
             raise ssl.SSLError("pin")
 
 
-def post_reply(origin, body, insecure=False, pin=""):
-    """POST /voice/reply. Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
+def build_show(bot, doc, seed_b64, station_pub_b64):
+    """Seal a card put/clear. doc is the signed JSON (no bot field). Same outer envelope as an answer.
+
+    kind, nonce, and exp_ms are always written here (a fresh nonce, exp about 60 seconds ahead),
+    so the same stdin posted twice is two different blobs.
+    """
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    if not isinstance(doc, dict):
+        raise ValueError("show")
+    doc = dict(doc)
+    doc["kind"] = "show"
+    doc["nonce"] = secrets.token_urlsafe(16)
+    doc["exp_ms"] = int(time.time() * 1000) + 60_000
+    seed = base64.b64decode("".join(str(seed_b64).split()), validate=True)
+    pub = base64.b64decode("".join(str(station_pub_b64).split()), validate=True)
+    if len(seed) != 32 or len(pub) != 32:
+        raise ValueError("key")
+    body = json.dumps(doc, separators=(",", ":"), sort_keys=True).encode()
+    signed = SigningKey(seed).sign(body)
+    sealed = SealedBox(PublicKey(pub)).encrypt(signed)
+    outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
+    return json.dumps(outer, separators=(",", ":")).encode()
+
+
+def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
+    """POST /voice/reply (or /voice/show). Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
+    if path not in ("/voice/reply", "/voice/show"):
+        raise ValueError("path")
     parts = urlsplit(origin)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise ValueError("https")
@@ -186,7 +213,7 @@ def post_reply(origin, body, insecure=False, pin=""):
         ctx.verify_mode = ssl.CERT_NONE
     conn = _Conn(parts.hostname, parts.port or 443, ctx, pin, 15)
     try:
-        conn.request("POST", "/voice/reply", body=body, headers={"Content-Type": "application/json"})
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         resp.read()
         status = resp.status
@@ -257,9 +284,20 @@ def _post_args(args):
     return pin
 
 
-def _do_post(args, body, pin):
+def _read_show():
+    raw = sys.stdin.buffer.read(9000) if hasattr(sys.stdin, "buffer") else sys.stdin.read(9000).encode()
+    if not raw or len(raw) > MAX_BODY:
+        return None
     try:
-        status, verdict = post_reply(args.station, body, insecure=args.insecure, pin=pin)
+        doc = json.loads(raw.decode())
+    except Exception:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _do_post(args, body, pin, path="/voice/reply"):
+    try:
+        status, verdict = post_reply(args.station, body, insecure=args.insecure, pin=pin, path=path)
     except ssl.SSLError as e:
         if "pin" in str(e):
             print("certificate pin mismatch")
@@ -293,6 +331,12 @@ def main(argv=None):
         sp.add_argument("--bot", required=True)
         sp.add_argument("--station-pub", required=True)
         sp.add_argument("--request-id", required=True)
+    show = sub.add_parser("show")
+    show.add_argument("--bot", required=True)
+    show.add_argument("--station-pub", required=True)
+    show.add_argument("--station", required=True)
+    show.add_argument("--insecure", action="store_true")
+    show.add_argument("--pin-sha256", default="")
     try:
         args = p.parse_args(argv)
     except SystemExit as e:
@@ -330,6 +374,24 @@ def main(argv=None):
         if body is None:
             return rc
         return _do_post(args, body, pin)
+    if args.cmd == "show":
+        pin = _post_args(args)
+        if pin is None:
+            return 2
+        doc = _read_show()
+        if doc is None:
+            print("400 bad request")
+            return 1
+        seed = os.environ.get("GROK_STATION_BOT_KEY", "")
+        if not seed.strip():
+            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            return 2
+        try:
+            body = build_show(args.bot, doc, seed, args.station_pub)
+        except Exception:
+            print("400 bad request")
+            return 1
+        return _do_post(args, body, pin, path="/voice/show")
     p.print_help(sys.stderr)
     return 2
 

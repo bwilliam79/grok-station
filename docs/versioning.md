@@ -48,3 +48,7 @@ Minor release. Installs over 0.5.0.
 - **Where the key lives.** Cloud is the default: the bot's cloud computer seals, and the home machine posts. A faster home mode (key, seal and post in one command on the home machine) comes in a later update. A key exists on only one machine. Switching the mode revokes the pinned key and asks for a new public key.
 - **Home key mode** is built but held back until its security review; the Add bot flow offers cloud mode only.
 - **Main bot first.** Add your main bot first. The add-bot dialog says so on the first step.
+
+## 0.7.0
+
+Minor: display cards (recipe, sports, calendar, home) on the signed show path. The reply tool still posts a reply when no card is given. See [cards.md](cards.md).

@@ -95,6 +95,10 @@ function attn(el, msg) {
   if (!el) return;
   el.innerHTML = msg ? `<div class="banner warn" role="alert"><span class="pill warn"><i></i>Needs attention</span> ${esc(msg)}</div>` : "";
 }
+function attnBox(el, msg) {
+  if (!el) return;
+  el.innerHTML = msg ? `<div class="attn" role="alert">Needs attention. ${esc(msg)}</div>` : "";
+}
 function busyBtn(btn, on, label) { btn.disabled = on; if (label) btn.textContent = label; }
 const CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function markSaved() {
@@ -789,9 +793,12 @@ function openVoiceStatus(bot, el) {  // reopen the in-progress (or failed) attem
 
 async function displayPanel(el) {
   const g = await api("GET", "/api/settings/display");
+  const cards = await api("GET", "/api/cards");
   const v = (g.data || {}).values || {};
   const dim = (g.data || {}).dim || {};
   const sensor = dim.sensor || null;
+  const hosts = (cards.ok && cards.data && Array.isArray(cards.data.hosts)) ? cards.data.hosts.join("\n") : "";
+  const rot = v.GROK_STATION_CARD_ROTATE || "20";
   const [nf, nt] = (v.GROK_STATION_NIGHT || "22-6").split("-");
   const hours = sel => [...Array(24).keys()].map(h => `<option value="${h}"${String(h) === sel ? " selected" : ""}>${((h + 11) % 12) + 1} ${h < 12 ? "AM" : "PM"}</option>`).join("");
   const pct = (s, fallback) => { const n = parseInt(s, 10); return Number.isFinite(n) && n >= 0 && n <= 100 ? String(n) : String(fallback); };
@@ -804,6 +811,9 @@ async function displayPanel(el) {
     <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-checked="${v.GROK_STATION_NIGHT === "" ? "false" : "true"}" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock overnight. With dimming on, it follows that window.</div></div></div>
     <div class="row inline"><label class="help">From <select class="sel" id="nf" style="width:130px">${hours(nf)}</select></label><label class="help">to <select class="sel" id="nt" style="width:130px">${hours(nt)}</select></label></div>
     <div class="field"><label for="hold">Message hold time <span class="help" id="holdv"></span></label><input type="range" id="hold" min="5" max="120" value="${esc(v.GROK_STATION_HOLD || "30")}"></div>
+    <div class="field"><label for="crot">Card rotation <span class="help" id="crotv"></span></label><input type="range" id="crot" min="5" max="120" value="${esc(rot)}"></div>
+    <div class="field"><label for="chosts">Logo hosts</label><textarea class="inp" id="chosts" rows="3" placeholder="cdn.example.com">${esc(hosts)}</textarea>
+      <div class="help">Team logos load only from these HTTPS hosts. Anything else stays a monogram.</div></div>
     <div class="row"><button class="tog${v.GROK_STATION_FADE === "0" ? "" : " on"}" role="switch" id="fade" aria-checked="${v.GROK_STATION_FADE === "0" ? "false" : "true"}" aria-label="Fade"></button><div class="lbl">Fade between screens</div></div>
     <div class="field"><label for="dun">Temperature</label><select class="sel" id="dun"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
     <div class="field"><label for="dmode">Brightness</label><select class="sel" id="dmode">
@@ -815,22 +825,23 @@ async function displayPanel(el) {
     <div class="row inline"><label class="help">Sunrise offset <input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"></label><label class="help">Sunset offset <input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"></label></div>
     <div class="row inline"><label class="help">Latitude <input class="inp" id="dlat" maxlength="8" inputmode="decimal" placeholder="12.34" value="${esc(v.GROK_STATION_DIM_LAT || "")}"></label><label class="help">Longitude <input class="inp" id="dlon" maxlength="8" inputmode="decimal" placeholder="-56.78" value="${esc(v.GROK_STATION_DIM_LON || "")}"></label></div>
     <p class="note">Blank latitude and longitude use the station location, rounded to 2 decimals. Sensor: ${sensor ? esc(sensor.name) : "none"}. ${dim.backlight ? "Backlight: " + esc(dim.backlight.name) : "No backlight file; a dark layer is drawn instead."}</p>
-    <div id="de"></div><div class="field inline"><button class="btn p" id="dsave" type="button" disabled>Save</button></div></div>
+    <div id="de"></div><div id="ce"></div><div class="field inline"><button class="btn p" id="dsave" type="button" disabled>Save</button></div></div>
     <div class="card"><h2>Live preview</h2><img class="thumb" id="pv" alt="What the station screen shows now">
       <div class="nightprev" id="nprev"><div class="tm">11:24</div><div class="dt">Thu, Oct 22</div><div class="dim-overlay" id="nov"></div></div>
       <p class="note">Example night clock. The black layer is the night brightness.</p></div></div>`;
   $("#dmode", el).value = mode;
-  const FIELDS = {hold: "GROK_STATION_HOLD", dun: "GROK_STATION_UNITS", dmode: "GROK_STATION_DIM_MODE", dday: "GROK_STATION_DIM_DAY",
-    dnight: "GROK_STATION_DIM_NIGHT", dfrom: "GROK_STATION_DIM_FROM", dto: "GROK_STATION_DIM_TO", dlat: "GROK_STATION_DIM_LAT",
-    dlon: "GROK_STATION_DIM_LON", dsr: "GROK_STATION_DIM_SUNRISE", dss: "GROK_STATION_DIM_SUNSET"};
+  const FIELDS = {hold: "GROK_STATION_HOLD", crot: "GROK_STATION_CARD_ROTATE", dun: "GROK_STATION_UNITS", dmode: "GROK_STATION_DIM_MODE",
+    dday: "GROK_STATION_DIM_DAY", dnight: "GROK_STATION_DIM_NIGHT", dfrom: "GROK_STATION_DIM_FROM", dto: "GROK_STATION_DIM_TO",
+    dlat: "GROK_STATION_DIM_LAT", dlon: "GROK_STATION_DIM_LON", dsr: "GROK_STATION_DIM_SUNRISE", dss: "GROK_STATION_DIM_SUNSET"};
   const fieldVals = () => { const o = {}; for (const id in FIELDS) o[FIELDS[id]] = $("#" + id, el).value.trim(); return o; };
   const nightOn = v.GROK_STATION_NIGHT !== "";
-  const savedDisp = {fields: fieldVals(), hours: nightOn ? `${$("#nf", el).value}-${$("#nt", el).value}` : ""};
+  const savedDisp = {fields: fieldVals(), hours: nightOn ? `${$("#nf", el).value}-${$("#nt", el).value}` : "", hosts: $("#chosts", el).value};
   const curHours = () => $("#non", el).classList.contains("on") ? `${$("#nf", el).value}-${$("#nt", el).value}` : "";
-  const dispDirty = () => JSON.stringify(fieldVals()) !== JSON.stringify(savedDisp.fields) || curHours() !== savedDisp.hours;
+  const dispDirty = () => JSON.stringify(fieldVals()) !== JSON.stringify(savedDisp.fields) || curHours() !== savedDisp.hours || $("#chosts", el).value !== savedDisp.hosts;
   const syncDisp = () => { const b = $("#dsave", el); if (b) b.disabled = !dispDirty(); };
   const hl = () => ($("#holdv", el).textContent = $("#hold", el).value + " s");
   $("#hold", el).oninput = hl; hl();
+  const rl = () => ($("#crotv", el).textContent = $("#crot", el).value + " s"); $("#crot", el).oninput = rl; rl();
   const levels = () => { $("#ddayv", el).textContent = $("#dday", el).value + "%"; $("#dnightv", el).textContent = $("#dnight", el).value + "%";
     const n = parseInt($("#dnight", el).value, 10) || 0; $("#nov", el).style.opacity = String((100 - n) / 100); };
   $("#dday", el).oninput = $("#dnight", el).oninput = levels; levels();
@@ -842,7 +853,7 @@ async function displayPanel(el) {
       : "No light sensor was found. Dimming uses the schedule, then sunrise, then the day level.");
   };
   $("#dmode", el).addEventListener("change", showSense); showSense();
-  for (const id of [...Object.keys(FIELDS), "nf", "nt"]) { $("#" + id, el).addEventListener("input", syncDisp); $("#" + id, el).addEventListener("change", syncDisp); }
+  for (const id of [...Object.keys(FIELDS), "nf", "nt", "chosts"]) { $("#" + id, el).addEventListener("input", syncDisp); $("#" + id, el).addEventListener("change", syncDisp); }
   syncDisp();
   const putDisp = async body => {
     const r = await api("PUT", "/api/settings/display", body);
@@ -874,9 +885,17 @@ async function displayPanel(el) {
   $("#dsave", el).onclick = async () => {
     const body = fieldVals();
     if ($("#non", el).classList.contains("on")) body.GROK_STATION_NIGHT = curHours();
-    if (!await putDisp(body)) return;
+    const displayOk = await putDisp(body);
+    const c = await api("PUT", "/api/cards", {hosts: $("#chosts", el).value});
+    if (c.ok) attnBox($("#ce", el), "");
+    else attnBox($("#ce", el), (c.data && c.data.error) || "Couldn't save logo hosts.");
+    if (!displayOk || !c.ok) {
+      if (!c.ok) { const n = document.querySelector("header.top .saved"); if (n) n.hidden = true; }
+      return;
+    }
     savedDisp.fields = fieldVals();
     if (body.GROK_STATION_NIGHT != null) savedDisp.hours = body.GROK_STATION_NIGHT;
+    savedDisp.hosts = $("#chosts", el).value;
     syncDisp();
     toast("Saved. The screen restarts.");
   };

@@ -277,10 +277,39 @@ class Csrf(unittest.TestCase):
 
 class LanOnly(unittest.TestCase):
     def test_lan_check(self):
-        for ip in ("127.0.0.1", "192.168.77.20", "10.42.0.7", "172.16.3.4", "fe80::1", "::ffff:192.168.0.9", "fd00::5"):
-            self.assertTrue(ga.lan_ok(ip), ip)
-        for ip in ("8.8.8.8", "1.1.1.1", "2001:4860::8888", "::ffff:8.8.8.8", "junk"):
-            self.assertFalse(ga.lan_ok(ip), ip)
+        # 192.168.4.0/24 on eth0, plus that interface's link-local /64. Not every RFC1918 net.
+        v4 = (
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n"
+            "eth0\t0004A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n"
+            "eth0\t00000000\t0104A8C0\t0003\t0\t0\t0\t00000000\n"
+        )
+        v6 = "fe80000000000000021a2bfffe3c4d5e 02 40 20 80 eth0\n"
+        nets = ga.home_subnets(v4=v4, v6=v6)
+        for ip in ("127.0.0.1", "::1", "192.168.4.20", "::ffff:192.168.4.9", "fe80::1"):
+            self.assertTrue(ga.lan_ok(ip, nets), ip)
+        for ip in ("10.42.0.7", "172.16.3.4", "192.168.77.20", "8.8.8.8", "1.1.1.1",
+                   "2001:4860::8888", "::ffff:8.8.8.8", "fd00::5", "junk"):
+            self.assertFalse(ga.lan_ok(ip, nets), ip)
+
+
+class LanVirtualIfaces(unittest.TestCase):
+    def test_container_and_vpn_interfaces_are_not_home(self):
+        v4 = (
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\n"
+            "eth0\t0004A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\n"
+            "docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\n"
+            "br-1a2b3c\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\n"
+            "tailscale0\t0000400A\t00000000\t0001\t0\t0\t0\t0000FFFF\n"
+            "wg0\t00000A0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\n"
+        )
+        v6 = ("fe80000000000000021a2bfffe3c4d5e 02 40 20 80 eth0\n"
+              "fd7a115ca1e0ab120000000000000001 05 30 00 80 tailscale0\n")
+        nets = ga.home_subnets(v4=v4, v6=v6)
+        self.assertTrue(ga.lan_ok("192.168.4.20", nets))
+        self.assertTrue(ga.lan_ok("127.0.0.1", nets))
+        self.assertTrue(ga.lan_ok("::1", nets))
+        for ip in ("172.17.0.2", "172.18.0.3", "10.64.0.5", "10.10.10.2", "fd7a:115c:a1e0:ab12::5"):
+            self.assertFalse(ga.lan_ok(ip, nets), ip)
 
 
 class Secrets(unittest.TestCase):

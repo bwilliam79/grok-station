@@ -2,7 +2,9 @@
 """grok-station: LAN HTTP listener + fullscreen framebuffer UI for a Raspberry Pi display.
 
 POST /show {"text": "...", "from": "Grok", "heard": "..."} with "Authorization: Bearer $GROK_STATION_TOKEN".
-Screens: idle (clock, date, weather), message/session, night clock, weather offline.
+A localhost caller with the same bearer may also put or clear a display card (docs/cards.md).
+Screens: idle (clock, date, weather, home cards), message/session, night clock, weather offline,
+recipe / sports / calendar cards.
 A tool card (weather, time, unit conversion) sits in the session text column and holds 4 s after the
 session ends. On the idle screen, timers are up to four countdown rings (overflow as chips); a ringing
 timer takes the screen with an amber pulse. During a conversation they stay a bottom chip strip so the
@@ -16,7 +18,7 @@ Off leaves the backlight alone. A missing backlight file is a black overlay on a
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
 Small status icons (network, relay, mic) sit in the top-right corner. A daemon thread polls them; --demo does not.
 """
-import hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.parse, urllib.request
+import hashlib, hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -26,6 +28,8 @@ except ImportError:  # installed next to this file once the helper is shipped; t
 
     def default_avatar_index(slug):
         return int(hashlib.sha256(slug.encode()).hexdigest(), 16) % 18 + 1
+
+import cards
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -55,6 +59,7 @@ WX_EVERY, WX_RETRY, WX_STALE = 900, 300, 3600         # refresh, retry after fai
 FADE = E("GROK_STATION_FADE", "1") != "0"
 MAX_TEXT, MAX_FROM, MAX_HEARD = 500, 40, 300
 SHOW, WEATHER, STATE, STATUS_EV = pygame.USEREVENT + 1, pygame.USEREVENT + 2, pygame.USEREVENT + 3, pygame.USEREVENT + 4
+FEED = pygame.USEREVENT + 5  # a display card was put or cleared; the deck already changed
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
 CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
@@ -107,7 +112,9 @@ def hexc(s):
 BG, SURFACE, SURFACE2, RULE = hexc("0D0B09"), hexc("17130F"), hexc("211B16"), hexc("2E2620")
 TEXT, MUTED, FAINT = hexc("F5EFE6"), hexc("A89B8C"), hexc("6F655A")
 LISTENING, THINKING, SPEAKING, AMBER = hexc("3FD3B6"), hexc("A99CFF"), hexc("FFE6BF"), hexc("F5C04A")
-RED = hexc("FF5A52")  # the single red (design.md): mic off only on the display; problems use text on a quiet ring
+RED = hexc("FF5A52")  # mic off, and a stock-down arrow. Problems use text on a quiet ring
+GREEN = hexc("4ADE80")  # stock up only
+TEAL_BG = hexc("12302A")  # the next calendar row
 SUN = hexc("F2C46A")
 NIGHT_TEXT, NIGHT_DIM, BLACK = hexc("9A7752"), hexc("5E4934"), hexc("000000")
 
@@ -222,6 +229,13 @@ class Handler(BaseHTTPRequestHandler):
             if n > 8192:
                 return self._reply(413, {"error": "too large"})
             j = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return self._reply(400, {"error": "bad json"})
+        if isinstance(j, dict) and j.get("op") in ("put", "clear"):
+            if not card_from_here(self.client_address[0]):
+                return self._reply(403, {"error": "localhost only"})
+            return self._card(j)
+        try:
             clean = lambda k, m: " ".join(str(j.get(k) or "").split())[:m] if k != "text" else str(j.get(k) or "").strip()[:m]
             text, who, heard = clean("text", MAX_TEXT), clean("from", MAX_FROM), clean("heard", MAX_HEARD)
         except Exception:
@@ -233,6 +247,16 @@ class Handler(BaseHTTPRequestHandler):
             who = ""  # /show can't speak as Grok or any voice persona, however the name is spelled or padded
         pygame.event.post(pygame.event.Event(SHOW, msg={"text": text, "from": who, "heard": heard}))
         print(f"show from {self.client_address[0]}: {len(text)} chars{' speaker=' + who if who else ''}", flush=True)
+        self._reply(200, {"ok": True})
+
+    def _card(self, j):
+        """Localhost card put/clear. The log is the op, the bot, and the id. Never the text or a logo URL."""
+        try:
+            kind, bot, cid = apply_show(j, logo_cache(), deck())
+        except cards.CardError:
+            return self._reply(400, {"error": "bad card"})
+        pygame.event.post(pygame.event.Event(FEED))
+        print(f"show card {kind} bot={bot} id={cid}", flush=True)
         self._reply(200, {"ok": True})
 
     def _enroll(self):
@@ -300,6 +324,77 @@ class Handler(BaseHTTPRequestHandler):
 
 def _localhost_client(addr):
     return addr.removeprefix("::ffff:") in ("127.0.0.1", "::1")
+
+
+def card_from_here(addr):
+    """Card puts ride /show, but only from localhost. The bearer was already checked."""
+    return _localhost_client(addr)
+
+
+DECK = None
+_LOGO = None
+
+
+def deck():
+    """The station's card deck. Tests replace DECK; the process env sets rotation and the ttl cap."""
+    global DECK
+    if DECK is None:
+        DECK = cards.Deck(rotate_s=cards.rotate_s(E("GROK_STATION_CARD_ROTATE", "")),
+                          ttl_max=cards.ttl_cap(E("GROK_STATION_CARD_TTL_MAX", "")))
+    return DECK
+
+
+def logo_cache():
+    """Logo files under the display cache. An empty allowlist means no fetch."""
+    global _LOGO
+    if _LOGO is None:
+        root = E("GROK_STATION_LOGO_CACHE", "/var/cache/grok-station/logos")
+        _LOGO = cards.LogoCache(root, cards.hosts_from_env(E("GROK_STATION_LOGO_HOSTS", "")))
+    return _LOGO
+
+
+def apply_show(doc, cache, deck, now=None):
+    """Re-validate a card op, settle logos, and put or clear. Raises CardError."""
+    if not isinstance(doc, dict):
+        raise cards.CardError("schema")
+    body = dict(doc)
+    bot = body.pop("bot", None)
+    if not cards.bot_slug_ok(bot):
+        raise cards.CardError("schema")
+    show = cards.validate_show(body, deck.ttl_max)
+    now = time.time() if now is None else now
+    if show["op"] == "clear":
+        deck.clear(bot, show["id"])
+        return "clear", bot, show["id"]
+    card = cards.settle_logos(show["card"], cache)
+    deck.put(bot, show["id"], show["priority"], show["ttl_s"], card, now)
+    return "put", bot, show["id"]
+
+
+def feed_identity(now=None):
+    """What is on screen from the deck. Content that changes the pixels is part of the key."""
+    now = time.time() if now is None else now
+    cur = deck().current(now)
+    homes = deck().home_row(now)
+    full = ""
+    if cur and cur["card"]["type"] in ("recipe", "sports", "calendar"):
+        c = cur["card"]
+        if c["type"] == "recipe":
+            mark = str(c["step"])
+        elif c["type"] == "sports":
+            mark = f"{c['home_score']}-{c['away_score']}-{c['status']}"
+        else:
+            mark = str(len(c["events"]))
+        full = f"{cur['bot']}:{cur['id']}:{c['type']}:{mark}"
+    home = ",".join(f"{h['bot']}:{h['id']}" for h in homes)
+    return full + "|" + home
+
+
+def feed_due(last_key, ident):
+    """True when the idle or feed screen is showing a different card than the one just painted."""
+    if not last_key or last_key[0] not in ("idle", "feed"):
+        return False
+    return last_key[-1] != ident
 
 
 # ---------------------------------------------------------------- status (network, relay, mic)
@@ -1968,9 +2063,347 @@ def draw_offline_badge(surf, L, clock_base):
     LAST_OFFLINE_RECT = rect.union(tr)
 
 
+def _line(surf, kind, px, text, color, width):
+    f = font(kind, px)
+    shown = text if f.size(text)[0] <= width else ellipsize(f, text, width)
+    return f.render(shown, True, color)
+
+
+def _fit_px(kind, text, max_px, width, floor=16):
+    """Largest size at or under max_px whose text fits width. Never zero."""
+    px = max(floor, int(max_px))
+    floor = max(8, int(floor))
+    while px > floor and font(kind, px).size(str(text))[0] > width:
+        px = max(floor, int(px * 0.88))
+    return px
+
+
+def monogram_shield(abbr, px):
+    """A colored shield with the abbreviation. Never red: red is mic-off and stock-down.
+
+    Drawn in the square the score layout reserved. A cached logo replaces this;
+    the station never ships a real team mark.
+    """
+    colors = (LISTENING, THINKING, SPEAKING, AMBER)
+    color = colors[hashlib.sha256(str(abbr).encode()).digest()[0] % 4]
+    box = pygame.Surface((px, px), pygame.SRCALPHA)
+    w = h = max(8, int(px))
+    tip = [(int(x), int(y)) for x, y in (
+        (w * 0.50, h * 0.04), (w * 0.92, h * 0.16), (w * 0.92, h * 0.46),
+        (w * 0.50, h * 0.96), (w * 0.08, h * 0.46), (w * 0.08, h * 0.16))]
+    pygame.draw.polygon(box, color, tip)
+    band = [(int(x), int(y)) for x, y in (
+        (w * 0.08, h * 0.40), (w * 0.50, h * 0.56), (w * 0.92, h * 0.40),
+        (w * 0.92, h * 0.50), (w * 0.50, h * 0.66), (w * 0.08, h * 0.50))]
+    pygame.draw.polygon(box, BG, band)
+    label = "".join(ch for ch in str(abbr) if ch.isalnum())[:3] or "?"
+    img = font("display", max(12, int(px * 0.26))).render(label, True, BG)
+    box.blit(img, ((px - img.get_width()) // 2, int(px * 0.18)))
+    return box
+
+
+def team_mark(team, px):
+    """Blit a cached logo, or a monogram. This does not fetch.
+
+    A logo id with no file yet (the download is still in the background) is a monogram.
+
+    convert_alpha needs a display mode. Demo renders and tests often have none,
+    and a decoded logo should still show rather than falling back to a monogram.
+    """
+    lid = team.get("logo_id") if isinstance(team, dict) else None
+    path = logo_cache().path_for(lid) if lid else None
+    if path and os.path.isfile(path):
+        try:
+            img = pygame.image.load(path)
+            try:
+                img = img.convert_alpha()
+            except pygame.error:
+                pass
+            return pygame.transform.smoothscale(img, (px, px))
+        except Exception:
+            pass
+    abbr = team.get("abbr") if isinstance(team, dict) else "?"
+    return monogram_shield(abbr or "?", px)
+
+
+def _trend(surf, x, y, size, trend):
+    if trend == "up":
+        pygame.draw.polygon(surf, GREEN, [(x, y + size), (x + size // 2, y), (x + size, y + size)])
+        return GREEN
+    if trend == "down":
+        pygame.draw.polygon(surf, RED, [(x, y), (x + size // 2, y + size), (x + size, y)])
+        return RED
+    return None
+
+
+def draw_home_band(surf, L, rows):
+    """Up to three home cards under the date and weather, above the timer strip. No-op if there is no room."""
+    if not rows:
+        return
+    floor_y = content_limit(L)
+    date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
+    weather_bottom = LAST_WEATHER_RECT.bottom if LAST_WEATHER_RECT else 0
+    top = max(date_bottom, weather_bottom, int(L.h * 0.58)) + L(16)
+    if floor_y - top < L(80):
+        top = max(date_bottom, weather_bottom) + L(16)
+    if floor_y - top < L(80):
+        return
+    gap = L(16)
+    n = min(3, len(rows))
+    width = (L.w - 2 * L.m - gap * (n - 1)) // n
+    height = min(L(280), floor_y - top)
+    for i, row in enumerate(rows[:n]):
+        rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
+        pygame.draw.rect(surf, SURFACE, rect, border_radius=L(20))
+        card = row["card"]
+        y = rect.top + L(16)
+        title = _line(surf, "display", L(34), card["title"].upper(), MUTED, rect.w - L(48))
+        surf.blit(title, (rect.left + L(28), y))
+        y += title.get_height() + L(16)
+        for item in card["items"]:
+            trend = item.get("trend")
+            color = GREEN if trend == "up" else RED if trend == "down" else TEXT
+            arrow = L(22)
+            label = _line(surf, "body", L(36), item["label"], MUTED, max(40, rect.w // 2 - L(16)))
+            value = _line(surf, "display", L(48), item["value"], color, max(40, rect.w // 2 - arrow - L(24)))
+            row_h = max(label.get_height(), value.get_height())
+            if y + row_h > rect.bottom - L(8):
+                break
+            surf.blit(label, (rect.left + L(28), y + max(0, (value.get_height() - label.get_height()) // 2)))
+            vx = rect.right - L(28) - value.get_width()
+            if trend in ("up", "down"):
+                _trend(surf, vx - arrow - L(8), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
+            surf.blit(value, (vx, y))
+            y += row_h + L(12)
+
+
 def draw_next_up(surf, L, now):
-    """Hook: the lower third is reserved for a rotating "Next up" card once a data source exists."""
-    return
+    """Home cards in the lower band. Empty deck: nothing, so the idle clock stays where it is."""
+    draw_home_band(surf, L, deck().home_row(time.time()))
+
+
+def _panel(surf, L):
+    top = L(120)
+    bottom = content_limit(L)
+    rect = pygame.Rect(L.m, top, L.w - 2 * L.m, max(L(120), bottom - top))
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
+    pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
+    return rect
+
+
+def draw_recipe(surf, L, card):
+    """Two cards, as on the recipe screen: ingredients, then the current step with a teal bar."""
+    top = L(120)
+    bottom = content_limit(L)
+    gap = L(28)
+    height = max(L(160), bottom - top)
+    left_w = min(L(520), max(L(180), (L.w - 2 * L.m - gap) // 3))
+    ing = pygame.Rect(L.m, top, left_w, height)
+    stp = pygame.Rect(ing.right + gap, top, max(L(160), L.w - L.m - ing.right - gap), height)
+    for rect in (ing, stp):
+        pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
+        pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
+    x, y = ing.left + L(28), ing.top + L(28)
+    cap = _line(surf, "display", L(28), "INGREDIENTS", MUTED, ing.w - L(56))
+    surf.blit(cap, (x, y))
+    y += cap.get_height() + L(8)
+    meta = _line(surf, "body", L(22), f"Serves {card['servings']}", MUTED, ing.w - L(56))
+    surf.blit(meta, (x, y))
+    y += meta.get_height() + L(16)
+    for item in card["ingredients"]:
+        if y > ing.bottom - L(40):
+            break
+        line = _line(surf, "body", L(42), item, TEXT, ing.w - L(56))
+        surf.blit(line, (x, y))
+        y += line.get_height() + L(10)
+    sx, sy = stp.left + L(48), stp.top + L(40)
+    step_n, total = card["step"], len(card["steps"])
+    col = stp.w - L(96)
+    label = _line(surf, "display", L(52), f"Step {step_n} of {total}", LISTENING, col)
+    surf.blit(label, (sx, sy))
+    sy += label.get_height() + L(18)
+    track = pygame.Rect(sx, sy, col, max(6, L(12)))
+    pygame.draw.rect(surf, SURFACE2, track, border_radius=L(6))
+    fill = max(track.h, int(track.w * step_n / total))
+    pygame.draw.rect(surf, LISTENING, (track.left, track.top, min(fill, track.w), track.h), border_radius=L(6))
+    sy = track.bottom + L(36)
+    hint_px = L(42)
+    hint_h = font("body", hint_px).get_height() + L(36)
+    body_px = L(92)
+    while body_px > L(36) and font("display", body_px).get_height() * 2 > max(1, stp.bottom - hint_h - sy):
+        body_px = int(body_px * 0.88)
+    f = font("display", body_px)
+    lines = wrap(f, card["steps"][step_n - 1], col)
+    room = max(1, (stp.bottom - hint_h - sy) // max(1, f.get_height()))
+    shown = lines[:room]
+    if len(lines) > len(shown) and shown:
+        shown[-1] = ellipsize(f, shown[-1], col)
+    for line in shown:
+        img = f.render(line if f.size(line)[0] <= col else ellipsize(f, line, col), True, TEXT)
+        surf.blit(img, (sx, sy))
+        sy += img.get_height() + L(8)
+    hint = _line(surf, "body", hint_px, "Say “next step”", MUTED, col)
+    surf.blit(hint, (sx, stp.bottom - L(36) - hint.get_height()))
+
+
+def _feed_span(L):
+    """The card column under the top bar and above the timer strip."""
+    top = L(120)
+    bottom = content_limit(L)
+    return top, max(top + L(120), bottom), max(L(160), L.w - 2 * L.m)
+
+
+def draw_sports(surf, L, card):
+    """Score card, shields or cached logos, then a next-game strip. No fetch while drawing."""
+    top, bottom, width = _feed_span(L)
+    games = card["schedule"][:4]
+    gap = L(24)
+    span = bottom - top
+    strip_h = 0
+    if games:
+        strip_h = min(L(150) if len(games) == 1 else L(200), max(L(72), span // 3))
+    score_h = span - (strip_h + gap if strip_h else 0)
+    if games and score_h < L(180):
+        strip_h = max(0, span - L(180) - gap)
+        score_h = span - (strip_h + gap if strip_h else 0)
+    rect = pygame.Rect(L.m, top, width, max(L(120), score_h))
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
+    pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
+    pad = L(48)
+    head = rect.top + L(36)
+    live = card["status"] == "live"
+    label = "LIVE" if live else card["status"].upper()
+    st = _line(surf, "display", L(44), label, LISTENING if live else MUTED, max(40, rect.w // 3))
+    if live:
+        pygame.draw.circle(surf, LISTENING, (rect.left + pad + L(8), head + st.get_height() // 2), max(4, L(10)))
+        surf.blit(st, (rect.left + pad + L(28), head))
+    else:
+        surf.blit(st, (rect.left + pad, head))
+    period = _line(surf, "display", L(44), card["period"], MUTED, max(40, rect.w // 3))
+    surf.blit(period, (rect.right - pad - period.get_width(), head))
+    league = _line(surf, "body", L(28), card["league"], FAINT, max(40, rect.w // 4))
+    surf.blit(league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
+    mark = min(L(170), max(L(48), rect.w // 8))
+    head_bottom = head + st.get_height()
+    avail = max(L(48), rect.bottom - head_bottom - L(24))
+    name_px = min(L(56), max(L(22), avail // 6))
+    name_w = max(40, rect.w // 2 - mark - L(120))
+    score_px = min(
+        _fit_px("display", card["home_score"], L(220), name_w, L(48)),
+        _fit_px("display", card["away_score"], L(220), name_w, L(48)),
+        max(L(36), avail - name_px - L(12)))
+    block = max(mark, name_px + score_px + L(8))
+    y = head_bottom + max(L(12), (avail - block) // 2)
+
+    def paint_side(team, score, logo_x, text_right):
+        surf.blit(team_mark(team, mark), (logo_x, y))
+        name = _line(surf, "display", name_px, team["name"], TEXT, name_w)
+        sc = font("display", score_px).render(str(score), True, TEXT)
+        if text_right:
+            tx = logo_x - L(28)
+            surf.blit(name, (tx - name.get_width(), y + L(6)))
+            surf.blit(sc, (tx - sc.get_width(), y + name.get_height() + L(4)))
+        else:
+            tx = logo_x + mark + L(28)
+            surf.blit(name, (tx, y + L(6)))
+            surf.blit(sc, (tx, y + name.get_height() + L(4)))
+
+    paint_side(card["home"], card["home_score"], rect.left + pad, False)
+    paint_side(card["away"], card["away_score"], rect.right - pad - mark, True)
+    dash = font("display", min(L(60), max(16, score_px // 3))).render("–", True, MUTED)
+    surf.blit(dash, (rect.centerx - dash.get_width() // 2, y + name_px + max(0, (score_px - dash.get_height()) // 2)))
+    if games and strip_h >= L(48) and rect.bottom + gap < bottom:
+        strip = pygame.Rect(L.m, rect.bottom + gap, width, min(strip_h, bottom - rect.bottom - gap))
+        pygame.draw.rect(surf, SURFACE, strip, border_radius=L(28))
+        pygame.draw.rect(surf, RULE, strip, max(2, L(2)), border_radius=L(28))
+        cap = _line(surf, "display", L(28), "NEXT GAME", MUTED, L(240))
+        game = games[0]
+        when = _line(surf, "display", L(44), game["when"], LISTENING, max(40, strip.w // 4))
+        label_w = max(40, strip.w - cap.get_width() - when.get_width() - L(180))
+        name = _line(surf, "display", L(44), game["label"], TEXT, label_w)
+        row_y = strip.top + L(28)
+        if len(games) > 1 and strip.h >= cap.get_height() + L(70):
+            row_y = strip.top + L(24)
+        else:
+            row_y = strip.centery - max(cap.get_height(), name.get_height(), when.get_height()) // 2
+        surf.blit(cap, (strip.left + pad, row_y + (name.get_height() - cap.get_height()) // 2))
+        surf.blit(name, (strip.left + pad + cap.get_width() + L(32), row_y))
+        surf.blit(when, (strip.right - pad - when.get_width(), row_y))
+        if len(games) > 1 and strip.bottom - (row_y + name.get_height()) > L(28):
+            extra = "   ·   ".join(f"{g['when']}  {g['label']}" for g in games[1:])
+            more = _line(surf, "body", L(28), extra, MUTED, strip.w - 2 * pad)
+            surf.blit(more, (strip.left + pad, row_y + name.get_height() + L(8)))
+    elif games:
+        line = _line(surf, "body", L(28), f"{games[0]['when']}  {games[0]['label']}", MUTED, rect.w - 2 * pad)
+        surf.blit(line, (rect.left + pad, rect.bottom - L(16) - line.get_height()))
+
+
+def friendly_date(iso):
+    """YYYY-MM-DD as a weekday and month day. An impossible day stays the raw date."""
+    try:
+        parsed = time.strptime(iso, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(iso or "")
+    return time.strftime("%A, %B %-d", parsed)
+
+
+def draw_calendar(surf, L, card):
+    """Five rows. The first event is next (teal). A summary line names it."""
+    rect = _panel(surf, L)
+    shown = card["events"][:5]
+    extra = len(card["events"]) - len(shown)
+    foot_h = L(64)
+    y = rect.top + L(28)
+    room = max(L(48), rect.bottom - y - foot_h)
+    row_h = min(L(118), max(L(52), room // max(1, len(shown) or 1)))
+    time_col = L(260)
+    for i, ev in enumerate(shown):
+        row = pygame.Rect(rect.left + L(24), y, rect.w - L(48), max(L(40), row_h - L(12)))
+        if i == 0:
+            pygame.draw.rect(surf, TEAL_BG, row, border_radius=L(16))
+        px = min(L(54), max(L(22), row.h - L(20)))
+        when = _line(surf, "display", px, ev["time"], LISTENING if i == 0 else MUTED, max(40, time_col - L(24)))
+        bar = pygame.Rect(row.left + time_col, 0, max(4, L(8)), max(4, min(L(70), row.h - L(16))))
+        bar.centery = row.centery
+        pygame.draw.rect(surf, LISTENING if i == 0 else RULE, bar, border_radius=L(4))
+        name = _line(surf, "display", px, ev["title"], TEXT, max(40, row.right - bar.right - L(36)))
+        surf.blit(when, (row.left + time_col - L(20) - when.get_width(), row.centery - when.get_height() // 2))
+        surf.blit(name, (bar.right + L(28), row.centery - name.get_height() // 2))
+        y += row_h
+    if shown:
+        summary = f"Next: {shown[0]['title']} · {shown[0]['time']}"
+        if extra > 0:
+            summary += f" · and {extra} more"
+    else:
+        summary = "Nothing on this day"
+    foot = _line(surf, "body", L(36), summary, MUTED, rect.w - L(72))
+    surf.blit(foot, (rect.left + L(48), rect.bottom - L(24) - foot.get_height()))
+
+
+def draw_feed(surf, L, now, card, colon_on=True):
+    """Full-screen recipe, sports, or calendar. Home cards stay on the idle clock."""
+    surf.fill(BG)
+    kind = card.get("type") if isinstance(card, dict) else None
+    if isinstance(now, time.struct_time):
+        draw_topbar_clock(surf, L, now)
+        if kind == "recipe":
+            caption = card.get("title", "")
+        elif kind == "sports":
+            caption = "Sports"
+        elif kind == "calendar":
+            caption = friendly_date(card.get("date", ""))
+        else:
+            caption = ""
+        if caption:
+            title = _line(surf, "body", L(40), caption, MUTED, max(40, L.w // 2))
+            surf.blit(title, (L.m, L(34)))
+    if kind == "recipe":
+        draw_recipe(surf, L, card)
+    elif kind == "sports":
+        draw_sports(surf, L, card)
+    elif kind == "calendar":
+        draw_calendar(surf, L, card)
+    draw_timer_strip(surf, L)
 
 
 def draw_night(surf, L, now, colon_on=True):
@@ -2508,10 +2941,12 @@ def draw_hotspot(surf, L, now, d):
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
-def screen_for(setup_doc, busy, msg, night, timers=False):
+def screen_for(setup_doc, busy, msg, night, feed=None, timers=False):
     """Which screen paint() shows. Setup (or hotspot) until setup is done; after that a conversation, the night
-    clock, the timer rings when any timer is up, or the idle clock with date and weather.
-    Nothing else (no certificate or pairing screen) can take over. Night hides timers."""
+    clock, a full-screen card, the timer rings when any timer is up, or the idle clock with date and weather.
+    Night hides timers. Night and a voice session win over cards. A full-screen card keeps the timer strip
+    instead of the rings; home cards stay on the idle clock, which the rings replace.
+    Nothing else (no certificate or pairing screen) can take over."""
     if setup_doc:
         return "hotspot" if setup_doc.get("mode") == "hotspot" else "setup"
     if busy:
@@ -2520,13 +2955,15 @@ def screen_for(setup_doc, busy, msg, night, timers=False):
         return "session"
     if night:
         return "night"
+    if isinstance(feed, dict) and feed.get("type") in ("recipe", "sports", "calendar"):
+        return "feed"
     if timers:
         return "timers"
     return "idle"
 
 
 SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot,
-           "timers": draw_timers}
+           "timers": draw_timers, "feed": draw_feed}
 
 
 # ---------------------------------------------------------------- output
@@ -2679,7 +3116,13 @@ def main():
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
-        view = screen_for(sd, thinking(), msg, night_face(now), bool(TIMER_CHIPS))
+        night = night_face(now)
+        view_card = None
+        if not thinking() and not msg and not night:
+            page = deck().current(time.time())
+            if page and page["card"]["type"] in ("recipe", "sports", "calendar"):
+                view_card = page["card"]
+        view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS))
         if view == "thinking":
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -2692,9 +3135,12 @@ def main():
         elif view == "timers":
             disp.show(draw_timers, now, fade=fade, snapshot=snapshot)
             key = ("timers", now.tm_min, len(TIMER_CHIPS))
+        elif view == "feed":
+            disp.show(draw_feed, now, view_card, on, fade=fade, snapshot=snapshot)
+            key = ("feed", now.tm_min, feed_identity())
         else:
             disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
-            key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data))
+            key = ("idle", now.tm_min, wx.offline(), json.dumps(wx.data), feed_identity())
         last_key = key
         if TIMER_CHIPS and key[0] != "night":
             strip_at = time.time()
@@ -2803,9 +3249,13 @@ def main():
                 wait = min(wait, delay)
         if _DIM.get("mode") not in (None, "off"):
             wait = min(wait, 30.0)  # wake to re-read the sensor or the sun
+        if not setup["doc"] and not msg and not night_face(time.localtime()):
+            left = deck().seconds_until_change(time.time())
+            if left is not None:
+                wait = min(wait, max(0.05, left))
         ev = pygame.event.wait(max(1, int(wait * 1000)))
-        if setup["doc"] and ev.type in (STATE, SHOW):
-            continue  # nothing else is shown until setup is done
+        if setup["doc"] and ev.type in (STATE, SHOW, FEED):
+            continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
             chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
@@ -2844,7 +3294,10 @@ def main():
                     else:
                         paint(snapshot=not msg)
             continue
-        if ev.type == SHOW:
+        if ev.type == FEED:
+            if not msg and not night_face(time.localtime()):
+                paint(snapshot=False)
+        elif ev.type == SHOW:
             msg, until, anim_started, card_hold = ev.msg, time.time() + HOLD, None, False
             paint()
             print("rendered", flush=True)
@@ -2868,6 +3321,8 @@ def main():
                 spin_portrait()  # no full-screen repaint, no snapshot
                 maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:
+                paint(snapshot=False)
+            elif not msg and feed_due(last_key, feed_identity()):
                 paint(snapshot=False)
             elif not msg and E("GROK_STATION_BLINK", "0") != "0":
                 blink_colon()
@@ -2928,6 +3383,33 @@ def demo(out, size):
     shots.append(("setup-hotspot", draw_hotspot, (now, dict(sd, mode="hotspot", ssid="grok-station-7F3A", password="hearth-4821",
                                                             url="https://10.42.0.1", qr_join=demo_qr, qr_open=demo_qr))))
     shots.append(("t1-confirm", draw_session, (now, {"from": "Finn", "heard": "add|grocery|0", "text": "oat milk and two lemons", "state": "confirm"})))
+    recipe = {"type": "recipe", "v": 1, "title": "Weeknight soup", "servings": 4,
+              "ingredients": ["onion", "carrots", "stock"], "steps": ["Chop the vegetables.", "Simmer twenty minutes.", "Season and serve."], "step": 2}
+    sports = {"type": "sports", "v": 1, "league": "City league",
+              "home": {"name": "Harbor City", "abbr": "HC"}, "away": {"name": "Ridgeview", "abbr": "RV"},
+              "home_score": 3, "away_score": 2, "status": "live", "period": "2nd",
+              "schedule": [{"label": "Harbor City at Ridgeview", "when": "Sat 7pm"}]}
+    calendar = {"type": "calendar", "v": 1, "date": "2026-10-22",
+                "events": [{"time": "9:00", "title": "Market"}, {"time": "18:30", "title": "Practice"}]}
+    shots.append(("card-recipe", draw_feed, (now, recipe)))
+    shots.append(("card-sports", draw_feed, (now, sports)))
+    shots.append(("card-calendar", draw_feed, (now, calendar)))
+    home = {"type": "home", "v": 1, "title": "Stocks", "items": [
+        {"label": "Northwind", "value": "12.40", "trend": "up"},
+        {"label": "Harbor", "value": "8.10", "trend": "down"}]}
+
+    def draw_home_demo(surf, L, now, wx):
+        global DECK
+        old = DECK
+        sample = cards.Deck(rotate_s=20, ttl_max=86400)
+        sample.put("jules", "stocks", 10, 60, home, time.time())
+        DECK = sample
+        try:
+            draw_idle(surf, L, now, wx)
+        finally:
+            DECK = old
+
+    shots.append(("card-home", draw_home_demo, (now, wx)))
     for name, painter, args in shots:
         disp.screen.fill(BG)
         painter(disp.screen, disp.L, *args)

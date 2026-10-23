@@ -22,7 +22,7 @@ no daily talk-time cap (per-turn and per-session caps only); 5 bad tokens from a
 for 15 min; upstream audio per session is capped. The listener binds 127.0.0.1. Alerts (lockout, handoff) go as
 JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 """
-import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata
+import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata, urllib.error, urllib.request
 from zoneinfo import ZoneInfo
 try:
     from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
@@ -209,7 +209,9 @@ REPLY_WAIT = float(E("REPLY_WAIT", "30"))           # seconds the station waits 
 _limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "handoff.json")), lambda: today())
 _seen_rids = set()
 _reply_seen = set()       # request ids that already took a sealed reply; not the take_reply set
+_show_seen = None          # persisted (bot, nonce) pairs for sealed cards
 _reply_rate = None
+_card_rate = None
 _rtt = None
 _rtt_dir = None
 
@@ -576,6 +578,33 @@ def reply_limiter():
     if _reply_rate is None:
         _reply_rate = botreply.Limiter(botreply.env_rate("REPLY_RATE_BOT", 6), botreply.env_rate("REPLY_RATE_GLOBAL", 30))
     return _reply_rate
+
+
+def card_limiter():
+    """Separate buckets so a card does not spend the reply budget."""
+    global _card_rate
+    if _card_rate is None:
+        _card_rate = botreply.Limiter(botreply.env_rate("CARD_RATE_BOT", 12), botreply.env_rate("CARD_RATE_GLOBAL", 60))
+    return _card_rate
+
+
+def load_cards():
+    """app/cards.py in a checkout, or ../cards.py when the relay is installed under /opt/grok-station/relay."""
+    import importlib.util
+    mod = getattr(load_cards, "_mod", None)
+    if mod is not None:
+        return mod
+    here = os.path.dirname(os.path.abspath(__file__))
+    for rel in (os.path.join(here, "..", "app", "cards.py"), os.path.join(here, "..", "cards.py")):
+        path = os.path.abspath(rel)
+        if not os.path.isfile(path):
+            continue
+        spec = importlib.util.spec_from_file_location("gs_cards_relay", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        load_cards._mod = mod
+        return mod
+    raise ImportError("cards.py")
 
 
 def rtt_stats():
@@ -2215,7 +2244,7 @@ _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
-_REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 429: "too many"}
+_REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 422: "lint", 429: "too many"}
 
 
 def actor_ok(s):
@@ -2291,6 +2320,18 @@ def audit_policy(actor, on):
     _write_audit_line(f"{_audit_stamp()} {who} - pii-mode {'on' if on else 'off'} -\n")
 
 
+def audit_logo_hosts(actor, hosts):
+    """`<ts> <actor> - logo-hosts host1,host2`. An empty list is `-`. No other text."""
+    who = actor if actor_ok(actor) else "-"
+    mod = load_cards()
+    names = []
+    for host in hosts or []:
+        if isinstance(host, str) and mod.host_ok(host):
+            names.append(host)
+    shown = ",".join(names) if names else "-"
+    _write_audit_line(f"{_audit_stamp()} {who} - logo-hosts {shown}\n")
+
+
 def audit_reply(bot, rid, verdict, nbytes):
     """One reply attempt: time, bot, request id, verdict, byte count. No body and no key."""
     who = bot if handoff.bot_slug_ok(bot) else "-"
@@ -2363,6 +2404,214 @@ def write_policy(pii_on):
 def ensure_policy():
     """Startup: write both files from the current reading. Missing or invalid becomes an explicit true."""
     write_policy(read_pii_mode())
+
+
+def logo_hosts_path():
+    return os.path.join(bots_dir(), "logo-hosts.json")
+
+
+def read_logo_hosts():
+    """Allowlist mirrored for the admin API. The display reads GROK_STATION_LOGO_HOSTS, not this file."""
+    try:
+        with open(logo_hosts_path()) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(doc, dict):
+        return []
+    hosts = load_cards().normalize_hosts(doc.get("hosts"))
+    return hosts if isinstance(hosts, list) else []
+
+
+def write_logo_hosts(hosts):
+    """Replace the allowlist. False when hosts is not a legal list. Mode 0644: it is not a secret."""
+    norm = load_cards().normalize_hosts(hosts)
+    if norm is None:
+        return False
+    data = (json.dumps({"hosts": norm}, sort_keys=True) + "\n").encode()
+    atomic_write(logo_hosts_path(), data, 0o644)
+    return True
+
+
+def _station_env_values(keys):
+    """Selected keys from the station env file. Callers must not log values (the show token is one of them)."""
+    path = E("STATION_ENV_FILE", "/etc/grok-station/env")
+    found = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                m = re.match(r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$", line)
+                if m and m.group(1) in keys:
+                    found[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return found
+
+
+def card_ttl_max():
+    raw = _station_env_values(frozenset(("GROK_STATION_CARD_TTL_MAX",))).get("GROK_STATION_CARD_TTL_MAX", "")
+    return load_cards().ttl_cap(raw)
+
+
+class _ShowAudit:
+    def __init__(self, bot, verdict):
+        self.bot = bot if handoff.bot_slug_ok(bot) else "-"
+        self.verdict = verdict
+
+
+def post_station_show(show, post=None):
+    """POST the cleaned card to the station's localhost /show. Never logs the token, the URL, or the body."""
+    vals = _station_env_values(frozenset(("GROK_STATION_TOKEN", "GROK_STATION_PORT")))
+    token = vals.get("GROK_STATION_TOKEN", "")
+    try:
+        port = int(vals.get("GROK_STATION_PORT") or 8787)
+    except ValueError:
+        port = 8787
+    if not token or not 1 <= port <= 65535:
+        return 503
+    body = json.dumps(show, separators=(",", ":"), sort_keys=True).encode()
+    if post is not None:
+        try:
+            return int(post(body, token, port))
+        except Exception:
+            return 503
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/show" % port, data=body,
+        headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+    except Exception:
+        return 503
+
+
+def show_seen():
+    """Bounded file of card nonces. One store per process."""
+    global _show_seen
+    if _show_seen is None:
+        _show_seen = botreply.ShowSeen(E("SHOW_SEEN", os.path.join(STATE_DIR, "state", "show-seen.json")))
+    return _show_seen
+
+
+def _reject_show(rej):
+    err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
+    return rej.status, {"error": err}, rej
+
+
+def _card_strings(card):
+    """Every text value on a cleaned card. Keys, numbers, and the signed envelope are not text."""
+    found = []
+
+    def walk(value):
+        if isinstance(value, str):
+            found.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(card)
+    return found
+
+
+def _pii_strings(card):
+    """Calendar event titles and home item values. Other fields are not PII-linted."""
+    if not isinstance(card, dict):
+        return []
+    if card.get("type") == "calendar":
+        rows = card.get("events") or []
+        return [row.get("title") for row in rows if isinstance(row, dict) and isinstance(row.get("title"), str)]
+    if card.get("type") == "home":
+        rows = card.get("items") or []
+        return [row.get("value") for row in rows if isinstance(row, dict) and isinstance(row.get("value"), str)]
+    return []
+
+
+def _lint_field(text, hosts, names, pii):
+    """Same checker as a spoken reply, after the reply normalizer. Exceptions block the card."""
+    try:
+        cleaned = handoff.clean(text, len(text) + 1) if isinstance(text, str) else ""
+        if not cleaned:
+            return None
+        return handoff.lint_reply(cleaned, hosts, names, pii=pii)
+    except Exception:
+        return "error"
+
+
+def lint_show(show, hosts=(), names=(), pii=True):
+    """Secret lint on every card text field. PII lint only on calendar titles and home values.
+
+    A clear has no text. None means the card may be posted. A reason means 422. Fail closed.
+    """
+    if not isinstance(show, dict) or show.get("op") != "put":
+        return None
+    pii_on = True if pii is None else bool(pii)
+    try:
+        for text in _card_strings(show.get("card")):
+            why = _lint_field(text, hosts, names, False)
+            if why:
+                return why
+        if pii_on:
+            for text in _pii_strings(show.get("card")):
+                why = _lint_field(text, hosts, names, True)
+                if why:
+                    return why
+    except Exception:
+        return "error"
+    return None
+
+
+def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, rate_now=None,
+                seen=None, now_ms=None, pii=True, hosts=(), names=()):
+    """Verify a sealed card and hand it to post(show) -> HTTP status. Testable without aiohttp.
+
+    post is called only after the signature, the schema, and the text lint pass. A non-200 from
+    the station (including a tighter ttl cap) is an error, not a success. seen, when passed,
+    records (bot, nonce) only after the station returns 200. A failed post releases the
+    reservation so the same blob can be retried. The same blob after a 200 is 409.
+    Secret lint covers every text field. pii adds the reply PII lint on calendar titles and
+    home values only. A lint hit is 422 and does not record the nonce.
+    """
+    mod = load_cards()
+    cap = mod.TTL_HARD if ttl_max is None else ttl_max
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+
+    def parse(doc):
+        return mod.validate_show(doc, cap)
+
+    try:
+        show = botreply.ingest_show(raw, station_sk, keys_doc, known, limiter, parse,
+                                    rate_now=rate_now, seen=seen, now_ms=now)
+    except botreply.Reject as rej:
+        return _reject_show(rej)
+    if lint_show(show, hosts, names, pii):
+        return _reject_show(botreply.Reject(422, "lint", show.get("bot", "-")))
+    reserved = False
+    if isinstance(seen, botreply.ShowSeen):
+        got = seen.reserve(show["bot"], show["nonce"], show["exp_ms"], now)
+        if got is None:  # seen-set full of live nonces: refuse, never evict
+            return _reject_show(botreply.Reject(503, "busy", show.get("bot", "-")))
+        if not got:
+            return _reject_show(botreply.Reject(409, "duplicate", show.get("bot", "-")))
+        reserved = True
+    try:
+        code = int(post(show))
+    except Exception:
+        code = 503
+    if code != 200:
+        if reserved:
+            try:
+                seen.release(show["bot"], show["nonce"], now)
+            except OSError:
+                pass
+        return 503, {"error": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
+    if isinstance(seen, set):
+        seen.add((show["bot"], show["nonce"]))
+    return 200, {"ok": True}, _ShowAudit(show.get("bot", "-"), "ok")
 
 
 def factory_reset_policy():
@@ -3328,6 +3577,68 @@ async def admin_list_source_put(req):
     return web.json_response({"ok": True, "list_source": slug})
 
 
+async def voice_show(req):
+    """Verify a sealed card put/clear and forward it to the station /show listener. The body is not echoed."""
+    n_hdr = req.content_length if isinstance(req.content_length, int) else 0
+    if n_hdr > botreply.OUTER_MAX:
+        audit_reply("-", "-", "shape", n_hdr)
+        return _reply_error(400)
+    try:
+        raw = await req.read()
+    except Exception:
+        audit_reply("-", "-", "shape", n_hdr)
+        return _reply_error(400)
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = b""
+    try:
+        station = botreply.load_or_create_station(SECRETS_DIR)
+    except botreply.StationKeyError:
+        audit_reply("-", "-", "error", len(raw))
+        return web.json_response({"error": "unavailable"}, status=500)
+    except OSError:
+        audit_reply("-", "-", "error", len(raw))
+        return web.json_response({"error": "unavailable"}, status=500)
+
+    def post(show):
+        return post_station_show(show)
+
+    status, body, info = accept_show(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+                                      card_limiter(), post, ttl_max=card_ttl_max(), seen=show_seen(),
+                                      pii=pii_mode(), hosts=_personas.get("hosts") or (),
+                                      names=_personas.get("names") or ())
+    audit_reply(getattr(info, "bot", "-"), "-", getattr(info, "verdict", "error"), len(raw))
+    if status == 503:
+        return web.json_response({"error": "unavailable"}, status=503)
+    if status != 200:
+        return _reply_error(status)
+    return web.json_response({"ok": True})
+
+
+async def admin_cards_get(req):
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    return web.json_response({"hosts": read_logo_hosts()})
+
+
+async def admin_cards_put(req):
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if not isinstance(body, dict) or "hosts" not in body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    try:
+        ok = write_logo_hosts(body.get("hosts"))
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    if not ok:
+        return web.json_response({"error": "bad request"}, status=400)
+    saved = read_logo_hosts()
+    audit_logo_hosts(body.get("actor"), saved)
+    return web.json_response({"ok": True, "hosts": saved})
+
+
 ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
     web.post("/admin/bots/revoke-all", admin_revoke_all),
@@ -3344,7 +3655,9 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
+    web.get("/admin/cards", admin_cards_get), web.put("/admin/cards", admin_cards_put),
     web.post("/voice/reply", voice_reply),
+    web.post("/voice/show", voice_show),
 ]
 
 

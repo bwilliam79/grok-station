@@ -3,8 +3,7 @@
 The relay calls these. Nothing here speaks, logs a body, or stores a bot's private key.
 A reply is SealedBox(station public key) around an Ed25519 attached signature of the reply JSON.
 """
-import base64, json, os, re, tempfile, time, unicodedata
-
+import base64, json, os, re, tempfile, threading, time, unicodedata
 import handoff
 from nacl.exceptions import CryptoError
 from nacl.public import PrivateKey, SealedBox
@@ -14,11 +13,13 @@ OUTER_MAX = 8192
 REPLY_BY_S = 60
 SKEW_S = 120  # accept a sealed reply this long after issue (clock skew / replay). The station stops waiting sooner.
 _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
-_REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class"))
+_REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class", "kind"))
+_ANSWER_KEYS = frozenset(("request_id", "text", "tier", "action_class"))  # 0.6.0 answers omit kind
 _LIST_KEYS = frozenset(("request_id", "kind", "tier", "action_class", "bots"))
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 LIST_MAX = 24
-
+_NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
+SHOW_SEEN_MAX = 1024
 
 class Reject(Exception):
     """A reply the relay must not accept. status is the HTTP code. verdict is safe to log."""
@@ -329,8 +330,19 @@ def _pending_open(pending_for, rid, bot, now_ms):
 
 
 def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
-    """Today's answer schema. Order after the shared prefix: schema, duplicate, pending, lint."""
-    if not isinstance(doc, dict) or set(doc) != _REPLY_KEYS:
+    """Answer schema. Order: schema, duplicate, pending, lint.
+
+    kind "reply" is the signed binding. An answer that omits kind is still an answer
+    (the 0.6.0 shape), not a list and not a card. Any other kind is rejected by ingest
+    before this runs.
+    """
+    if not isinstance(doc, dict):
+        raise Reject(400, "schema", bot)
+    keys = set(doc)
+    if keys == _REPLY_KEYS:
+        if doc.get("kind") != "reply":
+            raise Reject(400, "schema", bot)
+    elif keys != _ANSWER_KEYS:
         raise Reject(400, "schema", bot)
     rid = doc.get("request_id")
     if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
@@ -411,16 +423,12 @@ def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
             "nonce": nonce if isinstance(nonce, str) else "", "names": names_out}
 
 
-def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
-           rate_now=None, source=None):
-    """Check one POST body. Returns the reply to hand to the waiter, or raises Reject.
+def open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=None):
+    """Open one sealed POST body. Returns (bot, message bytes) or raises Reject.
 
-    Shared prefix: size and outer shape, kill switch, unknown bot, revoked key, rate limit, unseal,
-    signature (before the message is parsed), JSON. Dispatch is on the signed kind field only.
-    Answers have no kind and keep today's order (schema, duplicate, pending, lint). A list uses
-    schema, names, lint, duplicate, pending, then the list source.
-    seen and the pending file are not changed here. The limiter is charged only when a paired key
-    would be unsealed. pending_for(rid) is called only after the signed message parses.
+    Order: size and outer shape, kill switch, unknown bot, revoked key, rate limit, unseal,
+    signature (before the message is parsed). The limiter is charged only when a paired key
+    would be unsealed. The caller decides what the signed bytes mean.
     """
     if not isinstance(raw, (bytes, bytearray)) or len(raw) > OUTER_MAX:
         _shape()
@@ -462,13 +470,140 @@ def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(
         message = VerifyKey(vk_raw).verify(bytes(signed))
     except Exception:
         raise Reject(403, "signature", bot)
+    return bot, bytes(message)
+
+
+def nonce_ok(value):
+    """URL-safe base64 (no padding) of at least 16 bytes."""
+    if not isinstance(value, str) or not 22 <= len(value) <= 200:
+        return False
+    if any(c not in _NONCE_ALPHABET for c in value):
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(value + ("=" * ((-len(value)) % 4)))
+    except Exception:
+        return False
+    return len(raw) >= 16
+
+
+class ShowSeen:
+    """Persisted (bot, nonce) pairs for sealed cards. Expired rows are dropped. The file is mode 0600.
+
+    reserve() records the pair and returns False when it was already there. release() undoes a
+    reserve when the station did not accept the card, so a failed post can be retried.
+    """
+
+    def __init__(self, path, max_n=SHOW_SEEN_MAX):
+        self.path = path
+        self.max_n = max_n if type(max_n) is int and max_n >= 1 else SHOW_SEEN_MAX
+        self._lock = threading.Lock()
+
+    def _load(self, now_ms):
+        try:
+            with open(self.path) as f:
+                rows = json.load(f)
+        except (OSError, ValueError):
+            return []
+        if not isinstance(rows, list):
+            return []
+        kept = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) != 3:
+                continue
+            bot, nonce, exp = row
+            if not isinstance(bot, str) or not isinstance(nonce, str) or type(exp) is not int:
+                continue
+            if exp < now_ms:
+                continue
+            kept.append([bot, nonce, exp])
+        return kept[-self.max_n:]
+
+    def _write(self, rows):
+        _atomic_0600(self.path, json.dumps(rows, separators=(",", ":")).encode())
+
+    def contains(self, bot, nonce, now_ms):
+        with self._lock:
+            return any(r[0] == bot and r[1] == nonce for r in self._load(now_ms))
+
+    def reserve(self, bot, nonce, exp_ms, now_ms):
+        """True when this call stored the pair. False when (bot, nonce) is already current.
+
+        None when the set is full of unexpired rows: refuse the show rather than forget a live nonce.
+        """
+        with self._lock:
+            rows = self._load(now_ms)
+            if any(r[0] == bot and r[1] == nonce for r in rows):
+                return False
+            if len(rows) >= self.max_n:
+                return None  # _load already dropped expired rows; never evict a live one
+            rows.append([bot, nonce, int(exp_ms)])
+            self._write(rows)
+            return True
+
+    def release(self, bot, nonce, now_ms):
+        with self._lock:
+            rows = [r for r in self._load(now_ms) if not (r[0] == bot and r[1] == nonce)]
+            self._write(rows)
+
+
+def _seen_hit(seen, bot, nonce, now_ms):
+    if seen is None:
+        return False
+    if isinstance(seen, set):
+        return (bot, nonce) in seen
+    return bool(seen.contains(bot, nonce, now_ms))
+
+
+def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
+           rate_now=None, source=None):
+    """Check one POST body. Returns the reply to hand to the waiter, or raises Reject.
+
+    Shared prefix is open_signed. Dispatch is on the signed kind. A list (kind bot_list) is
+    schema, names, lint, duplicate, pending, then the list source. An answer is kind reply,
+    or the shape with no kind: schema, duplicate, pending, lint. Any other kind, including
+    show, is schema. seen and the pending file are not changed here. The limiter is charged
+    only when a paired key would be unsealed. pending_for(rid) runs only after the signed
+    message parses.
+    """
+    bot, message = open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=rate_now)
     try:
         doc = json.loads(message)
     except ValueError:
         raise Reject(400, "schema", bot)
-    if isinstance(doc, dict) and "kind" in doc:
-        if doc.get("kind") != "bot_list":
-            rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
-            raise Reject(400, "schema", bot, rid)
+    if isinstance(doc, dict) and doc.get("kind") == "bot_list":
         return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source)
+    if isinstance(doc, dict) and "kind" in doc and doc.get("kind") != "reply":
+        rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
+        raise Reject(400, "schema", bot, rid)
     return _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms)
+
+
+def ingest_show(raw, station_sk, keys_doc, known, limiter, parse_show, rate_now=None, seen=None, now_ms=None):
+    """Open a sealed card put/clear. parse_show runs only after the signature verifies.
+
+    The signed document carries kind "show", a nonce, and exp_ms. exp_ms in the past, or more
+    than SKEW_S seconds ahead, is rejected. (bot, nonce) already in seen is a replay. seen is
+    not updated here. A bot field inside the signed document is rejected: the outer slug is
+    the only bot id, and it is stamped here. A reply (kind "reply") does not pass.
+    """
+    bot, message = open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=rate_now)
+    try:
+        doc = json.loads(message)
+        show = parse_show(doc)
+    except Reject:
+        raise
+    except Exception:
+        raise Reject(400, "schema", bot)
+    if not isinstance(show, dict) or "bot" in show or show.get("kind") != "show":
+        raise Reject(400, "schema", bot)
+    nonce, exp = show.get("nonce"), show.get("exp_ms")
+    if not nonce_ok(nonce) or type(exp) is not int:
+        raise Reject(400, "schema", bot)
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    if type(now) is not int or exp < now or exp > now + SKEW_S * 1000:
+        raise Reject(403, "expired", bot)
+    if _seen_hit(seen, bot, nonce, now):
+        raise Reject(409, "duplicate", bot)
+    out = dict(show)
+    out["bot"] = bot
+    return out
