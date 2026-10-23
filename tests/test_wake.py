@@ -150,24 +150,24 @@ class TestEnroll(unittest.TestCase):
             self.assertEqual(ph["hey_kitchen"], "kitchen-bot")
             self.assertEqual(ph["hey_finn"], "grok")  # override persona wins over the config
             self.assertEqual(ph["hey_hank"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 25, "speaker": "spk-ab12", "speakers": ["a"]}),
-                             {"phrase": "hey_hank", "persona": "hank", "count": 25, "topup": False})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10, "speaker": "spk-ab12", "speakers": ["a"]}),
+                             {"phrase": "hey_hank", "persona": "hank", "count": 10, "topup": False})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "persona": "grok"})["persona"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 25)  # omitted count is the default
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 10)  # omitted count is the default
             self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen"})["persona"], "kitchen-bot")
-            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 22, "topup": True}),
-                             {"phrase": "okay_finn", "persona": "finn", "count": 22, "topup": True})
+            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 10, "topup": True}),
+                             {"phrase": "okay_finn", "persona": "finn", "count": 10, "topup": True})
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn"}))
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn", "persona": "Not A Slug"}))
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5}), {"error": "count"})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 19}), {"error": "count"})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 31}), {"error": "count"})
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 20})["count"], 20)
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 30})["count"], 30)
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 20}), {"error": "count"})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10})["count"], 10)
             self.assertIsNone(gw.parse_enroll({"phrase": "hey_hank", "count": "ten"}))
             self.assertTrue(gw.wake_name_ok("hey_kitchen-bot"))
             self.assertFalse(gw.phrase_ok("hey_kitchen-bot"))  # phrase_ok stays letters-only
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen-bot", "persona": "kitchen-bot", "count": 25})["persona"],
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen-bot", "persona": "kitchen-bot", "count": 10})["persona"],
                              "kitchen-bot")
         finally:
             gw.WAKE_CONFIG, gw.OVERRIDES = old
@@ -264,7 +264,7 @@ class EnrollFlow(unittest.TestCase):
         return posted, uploads
 
     def test_stages_and_default_count(self):
-        self.assertEqual(gw.ENROLL_COUNT, 25); self.assertEqual(gw.TOPUP_COUNT, 25)
+        self.assertEqual(gw.ENROLL_COUNT, 10); self.assertEqual(gw.TOPUP_COUNT, 10)
         self.assertEqual((gw.LEAD_S, gw.CLIP_S, gw.RETRY_S), (0.9, 2.4, 1.5))
         posted, uploads = self.run_enroll(loud_at=(2,))
         self.assertEqual(posted[0], "prompt")
@@ -340,16 +340,16 @@ class TrainingNotice(unittest.TestCase):
             raise last
 
         try:
-            st, j = post({"phrase": "hey_finn", "count": 10})
-            self.assertEqual((st, j.get("error")), (400, "count must be 20-30"))
-            st, j = post({"phrase": "hey_finn", "count": 31})
-            self.assertEqual((st, j.get("error")), (400, "count must be 20-30"))
             st, j = post({"phrase": "hey_finn", "count": 25})
+            self.assertEqual((st, j.get("error")), (400, "count must be 10"))
+            st, j = post({"phrase": "hey_finn", "count": 31})
+            self.assertEqual((st, j.get("error")), (400, "count must be 10"))
+            st, j = post({"phrase": "hey_finn", "count": 10})
             self.assertNotEqual(st, 400)  # count accepted
-            st, j = post({"phrase": "hey_finn", "count": 20})
+            st, j = post({"phrase": "hey_finn"})
             self.assertNotEqual(st, 400)
-            st, j = post({"phrase": "hey_finn", "count": 30})
-            self.assertNotEqual(st, 400)
+            st, j = post({"phrase": "hey_finn", "count": 30})  # 30 is refused now
+            self.assertEqual(st, 400)
         finally:
             if gw.CONTROL_HTTPD is not None:
                 gw.CONTROL_HTTPD.shutdown()
@@ -612,3 +612,29 @@ class SingleWakeWordDefault(unittest.TestCase):
                 sys.modules["openwakeword.model"] = old[2]
         self.assertEqual(seen["paths"], [os.path.join(d, "hey_grok.onnx")])
         self.assertEqual(list(gw.WORDS), ["hey_grok"])
+
+
+class ForgetWord(unittest.TestCase):
+    def test_forget_removes_clips_and_model_and_reloads(self):
+        d = tempfile.mkdtemp()
+        inbox, enr = os.path.join(d, "inbox"), os.path.join(d, "enrolled")
+        os.makedirs(os.path.join(inbox, "gstest_word", "20261023-010101"))
+        os.makedirs(enr)
+        open(os.path.join(enr, "gstest_word.onnx"), "w").write("x")
+        json.dump({"words": [{"name": "gstest_word"}, {"name": "hey_finn"}]}, open(os.path.join(enr, "wakewords.enrolled.json"), "w"))
+        old = gw.ENROLL_DIR, gw.ENROLLED_DIR
+        gw.ENROLL_DIR, gw.ENROLLED_DIR = inbox, enr
+        gw.RELOAD.clear()
+        try:
+            self.assertEqual(gw.forget_word("hey_grok"), (False, "bad name"))
+            self.assertEqual(gw.forget_word("../etc"), (False, "bad name"))
+            self.assertEqual(gw.forget_word("gstest_word"), (True, None))
+        finally:
+            gw.ENROLL_DIR, gw.ENROLLED_DIR = old
+        self.assertFalse(os.path.exists(os.path.join(inbox, "gstest_word")))
+        self.assertFalse(os.path.exists(os.path.join(enr, "gstest_word.onnx")))
+        self.assertEqual([w["name"] for w in json.load(open(os.path.join(enr, "wakewords.enrolled.json")))["words"]], ["hey_finn"])
+        self.assertTrue(gw.RELOAD.is_set())
+
+    def test_fixed_ten_clips(self):
+        self.assertEqual((gw.ENROLL_COUNT, gw.TOPUP_COUNT), (10, 10))

@@ -9,6 +9,9 @@
 # services restart in place, with no prompt and no reboot.
 # Everything runs on this Pi: display, wake listener, admin page (HTTPS) and the voice relay (loopback only).
 # Secrets are generated here and never printed. The xAI key is entered on the admin page during first-run setup.
+# Card image (tools/build-image): the build runs this file in an arm64 chroot with GROK_STATION_IMAGE_BUILD=1
+# (network stages only: packages, Python venvs, wake models; no secrets, nothing that needs the Pi). First boot runs
+# it again with GROK_STATION_OFFLINE=1: every other stage runs as usual and the network steps are checked, not run.
 # Command output goes to $LOG (default /var/log/grok-station-install.log); the screen shows one line per stage.
 set -eu
 cd "$(dirname "$0")"
@@ -36,6 +39,10 @@ FLAGS="${TMPDIR:-/tmp}/grok-station-install.$$"; mkdir -p "$FLAGS"; trap 'rm -rf
 # Setup is complete once an admin password and the xAI key exist. Then (or from the update unit) this is an update.
 setup_done() { grep -q '"password"' /var/lib/grok-station/admin/auth.json 2>/dev/null && [ -s $S/xai_api_key ]; }
 if [ "${GROK_STATION_NONINTERACTIVE:-0}" = 1 ] || setup_done; then MODE=update; else MODE=fresh; fi
+IMAGE_BUILD="${GROK_STATION_IMAGE_BUILD:-0}"   # 1: inside the image build chroot
+OFFLINE="${GROK_STATION_OFFLINE:-0}"           # 1: first boot of a card image; packages and venvs are already there
+IMAGE_MARK=$O/.image-build                      # written by the image build: the VERSION it prepared
+[ "$IMAGE_BUILD" = 1 ] && MODE=fresh
 REBOOT_FLAG=/run/grok-station-reboot-required  # read by the admin page; gone after the reboot
 
 # ---- output: colors only on a TTY without NO_COLOR
@@ -104,7 +111,13 @@ stage() {
 }
 
 # ---- stages
+# Offline first boot: the image build already did the network work. Check it matches this VERSION instead.
+offline_ready() {
+  if [ "$DRY" = 1 ]; then echo "+ check $IMAGE_MARK is $VER (offline: packages and venvs come from the image)"; return 0; fi
+  [ "$(cat "$IMAGE_MARK" 2>/dev/null)" = "$VER" ] || { echo "image build marker missing or not $VER"; return 1; }
+}
 st_packages() {
+  if [ "$OFFLINE" = 1 ]; then offline_ready; return; fi
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pygame \
     python3-qrcode python3-venv python3-pip python3-cryptography alsa-utils openssl curl git ca-certificates libegl1 libegl-mesa0 libgles2 \
@@ -116,6 +129,8 @@ st_users() {
   sh_ 'getent group grok-admin >/dev/null || groupadd -r grok-admin'
   sh_ 'id grok-relay >/dev/null 2>&1 || useradd -r -g grok-admin -M -d /nonexistent -s /usr/sbin/nologin grok-relay'
   run usermod -aG audio grok
+  # Every card from one image must get its own secrets, so the image build stops here; first boot makes them.
+  [ "$IMAGE_BUILD" = 1 ] && return 0
   # Secrets and state (generated, never printed)
   run install -d -o root -g root -m 0711 /etc/grok-station $S
   gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
@@ -165,7 +180,7 @@ st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
 for f in relay.py handoff.py tools.py t1.py botreply.py; do run install -m644 relay/$f $O/relay/; done
   sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
-  run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt
+  if [ "$OFFLINE" != 1 ]; then run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt; fi
   run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
   run rm -f $O/relay/release.py  # old updater module, no longer used
 }
@@ -175,12 +190,15 @@ st_wake() {
   sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
   # openwakeword stays --no-deps. These three are exact pins; the rest stay lower bounds so pip
   # never considers ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name).
+  if [ "$OFFLINE" != 1 ]; then
   run $O/wake/venv/bin/pip install --quiet --no-deps "openwakeword==0.6.0"
   run $O/wake/venv/bin/pip install --quiet "onnxruntime==1.31.0" "numpy==2.5.4" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
     requests "websockets>=17"
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
+  fi
   run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/wakewords.json $O/wake/
-  run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
+  # Every shipped starter model (Hey Ash, Hey Rhea, ...), so a bot with that name has a wake word without training.
+  sh_ "install -o grok -g grok -m644 wake/models/*.onnx $O/wake/models/"
 }
 
 st_boot() {  # boot splash and kiosk; hides the blinking console cursor
@@ -249,6 +267,14 @@ echo "${C_B}grok-station${C_0} installer ($VER)"
 [ "$DRY" = 1 ] && echo "${C_Y}Dry run: nothing is changed.${C_0}"
 stage "Updating software"               st_packages
 stage "Setting up users and secrets"    st_users
+if [ "$IMAGE_BUILD" = 1 ]; then
+  # Image build: only the stages that need the network. The rest runs on the Pi at first boot.
+  stage "Installing voice relay"          st_relay
+  stage "Installing wake listener (Hey Grok)" st_wake
+  sh_ "printf '%s\n' '$VER' > $IMAGE_MARK"
+  echo "${C_G}${C_B}Image prepared ($VER).${C_0} First boot finishes the install offline."
+  exit 0
+fi
 stage "Installing the display"          st_display
 stage "Installing voice relay"          st_relay
 stage "Installing wake listener (Hey Grok)" st_wake

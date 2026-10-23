@@ -395,7 +395,8 @@ class WakeWords(unittest.TestCase):
         words = {w["name"]: w for w in body["words"]}
         self.assertEqual(words["hey_hank"]["trained_on"], {"trained_at": 3})
         self.assertNotIn("spk-old", json.dumps(body))
-        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": "spk-old"})[0], 400)
+        # The clip count is fixed at 10; a sent count is ignored (the listener is down here, so 503).
+        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": "spk-old"})[0], 503)
         # "Hey Hank!" is the known word hey_hank, so this re-records it (the listener is down here).
         st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 25})
         self.assertEqual((st, out.get("id")), (503, "hey_hank"))
@@ -870,7 +871,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         st, j = c.req("POST", "/api/enroll/check", {"phrase": "hey fin"})
         self.assertEqual((st, j["error"]), (400, "Too close to “Hey Finn”. Pick something that sounds different."))
         st, j = c.req("POST", "/api/enroll", {"phrase": "cat", "count": 5, "persona": "grok"})
-        self.assertEqual((st, j["error"]), (400, "Pick a wake word and 20 to 30 clips."))
+        self.assertEqual((st, j["error"]), (400, "Too short. Use two or three words."))
 
     def test_mapping_saved_and_rerecord_keeps_persona(self):
         c = signed_in()
@@ -881,7 +882,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(st, 202)
         self.assertEqual(j["id"], "hey_kitchen")
         self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
-        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 25, "topup": False, "persona": "kitchen-bot"})
+        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 10, "topup": False, "persona": "kitchen-bot"})
         self.assertNotIn("speaker", json.dumps(self.sent))
         self.assertNotIn("spk-legacy", json.dumps(self.sent))
         ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
@@ -1472,7 +1473,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertIn("Hey Grok is the built-in wake word. It is always on.", js)
         self.assertNotIn("Jarvis", js)
         self.assertIn("Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.", js)
-        self.assertIn('min="20" max="30" step="1" value="25"', js)
+        self.assertIn("You say it 10 times", js)
         self.assertIn("Block personal info in replies", js)
         self.assertIn('["privacy", "Privacy"]', js)
 
@@ -1936,3 +1937,50 @@ class XaiKeyStatus(unittest.TestCase):
         st, j = c.req("GET", "/api/xai-key")
         self.assertEqual(j, {"set": True, "last4": "Wx9z"})
         self.assertNotIn(key[:-4], open(ga.path("xai_key_hint.json")).read())
+
+
+class DeleteWakeWord(unittest.TestCase):
+    def setUp(self):
+        self.sent = []
+        self.orig = ga.wake
+        ga.wake = lambda m, p, body=None, timeout=3: (self.sent.append((m, p, body)), (200, {"ok": True}))[1]
+        self.state = os.environ["ADMIN_STATE_DIR"]
+
+    def tearDown(self):
+        ga.wake = self.orig
+
+    def ov(self):
+        return ga.read_json(os.path.join(self.state, "wake-overrides.json"), {})
+
+    def test_builtin_cannot_be_deleted(self):
+        c = signed_in()
+        code, out = c.req("DELETE", "/api/wakewords/hey_grok", {})
+        self.assertEqual(code, 409)
+        self.assertIn("can't be deleted", out["error"])
+        self.assertEqual(self.sent, [])
+
+    def test_orphan_untrained_word_is_removed_and_listener_reloads(self):
+        c = signed_in()
+        c.req("GET", "/api/wakewords")  # creates the overrides file
+        ov = self.ov(); ov["gstest_word"] = {"persona": "grok", "enabled": False}
+        ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
+        drop = tempfile.mkdtemp()
+        old_drop, ga.WAKE_DROP_DIR = ga.WAKE_DROP_DIR, drop
+        open(os.path.join(drop, "gstest_word.onnx"), "w").write("x")
+        try:
+            self.assertIn("gstest_word", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
+            self.assertEqual(c.req("DELETE", "/api/wakewords/gstest_word", {})[0], 200)
+        finally:
+            ga.WAKE_DROP_DIR = old_drop
+        self.assertNotIn("gstest_word", self.ov())
+        self.assertFalse(os.path.exists(os.path.join(drop, "gstest_word.onnx")))
+        self.assertIn(("POST", "/forget", {"name": "gstest_word"}), self.sent)
+        self.assertEqual(self.sent[-1][:2], ("POST", "/reload"))
+        self.assertNotIn("gstest_word", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
+
+    def test_configured_word_stays_hidden(self):
+        c = signed_in()
+        self.assertEqual(c.req("DELETE", "/api/wakewords/hey_finn", {})[0], 200)
+        self.assertTrue(self.ov()["hey_finn"]["hidden"])
+        self.assertNotIn("hey_finn", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
+        self.assertEqual(c.req("DELETE", "/api/wakewords/no_such_word", {})[0], 404)

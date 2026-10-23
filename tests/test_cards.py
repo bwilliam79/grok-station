@@ -904,3 +904,22 @@ def _has(surf, color):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultLogoHosts(unittest.TestCase):
+    def test_espn_default_until_saved(self):
+        self.assertEqual(cards.hosts_from_env(None), ["a.espncdn.com"])
+        self.assertEqual(cards.hosts_from_env(""), [])  # a saved empty list stays empty
+        u = "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"
+        self.assertTrue(cards.logo_url_ok(u, cards.hosts_from_env(None)))
+        self.assertFalse(cards.logo_url_ok("https://example.com/kc.png", cards.hosts_from_env(None)))
+
+    def test_default_logo_is_cached_for_a_sports_card(self):
+        png = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0)
+               + struct.pack(">I", zlib.crc32(b"IHDR" + struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0)))
+               + struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND")))
+        c = cards.LogoCache(tempfile.mkdtemp(), cards.hosts_from_env(None), opener=lambda u: (png, "image/png"),
+                            resolve=lambda h: ["23.1.2.3"])
+        lid = c.fetch("https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/kc.png&w=200&h=200")
+        self.assertIsNotNone(lid)
+        self.assertTrue(os.path.exists(c.path_for(lid)))

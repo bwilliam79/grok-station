@@ -2,7 +2,7 @@
    Hearth theme, settings scale (see ADMIN-UI.md) */
 :root{--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
 --gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#6F655A;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
---gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-amber-bg:#33270F;
+--gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--gs-bg);color:var(--gs-text);font:15px/1.45 var(--body);-webkit-font-smoothing:antialiased;overflow:hidden;font-variant-numeric:tabular-nums}
@@ -238,3 +238,4 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0}
 @media (max-width:767px){#offline{margin-left:16px;margin-right:16px}}
 .updlog{white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:13px;max-height:420px;overflow:auto;margin:8px 0 0}
+.mainstar{color:var(--gs-gold)}

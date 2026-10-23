@@ -222,6 +222,23 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("withPassword(", sysp)
         self.assertIn("data-vsel", _fn(self.js, "paintBots"))
 
+    def test_main_bot_sorts_first_and_gold_star(self):
+        import json, subprocess, shutil
+        fn = _fn(self.js, "mainFirst")
+        self.assertIn("mainFirst(", _fn(self.js, "paintBots"))
+        css = _read(os.path.join("admin", "web", "admin.css"))
+        self.assertIn("--gs-gold:", css)
+        self.assertIn(".mainstar{color:var(--gs-gold)}", css)
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        bots = [{"slug": "a"}, {"slug": "b"}, {"slug": "c", "main": True}, {"slug": "d"}]
+        out = subprocess.run(["node", "-e", fn + "\nconsole.log(JSON.stringify(mainFirst(" + json.dumps(bots) + ").map(b => b.slug)))"],
+                             capture_output=True, text=True, timeout=20, check=True).stdout
+        self.assertEqual(json.loads(out), ["c", "a", "b", "d"])
+        out = subprocess.run(["node", "-e", fn + "\nconsole.log(JSON.stringify(mainFirst([{slug:'x'},{slug:'y'}]).map(b => b.slug)))"],
+                             capture_output=True, text=True, timeout=20, check=True).stdout
+        self.assertEqual(json.loads(out), ["x", "y"])
+
     def test_imported_list_card(self):
         js = self.js
         self.assertNotIn("List source", js)
@@ -606,3 +623,39 @@ class AdminUI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Release092UI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+
+    def test_setup_prompt_teaches_display_cards(self):
+        for routine in ("BOT_ROUTINE = `", "BOT_ROUTINE_HOME = `"):
+            start = self.js.index(routine)
+            body = self.js[start:self.js.index("`;", start)]
+            for needle in ("Display cards", '"type":"recipe"', '"type":"sports"', '"type":"calendar"', '"type":"home"',
+                           '"op":"clear"', "a.espncdn.com"):
+                self.assertIn(needle, body, (routine, needle))
+        cloud = self.js[self.js.index("BOT_ROUTINE = `"):self.js.index("BOT_ROUTINE_HOME")]
+        self.assertIn("seal-show --bot <slug>", cloud)
+        self.assertIn("post --show", cloud)
+
+    def test_copy_updated_instructions_for_paired_bots(self):
+        self.assertIn("Copy updated instructions", self.js)
+        fn = _fn(self.js, "routineUpdate")
+        self.assertIn("BOT_ROUTINE", fn)
+        self.assertNotIn("deployScript", fn)
+
+    def test_fixed_ten_reps_train_more_and_delete(self):
+        self.assertNotIn('id="cnt"', self.js)
+        self.assertIn("You say it 10 times", self.js)
+        self.assertIn("Train more", self.js)
+        self.assertIn("topup: true", self.js)
+        self.assertIn('"DELETE", "/api/wakewords/"', self.js)
+        self.assertIn("w.builtin ? \"\" : `<button class=\"btn d sm\" data-del", self.js)
+        self.assertNotIn("coming later", _read(os.path.join("wake", "grok_wake.py")))
+
+    def test_logo_hosts_are_advanced_and_prefilled(self):
+        self.assertIn("Advanced: team logo sources", self.js)
+        self.assertIn('placeholder="a.espncdn.com"', self.js)
