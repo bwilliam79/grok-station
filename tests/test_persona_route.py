@@ -152,7 +152,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         botreply.pin_key(botreply.keys_path(self.tmp), slug, base64.b64encode(b"\x33" * 32).decode())
 
     async def drive(self, transcript, persona=None, t1=None, function_call=False, tool_first=False, timeout=8,
-                    call=None, expect_ack=False):
+                    call=None, expect_ack=False, follow=None, slug="jules"):
         """One station turn against the fake upstream. Returns station events, binary frames and upstream JSON."""
         upstream, events, binaries, order = [], [], [], []
         self.ack_before_post = False
@@ -191,6 +191,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                 write()
             return web.json_response({"ok": True})
 
+        scripts = [transcript] + ([follow] if follow else [])
+        cursor = {"i": 0}
+
         async def xai(req):
             s = web.WebSocketResponse()
             await s.prepare(req)
@@ -206,18 +209,23 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                     armed = True
                 elif ev.get("type") == "input_audio_buffer.append" and armed:
                     armed = False
+                    i = cursor["i"]
+                    if i >= len(scripts):
+                        continue
+                    cursor["i"] = i + 1
+                    said = scripts[i]
                     await s.send_json({"type": "input_audio_buffer.speech_started"})
                     await s.send_json({"type": "input_audio_buffer.speech_stopped"})
                     await s.send_json({"type": "response.created"})
-                    if spec and tool_first:
+                    if i == 0 and spec and tool_first:
                         await s.send_json({"type": "response.function_call_arguments.done", "name": spec["name"],
                                            "call_id": "c1", "arguments": json.dumps(spec.get("arguments") or {})})
                     await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
-                                       "transcript": transcript})
+                                       "transcript": said})
                     await s.send_json({"type": "response.audio.delta", "delta": AUDIO})
                     await s.send_json({"type": "response.text", "text": PRE})
                     await s.send_json({"type": "response.output_audio.delta", "delta": AUDIO})
-                    if spec and not tool_first:
+                    if i == 0 and spec and not tool_first:
                         await s.send_json({"type": "response.function_call_arguments.done", "name": spec["name"],
                                            "call_id": "c1", "arguments": json.dumps(spec.get("arguments") or {})})
                     await s.send_json({"type": "response.done"})
@@ -234,9 +242,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
             await hs.start_server()
             url = str(hs.make_url("/hook"))
             with open(relay.WEBHOOKS_FILE, "w") as f:
-                json.dump({"jules": {"url": url, "token": token}}, f)
+                json.dump({slug: {"url": url, "token": token}}, f)
             relay._hooks["mtime"] = None
-            self._pin("jules")
+            self._pin(slug)
             await xs.start_server()
             relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
             rapp = web.Application()
@@ -266,9 +274,17 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                     order.append(ev.get("type"))
                     events.append(ev)
 
+            follow_sent = False
+
             async def read():
+                nonlocal follow_sent
                 async for msg in ws:
                     take(msg)
+                    if (msg.type == WSMsgType.TEXT and events and events[-1].get("type") == "turn_done"
+                            and follow and not follow_sent):
+                        follow_sent = True
+                        await ws.send_json({"type": "listening"})
+                        continue
                     if msg.type == WSMsgType.TEXT and events and events[-1].get("type") in ("turn_done", "done", "timeout", "error"):
                         # The filler is sent before queued model frames are read. Drain so a late forward fails the test.
                         while True:
@@ -608,6 +624,94 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         out = await self.drive("")
         self.assertEqual(self._acks(out["events"]), [])
         self.assertEqual(self.calls, [])
+
+
+_KAI = [{"slug": "kai", "name": "Kai", "aliases": []},
+        {"slug": "mira", "name": "Mira", "aliases": [], "main": True},
+        {"slug": "sol", "name": "Sol", "aliases": []}]
+
+
+class ConnectPhrase(unittest.TestCase):
+    def test_variants_match_and_other_sentences_pass_through(self):
+        for phrase in (
+            "Hey Grok, can you connect me with Kai?",
+            "hey grok can you connect me with kai",
+            "HEY GROK, Could you connect me with Kai.",
+            "please connect me to Kai",
+            "can you please connect me with Kai!",
+            "put me through to Kai",
+            "Hey Grok put me through to kai?",
+        ):
+            hit = relay.connect_request(phrase, _KAI)
+            self.assertEqual(hit["kind"], "switch", phrase)
+            self.assertEqual(hit["slug"], "kai", phrase)
+            self.assertEqual(hit["lines"][0][0], "Connecting you with Kai.")
+            self.assertEqual(hit["lines"][1], ("Hey, this is Kai. How can I help you?", "bot"))
+        for phrase in ("what's for dinner", "ask Kai what's for dinner", "connect the printer",
+                       "can you help me", "put me through", ""):
+            self.assertIsNone(relay.connect_request(phrase, _KAI), phrase)
+
+    def test_unknown_lists_bots_and_an_empty_station_says_so(self):
+        hit = relay.connect_request("connect me with Remy", _KAI)
+        self.assertEqual(hit["kind"], "unknown")
+        self.assertEqual(hit["lines"][0][0],
+                         "I don't see a bot called Remy. Your bots are Kai, Mira and Sol.")
+        self.assertIsNone(relay.connect_request("what time is it", []))
+        empty = relay.connect_request("Hey Grok, connect me with Sol", [])
+        self.assertEqual(empty["lines"][0][0],
+                         "I don't see a bot called Sol. You don't have any other bots yet.")
+
+    def test_grok_and_main_bot(self):
+        same = relay.connect_request("connect me with Grok", _KAI, current="grok")
+        self.assertEqual(same["kind"], "same")
+        self.assertEqual(same["lines"][0][0], "You're already talking to Grok.")
+        back = relay.connect_request("Hey Grok, can you connect me with Grok?", _KAI, current="kai")
+        self.assertEqual(back["kind"], "switch")
+        self.assertEqual(back["slug"], "grok")
+        self.assertEqual(back["lines"][1][1], "current")
+        main = relay.connect_request("put me through to the main bot", _KAI)
+        self.assertEqual(main["slug"], "mira")
+        none = relay.connect_request("connect me with the main bot",
+                                     [{"slug": "kai", "name": "Kai"}])
+        self.assertIn("I don't see a main bot.", none["lines"][0][0])
+        self.assertIn("Your bots are Kai.", none["lines"][0][0])
+        already = relay.connect_request("connect me to Kai", _KAI, current="kai")
+        self.assertEqual(already["kind"], "same")
+        self.assertEqual(already["lines"][0][0], "You're already talking to Kai.")
+
+
+class ConnectSession(PersonaRoute):
+    def _kai_roster(self):
+        with open(relay.PERSONAS_FILE, "w") as f:
+            json.dump({"personas": [
+                {"slug": "kai", "name": "Kai", "voice": "ara", "prompt": "Kai helps."},
+                {"slug": "mira", "name": "Mira", "voice": "rex", "prompt": "Mira helps."},
+            ]}, f)
+        relay._personas["mtime"] = None
+
+    async def test_connect_switches_and_the_followup_goes_to_that_bot(self):
+        self._kai_roster()
+        out = await self.drive("Hey Grok, can you connect me with Kai?", follow="what time is it", slug="kai")
+        replies = self._replies(out["events"])
+        self.assertIn("Connecting you with Kai.", replies)
+        self.assertIn("Hey, this is Kai. How can I help you?", replies)
+        self.assertEqual([(t, v) for t, v in self.tts if t.startswith("Hey, this is Kai")],
+                         [("Hey, this is Kai. How can I help you?", "ara")])
+        personas = [e for e in out["events"] if e.get("type") == "persona"]
+        self.assertTrue(any(e.get("slug") == "kai" and e.get("name") == "Kai" for e in personas))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["persona"], "kai")
+        self.assertEqual(self.calls[0]["question"], "what time is it")
+        self.assertNotIn(MODEL_PCM, out["binaries"])
+        self.assertTrue(any(e.get("type") == "session.update" and e.get("session", {}).get("voice") == "ara"
+                            for e in out["upstream"]))
+
+    async def test_unknown_connect_is_spoken_and_does_not_ask_a_bot(self):
+        self._kai_roster()
+        out = await self.drive("can you connect me with Sol?")
+        self.assertEqual(self.calls, [])
+        self.assertIn("I don't see a bot called Sol. Your bots are Kai and Mira.", self._replies(out["events"]))
+        self.assertFalse(any(e.get("type") == "persona" and e.get("slug") == "sol" for e in out["events"]))
 
 
 if __name__ == "__main__":

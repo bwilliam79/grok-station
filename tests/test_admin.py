@@ -1483,10 +1483,10 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertNotIn(">Slug<", js)
         self.assertIn("Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.", js)
         self.assertNotIn("like nix", js)
-        self.assertIn("Hey Grok is the built-in wake word. It is always on.", js)
+        self.assertIn("Built in, always on", js)
         self.assertNotIn("Jarvis", js)
-        self.assertIn("Higher wakes more easily but may wake by mistake. Lower means fewer false wakes but it may miss you.", js)
-        self.assertIn("You say it 10 times", js)
+        self.assertNotIn("Higher wakes more easily", js)
+        self.assertIn("You’ll say it 10 times", js)
         self.assertIn("Block personal info in replies", js)
         self.assertIn('["privacy", "Privacy"]', js)
 
@@ -1958,9 +1958,14 @@ class DeleteWakeWord(unittest.TestCase):
         self.orig = ga.wake
         ga.wake = lambda m, p, body=None, timeout=3: (self.sent.append((m, p, body)), (200, {"ok": True}))[1]
         self.state = os.environ["ADMIN_STATE_DIR"]
+        self.inbox = tempfile.mkdtemp(prefix="gs-enroll-")
+        self._inbox = ga.ENROLL_INBOX
+        ga.ENROLL_INBOX = self.inbox
 
     def tearDown(self):
         ga.wake = self.orig
+        ga.ENROLL_INBOX = self._inbox
+        shutil.rmtree(self.inbox, ignore_errors=True)
 
     def ov(self):
         return ga.read_json(os.path.join(self.state, "wake-overrides.json"), {})
@@ -1997,6 +2002,76 @@ class DeleteWakeWord(unittest.TestCase):
         self.assertTrue(self.ov()["hey_finn"]["hidden"])
         self.assertNotIn("hey_finn", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
         self.assertEqual(c.req("DELETE", "/api/wakewords/no_such_word", {})[0], 404)
+
+    def test_unlink_parks_the_word_and_keeps_recordings(self):
+        c = signed_in()
+        c.req("GET", "/api/wakewords")
+        ov = self.ov()
+        ov["hey_mira"] = {"persona": "mira", "enabled": True}
+        ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
+        clip = os.path.join(self.inbox, "hey_mira", "s1")
+        os.makedirs(clip)
+        open(os.path.join(clip, "00.wav"), "wb").write(b"RIFF")
+        try:
+            self.assertEqual(c.req("PUT", "/api/wakewords/hey_grok", {"unlink": True})[0], 409)
+            st, j = c.req("PUT", "/api/wakewords/hey_mira", {"unlink": True})
+            self.assertEqual(st, 200, j)
+            body = c.req("GET", "/api/wakewords")[1]
+            self.assertNotIn("hey_mira", {w["name"] for w in body["words"]})
+            parked = {w["name"]: w for w in body["unused"]}
+            self.assertEqual(parked["hey_mira"]["reason"], "unlinked")
+            self.assertGreaterEqual(parked["hey_mira"]["recordings"], 1)
+            self.assertTrue(os.path.isfile(os.path.join(clip, "00.wav")))
+            self.assertEqual(c.req("PUT", "/api/wakewords/no_such_word", {"unlink": True})[0], 404)
+        finally:
+            shutil.rmtree(os.path.join(self.inbox, "hey_mira"), ignore_errors=True)
+
+    def test_deleting_a_bot_moves_its_wake_word_to_unused(self):
+        c = signed_in()
+        ov = self.ov()
+        ov["hey_kai"] = {"persona": "kai", "enabled": True}
+        ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
+        clip = os.path.join(self.inbox, "hey_kai", "s1")
+        os.makedirs(clip)
+        open(os.path.join(clip, "00.wav"), "wb").write(b"RIFF")
+        old = ga.relay_call
+        ga.relay_call = lambda *a, **k: (200, {"ok": True, "bots": []})
+        try:
+            st, j = c.req("DELETE", "/api/bots/kai", {"password": GOOD})
+            self.assertEqual(st, 200, j)
+            body = c.req("GET", "/api/wakewords")[1]
+            self.assertNotIn("hey_kai", {w["name"] for w in body["words"]})
+            parked = {w["name"]: w for w in body["unused"]}
+            self.assertEqual(parked["hey_kai"]["reason"], "deleted")
+            self.assertGreaterEqual(parked["hey_kai"]["recordings"], 1)
+            self.assertTrue(os.path.isfile(os.path.join(clip, "00.wav")))
+        finally:
+            ga.relay_call = old
+            shutil.rmtree(os.path.join(self.inbox, "hey_kai"), ignore_errors=True)
+
+    def test_enroll_control_proxies_pause_and_discard(self):
+        c = signed_in()
+        sent = []
+
+        def fake(method, path, body=None, timeout=3):
+            sent.append((method, path, body))
+            if path == "/enroll/control" and isinstance(body, dict) and body.get("op") == "pause":
+                return 200, {"ok": True, "op": "pause"}
+            if path == "/enroll/control":
+                return 409, {"error": "Nothing is recording."}
+            return 200, {"ok": True}
+
+        ga.wake = fake
+        try:
+            st, j = c.req("POST", "/api/enroll/control", {"op": "pause"})
+            self.assertEqual((st, j.get("op")), (200, "pause"))
+            self.assertEqual(c.req("POST", "/api/enroll/control", {"op": "nope"})[0], 400)
+            st, j = c.req("POST", "/api/enroll/control", {"op": "discard"})
+            self.assertEqual(st, 409)
+            self.assertIn("recording", j["error"].lower())
+        finally:
+            ga.wake = self.orig
+        self.assertEqual(sent[0], ("POST", "/enroll/control", {"op": "pause"}))
 
 
 class FewshotEnrollFlow(unittest.TestCase):

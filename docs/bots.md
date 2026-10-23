@@ -133,16 +133,32 @@ printf '%s' "$ANSWER" | grok-station-reply send \
   --insecure --pin-sha256 '<fingerprint from the System page>'
 ```
 
+## Wake words on the Bots page
+
+There is no separate Wake words page. Opening `#wake` goes to Bots.
+
+Hey Grok is the first row: built in, always on, and not configurable. Then the main bot (an amber star and a Main bot pill), then the other bots in saved order. Each of those rows shows its wake word. The switch turns that word on or off. **Configure** is where you set a wake word, train more, remove it, change the computer, and change the voice, photo, and connection. Removing a wake word, or deleting the bot, keeps the recordings under **Unused wake words** until you delete that row.
+
+Recording a word is in [enroll.md](enroll.md).
+
+## Connect me with a bot
+
+During a Hey Grok session you can say "can you connect me with Kai", "connect me to Kai", or "put me through to Kai" (a leading "Hey Grok", and "please", are optional). The station handles that sentence itself. It does not ask the Grok model to answer it, and it does not send it to the bot.
+
+It says "Connecting you with Kai.", switches this same session to Kai (the same persona switch a wake word uses), and Kai's first line is spoken on the station: "Hey, this is Kai. How can I help you?" That line uses Kai's voice. Later turns in the session go to Kai without Kai's wake word, and the session ends the same way any other session ends (a goodbye, or the turn limit).
+
+An unknown name is spoken back: "I don't see a bot called Sol. Your bots are Kai, Mira and Sol." With no other bots: "You don't have any other bots yet." "Connect me with Grok" goes back to Grok, or says you're already talking to Grok. "The main bot" is the bot marked Main bot.
+
 ## Which computer sends replies
 
 A bot's replies are posted from one home computer on your network. If that computer sleeps or is off, replies stop.
 
 - **Setup.** The Add bot instructions tell the bot to pick the always-on home computer it can run commands on, use it for the setup step and every reply, and send back its name with the webhook URL, webhook key and public key. Paste the name into **Home computer name** on the same screen.
-- **Bots page and Configure** show **Replies from: <name>**, and Configure shows the last reply time. A bot added before 0.10.2 shows **Replies from: not set** until you use Change computer.
-- **No reply.** When a request times out, the station says "I couldn't reach <bot>. <name> may be offline." The bot's row says the same until the next reply arrives.
+- **Bots page and Configure** show **Replies from: <name>**, and Configure shows the last reply time. A bot added before 0.10.2 shows **Replies from: not set** until you use Change computer. On a home-key bot that still has no computer name, Change computer shows the name field so you can set it. Once the name is set, a home key has no name field: moving needs Replace key.
+- **No reply.** When a request times out, the station says "I couldn't reach <bot>. <name> may be offline." The bot's row says "<name> is offline. Replies will wait until it's back." until the next reply arrives.
 - **Change computer** (Configure):
-  - Key on the bot computer: copy the instructions, which set up the new computer only. Then type its name and save. The key and the pairing stay the same.
-  - Key on a home computer: the key is tied to that computer, so moving means **Replace key** and setting it up again on the new one.
+  - Key on the bot computer (cloud key): an inline panel, "Move replies to another computer". Copy the instructions, then type the new computer's name and save. The key and the pairing stay the same. An empty name is "Needs attention: type the computer's name."
+  - Key on a home computer: the key is tied to that computer, so the panel says "This needs a new key" and offers **Replace key**. No name field, except the not-set case above.
 - **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies.
 
 ## Routine prompt

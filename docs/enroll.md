@@ -6,18 +6,17 @@ upload.
 
 ## Make a wake word for a bot
 
-1. Open the admin page, go to **Wake words**, and add a phrase for the bot, like "Hey Rhea". Use 2 to 4 words.
-2. Stand where you normally talk to the station, and keep the room quiet.
-3. Press **Record**. The station listens to the room for 3 seconds first, so stay quiet until the first chime.
-4. Say the phrase after each chime, 10 times, the way you would normally say it.
-5. Wait a few seconds while it checks the recordings. Then it shows one of these:
-   - **Ready.** Say the phrase and the station starts that bot.
-   - **Not good enough yet.** Press **Train more** to record 10 more. The new recordings are added to the old
-     ones, and the word is rebuilt. You can do this more than once.
-   - **Sounds too much like Hey Grok** (or another of your words). Pick a different phrase.
-6. Delete a word to remove it and all of its recordings.
+1. Open the admin page, go to **Bots**, and open **Configure** on the bot. Hey Grok is built in and always on, and it is not configured here.
+2. Under **Wake word**, press **Set wake word**. It starts as "Hey Kai". Two or three syllables works best.
+3. Press **Start recording**. Stand where you normally talk to the station, and keep the room quiet. The station listens to the room for 3 seconds first, so stay quiet until the first chime.
+4. Say the phrase after each chime, 10 times, the way you would normally say it. A clip it can't use is asked again right away, so the word is built from 10 kept recordings.
+5. Then it shows one of these:
+   - **Ready.** Say the phrase and the station starts that bot. It's on now.
+   - **Not good enough yet.** Press **Train more** to record 10 more. The first 10 are kept, and the word is rebuilt. You can do this more than once.
+   - Too close to Hey Grok, or already used by another bot. Pick a different phrase.
+6. **Remove wake word** stops listening and leaves the recordings under **Unused wake words** on the Bots page. **Delete** there removes the recordings and the trained model. Deleting the bot moves its wake word to Unused the same way; it does not delete the recordings.
 
-"Hey Grok, ask Rhea …" always works too, with no recording.
+"Hey Grok, ask Kai …" always works too, with no recording. You can also say "Hey Grok, can you connect me with Kai" and the station switches the conversation over. See [bots.md](bots.md).
 
 ## How it works
 

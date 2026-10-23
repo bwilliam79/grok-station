@@ -211,7 +211,7 @@ class AdminUI(unittest.TestCase):
         rm = _fn(self.js, "confirmRemove")
         self.assertIn("dialogX()", rm)
         self.assertIn("bindSheet(d, close)", rm)
-        self.assertNotIn(">Cancel<", rm)
+        self.assertIn(">Cancel<", rm)
         self.assertIn("stepupOpen()", rm)
         self.assertIn('type="password"', rm)
         self.assertIn("DELETE", rm)
@@ -220,7 +220,10 @@ class AdminUI(unittest.TestCase):
         self.assertIn("/api/system/password-grace", sysp)
         self.assertIn("askPassword(", sysp)
         self.assertNotIn("withPassword(", sysp)
-        self.assertIn("data-vsel", _fn(self.js, "paintBots"))
+        self.assertIn("data-bot", _fn(self.js, "paintBots"))
+        self.assertIn('voiceOptions(el._voices, bot.voice, "bvoice")', _fn(self.js, "openBot"))
+        self.assertIn('id="${id}"', _fn(self.js, "voiceOptions"))
+        self.assertNotIn("data-vsel", _fn(self.js, "paintBots"))
 
     def test_main_bot_sorts_first_and_gold_star(self):
         import json, subprocess, shutil
@@ -228,7 +231,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("mainFirst(", _fn(self.js, "paintBots"))
         css = _read(os.path.join("admin", "web", "admin.css"))
         self.assertIn("--gs-gold:", css)
-        self.assertIn(".mainstar{color:var(--gs-gold)}", css)
+        self.assertIn(".mainstar{color:var(--gs-amber)}", css)
         if not shutil.which("node"):
             self.skipTest("node not installed")
         bots = [{"slug": "a"}, {"slug": "b"}, {"slug": "c", "main": True}, {"slug": "d"}]
@@ -278,22 +281,20 @@ class AdminUI(unittest.TestCase):
         self.assertIn("GROK_STATION_NIGHT", pre)
         self.assertIn("GROK_STATION_FADE", pre)
         self.assertNotIn("GROK_STATION_FADE", post)
-        wake = js.split("async function wakePanel", 1)[1].split("\nfunction enrollProgressHTML", 1)[0]
-        self.assertIn("data-sens-save", wake)
-        self.assertIn(">Save<", wake)
-        self.assertNotIn("s.onchange = async", wake)
-        bots = _fn(js, "paintBots")
-        head, tail = bots.split('querySelectorAll("[data-vsave]")', 1)
-        self.assertIn("data-vsave", bots)
-        self.assertNotIn("saveRowVoice", head)
-        self.assertIn("saveRowVoice", tail)
+        toggles = _fn(js, "bindWakeToggles")
+        self.assertLess(toggles.find("setTog"), toggles.find('api("PUT"'))
+        self.assertIn("/api/wakewords/", toggles)
+        self.assertNotIn(">Save<", toggles)
+        voice = _fn(js, "openBot")
+        self.assertIn('id="vsave"', voice)
+        self.assertIn("dataset.saved", voice)
         def chunk(start, end):
             return js.split(start, 1)[1].split(end, 1)[0]
         groups = {
             "wifi": chunk("async function wifiPanel", "\nfunction joinForm"),
             "time": chunk("async function timePanel", "\nfunction soundLabel"),
             "audio": chunk("async function audioPanel", "\nfunction wordLabel"),
-            "wake": wake,
+            "bots-voice": voice.split('<label for="bvoice">', 1)[1].split("<h3>Connection</h3>", 1)[0],
             "display": disp,
             "system": chunk("async function pageSystem", "\nfunction pageMore"),
             "xai": chunk("async function xaiKeyPanel", "\nasync function wizard"),
@@ -315,7 +316,8 @@ class AdminUI(unittest.TestCase):
         js = self.js
         self.assertIn('Replies from: not set', js)
         self.assertIn('Replies from: ${b.reply_host}', js)
-        self.assertIn('may be offline', js)
+        self.assertIn("is offline. Replies will wait until", js)
+        self.assertNotIn("may be offline", js)
         self.assertIn('id="ahost"', js)
         self.assertIn('id="chcomp"', js)
         self.assertIn("Change computer", js)
@@ -448,9 +450,12 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("mailbox", step3.lower())
         self.assertIn("key_mode", add)
         self.assertIn("Key lives", add)
-        bots = _fn(js, "paintBots")
-        self.assertIn("Key on home machine", bots)
-        self.assertIn("Key on cloud computer", bots)
+        # 0.10.3: the row no longer says where the key lives. Configure's Computer section does.
+        drawer = _fn(js, "openBot")
+        self.assertIn("Home key", drawer)
+        self.assertIn("Cloud key", drawer)
+        self.assertNotIn("Key on home machine", _fn(js, "paintBots"))
+        self.assertNotIn("Key on cloud computer", _fn(js, "paintBots"))
         mode = _fn(js, "wireKeyMode")
         self.assertIn("_kmLock", mode)
         self.assertIn("needs_key", mode)
@@ -515,7 +520,7 @@ class AdminUI(unittest.TestCase):
 
     def test_audio_gain_save_omits_untouched(self):
         """Sliders show the listener default. Save sends a gain only after that slider moves."""
-        audio = self.js.split("async function audioPanel", 1)[1].split("\nconst BUILTIN_TIP", 1)[0]
+        audio = self.js.split("async function audioPanel", 1)[1].split("\nconst ICO_WAVE", 1)[0]
         self.assertNotIn('|| "1"', audio)
         self.assertNotIn("|| '1'", audio)
         self.assertIn("gain_by_device", audio)
@@ -664,11 +669,12 @@ class Release092UI(unittest.TestCase):
 
     def test_fixed_ten_reps_train_more_and_delete(self):
         self.assertNotIn('id="cnt"', self.js)
-        self.assertIn("You say it 10 times", self.js)
+        self.assertIn("You’ll say it 10 times", self.js)
         self.assertIn("Train more", self.js)
         self.assertIn("topup: true", self.js)
         self.assertIn('"DELETE", "/api/wakewords/"', self.js)
-        self.assertIn("w.builtin ? \"\" : `<button class=\"btn d sm\" data-del", self.js)
+        self.assertIn("Remove wake word", self.js)
+        self.assertNotIn("async function wakePanel", self.js)
         self.assertNotIn("coming later", _read(os.path.join("wake", "grok_wake.py")))
 
     def test_logo_hosts_are_advanced_and_prefilled(self):
@@ -708,6 +714,9 @@ vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {};
     if (name && save) { name.value = "Den iMac"; await save.onclick(); }
     out[mode].saved = bot.reply_host;
   }
+  const named = el();
+  sandbox.__occ(named, {slug: "sol", name: "Sol", key_mode: "home", reply_host: "Living room PC"}, {_stationPub: "", _fingerprint: ""});
+  out.homeNamed = {field: !!named.querySelector("#chname"), replace: named.innerHTML.indexOf("use Replace key") >= 0};
   out.calls = calls;
   console.log(JSON.stringify(out));
 })();
@@ -721,5 +730,7 @@ vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {};
         self.assertEqual(r.returncode, 0, r.stderr)
         out = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertEqual(out["cloud"], {"shown": True, "copy": True, "field": True, "save": True, "saved": "Den iMac"})
+        # Home key with no computer yet (a bot from before 0.10.2) can still set the name.
         self.assertEqual(out["home"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
+        self.assertEqual(out["homeNamed"], {"field": False, "replace": True})
         self.assertEqual(out["calls"], [["/api/bots/jules", "PATCH", '{"reply_host":"Den iMac"}']] * 2)
