@@ -221,10 +221,14 @@ class AdminUI(unittest.TestCase):
 
     def test_imported_list_card(self):
         js = self.js
+        self.assertNotIn("List source", js)
+        self.assertNotIn('id="lsrc"', js)
+        self.assertIn("b.main", _fn(js, "paintBots"))
+        self.assertIn("bot.main ?", js)  # no Set as Main Bot on the current main bot
         self.assertIn('id="imported"', js)
         self.assertIn("function paintImported", js)
         for text in ("Get list now", "Already set up", "Not on the last list", ">New<", "Set up", "Dismiss",
-                     "List source", "/api/bots/import", "/api/bots/list-source", "/api/bots/imported/",
+                     "Set as Main Bot", "Main bot", "/api/bots/import", "/api/bots/list-source", "/api/bots/imported/",
                      "Needs attention", "Nothing in the list is run"):
             self.assertIn(text, js, text)
         self.assertIn("banner warn", _fn(js, "attn"))

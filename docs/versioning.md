@@ -73,6 +73,12 @@ Patch release. Installs over 0.8.1.
 
 - **Home mode available.** After its validation run on a Mac, Add bot (and a bot's key mode) now offers **Home machine** as an opt-in choice. **Cloud computer** stays the default and is pre-selected. No script or station changes.
 
+## 0.8.11
+
+Patch release. Installs over 0.8.10.
+
+- **Main bot.** The List source field is gone. The main bot has a star on the Bots page, and Configure has **Set as Main Bot**. The first bot you add becomes the main bot. Removing it clears it, or picks the only bot left. With no main bot, Grok says you can set one on the Bots page.
+
 ## 0.8.10
 
 Patch release. Installs over 0.8.9.

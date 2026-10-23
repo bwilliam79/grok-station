@@ -1644,7 +1644,7 @@ function paintBots(el, bots) {
     const info = voice[b.slug] || {};
     const where = b.key_mode === "home" ? "Key on home machine" : "Key on cloud computer";
     return `<div class="botrow">${avatar(b.slug, b.name)}
-    <div style="flex:1;min-width:0"><div class="lbl">${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
+    <div style="flex:1;min-width:0"><div class="lbl">${b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : ""}${esc(b.name)}</div><div style="margin-top:4px">${botPill(b)}</div>
     <div class="help">${esc(where)}</div>
     <div class="help">${esc(rttLine(b.stats))}</div></div>
     ${voiceOptions(el._voices, voiceChoice(b, el), "vv-" + b.slug, "", ` data-vsel="${esc(b.slug)}" aria-label="Voice"`)}
@@ -1783,7 +1783,7 @@ function openBot(bot, el) {
     ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
     ${keyModeFields(bot.key_mode)}
     ${pairFields(el._stationPub, bot)}
-    <div class="botfoot"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
+    <div class="botfoot">${bot.main ? "" : `<button class="btn g sm" id="setmain" type="button">Set as Main Bot</button>`}<button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm" id="delbot" type="button">Remove bot</button></div>`;
   document.body.appendChild(d);
   bindAvatars(d);
   wirePair(d, bot, el);
@@ -2014,6 +2014,21 @@ function openBot(bot, el) {
       d.remove();
       refreshBots(el);
     };
+  };
+  const setMain = $("#setmain", d);
+  if (setMain) setMain.onclick = async () => {
+    busyBtn(setMain, true);
+    markSaving();
+    const r = await api("PUT", "/api/bots/list-source", {list_source: bot.slug});
+    if (!r.ok) {
+      if (setMain.isConnected) busyBtn(setMain, false, "Set as Main Bot");
+      markUnsaved();
+      return toast((r.data && r.data.error) || "Couldn't set the main bot.");
+    }
+    markSaved();
+    toast(`${bot.name} is now the main bot.`);
+    d.remove();
+    refreshBots(el);
   };
   $("#delbot", d).onclick = () => confirmRemove(bot, async () => {
     await cancelTest();
@@ -2278,22 +2293,13 @@ function importedBusy(el) {
   if (!box) return false;
   const a = document.activeElement;
   if (a && box.contains(a)) return true;
-  const sel = $("#lsrc", box);
-  return !!(sel && sel.dataset.touched === "1");
+  return false;
 }
 function paintImported(el, data) {
   const box = $("#imported", el);
   if (!box) return;
   const imp = (data && data.imported) || {rows: [], source: "", updated_at: null};
-  const routed = (data && data.routed) || [];
   const saved = (data && data.list_source) || "";
-  const prev = $("#lsrc", box);
-  const touched = !!(prev && prev.dataset.touched === "1");
-  const keep = touched ? prev.value : null;
-  const options = routed.slice();
-  if (saved && !options.some(b => b.slug === saved)) options.push({slug: saved, name: listSourceName(data, saved)});
-  const pre = saved || (routed.length === 1 ? routed[0].slug : "");
-  const chosen = keep != null ? keep : pre;
   const titleName = listSourceName(data, imp.source || saved);
   const title = titleName ? `Imported from ${titleName}` : "Imported bots";
   const n = importedOnList(imp);
@@ -2302,39 +2308,11 @@ function paintImported(el, data) {
   box.innerHTML = `<div class="inline"><h2>${esc(title)}</h2>
       <button class="btn sm right" id="lget" type="button"${saved ? "" : " disabled"}>Get list now</button></div>
     <p class="note">${esc(head)}</p>
-    <div class="field"><label for="lsrc">List source</label>
-      <div class="inline"><select class="sel" id="lsrc" style="width:auto;flex:1;min-width:160px">
-        <option value="">None</option>
-        ${options.map(b => `<option value="${esc(b.slug)}"${b.slug === chosen ? " selected" : ""}>${esc(b.name)}</option>`).join("")}
-      </select><button class="btn sm" id="lsave" type="button">Save</button></div>
-      <p class="note">Names only. Pick a paired bot and save. Nothing in the list is run.</p></div>
+    <p class="note">${saved ? `Names come from your main bot, ${esc(listSourceName(data, saved))}. Nothing in the list is run.` : "Set a main bot (Configure, then Set as Main Bot) to get its list."}</p>
     ${rows.length ? rows.map(row => `<div class="row"><span class="lbl">${esc(row.name)}</span>${importedPill(row.state)}
       <span class="right inline">${row.state === "new" ? `<button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>` : ""}
       ${row.state === "new" || row.state === "missing" ? `<button class="btn sm" type="button" data-dismiss="${esc(row.key)}">Dismiss</button>` : ""}</span></div>`).join("")
       : `<p class="help">No names yet.</p>`}`;
-  const sel = $("#lsrc", box);
-  const save = $("#lsave", box);
-  if (sel) {
-    sel.dataset.saved = saved;
-    if (touched) sel.dataset.touched = "1";
-    if ([...sel.options].some(o => o.value === chosen)) sel.value = chosen;
-    const sync = () => { if (save) save.disabled = sel.value === (sel.dataset.saved || ""); };
-    sel.onchange = () => { sel.dataset.touched = "1"; sync(); };
-    sync();
-  }
-  if (save) save.onclick = async () => {
-    const slug = sel ? sel.value : "";
-    busyBtn(save, true);
-    markSaving();
-    const r = await api("PUT", "/api/bots/list-source", {list_source: slug});
-    if (save.isConnected) busyBtn(save, false, "Save");
-    if (!r.ok) { markUnsaved(); return attn($("#iere", el), (r.data && r.data.error) || "Couldn't save the list source."); }
-    attn($("#iere", el), "");
-    if (sel) sel.dataset.touched = "";
-    markSaved();
-    toast("List source saved.");
-    refreshBots(el);
-  };
   const get = $("#lget", box);
   if (get) get.onclick = async () => {
     busyBtn(get, true, "Asking…");

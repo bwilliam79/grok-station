@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Bot list import: sealed list schema, merge store, one ask per minute, and the admin fetch."""
-import asyncio, base64, importlib.machinery, importlib.util, io, json, os, stat, sys, tempfile, time, unittest
+import asyncio, datetime, base64, importlib.machinery, importlib.util, io, json, os, stat, sys, tempfile, time, unittest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -412,6 +412,49 @@ class ImportApi(unittest.IsolatedAsyncioTestCase):
         res = await self.client.put(f"/admin/bots/{slug}/key", headers=self.headers(),
                                     json={"public_key": pub, "actor": "admin"})
         self.assertEqual(res.status, 200, await res.text())
+
+    async def _main(self):
+        return (await (await self.client.get("/admin/bots", headers=self.headers())).json())["list_source"]
+
+    async def _add(self, slug):
+        res = await self.client.post("/admin/bots", headers=self.headers(),
+                                     json={"slug": slug, "name": slug.title(), "voice": "ara", "actor": "admin"})
+        self.assertEqual(res.status, 201, await res.text())
+
+    async def _remove(self, slug):
+        res = await self.client.delete(f"/admin/bots/{slug}", headers=self.headers(), json={"actor": "admin"})
+        self.assertEqual(res.status, 200, await res.text())
+
+    async def test_first_added_bot_becomes_main(self):
+        self.assertEqual(await self._main(), "")
+        await self._add("kai")
+        self.assertEqual(await self._main(), "kai")
+        await self._add("ivy")
+        self.assertEqual(await self._main(), "kai")  # a later add does not move it
+
+    async def test_set_main_without_pairing(self):
+        c = self.client
+        res = await c.put("/admin/bots/list-source", headers=self.headers(), json={"list_source": "luna", "actor": "admin"})
+        self.assertEqual(res.status, 200, await res.text())
+        self.assertEqual(await self._main(), "luna")
+        res = await c.put("/admin/bots/list-source", headers=self.headers(), json={"list_source": "nobody", "actor": "admin"})
+        self.assertEqual(res.status, 400)
+        self.assertEqual(await self._main(), "luna")
+        self.assertNotIn("get_bot_list", [t["name"] for t in self.relay.tools_for(self.relay.persona_list(), "grok")])
+        say = self.relay.persona_instructions(None, self.relay.persona_list(), datetime.datetime.now())
+        self.assertIn("main bot", say)
+        self.assertIn("Bots page", say)
+
+    async def test_removing_main_clears_or_picks_the_last_one(self):
+        await self._add("kai")
+        self.assertEqual(await self._main(), "kai")
+        await self._remove("kai")  # sol and luna remain
+        self.assertEqual(await self._main(), "")
+        await self._add("ivy")
+        self.assertEqual(await self._main(), "ivy")  # no main: the next add takes it
+        await self._remove("sol")
+        await self._remove("ivy")  # only luna remains
+        self.assertEqual(await self._main(), "luna")
 
     async def test_admin_gate_and_fetch(self):
         c, r = self.client, self.relay

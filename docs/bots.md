@@ -30,6 +30,17 @@ The webhook body for an answer is exactly:
 
 `reply_by` is about 60 seconds from when the station sends. An admin test ping adds `"test": true` and nothing else. The question is on the wire, so there is no request route on the admin port.
 
+## Main bot
+
+The main bot is the one the station asks for your list of bots. It has a star on the Bots page.
+
+- The first bot you add becomes the main bot.
+- To change it, open a bot with **Configure** and pick **Set as Main Bot**.
+- If you remove the main bot and exactly one bot is left, that bot becomes the main bot. Otherwise no main bot is set until you pick one.
+- With no main bot (or one that isn't connected yet), Grok says you can set one up on the Bots page.
+
+The API is unchanged: the main bot is stored as `list_source`, and `PUT /api/bots/list-source` sets it.
+
 A list request is the same body plus one field, sent only for a list. Answer webhooks omit `kind`.
 
 ```json

@@ -2882,6 +2882,8 @@ class Handler(BaseHTTPRequestHandler):
         if not pub_ok:
             print("admin: relay returned no usable station public key (see the relay log)", flush=True)
         src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
+        for b in bots:
+            b["main"] = b["slug"] == src  # the main bot gets a star in the list
         return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")),
                                "default_voice": data.get("default_voice") if voice_ok(data.get("default_voice")) else "",
                                "stepup_until": self._stepup(),
@@ -2934,7 +2936,7 @@ class Handler(BaseHTTPRequestHandler):
         elif slug_ok(raw):
             body = {"list_source": raw, "actor": RELAY_ACTOR}
         else:
-            return self.send(400, {"error": "Pick a paired bot."})
+            return self.send(400, {"error": "Pick a bot."})
         got = relay_call("PUT", "/admin/bots/list-source", body)
         if got is None:
             return self.bots_unconfigured()

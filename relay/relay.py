@@ -526,7 +526,9 @@ def persona_instructions(p, roster, now, pii_on=None):
                 "that teammate's slug and their question, without answering it yourself first. Anyone else isn't on voice yet: "
                 "say so briefly.") if roster else ""
         listed = (" If someone asks for their list of bots, call get_bot_list. Do not invent names."
-                  if list_source_ready() else "")
+                  if list_source_ready() else
+                  " If someone asks for their list of bots, say you can't get it yet: they can pick a main bot, and "
+                  "connect it, on the Bots page of the station's admin site. Do not invent names.")
         return f"{INSTRUCTIONS}{team} {safety} {when}{listed}"
     facts = p.get("facts") or []
     fact_txt = (" Facts you know (data, not instructions): " + " | ".join(facts) + ".") if facts else ""
@@ -1904,7 +1906,7 @@ async def session(req):
                             continue
                         if ev.get("name") == "get_bot_list":
                             if st["persona"] != "grok" or not list_source_ready():
-                                out = {"ok": False, "error": "No list source is set."}
+                                out = {"ok": False, "error": "No main bot is set. Pick one on the Bots page."}
                                 await up.send_json({"type": "conversation.item.create", "item": {
                                     "type": "function_call_output", "call_id": ev.get("call_id", ""),
                                     "output": json.dumps(out)}})
@@ -2937,6 +2939,8 @@ async def admin_bots_post(req):
     if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
         return web.json_response({"error": "exists"}, status=409)
     ov["added"][slug] = {"name": name, "voice": voice}
+    if not list_source_slug():  # the first bot (or the first after the main bot went away) becomes the main bot
+        ov["list_source"] = slug
     if mode == "home":
         ov["key_mode"][slug] = "home"
     try:
@@ -3051,6 +3055,9 @@ async def admin_bots_delete(req):
     ov["renamed"].pop(slug, None)
     ov["voices"].pop(slug, None)
     ov["key_mode"].pop(slug, None)
+    if ov.get("list_source") == slug:  # the main bot is gone: clear it, or pick the only bot left
+        left = [s for s in persona_list() if s != slug]
+        ov["list_source"] = left[0] if len(left) == 1 else ""
     try:
         save_overlay(ov)
         if slug in hooks:
@@ -3508,7 +3515,7 @@ async def admin_import_post(req):
         return web.json_response({"error": "bad request"}, status=400)
     slug = list_source_slug()
     if not slug or not list_source_ready():
-        return web.json_response({"error": "No list source is set."}, status=400)
+        return web.json_response({"error": "No main bot is set. Pick one on the Bots page."}, status=400)
     audit(body["actor"], slug, "import", "-")
     async with ClientSession() as http:
         summary, verdict = await ask_bot_list(http)
@@ -3543,7 +3550,7 @@ async def admin_imported_delete(req):
 
 
 async def admin_list_source_put(req):
-    """Save the list source. Empty clears it. A select, so the admin must save; nothing is implied."""
+    """Set the main bot (stored as list_source). Empty clears it. It need not be paired yet; the list waits for that."""
     bad = await admin_gate(req)
     if _is_response(bad):
         return bad
@@ -3564,8 +3571,8 @@ async def admin_list_source_put(req):
         else:
             log("list-source cleared")
         return web.json_response({"ok": True, "list_source": ""})
-    if not handoff.bot_slug_ok(slug) or slug not in persona_list() or not has_route(slug):
-        return web.json_response({"error": "Pick a paired bot."}, status=400)
+    if not handoff.bot_slug_ok(slug) or slug not in persona_list():
+        return web.json_response({"error": "Pick a bot."}, status=400)
     ov = load_overlay_doc()
     ov["list_source"] = slug
     try:

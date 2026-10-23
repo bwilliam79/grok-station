@@ -624,6 +624,21 @@ class Bots(unittest.TestCase):
     def test_list_proxied(self):
         st, j = self.c.req("GET", "/api/bots")
         self.assertEqual(st, 200); self.assertEqual(j["bots"][0]["webhook"]["last4"], "WXYZ")
+        self.assertIs(j["bots"][0]["main"], False)  # no main bot set
+
+    def test_main_bot_gets_the_star_flag(self):
+        rc = ga.relay_call
+        def fake(method, path, payload=None, timeout=10):
+            if path == "/admin/bots" and method == "GET":
+                st, j = rc(method, path, payload, timeout)
+                j = dict(j, list_source="kai")
+                j["bots"] = j["bots"] + [{"slug": "ivy", "name": "Ivy", "webhook": {}, "status": {}}]
+                return st, j
+            return rc(method, path, payload, timeout)
+        ga.relay_call = fake
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual({b["slug"]: b["main"] for b in j["bots"]}, {"kai": True, "ivy": False})
+        self.assertEqual(j["list_source"], "kai")
 
     def test_save_needs_password_and_key_is_not_kept(self):
         body = {"url": self.URL, "key": self.KEY}
