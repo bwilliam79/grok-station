@@ -1481,7 +1481,7 @@ async def session(req):
                                                            heartbeat=20, max_msg_size=1 << 24) as up:
             now = datetime.datetime.now(ZoneInfo(TZ))
             roster = persona_list()
-            want = req.query.get("persona", "")  # the wake word the Pi heard ("Hey Kai" -> kai); Grok when absent
+            want = req.query.get("persona", "")  # the wake word the Pi heard ("Hey <bot>" -> that bot); Grok when absent
             start = roster.get(want) if isinstance(want, str) and want in roster else None
             if want and not start:
                 log("persona query ignored:", want if SLUG.match(want) or handoff.bot_slug_ok(want) else "bad slug")

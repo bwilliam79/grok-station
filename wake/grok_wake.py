@@ -1273,7 +1273,7 @@ HANDOFF_KEEPALIVE_S = 8  # well under the display's 20 s thinking hold
 
 
 def handoff_wait_text(ev):
-    """Wait-screen label. Direct wake ("Hey Ash") shows only the spinning ring; a bot-to-bot handoff names the bot.
+    """Wait-screen label. Direct wake (a bot's own word) shows only the spinning ring; a bot-to-bot handoff names the bot.
     A relay that doesn't send `direct` gets the old label."""
     if ev.get("direct") is True:
         return THINKING_BLANK

@@ -132,7 +132,7 @@ Patch release. Installs over 0.9.1.
 
 - **Card image without a network.** `install.sh` runs inside the image at build time (`GROK_STATION_IMAGE_BUILD=1`: packages, venvs, wake models; no secrets) and finishes offline on first boot (`GROK_STATION_OFFLINE=1`: secrets, files, services). The source is a real clone of GitHub `main`, so the Updates page works. Wi-Fi is set up through the setup hotspot. Native build scripts: Linux (`build-image.sh`), macOS (`build-image-macos.sh`, Lima VM) and Windows (`build-image.ps1`, WSL 2); the Docker scripts are gone.
 - **Main bot first.** The main bot's star is gold (`--gs-gold`) and the main bot is listed first.
-- **Wake words.** The shipped starter models (Hey Ash, Hey Miles, Hey Kai, Hey Piper, Hey Jules, Hey Rhea) are installed, so those bots have a wake word without training; turn it on under Wake words. Training is a fixed 10 recordings per session; when the training gate says it isn't good enough, **Train more** records 10 more and adds them. Wake words other than Hey Grok can be deleted (recordings, model, entry; the listener reloads). The station still does not train words itself (see docs/enroll.md).
+- **Wake words.** Every shipped model was installed (0.9.4 removes all but Hey Grok). Training is a fixed 10 recordings per session; when the training gate says it isn't good enough, **Train more** records 10 more and adds them. Wake words other than Hey Grok can be deleted (recordings, model, entry; the listener reloads). The station still does not train words itself (see docs/enroll.md).
 - **Team logos.** Logo hosts default to `a.espncdn.com` and move under an advanced option.
 - **Display cards from bots.** The Add bot instructions teach recipe, sports, calendar and home cards (`grok-station-reply seal-show`, then `post --show`). Configure has **Copy updated instructions** for bots already set up.
 
@@ -141,3 +141,9 @@ Patch release. Installs over 0.9.1.
 Patch release. Installs over 0.9.2.
 
 - **Linux-only image build.** The card image builds with `tools/build-image/build-image.sh` on a Linux PC or a Linux VM. The macOS (`build-image-macos.sh`, Lima) and Windows (`build-image.ps1`, WSL) scripts are removed. The normal install is unchanged.
+
+## 0.9.4
+
+Patch release. Installs over 0.9.3.
+
+- **Hey Grok only.** Hey Grok is the only wake word model in the repo and the only one the installer copies. On update, the installer deletes the six starter models 0.9.2 installed and their entries in the wake overrides. Custom words you trained or uploaded (`wake/models/enrolled`) are never touched. Reach any bot with "Hey Grok, ask <bot>", or give it its own trained word.

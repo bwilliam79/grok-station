@@ -1598,7 +1598,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
             "hey_finn": {"state": "done", "message": log, "updated_at": 1, "persona": "finn",
                          "scores": {"recall_real": 0.65, "fa_h": 1.5}},
             "hey_hank": {"state": "published", "message": "Ready.", "updated_at": 2, "persona": "hank"},
-            "hey_kai": {"state": "processing", "message": "Processing…", "updated_at": 3, "persona": "kai"},
+            "hey_kitchen": {"state": "processing", "message": "Processing…", "updated_at": 3, "persona": "kitchen"},
         })
         st, j = c.req("GET", "/api/enroll/status")
         self.assertEqual(st, 200)
@@ -1607,11 +1607,11 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertIn("0.65", j["words"]["hey_finn"]["message"])
         self.assertIn("20-30", j["words"]["hey_finn"]["message"])
         self.assertEqual(j["words"]["hey_hank"]["state"], "published")
-        self.assertEqual(j["words"]["hey_kai"]["state"], "processing")
+        self.assertEqual(j["words"]["hey_kitchen"]["state"], "processing")
         self.assertEqual(j["buttons"]["finn"]["state"], "failed_quality")
         self.assertIn("0.65", j["buttons"]["finn"]["label"])
         self.assertEqual(j["buttons"]["hank"]["label"], "Ready")
-        self.assertEqual(j["buttons"]["kai"]["label"], "Processing…")
+        self.assertEqual(j["buttons"]["kitchen"]["label"], "Processing…")
 
 
 class DimDisplay(unittest.TestCase):
