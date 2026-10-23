@@ -40,7 +40,7 @@ Off unless `T1_ENABLED=1`. The relay does not authorize a write. It can show a p
 
 ## Validation on the Pi
 
-What changed: a handoff says "Asking <name>…" from a clip cached for that bot's name and voice. A direct wake plays it at the end of speech. A question Grok routes (spoken name, `talk_to`, or `check_notes`) plays it when the handoff starts. The wait for the answer is the same length as before. No new listening port.
+What changed: a handoff says "Asking <name>…" from a clip cached for that bot's name and voice. A direct wake plays it once the words show the turn goes to the bot, so a goodbye never says it. A question Grok routes (spoken name, `talk_to`, or `check_notes`) plays it when the handoff starts. The wait for the answer is the same length as before. No new listening port.
 
 How to test, after an update (the installer creates `voice/ack` on a re-run):
 

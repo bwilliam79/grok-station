@@ -1787,9 +1787,8 @@ async def session(req):
                         elif st.get("drop_model"):
                             st["responding"] = True  # no auto response: wait for the transcript, not NO_SPEECH
                         await pi.send_json({"type": "speech_stopped"})  # wake stamps end-of-speech before the ack
-                        # Words are not known yet. Skip a cap refusal; an empty transcript cannot be seen from here.
-                        if persona_routed(st["persona"]) and st.get("utt") and not st.get("hold") and not st.get("t1"):
-                            await emit_ack(st["persona"])
+                        # No ack here: the words are not known yet. A goodbye or other non-routed turn must never
+                        # say Asking. routed_turn acks once the transcript shows the turn really goes to the bot.
                     elif t == "response.created":
                         st.update(responding=True, audio=False)
                         await pi.send_json({"type": "response_started"})

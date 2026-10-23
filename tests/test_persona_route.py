@@ -595,8 +595,16 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         self.assertEqual(os.listdir(relay.ACK_DIR), [])
 
+    async def test_goodbye_to_a_bot_does_not_ack(self):
+        """After a handoff the bot stays on, but a goodbye ends the session. It never says Asking or reaches the bot."""
+        out = await self.drive("okay, goodbye", persona="jules")
+        self.assertEqual(self._acks(out["events"]), [])
+        self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
+        self.assertEqual(self.calls, [])
+        self.assertEqual(out["events"][-1].get("type"), "done")
+
     async def test_grok_noise_does_not_ack(self):
-        """No transcript worth routing: Grok does not say Asking. A woken bot cannot see that yet."""
+        """No transcript worth routing: Grok does not say Asking. Nor does a woken bot."""
         out = await self.drive("")
         self.assertEqual(self._acks(out["events"]), [])
         self.assertEqual(self.calls, [])

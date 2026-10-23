@@ -73,6 +73,12 @@ Patch release. Installs over 0.8.1.
 
 - **Home mode available.** After its validation run on a Mac, Add bot (and a bot's key mode) now offers **Home machine** as an opt-in choice. **Cloud computer** stays the default and is pre-selected. No script or station changes.
 
+## 0.8.10
+
+Patch release. Installs over 0.8.9.
+
+- **No "Asking" on goodbye.** After a handoff, the station waits for your words before saying "Asking <name>…". Saying goodbye now just ends the session.
+
 ## 0.8.5
 
 Patch release. Installs over 0.8.4.
