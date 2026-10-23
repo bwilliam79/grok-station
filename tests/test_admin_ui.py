@@ -2,7 +2,7 @@
 
 Reads admin/web/app.js and admin/web/admin.css. No browser and no network.
 """
-import os
+import json, os, shutil, subprocess
 import re
 import unittest
 
@@ -319,7 +319,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn('id="ahost"', js)
         self.assertIn('id="chcomp"', js)
         self.assertIn("Change computer", js)
-        self.assertIn("Use Replace key", js)
+        self.assertIn("use Replace key", js)
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
         self.assertIn("Reply with that computer's name.", fn)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
@@ -674,3 +674,52 @@ class Release092UI(unittest.TestCase):
     def test_logo_hosts_are_advanced_and_prefilled(self):
         self.assertIn("Advanced: team logo sources", self.js)
         self.assertIn('placeholder="a.espncdn.com"', self.js)
+
+
+class ChangeComputerJs(unittest.TestCase):
+    """Runs openChangeComputer from app.js in node with a tiny DOM stand-in: both key modes end in a saved name."""
+    HARNESS = r"""
+const fs = require("fs"), vm = require("vm");
+let src = fs.readFileSync(process.argv[1], "utf8").replace(/\nboot\(\);\r?\n/, "\n");
+const calls = [];
+function el() {
+  const kids = {};
+  const node = {hidden: true, value: "", _html: "", onclick: null, textContent: "",
+    set innerHTML(v) { this._html = v; for (const k of Object.keys(kids)) delete kids[k];
+      for (const m of v.matchAll(/id="([^"]+)"(?:[^>]*value="([^"]*)")?/g)) { kids[m[1]] = el(); kids[m[1]].value = m[2] || ""; } },
+    get innerHTML() { return this._html; },
+    querySelector(s) { return kids[s.slice(1)] || null; }};
+  return node;
+}
+const sandbox = {console, URL, module: {exports: {}}, exports: {},
+  document: {addEventListener() {}, querySelector() { return el(); }, getElementById() { return null; }, body: {contains() { return true; }}},
+  window: {addEventListener() {}}, location: {host: "station.example"},
+  fetch: async (u, o) => { calls.push([u, o.method, o.body]); return {ok: true, status: 200, json: async () => ({ok: true})}; },
+  setTimeout() { return 0; }, clearTimeout() {}, setInterval() { return 0; }, clearInterval() {}};
+vm.createContext(sandbox);
+vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {}; this.refreshBots = () => {};", sandbox);
+(async () => {
+  const out = {};
+  for (const mode of ["cloud", "home"]) {
+    const box = el(), bot = {slug: "jules", key_mode: mode, reply_host: null};
+    sandbox.__occ(box, bot, {_stationPub: "", _fingerprint: ""});
+    const name = box.querySelector("#chname"), save = box.querySelector("#chsave");
+    out[mode] = {shown: !box.hidden, copy: !!box.querySelector("#chcopy"), field: !!name, save: !!save};
+    if (name && save) { name.value = "Den iMac"; await save.onclick(); }
+    out[mode].saved = bot.reply_host;
+  }
+  out.calls = calls;
+  console.log(JSON.stringify(out));
+})();
+"""
+
+    def test_both_modes_save_a_name(self):
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        r = subprocess.run(["node", "-e", self.HARNESS, os.path.join(ROOT, "admin", "web", "app.js")],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["cloud"], {"shown": True, "copy": True, "field": True, "save": True, "saved": "Den iMac"})
+        self.assertEqual(out["home"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
+        self.assertEqual(out["calls"], [["/api/bots/jules", "PATCH", '{"reply_host":"Den iMac"}']] * 2)

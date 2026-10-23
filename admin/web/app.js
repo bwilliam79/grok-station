@@ -2520,16 +2520,17 @@ function routineChangeComputer(slug, pub, fp) {
 function openChangeComputer(box, bot, el) {
   if (!box) return;
   box.hidden = false;
-  if (bot.key_mode === "home") {
-    box.innerHTML = `<p class="note">This bot's key lives on ${esc(bot.reply_host || "its home computer")}, so moving to another computer means a new key. Use Replace key, then set it up on the new computer.</p>`;
-    return;
-  }
-  box.innerHTML = `<p class="help">Copy these to your Grok Bot. It sets up the new computer and tells you its name.</p>
-    <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>
-    <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(bot.reply_host || "")}"></div>
+  // Home mode: the key is tied to one computer, so moving needs Replace key. The name can still be set, so a bot
+  // from before 0.10.2 isn't stuck at "not set" (0.10.2 showed only the note here, with nothing to save).
+  const home = bot.key_mode === "home";
+  box.innerHTML = (home
+    ? `<p class="note">This bot's key lives on ${esc(bot.reply_host || "its home computer")}. To move to another computer, use Replace key, then set it up on the new one. To name the computer it uses now, type its name below.</p>`
+    : `<p class="help">Copy these to your Grok Bot. It sets up the new computer and tells you its name.</p>
+    <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>`)
+    + `<div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(bot.reply_host || "")}"></div>
     <div id="chere"></div>
     <div class="field"><button class="btn p sm" type="button" id="chsave">Save</button></div>`;
-  $("#chcopy", box).onclick = ev => copyText(routineChangeComputer(bot.slug, el._stationPub, el._fingerprint), ev.currentTarget);
+  if ($("#chcopy", box)) $("#chcopy", box).onclick = ev => copyText(routineChangeComputer(bot.slug, el._stationPub, el._fingerprint), ev.currentTarget);
   $("#chsave", box).onclick = async () => {
     const name = $("#chname", box).value.trim();
     if (!name) return errBox($("#chere", box), "Type the computer's name.");
