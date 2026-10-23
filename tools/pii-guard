@@ -2,21 +2,31 @@
 # pii-guard: refuse commits/pushes that contain personal info (names, emails, LAN addresses, ...).
 # The patterns are NOT in this repo (the list itself is personal). One extended regex per line in:
 #   $PII_GUARD_PATTERNS, else ~/.config/pii-guard/patterns
+# tools/leak-scan.py always runs too (hashed private terms, gmail/aol, real LAN IPs); it needs no
+# patterns file, so it also guards CI and fresh clones.
 # Modes:  staged   (pre-commit: staged additions + file names)
+#         msg FILE (commit-msg: the commit message)
 #         push     (pre-push: reads the hook's stdin; new commits' diffs, messages, authors)
 #         tree     (CI: every tracked file, file names, and the last commit's message/author)
 # Output names the file and line only, never the matching text. Exit 1 on a match.
 set -u
 PAT="${PII_GUARD_PATTERNS:-$HOME/.config/pii-guard/patterns}"
 mode="${1:-staged}"
+LEAK="$(dirname "$0")/leak-scan.py"
+nopat=0
 if [ ! -s "$PAT" ]; then
-  if [ "$mode" = tree ] && [ -n "${CI:-}" ]; then echo "::warning::pii-guard: no patterns (set the PII_GUARD_PATTERNS secret); skipped"; exit 0; fi
-  echo "pii-guard: no patterns file at $PAT; see README (pii-guard)." >&2; exit 1
+  if [ -n "${CI:-}" ] || [ "$mode" = msg ]; then nopat=1
+  else echo "pii-guard: no patterns file at $PAT; see README (pii-guard)." >&2; exit 1; fi
+  [ -n "${CI:-}" ] && echo "::warning::pii-guard: no patterns (set the PII_GUARD_PATTERNS secret); running leak-scan only"
 fi
 hits=0
 scan() {  # stdin: text; $1: label. Reports "label line N" per hit; returns 1 on any hit.
-  local out
-  out="$(LC_ALL=C grep -nIE -f "$PAT" | cut -d: -f1)" || true
+  local out text rc=0
+  text="$(cat)"
+  printf '%s\n' "$text" | python3 "$LEAK" "$1" || rc=1
+  [ "$nopat" = 1 ] && return $rc
+  out="$(printf '%s\n' "$text" | LC_ALL=C grep -nIE -f "$PAT" | cut -d: -f1)" || true
+  [ -z "$out" ] && return $rc
   [ -z "$out" ] && return 0
   printf '%s\n' "$out" | sed "s|^|pii-guard: match in $1 line |" >&2
   return 1
@@ -25,8 +35,12 @@ case "$mode" in
   staged)
     git diff --cached --name-only --diff-filter=ACMR | scan "staged file names" || hits=1
     while IFS= read -r -d '' f; do
+      case "$f" in tools/leak-scan.py|tests/test_leak_scan.py) continue;; esac
       git diff --cached -U0 -- "$f" | grep '^+' | grep -v '^+++' | scan "$f (added)" || hits=1
     done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+    ;;
+  msg)
+    grep -v '^#' "${2:?usage: pii-guard msg FILE}" | scan "commit message" || hits=1
     ;;
   push)
     z=0000000000000000000000000000000000000000
@@ -37,7 +51,7 @@ case "$mode" in
       for c in $(git rev-list $range); do
         git show -s --format='%an %ae %cn %ce%n%B' "$c" | scan "commit ${c:0:7} message/author" || hits=1
         git show --format= --name-only "$c" | scan "commit ${c:0:7} file names" || hits=1
-        git show --format= -U0 "$c" | grep '^+' | grep -v '^+++' | scan "commit ${c:0:7} diff" || hits=1
+        git show --format= -U0 "$c" -- . ':!tools/leak-scan.py' ':!tests/test_leak_scan.py' | grep '^+' | grep -v '^+++' | scan "commit ${c:0:7} diff" || hits=1
       done
     done
     ;;
@@ -45,10 +59,12 @@ case "$mode" in
     git ls-files | scan "file names" || hits=1
     while IFS= read -r -d '' f; do
       [ -f "$f" ] || continue
+      case "$f" in tools/leak-scan.py|tests/test_leak_scan.py) continue;; esac
+      grep -qI . "$f" 2>/dev/null || continue
       scan "$f" < "$f" || hits=1
     done < <(git ls-files -z)
     git log -1 --format='%an %ae %cn %ce%n%B' | scan "last commit message/author" || hits=1
     ;;
-  *) echo "usage: pii-guard staged|push|tree" >&2; exit 2;;
+  *) echo "usage: pii-guard staged|msg FILE|push|tree" >&2; exit 2;;
 esac
 [ "$hits" = 0 ] || { echo "pii-guard: blocked. Remove the personal info (use 'the owner', placeholders, or documentation addresses)." >&2; exit 1; }

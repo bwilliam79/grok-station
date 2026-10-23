@@ -13,4 +13,4 @@ jobs:
         run: |
           f="$RUNNER_TEMP/pii-patterns"; printf '%s\n' "$PATTERNS" > "$f"
           [ -n "$PATTERNS" ] || : > "$f"
-          PII_GUARD_PATTERNS="$f" bash tools/pii-guard tree
+          PII_GUARD_PATTERNS="$f" CI=1 bash tools/pii-guard tree
