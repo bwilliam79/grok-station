@@ -550,24 +550,69 @@ def ensure_wake_entries(cfg, ov, bots):
     return ov, changed
 
 
+def _phrase_has_model(name, cfg=None):
+    """True when this phrase has a trained model (enrolled list or an onnx file)."""
+    if name in enrolled_entries():
+        return True
+    if not isinstance(cfg, dict):
+        cfg = read_json(WAKE_CONFIG, {})
+    models = cfg.get("models_dir") if isinstance(cfg, dict) else ""
+    if not isinstance(models, str) or not models:
+        return False
+    return os.path.isfile(os.path.join(models, name + ".onnx"))
+
+
+def _parked_phrase(row):
+    return isinstance(row, dict) and (
+        row.get("hidden") or row.get("forgotten") or row.get("unused") in ("deleted", "unlinked"))
+
+
 def remember_bot_wakeword(slug):
-    """A bot just added on this station gets hey_<slug>, off, unless that entry already exists."""
+    """A bot just added gets hey_<slug>, off, unless that entry already exists.
+
+    A parked word for this same slug (or named hey_<slug>) is reclaimed: it leaves Unused.
+    A model turns it on. No model stays off. An entry that is already active is left alone.
+    """
     if not slug_ok(slug):
         return
     name = "hey_" + slug
-    if name in configured_phrase_names(read_json(WAKE_CONFIG, {})):
-        return
+    cfg = read_json(WAKE_CONFIG, {})
     ov = read_json(path("wake-overrides.json"), {})
     if not isinstance(ov, dict):
         ov = {}
-    if isinstance(ov.get(name), dict):
-        return
-    ov[name] = {"enabled": False, "persona": slug}
-    write_json(path("wake-overrides.json"), ov, 0o640)
+    changed = False
+    for n, o in list(ov.items()):
+        if n == BUILTIN_WORD or not isinstance(o, dict):
+            continue
+        persona = str(o.get("persona") or "")
+        if persona != slug and n != name:
+            continue
+        if not _parked_phrase(o):
+            continue
+        row = dict(o)
+        row.pop("unused", None)
+        row.pop("hidden", None)
+        row.pop("forgotten", None)
+        if not persona_ok(str(row.get("persona") or "")):
+            row["persona"] = slug
+        if _phrase_has_model(n, cfg):
+            row["enabled"] = True
+        elif "enabled" not in row:
+            row["enabled"] = False
+        ov[n] = row
+        changed = True
+    if name not in configured_phrase_names(cfg) and not isinstance(ov.get(name), dict):
+        ov[name] = {"enabled": False, "persona": slug}
+        changed = True
+    if changed:
+        write_json(path("wake-overrides.json"), ov, 0o640)
 
 
-def known_bots():
-    """Bots the wake-word list should mirror: the relay list, or the station's cached personas."""
+def bot_roster():
+    """(bots, authoritative). Authoritative only for a relay 200, or a non-empty local cache.
+
+    An empty local fallback is not a list of deleted bots. bots are {slug, name}.
+    """
     got = relay_call("GET", "/admin/bots")
     if got and got[0] == 200 and isinstance(got[1], dict):
         out = []
@@ -575,8 +620,75 @@ def known_bots():
             safe = safe_bot(b)
             if safe:
                 out.append({"slug": safe["slug"], "name": safe["name"]})
-        return out
-    return [{"slug": b["slug"], "name": b["name"]} for b in local_bots()]
+        return out, True
+    local = [{"slug": b["slug"], "name": b["name"]} for b in local_bots()]
+    if local:
+        return local, True
+    return [], False
+
+
+def known_bots():
+    """Bots the wake-word list should mirror: the relay list, or the station's cached personas."""
+    bots, _auth = bot_roster()
+    return bots
+
+
+def owner_absent(persona, slugs=None, authoritative=None):
+    """True when this persona is a bot and the bot list says it is gone.
+
+    False for Grok, a bad id, and whenever the list is not authoritative.
+    """
+    if not persona or persona == "grok" or not persona_ok(persona):
+        return False
+    if slugs is None or authoritative is None:
+        bots, authoritative = bot_roster()
+        slugs = {b["slug"] for b in bots}
+    if not authoritative:
+        return False
+    return persona not in slugs
+
+
+def _stored_phrase_persona(name, ov, enrolled, status):
+    """Persona saved for this phrase, "" if the record has none, None if nothing is stored.
+
+    A shipped wake word with no override, enrolled entry, or enroll-status row is None.
+    """
+    sources = []
+    o = ov.get(name) if isinstance(ov, dict) else None
+    if isinstance(o, dict):
+        sources.append(o)
+    ent = enrolled.get(name) if isinstance(enrolled, dict) else None
+    if isinstance(ent, dict):
+        sources.append(ent)
+    st = status.get(name) if isinstance(status, dict) else None
+    if isinstance(st, dict):
+        sources.append(st)
+    if not sources:
+        return None
+    for src in sources:
+        who = str(src.get("persona") or "")
+        if persona_ok(who):
+            return who
+    return ""
+
+
+def _orphan_names(ov, enrolled, status, slugs, auth):
+    """Phrases stored for a bot that is gone. Shipped words with no stored persona are not included."""
+    if not auth:
+        return set()
+    names = set()
+    if isinstance(ov, dict):
+        names.update(n for n, o in ov.items() if isinstance(o, dict))
+    if isinstance(enrolled, dict):
+        names.update(enrolled)
+    if isinstance(status, dict):
+        names.update(n for n, row in status.items() if isinstance(row, dict))
+    out = set()
+    for name in names:
+        who = _stored_phrase_persona(name, ov, enrolled, status)
+        if who and owner_absent(who, slugs, True):
+            out.add(name)
+    return out
 
 
 def wakewords():
@@ -585,13 +697,15 @@ def wakewords():
     ov = read_json(path("wake-overrides.json"), {})
     if not isinstance(ov, dict):
         ov = {}
-    bots = known_bots()
+    bots, bot_auth = bot_roster()
     new_ov, changed = ensure_wake_entries(cfg, ov, bots)
     if changed:
         write_json(path("wake-overrides.json"), new_ov, 0o640)
         ov = new_ov
     names = {b["slug"]: b["name"] for b in bots}
     enrolled = {w.get("name"): w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict)}
+    status = read_enroll_status()
+    orphans = _orphan_names(ov, enrolled, status, set(names), bot_auth)
     models = read_json(path("models.json"), {})  # phrase -> training note; speaker fields are ignored
     rows = [w for w in cfg.get("words", []) + cfg.get("enroll", []) if isinstance(w, dict)]
     have = {w.get("name") for w in rows}
@@ -610,6 +724,8 @@ def wakewords():
         if n != BUILTIN_WORD and isinstance(ov.get(n), dict) and (
                 ov[n].get("hidden") or ov[n].get("unused") in ("deleted", "unlinked")):
             continue  # deleted on the admin page, or parked under Unused wake words
+        if n in orphans:
+            continue  # owner bot is gone; listed under Unused, not written back here
         o = ov.get(n) if isinstance(ov.get(n), dict) else {}
         e = enrolled.get(n, {})
         has_model = n in enrolled or os.path.isfile(os.path.join(cfg.get("models_dir", ""), n + ".onnx"))
@@ -654,30 +770,43 @@ def clip_count(name):
 
 
 def unused_wakewords():
-    """Enrolled words the station is not listening for: unlinked, or left behind when a bot was deleted."""
+    """Words the station is not listening for: unlinked, or left behind when a bot was deleted.
+
+    An orphan (the owner bot is gone) is listed even when it is hidden, disabled, unfinished, or has no clips.
+    A word Delete had to keep (a shipped id) is marked forgotten and stays off this list.
+    """
     ov = read_json(path("wake-overrides.json"), {})
     if not isinstance(ov, dict):
         ov = {}
     enrolled = enrolled_entries()
-    bots = {b["slug"] for b in known_bots() if isinstance(b, dict) and b.get("slug")}
+    status = read_enroll_status()
+    roster, auth = bot_roster()
+    bots = {b["slug"] for b in roster if isinstance(b, dict) and b.get("slug")}
+    orphans = _orphan_names(ov, enrolled, status, bots, auth)
     out = []
-    for name in sorted(set(ov) | set(enrolled)):
+    names = set(ov) | set(enrolled) | set(status)
+    for name in sorted(names):
         if name == BUILTIN_WORD or not wake_name_ok(name):
             continue
         o = ov.get(name) if isinstance(ov.get(name), dict) else {}
-        if o.get("hidden"):
+        if o.get("forgotten"):
             continue
         ent = enrolled.get(name) if isinstance(enrolled.get(name), dict) else {}
-        persona = str(o.get("persona") or ent.get("persona") or "")
+        st = status.get(name) if isinstance(status.get(name), dict) else {}
+        persona = str(o.get("persona") or ent.get("persona") or st.get("persona") or "")
         flag = o.get("unused") if o.get("unused") in ("deleted", "unlinked") else ""
-        if not flag and persona in bots:
-            continue
+        orphan = name in orphans
         recordings = clip_count(name)
-        if not flag and not recordings and name not in enrolled:
-            continue
+        if not orphan:
+            if o.get("hidden"):
+                continue
+            if not flag and persona in bots:
+                continue
+            if not flag and not recordings and name not in enrolled:
+                continue
         if flag == "unlinked":
             reason = "unlinked"
-        elif flag == "deleted" or (persona and persona not in bots and persona != "grok"):
+        elif flag == "deleted" or orphan or (persona and persona not in bots and persona != "grok"):
             reason = "deleted"
         else:
             reason = "unlinked"
@@ -996,8 +1125,12 @@ def phrase_personas():
     return {w["name"]: w.get("persona") or "grok" for w in wakewords() if w.get("name")}
 
 
-def phrase_problem(text, known=None):
-    """None when the phrase can be a new wake word, otherwise the sentence to show."""
+def phrase_problem(text, known=None, for_persona=None):
+    """None when the phrase can be a new wake word, otherwise the sentence to show.
+
+    for_persona reclaims that same slug's word, and a word whose owner bot is gone.
+    Without it, an active word is still a duplicate. An orphan is not in the active list.
+    """
     mid, words = normalize_phrase(text)
     letters = sum(len(w) for w in words)
     if words and all(w in COMMON_WORDS for w in words):
@@ -1009,11 +1142,18 @@ def phrase_problem(text, known=None):
     if not phrase_ok(mid):
         return TOO_LONG_ID
     known = list(known_phrase_ids() if known is None else known)
-    if mid in known:
+    reclaim = False
+    if mid in known and persona_ok(for_persona):
+        owner = phrase_personas().get(mid) or "grok"
+        if owner == for_persona or owner_absent(owner):
+            reclaim = True
+    if mid in known and not reclaim:
         return duplicate_msg(phrase_label(mid))
     mine_syl = phrase_syllables(words)
     for other in known:
         if not isinstance(other, str) or not other:
+            continue
+        if reclaim and other == mid:
             continue
         ow = [p for p in other.split("_") if p]
         if not ow:
@@ -1045,6 +1185,7 @@ def save_phrase_persona(phrase, persona):
     o["persona"] = persona
     o.pop("hidden", None)   # recording a word you deleted earlier brings it back
     o.pop("unused", None)   # setting it again from Configure takes it out of Unused wake words
+    o.pop("forgotten", None)  # a reclaimed shipped id can be removed again later
     if o.get("enabled") is False:  # and on: a bot's hey_<slug> entry starts off (0.9.2), which kept a word
         o.pop("enabled")           # recorded in 0.10.0 from ever waking ("turned off on the admin page")
     ov[phrase] = o
@@ -2911,7 +3052,7 @@ class Handler(BaseHTTPRequestHandler):
         ov = read_json(path("wake-overrides.json"), {})
         if not isinstance(ov, dict):
             ov = {}
-        if name not in known and name not in ov and name not in read_enroll_status():
+        if name not in known and name not in ov and name not in read_enroll_status() and name not in enrolled_entries():
             return self.send(404, {"error": "No such wake word."})
         if not wake_name_ok(name) and name not in ov:
             return self.send(400, {"error": "bad name"})
@@ -2926,7 +3067,9 @@ class Handler(BaseHTTPRequestHandler):
         cfg = read_json(WAKE_CONFIG, {})
         keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
         if keep_hidden:
-            ov[name] = {"enabled": False, "hidden": True, "persona": (ov.get(name) or {}).get("persona", "grok")}
+            who = (ov.get(name) or {}).get("persona", "grok") if isinstance(ov.get(name), dict) else "grok"
+            # forgotten: a shipped id stays hidden, and Unused does not list it again
+            ov[name] = {"enabled": False, "hidden": True, "forgotten": True, "persona": who}
         else:
             ov.pop(name, None)
         write_json(path("wake-overrides.json"), ov, 0o640)
@@ -2953,7 +3096,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(409, {"error": out.get("error") or "Nothing is recording."})
             return self.send(503, {"error": "Couldn't reach the station's microphone."})
         if p == "/api/enroll/check":
-            err = phrase_problem(j.get("phrase", ""))
+            asked = j.get("persona") if isinstance(j, dict) else None
+            err = phrase_problem(j.get("phrase", ""), for_persona=asked if persona_ok(asked) else None)
             if err:
                 return self.send(400, {"error": err})
             mid, _words = normalize_phrase(j.get("phrase", ""))
@@ -2980,7 +3124,8 @@ class Handler(BaseHTTPRequestHandler):
             who = persona
         else:
             who = personas.get(mid) or (ov_mid.get("persona") if persona_ok(str(ov_mid.get("persona") or "")) else None) or "grok"
-            relink = ov_mid.get("unused") in ("deleted", "unlinked") or bool(ov_mid.get("hidden"))
+            relink = (ov_mid.get("unused") in ("deleted", "unlinked") or bool(ov_mid.get("hidden"))
+                      or bool(ov_mid.get("forgotten")) or owner_absent(who))
             if relink and isinstance(persona, str) and persona_allowed(persona):
                 who = persona
             elif isinstance(persona, str) and persona and persona != who:

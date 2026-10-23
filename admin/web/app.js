@@ -1045,7 +1045,7 @@ function openSetWake(bot, el, d, opts) {
     const field = $("#wwphrase", body);
     const typed = field ? field.value.trim() : "";
     if (!topup) {
-      const check = await api("POST", "/api/enroll/check", {phrase: typed});
+      const check = await api("POST", "/api/enroll/check", {phrase: typed, persona: bot.slug});
       if (!check.ok) {
         setErr(fieldCheckSentence((check.data && check.data.error) || "That wake word won’t work.", el && el._words, el && el._bots));
         return;
@@ -1246,7 +1246,7 @@ async function wizard(step) {
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
     root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
-      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="voice">Voice</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
+      <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="xai">xAI API</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
       <div class="field"><button class="btn p" id="fin">Go to Home</button></div></div></div>`;
     const fin = async p => { await api("POST", "/api/wizard", {step: 8, done: true}); S.page = p; boot(); };
     $("#fin").onclick = () => fin("home");
@@ -1296,22 +1296,24 @@ const ICON = {
   time: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', network: '<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
   system: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   updates: '<path d="M21 12a9 9 0 1 1-2.6-6.3L21 8"/><path d="M21 3v5h-5"/>',
+  xai: '<circle cx="8" cy="15" r="3.2"/><path d="M10.5 13.2L20 4M15 8l2.5 2.5M17 4l3 3"/>',
   more: '<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>'};
 const svg = k => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[k]}</svg>`;
-const PAGES = {home: ["Home", pageHome], voice: ["Voice", pageVoice], bots: ["Bots", pageBots],
+const PAGES = {home: ["Home", pageHome], xai: ["xAI API", pageXai], bots: ["Bots", pageBots],
   privacy: ["Privacy", pagePrivacy],
   audio: ["Audio", el => audioPanel(el)], display: ["Display", el => displayPanel(el)], time: ["Time and location", el => timePanel(el)],
   network: ["Network", el => wifiPanel(el)], updates: ["Updates", pageUpdates], system: ["System", pageSystem], more: ["More", pageMore]};
-const NAV = [["", [["home", "Home"]]], ["Voice service", [["voice", "Voice"]]],
+const NAV = [["", [["home", "Home"]]],
   ["Station", [["bots", "Bots"], ["privacy", "Privacy"], ["audio", "Audio"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]]],
-  ["System", [["updates", "Updates"], ["system", "System"]]]];
-const TABS = [["home", "Home", "home"], ["bots", "Bots", "bots"], ["voice", "Voice", "voice"], ["system", "System", "system"], ["more", "More", "more"]];
+  ["System", [["xai", "xAI API"], ["updates", "Updates"], ["system", "System"]]]];
+const TABS = [["home", "Home", "home"], ["bots", "Bots", "bots"], ["system", "System", "system"], ["more", "More", "more"]];
 
 function closeFloats() {
   document.querySelectorAll("body > .drawer, body > .sheet").forEach(n => { if (n._cancel) n._cancel(); n.remove(); });
 }
 function shell() {
   if (location.hash === "#wake") { location.replace("#bots"); return; }
+  if (location.hash === "#voice") { location.replace("#xai"); return; }
   closeFloats();
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
@@ -1349,7 +1351,7 @@ async function pageHome(el) {
     $("#rf", el).onclick = load;
     const n = h.network || {};
     $("#tiles", el).innerHTML = [
-      ["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "voice"],
+      ["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "xai"],
       ["Network", n.wifi ? `Wi-Fi ${esc(n.wifi.ssid)} · ${n.wifi.signal}%` : n.wired ? "Wired" : "Offline", "network"],
       ["Services", up ? "All running" : Object.entries(svc).filter(([, v]) => v !== "active").map(([k]) => esc(k.replace("grok-station-", ""))).join(", ") + " stopped", "system"],
       ["Bots", `${(h.words || []).length} on`, "bots"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
@@ -1357,7 +1359,7 @@ async function pageHome(el) {
   every(10000, load);
   every(5000, () => { const p = $("#pv", el); if (p) { p.src = "/api/preview?t=" + Date.now(); $("#pva", el).textContent = "Updated " + new Date().toLocaleTimeString(); } });
 }
-async function pageVoice(el) {
+async function pageXai(el) {
   el.innerHTML = `<div id="relayroot"></div>`;
   await paintRelay($("#relayroot", el));
 }
@@ -1377,6 +1379,7 @@ function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
 const BOT_ID_RE = /^[a-z][a-z0-9-]{1,23}$/;
 const BOT_ID_ERROR = "Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. The voice service doesn't allow a longer id.";
 const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.";
+const COMPUTER_HINT = "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.";
 // Home key mode (scripts/gs-seal-setup, scripts/gs-seal-reply) is available since 0.8.2, after its validation run. Cloud stays the default.
 const HOME_MODE = true;
 function botIdFromName(name) {
@@ -1905,8 +1908,9 @@ function paintBots(el, bots) {
   bots = mainFirst(bots || []);
   el._bots = bots;
   paintSummary(el, bots);
+  const pending = pendingTeammates(el);
   const empty = $("#emptybot", el);
-  if (empty) empty.hidden = bots.length > 0;
+  if (empty) empty.hidden = bots.length > 0 || pending.length > 0;
   const list = $("#blist", el);
   if (!list) return;
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
@@ -1925,21 +1929,37 @@ function paintBots(el, bots) {
         ${warn ? `<div class="need">${ICO_TRI}${esc(warn)}</div>` : ""}</div>
       ${wakeControlHTML(b, word, st)}
       <div class="cfg"><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
-  }).join("");
+  }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
+      <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div></div>
+      <div class="cfg"><button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>
+        <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>`).join("");
   bindAvatars(list);
   bindWakeToggles(list, el);
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
     openBot(bots.filter(x => x.slug === btn.dataset.bot)[0], el);
   });
+  list.querySelectorAll("[data-setup]").forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    const row = pending.filter(r => r.key === b.dataset.setup)[0];
+    if (row) addBot(el._voices || [], el, {name: row.name});
+  });
+  list.querySelectorAll("[data-remove]").forEach(b => b.onclick = async ev => {
+    ev.stopPropagation();
+    const r = await api("DELETE", "/api/bots/imported/" + encodeURIComponent(b.dataset.remove), {});
+    if (!r.ok) return attn($("#vere", el), (r.data && r.data.error) || "Couldn't remove that.");
+    attn($("#vere", el), "");
+    refreshBots(el);
+  });
   list.querySelectorAll(".botrow").forEach(row => row.onclick = ev => {
-    if (row.getAttribute("data-fixed")) return;
+    if (row.getAttribute("data-fixed") || row.getAttribute("data-pending")) return;
     const t = ev.target;
     if (t && t.closest && t.closest("button, a, .tog")) return;
     if (!window.matchMedia || !window.matchMedia("(max-width: 767px)").matches) return;
     openBot(bots.filter(x => x.slug === row.getAttribute("data-slug"))[0], el);
   });
   paintUnused(el);
+  paintTeam(el);
 }
 function saveRowVoice(sel, bot, el) {
   if (!bot || !sel) return;
@@ -1986,8 +2006,8 @@ async function refreshBots(el) {
   el._words = (w.ok && w.data && w.data.words) || el._words || [];
   el._unused = (w.ok && w.data && w.data.unused) || [];
   el._bots = (r.data && r.data.bots) || [];
+  el._imported = (r.data && r.data.imported) || {rows: []};
   applyBotMeta(el, r.data);
-  if (!importedBusy(el)) paintImported(el, r.data);
   const voiceSel = document.getElementById("bvoice");
   const voiceDirty = !!(voiceSel && voiceSel.value !== (voiceSel.dataset.saved || ""));
   if (el._holdPaint || voiceDirty) return r.data;
@@ -2082,6 +2102,9 @@ function openBot(bot, el) {
       ${pairFields(el._stationPub, bot)}
       <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
         <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div></section>
+    ${(bot.main && pendingTeammates(el).length) ? `<section class="dsec"><h3>Team setup</h3>
+      <p class="note">Paste this to ${esc(bot.name)}. It messages each teammate their setup. This station sends nothing.</p>
+      <div class="inline"><button class="btn sm" id="copyteam" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></section>` : ""}
     <section class="dsec"><h3>Main bot and removal</h3>
       ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<button class="btn sm" id="setmain" type="button">Set as Main Bot</button>`}
       <div class="inline"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm right" id="delbot" type="button">Delete bot</button></div>
@@ -2091,6 +2114,8 @@ function openBot(bot, el) {
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
   $("#cpupd", d).onclick = ev => copyText(routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode), ev.currentTarget);
+  const copyTeam = $("#copyteam", d);
+  if (copyTeam) copyTeam.onclick = ev => copyText(teamSetupMessage(pendingTeammates(el), el), ev.currentTarget);
   $("#chcomp", d).onclick = () => openChangeComputer($("#chbox", d), bot, el);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
   const sync = () => {
@@ -2602,66 +2627,56 @@ function connectWebhookWizard(bot, el) {
   const ctl = mountWebhookStep($("#hookmount", d), bot, el, finish);
   d._cancel = () => ctl.cancel();
 }
-function listSourceName(data, slug) {
-  if (!slug) return "";
-  const hit = ((data && data.routed) || []).find(b => b.slug === slug)
-    || ((data && data.bots) || []).find(b => b.slug === slug);
-  return hit && hit.name ? hit.name : slug;
-}
-function importedOnList(imp) {
-  return ((imp && imp.rows) || []).filter(r => r && r.state !== "missing").length;
-}
-function importedPill(state) {
-  if (state === "configured") return `<span class="pill ok"><i></i>Already set up</span>`;
-  if (state === "missing") return `<span class="pill warn"><i></i>Not on the last list</span>`;
-  return `<span class="pill busy"><i></i>New</span>`;
-}
-function importedBusy(el) {
-  const box = $("#imported", el);
-  if (!box) return false;
-  const a = document.activeElement;
-  if (a && box.contains(a)) return true;
-  return false;
-}
-function paintImported(el, data) {
-  const box = $("#imported", el);
-  if (!box) return;
-  const imp = (data && data.imported) || {rows: [], source: "", updated_at: null};
-  const saved = (data && data.list_source) || "";
-  const titleName = listSourceName(data, imp.source || saved);
-  const title = titleName ? `Imported from ${titleName}` : "Imported bots";
-  const n = importedOnList(imp);
-  const head = imp.updated_at ? `Last list ${clockTime(imp.updated_at)} · ${n} ${n === 1 ? "name" : "names"}` : "No list yet";
-  const rows = imp.rows || [];
-  box.innerHTML = `<div class="inline"><h2>${esc(title)}</h2>
-      <button class="btn sm right" id="lget" type="button"${saved ? "" : " disabled"}>Get list now</button></div>
-    <p class="note">${esc(head)}</p>
-    <p class="note">${saved ? `Names come from your main bot, ${esc(listSourceName(data, saved))}. Nothing in the list is run.` : "Set a main bot (Configure, then Set as Main Bot) to get its list."}</p>
-    ${rows.length ? rows.map(row => `<div class="row"><span class="lbl">${esc(row.name)}</span>${importedPill(row.state)}
-      <span class="right inline">${row.state === "new" ? `<button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>` : ""}
-      ${row.state === "new" || row.state === "missing" ? `<button class="btn sm" type="button" data-dismiss="${esc(row.key)}">Dismiss</button>` : ""}</span></div>`).join("")
-      : `<p class="help">No names yet.</p>`}`;
-  const get = $("#lget", box);
-  if (get) get.onclick = async () => {
-    busyBtn(get, true, "Asking…");
-    const r = await api("POST", "/api/bots/import", {});
-    if (get.isConnected) busyBtn(get, false, "Get list now");
-    if (!r.ok) return attn($("#iere", el), (r.data && r.data.error) || "Couldn't get the list.");
-    attn($("#iere", el), "");
-    toast("List updated.");
-    refreshBots(el);
-  };
-  box.querySelectorAll("[data-dismiss]").forEach(b => b.onclick = async () => {
-    const r = await api("DELETE", "/api/bots/imported/" + encodeURIComponent(b.dataset.dismiss), {});
-    if (!r.ok) return attn($("#iere", el), (r.data && r.data.error) || "Couldn't dismiss that.");
-    attn($("#iere", el), "");
-    refreshBots(el);
+function pendingTeammates(el) {
+  const rows = ((el && el._imported && el._imported.rows) || []).filter(r => r && r.name && r.state !== "configured");
+  const bots = (el && el._bots) || [];
+  const slugs = {};
+  const names = {};
+  bots.forEach(b => {
+    if (b && b.slug) slugs[b.slug] = true;
+    if (b && b.name) names[String(b.name).toLowerCase()] = true;
   });
-  box.querySelectorAll("[data-setup]").forEach(b => b.onclick = () => {
-    const row = rows.find(r => r.key === b.dataset.setup);
-    if (!row) return;
-    addBot(el._voices || [], el, {name: row.name});
+  return rows.filter(r => {
+    const slug = botIdFromName(r.name);
+    if (slug && slugs[slug]) return false;
+    if (names[String(r.name).toLowerCase()]) return false;
+    return true;
   });
+}
+function teamSetupMessage(rows, el) {
+  const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
+  const who = (main && main.name) || "your main bot";
+  const pub = (el && el._stationPub) || "";
+  const fp = (el && el._fingerprint) || "";
+  const lines = [];
+  lines.push("Paste this to " + who + ". Message each teammate the section with their name. This station sends nothing.");
+  lines.push("The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.");
+  (rows || []).forEach(row => {
+    const name = row.name;
+    const slug = botIdFromName(name) || "their-id";
+    lines.push("");
+    lines.push("Teammate: " + name + " (persona " + slug + ")");
+    lines.push("Station address: " + stationAddress());
+    lines.push("Message this to " + name + ".");
+    lines.push("");
+    lines.push("If the key lives on the bot computer:");
+    lines.push(routineForBot(slug, pub, fp, "cloud"));
+    lines.push("");
+    lines.push("If the key lives on the home computer, message this instead. The teammate runs the pinned install step on its home computer.");
+    lines.push("The user must approve that local run in Grok Bot.");
+    lines.push("Do not skip the approval.");
+    lines.push(routineForBot(slug, pub, fp, "home"));
+  });
+  return lines.join("\n");
+}
+function paintTeam(el) {
+  const card = $("#teamcard", el);
+  if (!card) return;
+  const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
+  const rows = pendingTeammates(el);
+  card.hidden = !(main && rows.length);
+  const note = $("#teamnote", el);
+  if (note) note.textContent = main ? ("Paste this to " + main.name + ". It messages each teammate their setup. This station sends nothing.") : "";
 }
 const BOT_ROUTINE = `Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -2772,7 +2787,8 @@ function openChangeComputer(box, bot, el) {
   if (home) {
     box.innerHTML = `<div class="note amber"><div class="lbl">This needs a new key</div>
       <p>${esc(who)}’s key is kept on this computer, and a key works on only one computer. To move ${esc(who)}, use Replace key, then set it up on the new computer. The computer name isn’t set yet. Type it below.</p></div>
-      <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value=""></div>
+      <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="">
+        <p class="help">${esc(COMPUTER_HINT)}</p></div>
       <div id="chere"></div>
       <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div>`;
   } else {
@@ -2781,7 +2797,7 @@ function openChangeComputer(box, bot, el) {
       <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>
       <p class="help">${esc(who)} sets up the new computer and tells you its name. Type it here.</p>
       <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="">
-        <p class="help">No new key or pairing needed.</p></div>
+        <p class="help">No new key or pairing needed. ${esc(COMPUTER_HINT)}</p></div>
       <div id="chere"></div>
       <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
   }
@@ -2984,7 +3000,7 @@ function addBot(voices, el, preset) {
       <div class="field"><label for="akey">Webhook key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400" required></div>
       <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120" required></div>
       <div class="field"><label for="ahost">Home computer name</label><input class="inp" id="ahost" autocomplete="off" spellcheck="false" maxlength="40" required>
-        <p class="help">The computer your bot said it will send replies from.</p></div>
+        <p class="help">${esc(COMPUTER_HINT)}</p></div>
       <div id="awe"></div>
       <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
     const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d), hostEl = $("#ahost", d);
@@ -3094,11 +3110,15 @@ async function pageBots(el) {
   el._session = !!(s.data && s.data.session);
   el._words = (w.ok && w.data && w.data.words) || [];
   el._unused = (w.ok && w.data && w.data.unused) || [];
+  el._imported = data.imported || {rows: []};
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
       <button class="btn p sm right" id="add" type="button">Add bot</button></div>
     <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
+    <div class="card" id="teamcard" hidden>
+      <p class="note" id="teamnote"></p>
+      <div class="inline"><button class="btn sm" id="copyteam" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></div>
     <p class="help">You can connect other bots from your Grok Bot account.</p>
     <div class="card emptybot" id="emptybot" hidden>
       <div class="ring">+</div>
@@ -3110,12 +3130,11 @@ async function pageBots(el) {
       <div class="card botsheet" id="unused"></div>
       <p class="help">The station doesn’t listen for these. Delete them to free space, or set one again from a bot’s Configure.</p></div>
     <p class="note" id="rttall"></p>
-    <div class="inline"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button></div>
-    <div id="iere"></div>
-    <div class="card" id="imported"></div>`;
+    <div class="inline"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button></div>`;
   applyBotMeta(el, data);
   paintBots(el, bots);
-  paintImported(el, data);
+  const copyTeam = $("#copyteam", el);
+  if (copyTeam) copyTeam.onclick = ev => copyText(teamSetupMessage(pendingTeammates(el), el), ev.currentTarget);
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
   const av = $("#avatars");
@@ -3275,7 +3294,7 @@ async function pageSystem(el) {
   };
 }
 function pageMore(el) {
-  const items = [["voice", "Voice"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
+  const items = [["xai", "xAI API"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
   el.innerHTML = `<div class="card">${items.map(([k, t]) => `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${esc(t)}<span class="right inline">${k === "updates" ? `<b class="count" data-upbadge hidden></b>` : ""}<span class="help">›</span></span></a>`).join("")}
     <div class="row"><button class="btn g" id="again">Run setup again</button></div><div class="row"><button class="btn g" id="out2">Sign out</button></div></div>`;
   $("#again", el).onclick = async () => { await api("POST", "/api/wizard", {step: 2, done: false}); boot(); };

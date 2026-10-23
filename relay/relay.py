@@ -1359,6 +1359,27 @@ def connect_request(text, bots, current="grok"):
                       (f"Hey, this is {name}. How can I help you?", who)]}
 
 
+_IMPORT_TEAM = re.compile(
+    r"^(?:hey grok )?(?:(?:can you|could you|please) ){0,2}"
+    r"import (?:the rest of my team|my team|the rest of my bots)(?: please)?$")
+
+
+def import_team_request(text):
+    """True when the sentence asks the station to import the rest of the team.
+
+    Same cleanup as connect_request: a leading "hey grok", up to two of
+    "can you" / "could you" / "please", and trailing punctuation.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return False
+    t = raw.lower().replace("\u2019", "'")
+    for ch in ",?!.":
+        t = t.replace(ch, " ")
+    t = " ".join(t.split())
+    return _IMPORT_TEAM.fullmatch(t) is not None
+
+
 def connect_bots(roster, main=""):
     """Roster entries shaped for connect_request. main is the list-source slug, if any."""
     out = []
@@ -1967,6 +1988,28 @@ async def session(req):
                             log(f"connect -> {hit['slug'] or hit['kind']}")  # slug only
                             for line, who in hit["lines"]:
                                 await play_fixed(line, bot_voice if who == "bot" else voice_now, TTS_SHORT_S)
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
+                        if import_team_request(heard):
+                            # Local import: do not let the model answer, and do not send this sentence to a bot.
+                            voice_now = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
+                            if not list_source_ready():
+                                await play_fixed("Set up your main bot first.", voice_now, TTS_SHORT_S)
+                            else:
+                                slug = list_source_slug()
+                                name = (roster.get(slug) or {}).get("name") or slug
+                                await play_fixed(f"Asking {name} for your team.", voice_now, TTS_SHORT_S)
+                                summary, verdict = await ask_bot_list(http)
+                                await play_fixed(voice_list_line(st.get("station"), name, summary, verdict),
+                                                 voice_now, TTS_SHORT_S)
+                            st["release_model"] = not persona_routed(st["persona"])
+                            log("import team")  # no names
                             end = await end_routed_turn()
                             if end:
                                 return end

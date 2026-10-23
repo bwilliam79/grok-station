@@ -31,8 +31,16 @@ class AdminUI(unittest.TestCase):
 
     def test_nav_labels(self):
         js = self.js
-        self.assertIn('["Voice service", [["voice", "Voice"]]]', js)
-        self.assertIn('["System", [["updates", "Updates"], ["system", "System"]]]', js)
+        self.assertNotIn('["Voice service", [["voice", "Voice"]]]', js)
+        self.assertNotIn('["voice", "Voice"]', js)
+        self.assertNotIn("async function pageVoice", js)
+        self.assertIn("async function pageXai", js)
+        self.assertIn('["System", [["xai", "xAI API"], ["updates", "Updates"], ["system", "System"]]]', js)
+        self.assertIn('const TABS = [["home", "Home", "home"], ["bots", "Bots", "bots"], ["system", "System", "system"], ["more", "More", "more"]]', js)
+        self.assertIn('if (location.hash === "#voice") { location.replace("#xai"); return; }', js)
+        self.assertIn('["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "xai"]', js)
+        self.assertIn('data-p="xai">xAI API</a>', js)
+        self.assertIn('["xai", "xAI API"]', _fn(js, "pageMore"))
         self.assertNotIn("xAI key and relay", js)
         self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"]', js)
         self.assertIn("xAI key", js.split("const STEPS = ", 1)[1].split("];", 1)[0])
@@ -248,14 +256,25 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn('id="lsrc"', js)
         self.assertIn("b.main", _fn(js, "paintBots"))
         self.assertIn("bot.main ?", js)  # no Set as Main Bot on the current main bot
-        self.assertIn('id="imported"', js)
-        self.assertIn("function paintImported", js)
-        for text in ("Get list now", "Already set up", "Not on the last list", ">New<", "Set up", "Dismiss",
+        for gone in ("Imported bots", "Get list now", "Already set up", "Not on the last list", ">New<",
+                     "function paintImported", 'id="imported"', "Nothing in the list is run", "Dismiss",
+                     "Couldn't dismiss that.", "No names yet", "No list yet"):
+            self.assertNotIn(gone, js, gone)
+        for text in ("Not set up", ">Set up<", ">Remove</button>", "Copy team setup message", ">Team setup<",
                      "Set as Main Bot", "Main bot", "/api/bots/import", "/api/bots/list-source", "/api/bots/imported/",
-                     "Needs attention", "Nothing in the list is run"):
+                     "Needs attention", "Couldn't remove that.",
+                     "The user must approve that local run in Grok Bot.",
+                     "Do not skip the approval.",
+                     "This station sends nothing.",
+                     "The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.",
+                     "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.",
+                     "No new key or pairing needed."):
             self.assertIn(text, js, text)
+        bots = _fn(js, "paintBots")
+        self.assertIn("data-pending", bots)
+        self.assertIn("data-setup", bots)
+        self.assertIn("data-remove", bots)
         self.assertIn("banner warn", _fn(js, "attn"))
-        self.assertIn("function paintImported", js)
         add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn("preset", add)
         self.assertIn("botIdFromName(preset.name)", add)
@@ -619,7 +638,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn('class="sr"', skel)
         self.assertIn("Loading…", skel)
         updates = js.split("async function pageUpdates", 1)[1].split("async function timePanel", 1)[0]
-        home = js.split("async function pageHome", 1)[1].split("async function pageVoice", 1)[0]
+        home = js.split("async function pageHome", 1)[1].split("async function pageXai", 1)[0]
         self.assertIn("skel(3)", updates)
         self.assertIn('id="updatesroot"', updates)
         self.assertIn("skel(4)", home)

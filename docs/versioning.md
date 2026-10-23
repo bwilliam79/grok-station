@@ -200,3 +200,14 @@ Minor release. Installs over 0.10.3.
 - **Admin page.** The home-mode setup script allows macOS and Linux. The bots-page command block is labeled "macOS or Linux". Both routines start with "Answer as the bot named in the request's persona field, in that bot's voice." Cards still need the bot-computer key; home mode says to skip cards.
 - **Pins.** `admin/web/deploy-pins.js` and `scripts/install-home.sh` name `df9221e6a62d9b7af99be12036315ba2ce760aa6`, the commit with the 0.11.0 scripts, so downloads get the macOS and Linux copies.
 
+## 0.11.1
+
+Patch release. Installs over 0.11.0. The pinned download files are unchanged.
+
+- **xAI API page.** The key status and save/replace form moved from Voice to **xAI API** under System (`#xai`). `#voice` opens that page. The Voice service section and the phone Voice tab are gone. Home still labels the status row Voice and links to the new page.
+- **Computer name.** Add bot and Change computer say the name is the label from the Grok Bot app. It does not need to be a hostname.
+- **Wake words.** Adding a bot again with the same id reclaims its old wake word. The station does not call that a duplicate when the word belongs to that bot, or when the bot that owned it is gone. A word left behind (including one that was never finished, switched off, or hidden) is listed under Unused wake words, and Delete removes it. Hey Finn stays taken when no bot list is known.
+- **Team import.** "Hey Grok, import the rest of my team" (also "import my team" and "import the rest of my bots") is handled on the station. It says "Asking <main bot> for your team." and asks the main bot for the list. With no main bot it says "Set up your main bot first." Names are not spoken.
+- **Not set up.** Each imported name that is not a bot yet is a Bots row, state "Not set up", with Set up and Remove. The old Imported bots box is gone.
+- **Team setup message.** When a main bot has teammates that are not set up, Configure and the Bots page can copy one message for that bot to send. It includes each teammate's routine and the deploy step. A home-computer key says the user must approve that local run in Grok Bot, and not to skip the approval. The station sends nothing. Webhook URL, webhook key, webhook header, and public keys stay a paste.
+

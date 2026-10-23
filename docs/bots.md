@@ -37,7 +37,7 @@ The main bot is the one the station asks for your list of bots. It has a gold st
 - The first bot you add becomes the main bot.
 - To change it, open a bot with **Configure** and pick **Set as Main Bot**.
 - If you remove the main bot and exactly one bot is left, that bot becomes the main bot. Otherwise no main bot is set until you pick one.
-- With no main bot (or one that isn't connected yet), Grok says you can set one up on the Bots page.
+- With no main bot (or one that isn't connected yet), Grok says you can set one up on the Bots page. "Import the rest of my team" says "Set up your main bot first." until one is connected.
 
 The API is unchanged: the main bot is stored as `list_source`, and `PUT /api/bots/list-source` sets it.
 
@@ -139,6 +139,8 @@ There is no separate Wake words page. Opening `#wake` goes to Bots.
 
 Hey Grok is the first row: built in, always on, and not configurable. Then the main bot (an amber star and a Main bot pill), then the other bots in saved order. Each of those rows shows its wake word. The switch turns that word on or off. **Configure** is where you set a wake word, train more, remove it, change the computer, and change the voice, photo, and connection. Removing a wake word, or deleting the bot, keeps the recordings under **Unused wake words** until you delete that row.
 
+Adding a bot again with the same id reclaims that bot's old wake word. The station does not say it is already in use when the word belongs to that same bot, or when the bot that owned it is gone. A word left behind by a deleted bot, including one that was never finished or was switched off, is listed under Unused wake words. Delete there removes it. Hey Finn stays a wake word when the station does not have a bot list.
+
 Recording a word is in [enroll.md](enroll.md).
 
 ## Connect me with a bot
@@ -148,6 +150,22 @@ During a Hey Grok session you can say "can you connect me with Kai", "connect me
 It says "Connecting you with Kai.", switches this same session to Kai (the same persona switch a wake word uses), and Kai's first line is spoken on the station: "Hey, this is Kai. How can I help you?" That line uses Kai's voice. Later turns in the session go to Kai without Kai's wake word, and the session ends the same way any other session ends (a goodbye, or the turn limit).
 
 An unknown name is spoken back: "I don't see a bot called Sol. Your bots are Kai, Mira and Sol." With no other bots: "You don't have any other bots yet." "Connect me with Grok" goes back to Grok, or says you're already talking to Grok. "The main bot" is the bot marked Main bot.
+
+## Import the rest of my team
+
+During a session you can say "Hey Grok, import the rest of my team", "import my team", or "import the rest of my bots" (a leading "Hey Grok", and "please" or "can you", are optional). The station handles that sentence itself, the same way it handles "connect me with". It does not send the sentence to a bot.
+
+If no main bot is set up, it says "Set up your main bot first." Otherwise it says "Asking <main bot name> for your team." and asks the main bot for the list. The reply is merged the same way as any other list. The station speaks the counts, not the names.
+
+Each imported name that is not a bot yet is a row on Bots with the state "Not set up", a **Set up** button (Add bot with that name filled in), and **Remove**. Those rows are not bots. A name that already matches a bot is not shown again.
+
+## Team setup
+
+When a main bot is set and at least one teammate is not set up, the Bots page and that bot's Configure show **Copy team setup message**. It copies one message for you to paste to the main bot. The note says the main bot messages each teammate their setup, and that this station sends nothing.
+
+Each teammate's section has the persona id, the station address, the cloud routine (including the deploy step), and the home-computer routine. The home text says the teammate runs the pinned install step on its home computer, "The user must approve that local run in Grok Bot.", and "Do not skip the approval."
+
+The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.
 
 ## Which computer sends replies
 
@@ -159,7 +177,7 @@ A bot's replies are posted from one home computer on your network. If that compu
 - **Change computer** (Configure):
   - Key on the bot computer (cloud key): an inline panel, "Move replies to another computer". Copy the instructions, then type the new computer's name and save. The key and the pairing stay the same. An empty name is "Needs attention: type the computer's name."
   - Key on a home computer: the key is tied to that computer, so the panel says "This needs a new key" and offers **Replace key**. No name field, except the not-set case above.
-- **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies.
+- **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies. Add bot and Change computer say: "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label."
 
 ## Routine prompt
 

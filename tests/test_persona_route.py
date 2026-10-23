@@ -77,6 +77,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.tts_caps = []
         self.fail_asking = False
         self.ack_before_post = False
+        self.list_names = None
 
         async def fake_tts(http, text, voice, max_s=relay.TTS_SHORT_S):
             self.tts.append((text, voice))
@@ -178,7 +179,21 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
             def write():
                 os.makedirs(relay.REPLIES_DIR, exist_ok=True)
-                with open(os.path.join(relay.REPLIES_DIR, body["request_id"] + ".json"), "w") as f:
+                path = os.path.join(relay.REPLIES_DIR, body["request_id"] + ".json")
+                if getattr(self, "list_names", None) is not None:
+                    # Same merge the sealed list reply does, then the counts file ask_bot_list waits on.
+                    counts = relay.merge_imported(list(self.list_names), pend["persona"])
+                    if counts.get("empty"):
+                        doc = {"request_id": body["request_id"], "agent": pend["persona"], "nonce": pend["nonce"],
+                               "action_class": "bot_list", "empty": True}
+                    else:
+                        doc = {"request_id": body["request_id"], "agent": pend["persona"], "nonce": pend["nonce"],
+                               "action_class": "bot_list", "n": counts["n"], "new": counts["new"],
+                               "missing": counts["missing"], "dropped": counts["dropped"]}
+                    with open(path, "w") as f:
+                        json.dump(doc, f)
+                    return
+                with open(path, "w") as f:
                     json.dump({"request_id": body["request_id"], "agent": pend["persona"], "nonce": pend["nonce"],
                                "tier": 0, "action_class": "answer", "text": text}, f)
 
@@ -680,6 +695,30 @@ class ConnectPhrase(unittest.TestCase):
         self.assertEqual(already["lines"][0][0], "You're already talking to Kai.")
 
 
+class ImportTeamPhrase(unittest.TestCase):
+    def test_team_phrases_match_and_other_sentences_do_not(self):
+        for phrase in (
+            "Hey Grok, import the rest of my team",
+            "hey grok, import the rest of my team",
+            "import my team",
+            "import the rest of my bots",
+            "Hey Grok, can you import the rest of my team?",
+            "please import my team",
+            "could you please import the rest of my bots!",
+            "import my team please",
+        ):
+            self.assertTrue(relay.import_team_request(phrase), phrase)
+        for phrase in (
+            "import my teammates' notes",
+            "can you import the file",
+            "import the rest of my team now",
+            "connect me with Kai",
+            "what's for dinner",
+            "",
+        ):
+            self.assertFalse(relay.import_team_request(phrase), phrase)
+
+
 class ConnectSession(PersonaRoute):
     def _kai_roster(self):
         with open(relay.PERSONAS_FILE, "w") as f:
@@ -712,6 +751,49 @@ class ConnectSession(PersonaRoute):
         self.assertEqual(self.calls, [])
         self.assertIn("I don't see a bot called Sol. Your bots are Kai and Mira.", self._replies(out["events"]))
         self.assertFalse(any(e.get("type") == "persona" and e.get("slug") == "sol" for e in out["events"]))
+
+
+class ImportTeamSession(PersonaRoute):
+    def _mira_main(self):
+        with open(relay.PERSONAS_FILE, "w") as f:
+            json.dump({"personas": [
+                {"slug": "mira", "name": "Mira", "voice": "rex", "prompt": "Mira helps."},
+            ]}, f)
+        relay._personas["mtime"] = None
+        with open(os.path.join(os.path.dirname(relay.WEBHOOKS_FILE), "personas-overlay.json"), "w") as f:
+            json.dump({"list_source": "mira"}, f)
+
+    async def test_import_asks_the_main_bot_and_does_not_speak_names(self):
+        self._mira_main()
+        self.list_names = ["Kai", "Noor"]
+        out = await self.drive("Hey Grok, import the rest of my team", slug="mira")
+        replies = self._replies(out["events"])
+        self.assertIn("Asking Mira for your team.", replies)
+        self.assertIn("Mira sent 2 bots: 2 new, 0 missing. Finish setup on the admin page.", replies)
+        self.assertEqual(self.calls[0]["kind"], "bot_list")
+        self.assertEqual(self.calls[0]["question"], "list bots")
+        self.assertEqual(self.calls[0]["persona"], "mira")
+        stored = json.load(open(relay.imported_path()))
+        self.assertEqual(stored["rows"]["kai"]["state"], "new")
+        self.assertEqual(stored["rows"]["noor"]["state"], "new")
+        spoken = "\n".join(replies)
+        self.assertNotIn("Kai", spoken)
+        self.assertNotIn("Noor", spoken)
+        self.assertNotIn("Kai", "\n".join(self.lines))
+        self.assertNotIn("Noor", "\n".join(self.lines))
+
+    async def test_import_without_a_main_bot_does_not_post(self):
+        out = await self.drive("import my team")
+        self.assertIn("Set up your main bot first.", self._replies(out["events"]))
+        self.assertEqual(self.calls, [])
+
+    async def test_import_the_rest_of_my_bots(self):
+        self._mira_main()
+        self.list_names = ["Kai"]
+        out = await self.drive("import the rest of my bots", slug="mira")
+        self.assertIn("Asking Mira for your team.", self._replies(out["events"]))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["kind"], "bot_list")
 
 
 if __name__ == "__main__":

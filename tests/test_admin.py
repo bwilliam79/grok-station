@@ -2049,6 +2049,137 @@ class DeleteWakeWord(unittest.TestCase):
             ga.relay_call = old
             shutil.rmtree(os.path.join(self.inbox, "hey_kai"), ignore_errors=True)
 
+    def _empty_roster(self, method, path, payload=None, timeout=10, raw=None, content_type=None):
+        if method == "GET" and path == "/admin/bots":
+            return 200, {"bots": []}
+        return 200, {"ok": True}
+
+    def test_same_slug_check_reclaims_and_a_bare_check_is_still_a_duplicate(self):
+        c = signed_in()
+        old = ga.relay_call
+        ga.relay_call = lambda *a, **k: (200, {"bots": [{"slug": "mira", "name": "Mira", "voice": "rex", "source": "added"}]})
+        try:
+            ga.write_json(ga.path("wake-overrides.json"), {"hey_mira": {"persona": "mira", "enabled": True}}, 0o640)
+            st, j = c.req("POST", "/api/enroll/check", {"phrase": "Hey Mira", "persona": "mira"})
+            self.assertEqual((st, j.get("ok"), j.get("id")), (200, True, "hey_mira"), j)
+            st, j = c.req("POST", "/api/enroll/check", {"phrase": "Hey Mira"})
+            self.assertEqual(st, 400)
+            self.assertEqual(j["error"], "“Hey Mira” is already a wake word.")
+        finally:
+            ga.relay_call = old
+
+    def test_orphans_are_listed_and_deleted_when_the_bot_list_is_empty(self):
+        """A disabled word, a hidden word, and an unfinished enroll row whose bot is gone."""
+        c = signed_in()
+        old = ga.relay_call
+        ga.relay_call = self._empty_roster
+        try:
+            ga.write_json(ga.path("wake-overrides.json"), {
+                "hey_pax": {"persona": "pax", "enabled": False},
+                "hey_joss": {"persona": "joss", "enabled": False, "hidden": True},
+            }, 0o640)
+            ga.write_enroll_status({
+                "hey_wynn": {"state": "recording", "message": "Say it on the station.", "updated_at": 1, "persona": "wynn"},
+            })
+            body = c.req("GET", "/api/wakewords")[1]
+            names = {w["name"] for w in body["words"]}
+            self.assertNotIn("hey_pax", names)
+            self.assertNotIn("hey_joss", names)
+            self.assertNotIn("hey_wynn", names)
+            parked = {w["name"]: w for w in body["unused"]}
+            for name in ("hey_pax", "hey_joss", "hey_wynn"):
+                self.assertEqual(parked[name]["reason"], "deleted", name)
+                self.assertEqual(parked[name]["recordings"], 0, name)
+            for name in ("hey_pax", "hey_joss", "hey_wynn"):
+                self.assertEqual(c.req("DELETE", "/api/wakewords/" + name, {})[0], 200, name)
+            body = c.req("GET", "/api/wakewords")[1]
+            left = {w["name"] for w in body["unused"]}
+            self.assertNotIn("hey_pax", left)
+            self.assertNotIn("hey_joss", left)
+            self.assertNotIn("hey_wynn", left)
+            ov = self.ov()
+            self.assertNotIn("hey_pax", ov)
+            self.assertNotIn("hey_joss", ov)
+            self.assertNotIn("hey_wynn", ga.read_enroll_status())
+            self.assertEqual(c.req("DELETE", "/api/wakewords/hey_pax", {})[0], 404)
+        finally:
+            ga.relay_call = old
+
+    def test_remember_turns_a_parked_word_on_only_when_it_has_a_model(self):
+        signed_in()
+        models = os.path.join(TMP, "models")
+        nix = os.path.join(models, "hey_nix.onnx")
+        ov_path = ga.path("wake-overrides.json")
+        try:
+            open(nix, "w").close()
+            ga.write_json(ov_path, {
+                "hey_nix": {"enabled": False, "hidden": True, "persona": "nix"},
+                "hey_zed": {"enabled": False, "hidden": True, "persona": "zed"},
+                "hey_ash": {"enabled": True, "persona": "ash"},
+            }, 0o640)
+            ga.remember_bot_wakeword("nix")
+            ga.remember_bot_wakeword("zed")
+            ga.remember_bot_wakeword("ash")
+            ov = json.load(open(ov_path))
+            self.assertTrue(ov["hey_nix"]["enabled"])
+            self.assertNotIn("hidden", ov["hey_nix"])
+            self.assertNotIn("forgotten", ov["hey_nix"])
+            self.assertEqual(ov["hey_nix"]["persona"], "nix")
+            self.assertFalse(ov["hey_zed"]["enabled"])
+            self.assertNotIn("hidden", ov["hey_zed"])
+            self.assertEqual(ov["hey_ash"], {"enabled": True, "persona": "ash"})
+        finally:
+            if os.path.exists(nix):
+                os.remove(nix)
+
+    def test_enroll_reclaims_a_word_whose_owner_is_gone(self):
+        c = signed_in()
+        old_relay, old_wake = ga.relay_call, ga.wake
+
+        def bots(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            if method == "GET" and path == "/admin/bots":
+                return 200, {"bots": [{"slug": "nova", "name": "Nova", "voice": "eve", "source": "added"}]}
+            return 200, {"ok": True}
+
+        def listener(method, p, body=None, timeout=3):
+            if p == "/enroll":
+                return 202, {"ok": True}
+            return 200, {"ok": True}
+
+        ga.relay_call, ga.wake = bots, listener
+        try:
+            ga.write_json(ga.path("wake-overrides.json"),
+                          {"hey_pax": {"persona": "pax", "enabled": False, "hidden": True}}, 0o640)
+            st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Pax", "count": 25, "persona": "nova"})
+            self.assertEqual(st, 202, j)
+            self.assertEqual(j.get("id"), "hey_pax")
+            row = self.ov()["hey_pax"]
+            self.assertEqual(row.get("persona"), "nova")
+            self.assertNotIn("hidden", row)
+            self.assertNotIn("unused", row)
+        finally:
+            ga.relay_call, ga.wake = old_relay, old_wake
+
+    def test_hey_finn_stays_taken_when_the_list_is_empty_or_unknown(self):
+        signed_in()
+        old = ga.relay_call
+        taken = "“Hey Finn” is already a wake word."
+        try:
+            ga.relay_call = self._empty_roster
+            bots, auth = ga.bot_roster()
+            self.assertEqual((bots, auth), ([], True))
+            self.assertEqual(ga.phrase_problem("Hey Finn"), taken)
+            self.assertIn("hey_finn", {w["name"] for w in ga.wakewords()})
+            self.assertNotIn("hey_finn", {w["name"] for w in ga.unused_wakewords()})
+            ga.relay_call = lambda *a, **k: None
+            bots, auth = ga.bot_roster()
+            self.assertFalse(auth)
+            self.assertEqual(ga.phrase_problem("Hey Finn"), taken)
+            self.assertIn("hey_finn", {w["name"] for w in ga.wakewords()})
+            self.assertNotIn("hey_finn", {w["name"] for w in ga.unused_wakewords()})
+        finally:
+            ga.relay_call = old
+
     def test_enroll_control_proxies_pause_and_discard(self):
         c = signed_in()
         sent = []
