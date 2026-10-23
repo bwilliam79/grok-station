@@ -7,7 +7,7 @@ Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sig
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a grace window on that session (password_grace_min, default 10 minutes;
 0 always asks) for saving a webhook, adding, renaming, or removing a bot, changing a bot's voice, uploading a
 portrait, revoking a key, and changing the privacy toggle. Changing the grace period always asks again. Logging
-out ends the window. Speaker names stay on this Pi. Stdlib only.
+out ends the window. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl, sys
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -504,7 +504,7 @@ def note_secret(name, value=None, test=None):
     write_json(path("secrets.json"), m)
 
 
-# ------------------------------------------------------------------ wake words / speakers
+# ------------------------------------------------------------------ wake words
 def configured_phrase_names(cfg):
     """Phrase ids already in wakewords.json (words, enroll, fallback). Not overrides."""
     names = set()
@@ -589,7 +589,7 @@ def wakewords():
         ov = new_ov
     names = {b["slug"]: b["name"] for b in bots}
     enrolled = {w.get("name"): w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict)}
-    models = read_json(path("models.json"), {})  # Pi-only: phrase -> {speakers: [ids], trained_at, clips}
+    models = read_json(path("models.json"), {})  # phrase -> training note; speaker fields are ignored
     rows = [w for w in cfg.get("words", []) + cfg.get("enroll", []) if isinstance(w, dict)]
     have = {w.get("name") for w in rows}
     fb = cfg.get("fallback") if isinstance(cfg.get("fallback"), dict) else None
@@ -611,7 +611,7 @@ def wakewords():
         row = {"name": n, "persona": persona, "enabled": o.get("enabled", True) and has_model,
                "has_model": has_model, "sensitivity": round(1 - float(o.get("threshold", e.get("threshold", w.get("threshold", 0.5)))), 2),
                "provisional": bool(w.get("provisional")), "enrolled": n in enrolled, "metrics": e.get("metrics"),
-               "trained_on": models.get(n)}
+               "trained_on": model_note(models.get(n) if isinstance(models, dict) else None)}
         slug = n[4:] if isinstance(n, str) and n.startswith("hey_") else ""
         if slug in names:
             row["label"] = "Hey " + names[slug]
@@ -622,8 +622,15 @@ def wakewords():
     return out
 
 
-def speakers():
-    return read_json(path("speakers.json"), {})  # id -> {"name", "added_at", "guest"}
+_SPEAKER_META = frozenset({"speaker", "speakers", "guest"})
+
+
+def model_note(raw):
+    """Training note shown for one phrase. Old speaker fields are dropped; None when nothing else is stored."""
+    if not isinstance(raw, dict):
+        return None
+    out = {k: v for k, v in raw.items() if k not in _SPEAKER_META}
+    return out or None
 
 
 # ------------------------------------------------------------------ request handling
@@ -657,6 +664,8 @@ REBOOT_FLAG = E("ADMIN_REBOOT_FLAG", "/run/grok-station-reboot-required")  # ins
 RELAY_DOWN = "Can't reach the voice service right now."
 RELAY_ACTOR = "admin"
 BOT_PATH = re.compile(r"^/api/bots(?:/([a-z][a-z0-9-]{1,23}))?(?:/(webhook|test|key)(?:/([A-Za-z0-9_-]{1,80}))?)?$")
+_IMPORTED_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
+_IMPORTED_KEY = re.compile(r"^[a-z0-9][a-z0-9 .'-]{0,31}$")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/admin.css": ("admin.css", "text/css; charset=utf-8"), "/favicon.ico": ("assets/favicon.ico", "image/x-icon")}
 ASSET_TYPE = {"png": "image/png", "svg": "image/svg+xml", "ttf": "font/ttf", "ico": "image/x-icon"}
@@ -673,12 +682,24 @@ BOT_ID_RESERVED = '"grok" is reserved.'
 
 
 def bot_id_from_name(name):
-    """Lowercase, hyphens for spaces, strip anything else. Does not invent a prefix or rewrite "grok"."""
-    s = str(name or "").lower()
-    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    s = re.sub(r"-{2,}", "-", s)
+    """Strict slug for Set up and Add bot. ASCII letters and digits only; anything else is a dash.
+
+    Does not unicode-lowercase or transliterate. The result matches SLUG_RE or is "". "grok" can
+    still come back; bot_id_problem rejects that id. The name and the id stay editable after this.
+    """
+    chars = []
+    for ch in str(name or ""):
+        if "A" <= ch <= "Z":
+            chars.append(ch.lower())
+        elif ("a" <= ch <= "z") or ("0" <= ch <= "9"):
+            chars.append(ch)
+        else:
+            chars.append("-")
+    s = re.sub(r"-{2,}", "-", "".join(chars)).strip("-")
     if len(s) > 24:
         s = s[:24].rstrip("-")
+    if SLUG_RE.fullmatch(s) is None:
+        return ""
     return s
 
 
@@ -1173,10 +1194,7 @@ def audit_stepup():
 
 
 def drop_stale_guest():
-    """Remove a leftover guest-mode flag from t1.json. Missing file or key is a no-op.
-
-    Speaker records keep their own guest flag. Only the station-wide switch is dropped.
-    """
+    """Remove a leftover guest-mode flag from t1.json. Missing file or key is a no-op."""
     p = path("t1.json")
     try:
         with open(p) as f:
@@ -1437,6 +1455,16 @@ def box_pub_ok(text):
     return len(raw) == 32
 
 
+def bot_public_key(b):
+    """Pinned public key for the browser, or None. An unpaired or unusable value is not forwarded."""
+    if not isinstance(b, dict) or b.get("paired") is not True:
+        return None
+    pub = b.get("public_key")
+    if not box_pub_ok(pub):
+        return None
+    return "".join(pub.split())
+
+
 def stats_view(raw):
     """avg_rtt_ms of answered asks and how many of the last 10 timed out. Nothing else."""
     if not isinstance(raw, dict):
@@ -1451,7 +1479,11 @@ def stats_view(raw):
 
 
 def safe_bot(b):
-    """The fields the browser may see. Anything else from the relay (tokens, urls, keys) is dropped."""
+    """The fields the browser may see. Tokens and webhook secrets are dropped.
+
+    public_key is the pinned bot key (it is public). It is returned only when the bot is paired
+    and the value is standard base64 of 32 bytes; otherwise null.
+    """
     if not isinstance(b, dict) or not slug_ok(b.get("slug")):
         return None
     wh = b.get("webhook") if isinstance(b.get("webhook"), dict) else {}
@@ -1476,8 +1508,60 @@ def safe_bot(b):
             "last_error_at": _epoch(st.get("last_error_at")),
         },
         "paired": b.get("paired") is True,
+        "public_key": bot_public_key(b),
+        "key_mode": b.get("key_mode") if b.get("key_mode") in ("cloud", "home") else "cloud",
         "stats": stats_view(b.get("stats")),
     }
+
+
+def empty_imported():
+    return {"source": "", "updated_at": None, "rows": []}
+
+
+def safe_imported(raw):
+    """Names the browser may render. Anything else from the relay is dropped."""
+    if not isinstance(raw, dict):
+        return empty_imported()
+    rows, seen = [], set()
+    for ent in raw.get("rows") or []:
+        if not isinstance(ent, dict):
+            continue
+        name = ent.get("name")
+        if not isinstance(name, str) or _IMPORTED_NAME.fullmatch(name) is None:
+            continue
+        key = name.casefold()
+        got = ent.get("key")
+        if isinstance(got, str) and got != key:
+            continue
+        if _IMPORTED_KEY.fullmatch(key) is None or key in seen:
+            continue
+        state = ent.get("state")
+        if state not in ("new", "missing", "configured"):
+            continue
+        seen.add(key)
+        rows.append({"key": key, "name": name, "state": state})
+    src = raw.get("source") if slug_ok(raw.get("source")) else ""
+    return {"source": src, "updated_at": _epoch(raw.get("updated_at")), "rows": rows}
+
+
+def safe_routed(raw):
+    out, seen = [], set()
+    if not isinstance(raw, list):
+        return out
+    for ent in raw:
+        if not isinstance(ent, dict) or not slug_ok(ent.get("slug")) or ent["slug"] in seen:
+            continue
+        name = ent.get("name")
+        if not isinstance(name, str) or _IMPORTED_NAME.fullmatch(name) is None:
+            name = ent["slug"]
+        seen.add(ent["slug"])
+        out.append({"slug": ent["slug"], "name": name})
+    return out
+
+
+def _count(data, key):
+    v = data.get(key) if isinstance(data, dict) else None
+    return v if type(v) is int and v >= 0 else 0
 
 
 def safe_voices(vs):
@@ -1503,7 +1587,7 @@ def local_bots():
                 "source": "registry",
                 "webhook": {"configured": False, "last4": None, "saved_at": None},
                 "status": {"state": "not_configured", "last_answered_at": None, "last_error": None, "last_error_at": None},
-                "paired": False, "stats": stats_view(None),
+                "paired": False, "public_key": None, "key_mode": "cloud", "stats": stats_view(None),
             })
     return out
 
@@ -2400,9 +2484,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200 if ok else 400, {"ok": ok} if ok else {"error": out.get("error", "Couldn't forget it.")})
         return self.send(404, {"error": "not found"})
 
-    # wake words + enrollment + speakers
+    # wake words + enrollment. An old client may still send speaker; it is ignored, and speakers.json is never read.
     def api_get_wakewords(self, p, q, j):
-        return self.send(200, {"words": wakewords(), "speakers": [{"id": k, **v} for k, v in speakers().items()]})
+        return self.send(200, {"words": wakewords()})
 
     def api_put_wakewords(self, p, q, j):
         name = p.split("/")[3] if p.count("/") >= 3 else ""
@@ -2437,7 +2521,6 @@ class Handler(BaseHTTPRequestHandler):
             mid, _words = normalize_phrase(j.get("phrase", ""))
             return self.send(200, {"ok": True, "id": mid, "label": phrase_label(mid)})
         raw, count = j.get("phrase", ""), j.get("count", 25)
-        spk = str(j.get("speaker") or "")
         direct = str(raw or "").strip().lower()
         # hey_<bot id> can contain a hyphen or a digit; normalize_phrase would strip those.
         mid = direct if wake_name_ok(direct) else normalize_phrase(raw)[0]
@@ -2445,8 +2528,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": "Pick a wake word and 20 to 30 clips."})
         if not wake_name_ok(mid):
             return self.send(400, {"error": phrase_problem(raw) or "Pick a wake word and 20 to 30 clips."})
-        if spk and spk not in speakers():
-            return self.send(400, {"error": "Pick a speaker."})
         personas = phrase_personas()
         persona = j.get("persona")
         creating = mid not in personas
@@ -2471,13 +2552,6 @@ class Handler(BaseHTTPRequestHandler):
         elif code == 202:
             set_enroll_state(mid, "recording", "Say it on the station.", who,
                              had_model=mid in enrolled_phrase_ids())
-            if spk:  # speaker name -> opaque id stays on the Pi; uploads carry no name
-                m = read_json(path("models.json"), {})
-                e = m.setdefault(mid, {"speakers": []})
-                if spk not in e["speakers"]:
-                    e["speakers"].append(spk)
-                e["last_session_at"] = int(now())
-                write_json(path("models.json"), m, 0o600)
         elif not creating:
             set_enroll_state(mid, "failed", out.get("error") or "Couldn't start recording.", who)
         out = {**out, "id": mid}
@@ -2490,27 +2564,6 @@ class Handler(BaseHTTPRequestHandler):
         code, st = wake("GET", "/status")
         return self.send(200, {"enrolling": st.get("enrolling") if code == 200 else None,
                                "last": st.get("last_enroll") if code == 200 else None})
-
-    def api_post_speakers(self, p, q, j):
-        name = " ".join(str(j.get("name", "")).split())[:32]
-        if not name:
-            return self.send(400, {"error": "Type a name."})
-        sp = speakers()
-        sid = "spk-" + secrets.token_hex(2)
-        while sid in sp:
-            sid = "spk-" + secrets.token_hex(2)
-        sp[sid] = {"name": name, "guest": bool(j.get("guest")), "added_at": int(now())}
-        write_json(path("speakers.json"), sp)
-        return self.send(200, {"id": sid})
-
-    def api_delete_speakers(self, p, q, j):
-        sid = p.split("/")[3] if p.count("/") >= 3 else ""
-        sp = speakers()
-        if sid not in sp:
-            return self.send(404, {"error": "not found"})
-        sp.pop(sid)
-        write_json(path("speakers.json"), sp)
-        return self.send(200, {"ok": True})
 
     def api_get_personas(self, p, q, j):
         doc = read_json(PERSONAS, {})
@@ -2616,6 +2669,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(503, {"error": RELAY_UNCONFIGURED})
 
     def api_get_bots(self, p, q, j):
+        if p == "/api/bots/imported":
+            return self.bots_imported()
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -2627,6 +2682,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     def api_post_bots(self, p, q, j):
+        if p == "/api/bots/import":
+            return self.bots_import()
         if p == "/api/bots/refresh-avatars":
             return self.bots_refresh_avatars()
         if p == "/api/bots/revoke-all":
@@ -2654,6 +2711,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     def api_put_bots(self, p, q, j):
+        if p == "/api/bots/list-source":
+            return self.bots_list_source(j)
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -2665,6 +2724,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     def api_delete_bots(self, p, q, j):
+        dm = re.fullmatch(r"/api/bots/imported/(.+)", p)
+        if dm:
+            return self.bots_dismiss(urllib.parse.unquote(dm.group(1)))
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -2692,7 +2754,9 @@ class Handler(BaseHTTPRequestHandler):
                                    "message": RELAY_UNCONFIGURED,
                                    "stepup_until": self._stepup(), "station_pub": "", "station_pub_error": True,
                                    "killed": False,
-                                   "stats": stats_view(None)})
+                                   "stats": stats_view(None), "list_source": "", "routed": [],
+                                   "imported": empty_imported(),
+                                   "fingerprint": tls_info()["fingerprint"]})
         status, data = got
         if status != 200:
             return self.relay_fail(status, data)
@@ -2701,12 +2765,68 @@ class Handler(BaseHTTPRequestHandler):
         pub_ok = box_pub_ok(pub)
         if not pub_ok:
             print("admin: relay returned no usable station public key (see the relay log)", flush=True)
+        src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
         return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")),
                                "default_voice": data.get("default_voice") if voice_ok(data.get("default_voice")) else "",
                                "stepup_until": self._stepup(),
                                "station_pub": "".join(pub.split()) if pub_ok else "",
                                "station_pub_error": not pub_ok,
-                               "killed": data.get("killed") is True, "stats": stats_view(data.get("stats"))})
+                               "killed": data.get("killed") is True, "stats": stats_view(data.get("stats")),
+                               "list_source": src, "routed": safe_routed(data.get("routed")),
+                               "imported": safe_imported(data.get("imported")),
+                               "fingerprint": tls_info()["fingerprint"]})
+
+    def bots_imported(self):
+        got = relay_call("GET", "/admin/bots/imported")
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200:
+            return self.relay_fail(status, data)
+        src = data.get("list_source") if isinstance(data, dict) and slug_ok(data.get("list_source")) else ""
+        return self.send(200, {"list_source": src, "routed": safe_routed(data.get("routed") if isinstance(data, dict) else None),
+                               "imported": safe_imported(data.get("imported") if isinstance(data, dict) else None)})
+
+    def bots_import(self):
+        got = relay_call("POST", "/admin/bots/import", {"actor": RELAY_ACTOR}, timeout=40)
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+            return self.relay_fail(status, data)
+        return self.send(200, {"ok": True, "n": _count(data, "n"), "new": _count(data, "new"),
+                               "missing": _count(data, "missing"), "dropped": _count(data, "dropped")})
+
+    def bots_dismiss(self, key):
+        if not isinstance(key, str):
+            return self.send(400, {"error": "Not on the list."})
+        key = key.casefold()
+        if _IMPORTED_KEY.fullmatch(key) is None:
+            return self.send(400, {"error": "Not on the list."})
+        got = relay_call("DELETE", "/admin/bots/imported/" + urllib.parse.quote(key, safe=""), {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+            return self.relay_fail(status, data)
+        return self.send(200, {"ok": True})
+
+    def bots_list_source(self, j):
+        raw = j.get("list_source") if isinstance(j, dict) else None
+        if raw in ("", None):
+            body = {"list_source": "", "actor": RELAY_ACTOR}
+        elif slug_ok(raw):
+            body = {"list_source": raw, "actor": RELAY_ACTOR}
+        else:
+            return self.send(400, {"error": "Pick a paired bot."})
+        got = relay_call("PUT", "/admin/bots/list-source", body)
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
+            return self.relay_fail(status, data)
+        src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
+        return self.send(200, {"ok": True, "list_source": src})
 
     def bots_refresh_avatars(self):
         """Ask the wake listener to re-sync personas and portraits. No password."""
@@ -2774,11 +2894,18 @@ class Handler(BaseHTTPRequestHandler):
                 voice = None
             elif not voice_ok(voice):
                 return self.send(400, {"error": "Pick a voice."})
+        mode = None
+        if isinstance(j, dict) and "key_mode" in j:
+            mode = j.get("key_mode")
+            if mode not in ("cloud", "home"):
+                return self.send(400, {"error": "Pick where the key lives."})
         if not self.need_password(j):
             return
         body = {"slug": slug, "name": name, "actor": RELAY_ACTOR}
         if voice:
             body["voice"] = voice
+        if mode in ("cloud", "home"):
+            body["key_mode"] = mode
         got = relay_call("POST", "/admin/bots", body)
         if got is None:
             return self.bots_unconfigured()
@@ -2793,11 +2920,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
 
     def bots_rename(self, slug, j):
-        """Rename, change voice, or both. Voice is optional when a name is sent, and the name is optional when a voice is."""
+        """Rename, change voice, change where the key lives, or a combination.
+
+        key_mode is optional. Sending it alone is enough. An invalid mode is rejected before the password.
+        """
         if not isinstance(j, dict):
             return self.send(400, {"error": "Type a name."})
-        has_name, has_voice = "name" in j, "voice" in j
-        if not has_name and not has_voice:
+        has_name, has_voice, has_mode = "name" in j, "voice" in j, "key_mode" in j
+        if not has_name and not has_voice and not has_mode:
             return self.send(400, {"error": "Type a name."})
         name = clean_name(j.get("name")) if has_name else None
         if has_name and not name:
@@ -2810,6 +2940,11 @@ class Handler(BaseHTTPRequestHandler):
             voice = voice.strip()
             if voice and not voice_ok(voice):
                 return self.send(400, {"error": "Pick a voice."})
+        mode = None
+        if has_mode:
+            mode = j.get("key_mode")
+            if mode not in ("cloud", "home"):
+                return self.send(400, {"error": "Pick where the key lives."})
         if not self.need_password(j):
             return
         body = {"actor": RELAY_ACTOR}
@@ -2817,17 +2952,23 @@ class Handler(BaseHTTPRequestHandler):
             body["name"] = name
         if has_voice:
             body["voice"] = voice
+        if has_mode:
+            body["key_mode"] = mode
         got = relay_call("PATCH", "/admin/bots/" + slug, body)
         if got is None:
             return self.bots_unconfigured()
         status, data = got
-        if status != 200 or data.get("ok") is False:
+        if status != 200 or not isinstance(data, dict) or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         if has_name:
             audit(slug, "rename")
         if has_voice:
             audit(slug, "voice")
-        return self.send(200, {"ok": True})
+        out = {"ok": True}
+        if data.get("needs_key") is True:
+            out["needs_key"] = True
+            audit(slug, "key-mode")
+        return self.send(200, out)
 
     def bots_remove(self, slug, j):
         if not self.need_password(j):

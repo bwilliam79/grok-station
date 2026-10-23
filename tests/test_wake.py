@@ -88,6 +88,31 @@ class GainClip(unittest.TestCase):
         loud = quiet.copy(); loud[:100] = 32767
         self.assertTrue(gw.is_clipped(loud))
 
+    def test_level_line_reports_peak_sample_and_clipped_ratio(self):
+        """Periodic level line keeps rms, dBFS, peak_score, frames, and peaks, and adds the window extremes."""
+        pcm = np.array([0, 100, -32768, 32767, 5], np.int16)
+        peak, clips, n = gw.pcm_extremes(pcm)
+        self.assertEqual((peak, clips, n), (32768, 2, 5))
+        self.assertEqual(gw.pcm_extremes(np.array([], np.int16)), (0, 0, 0))
+        line = gw.format_level_line(1000, 0.2, 4, {"hey_grok": 0.2, "other": 0.01}, peak, clips / n)
+        self.assertIn("level rms=1000 (", line)
+        self.assertIn("dBFS)", line)
+        self.assertIn("peak_score=0.200", line)
+        self.assertIn("frames=4", line)
+        self.assertIn("peak_sample=32768", line)
+        self.assertIn("clipped=0.4000", line)
+        self.assertIn("peaks hey_grok=0.200", line)
+        self.assertNotIn("other=", line)
+        # 12 clipped samples in 10000 is the documented clipped=0.0012 form
+        shown = gw.format_level_line(1, 0, 1, {}, 32767, 12 / 10000)
+        self.assertIn("clipped=0.0012", shown)
+        self.assertIn("peak_sample=32767", shown)
+        self.assertNotIn("peaks", shown)
+        with open(os.path.join(os.path.dirname(__file__), "..", "wake", "grok_wake.py")) as f:
+            src = f.read()
+        self.assertIn("format_level_line(", src)
+        self.assertIn("pcm_extremes(", src)
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -125,7 +150,7 @@ class TestEnroll(unittest.TestCase):
             self.assertEqual(ph["hey_kitchen"], "kitchen-bot")
             self.assertEqual(ph["hey_finn"], "grok")  # override persona wins over the config
             self.assertEqual(ph["hey_hank"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 25}),
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 25, "speaker": "spk-ab12", "speakers": ["a"]}),
                              {"phrase": "hey_hank", "persona": "hank", "count": 25, "topup": False})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "persona": "grok"})["persona"], "hank")
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 25)  # omitted count is the default
@@ -152,6 +177,28 @@ class TestEnroll(unittest.TestCase):
         self.assertEqual(gw.relay_persona("kitchen-bot"), "grok")
         self.assertEqual(gw.relay_persona("finn"), "finn")
         self.assertTrue(gw.persona_ok("kitchen-bot")); self.assertTrue(gw.persona_ok("grok"))
+
+    def test_word_and_dropped_model_ignore_speaker_fields(self):
+        import hashlib
+        w = gw._word({"name": "hey_kitchen", "persona": "kitchen-bot", "threshold": 0.4,
+                      "speaker": "spk-1", "speakers": ["spk-1"], "guest": True})
+        self.assertEqual(w["persona"], "kitchen-bot")
+        self.assertNotIn("speaker", w)
+        self.assertNotIn("speakers", w)
+        self.assertNotIn("guest", w)
+        d = tempfile.mkdtemp()
+        blob = b"not-really-onnx"
+        sha = hashlib.sha256(blob).hexdigest()
+        open(os.path.join(d, "hey_kitchen.onnx"), "wb").write(blob)
+        with open(os.path.join(d, "hey_kitchen.json"), "w") as f:
+            json.dump({"name": "hey_kitchen", "persona": "kitchen-bot", "threshold": 0.4, "patience": 2,
+                       "sha256": sha, "speakers": ["spk-1"], "speaker": "old", "guest": True}, f)
+        got = gw.load_dropped_wakewords(d)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["persona"], "kitchen-bot")
+        self.assertNotIn("speakers", got[0])
+        self.assertNotIn("speaker", got[0])
+        self.assertNotIn("guest", got[0])
 
     def test_apply_overrides_persona_wins_and_off_still_removes(self):
         entries = {"hey_kitchen": {"name": "hey_kitchen", "persona": "grok", "threshold": 0.5},

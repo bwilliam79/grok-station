@@ -2,21 +2,95 @@
 """Sign and seal one answer for a grok-station, post a sealed reply, or print a new bot key.
 
   seal  answer on stdin, seed from GROK_STATION_BOT_KEY only; prints the outer {v,bot,sealed} JSON.
+  seal-list  bot names, one per line on stdin; same outer JSON, inner kind bot_list.
   post  sealed JSON on stdin; validates it and POSTs it. No key, no PyNaCl (stdlib only).
   send  seal | post on one machine.
 
 The seed is never taken from an argument or a file. This does not import the station relay.
 """
-import argparse, base64, hashlib, http.client, json, os, ssl, sys
+import argparse, base64, hashlib, http.client, json, os, re, ssl, sys, unicodedata
 from urllib.parse import urlsplit
 
 MAX_BODY = 8192
 _REFUSED = ("--key", "--seed", "--bot-key", "--private-key", "--secret")
+_LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
+_RID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+_LIST_MAX = 24
 
 
 def canonical(request_id, text):
     body = {"action_class": "answer", "request_id": request_id, "text": text, "tier": 0}
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def _list_name(raw):
+    """Same name rule as the station. Controls reject; cleaning does not truncate-accept."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in raw):
+        return None
+    if any(ord(c) > 127 for c in raw):  # do not NFKC-fold fullwidth or other lookalikes into ASCII
+        return None
+    t = unicodedata.normalize("NFKC", raw)
+    t = "".join(c for c in t if unicodedata.category(c) not in ("Cc", "Cf"))
+    t = " ".join(t.split())
+    if not t or len(t) > 32 or _LIST_NAME.fullmatch(t) is None:
+        return None
+    return t
+
+
+def canonical_list(request_id, names):
+    body = {"action_class": "bot_list", "bots": [{"name": n} for n in names], "kind": "bot_list",
+            "request_id": request_id, "tier": 0}
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def build_list_outer(bot, request_id, names, seed_b64, station_pub_b64):
+    """Outer JSON bytes for a bot list. Raises ValueError on a bad key, name, or request id."""
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    if not isinstance(request_id, str) or _RID.fullmatch(request_id) is None:
+        raise ValueError("request")
+    if not isinstance(names, list) or len(names) > _LIST_MAX:
+        raise ValueError("names")
+    clean, seen = [], set()
+    for raw in names:
+        name = _list_name(raw)
+        if name is None:
+            raise ValueError("name")
+        key = name.casefold()
+        if key in seen:
+            raise ValueError("dup")
+        seen.add(key)
+        clean.append(name)
+    seed = base64.b64decode("".join(str(seed_b64).split()), validate=True)
+    pub = base64.b64decode("".join(str(station_pub_b64).split()), validate=True)
+    if len(seed) != 32 or len(pub) != 32:
+        raise ValueError("key")
+    signed = SigningKey(seed).sign(canonical_list(request_id, clean))
+    sealed = SealedBox(PublicKey(pub)).encrypt(signed)
+    outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
+    return json.dumps(outer, separators=(",", ":")).encode()
+
+
+def _read_list_names():
+    """Names, one per line. Empty lines are skipped. None when a line is bad or there are more than 24."""
+    text = sys.stdin.read()
+    names, seen = [], set()
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        name = _list_name(line)
+        if name is None:
+            return None
+        key = name.casefold()
+        if key in seen:
+            return None
+        seen.add(key)
+        names.append(name)
+        if len(names) > _LIST_MAX:
+            return None
+    return names
 
 
 def build_outer(bot, request_id, text, seed_b64, station_pub_b64):
@@ -134,6 +208,25 @@ def _read_answer():
     return text
 
 
+def _seal_list_body(args):
+    if not isinstance(args.request_id, str) or _RID.fullmatch(args.request_id) is None:
+        print("400 bad request")
+        return None, 1
+    names = _read_list_names()
+    if names is None:
+        print("400 bad request")
+        return None, 1
+    seed = os.environ.get("GROK_STATION_BOT_KEY", "")
+    if not seed.strip():
+        print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+        return None, 2
+    try:
+        return build_list_outer(args.bot, args.request_id, names, seed, args.station_pub), 0
+    except Exception:
+        print("400 bad request")
+        return None, 1
+
+
 def _seal_body(args):
     """Returns (body, rc). body is None on failure, rc is the exit code to use."""
     text = _read_answer()
@@ -190,12 +283,13 @@ def main(argv=None):
     sub.add_parser("keygen")
     send = sub.add_parser("send")
     seal = sub.add_parser("seal")
+    seal_list = sub.add_parser("seal-list")
     post = sub.add_parser("post")
     for sp in (send, post):
         sp.add_argument("--station", required=True)
         sp.add_argument("--insecure", action="store_true")
         sp.add_argument("--pin-sha256", default="")
-    for sp in (send, seal):
+    for sp in (send, seal, seal_list):
         sp.add_argument("--bot", required=True)
         sp.add_argument("--station-pub", required=True)
         sp.add_argument("--request-id", required=True)
@@ -209,6 +303,12 @@ def main(argv=None):
         return 0
     if args.cmd == "seal":
         body, rc = _seal_body(args)
+        if body is None:
+            return rc
+        print(body.decode())
+        return 0
+    if args.cmd == "seal-list":
+        body, rc = _seal_list_body(args)
         if body is None:
             return rc
         print(body.decode())

@@ -214,6 +214,201 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("withPassword(", sysp)
         self.assertIn("data-vsel", _fn(self.js, "paintBots"))
 
+    def test_imported_list_card(self):
+        js = self.js
+        self.assertIn('id="imported"', js)
+        self.assertIn("function paintImported", js)
+        for text in ("Get list now", "Already set up", "Not on the last list", ">New<", "Set up", "Dismiss",
+                     "List source", "/api/bots/import", "/api/bots/list-source", "/api/bots/imported/",
+                     "Needs attention", "Nothing in the list is run"):
+            self.assertIn(text, js, text)
+        self.assertIn("banner warn", _fn(js, "attn"))
+        self.assertIn("function paintImported", js)
+        add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
+        self.assertIn("preset", add)
+        self.assertIn("botIdFromName(preset.name)", add)
+
+    def test_toggles_are_instant_and_text_fields_have_save(self):
+        """Toggles apply on click. Text, number, and select groups keep a Save button that starts disabled."""
+        js, css = self.js, self.css
+        rule = css.split(".saved{", 1)[1].split("}", 1)[0]
+        self.assertIn("font-size:13px", rule)
+        self.assertIn("var(--gs-teal)", rule)
+        self.assertNotIn("13.5px", rule)
+        self.assertIn("function markSaved", js)
+        self.assertIn("All changes saved", js)
+        self.assertIn('class="saved"', js)
+        self.assertIn('id="allsaved"', js)
+        for tag in re.findall(r"<button\b[^>]*>", js):
+            if re.search(r'class="tog', tag):
+                self.assertIn('role="switch"', tag, tag)
+                self.assertNotIn("Save", tag, tag)
+        self.assertNotIn('$("#non", el).onclick = $("#fade", el).onclick', js)
+        disp = js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
+        pre, post = disp.split('$("#dsave", el).onclick', 1)
+        self.assertIn("GROK_STATION_NIGHT", pre)
+        self.assertIn("GROK_STATION_FADE", pre)
+        self.assertNotIn("GROK_STATION_FADE", post)
+        wake = js.split("async function wakePanel", 1)[1].split("\nfunction enrollProgressHTML", 1)[0]
+        self.assertIn("data-sens-save", wake)
+        self.assertIn(">Save<", wake)
+        self.assertNotIn("s.onchange = async", wake)
+        bots = _fn(js, "paintBots")
+        head, tail = bots.split('querySelectorAll("[data-vsave]")', 1)
+        self.assertIn("data-vsave", bots)
+        self.assertNotIn("saveRowVoice", head)
+        self.assertIn("saveRowVoice", tail)
+        def chunk(start, end):
+            return js.split(start, 1)[1].split(end, 1)[0]
+        groups = {
+            "wifi": chunk("async function wifiPanel", "\nfunction joinForm"),
+            "time": chunk("async function timePanel", "\nfunction soundLabel"),
+            "audio": chunk("async function audioPanel", "\nfunction wordLabel"),
+            "wake": wake,
+            "display": disp,
+            "system": chunk("async function pageSystem", "\nfunction pageMore"),
+            "xai": chunk("async function xaiKeyPanel", "\nasync function wizard"),
+        }
+        for name, body in groups.items():
+            self.assertTrue(">Save<" in body or "Save key" in body, name)
+            self.assertNotIn(".onblur", body, name)
+        self.assertIn("dataset.saved", js.split("function watchSave", 1)[1].split("function boot", 1)[0])
+        self.assertIn("btn.disabled", _fn(js, "watchSave"))
+        priv = chunk("async function pagePrivacy", "\nasync function pageSystem")
+        self.assertLess(priv.find("setTog"), priv.find("askPassword"))
+        self.assertIn("Enter the admin password to change this.", priv)
+        up = chunk("async function paintUpdates", "\nasync function pageUpdates")
+        auto = up.split('$("#auto"', 1)[1]
+        self.assertLess(auto.find("setTog"), auto.find("withPassword"))
+        self.assertIn("Enter the admin password to change the daily check", up)
+
+    def test_add_bot_routine_matches_docs(self):
+        docs = _read(os.path.join("docs", "bots.md"))
+        fences = [part.split("\n```", 1)[0] for part in docs.split("```text\n")[1:]]
+        js = self.js
+        cloud = js.split("const BOT_ROUTINE = `", 1)[1].split("`;", 1)[0]
+        home = js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0]
+        self.assertIn(cloud, fences)
+        self.assertNotIn(home, fences)  # home mode is held back until its review
+        self.assertIn("const HOME_MODE = false;", js)
+        self.assertIn("grok-station-reply seal", cloud)
+        self.assertNotIn("gs-seal-reply", cloud)
+        self.assertIn("gs-seal-reply reply", home)
+        self.assertNotIn("<base64 seed>", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
+        for token in ("<slug>", "<station public key>", "<station address>", "<fingerprint>"):
+            self.assertIn(token, cloud, token)
+        fn = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
+        self.assertIn("grok-station-reply keygen", fn)
+        self.assertIn("GROK_STATION_BOT_KEY", fn)
+        self.assertIn("webhook URL", fn)
+        self.assertIn("webhook key", fn)
+        self.assertIn("gs-seal-reply keygen", fn)
+        self.assertIn("gs-seal-reply init", fn)
+        self.assertIn("There is no hosted mailbox", cloud)
+        self.assertIn("There is no hosted mailbox", home)
+        self.assertIn("A key exists on only one machine", cloud)
+        self.assertIn("A key exists on only one machine", home)
+        self.assertIn("printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
+        self.assertIn("https://", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
+        self.assertIn('id="aroutine"', js)
+        self.assertIn("<pre ", js)
+        self.assertIn('data-copy="aroutine"', js)
+        self.assertNotIn("<textarea", js.split("const step3", 1)[1].split("const step2", 1)[0])
+        self.assertNotIn("function showRoutine", js)
+        self.assertNotIn("function routineText", js)
+
+    def test_key_location_main_bot_and_no_mailbox(self):
+        js, css = self.js, self.css
+        add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
+        self.assertIn("Add your main bot first.", add)
+        step2 = js.split("const step2 = ", 1)[1].split("const step1 = ", 1)[0]
+        self.assertIn("Where the bot's key lives", step2)
+        self.assertIn('name="alives"', step2)
+        self.assertIn('value="cloud"', step2)
+        self.assertIn('value="home"', step2)
+        self.assertIn("Cloud computer (default)", step2)
+        self.assertIn("Home machine", step2)
+        self.assertIn("key_mode", add)
+        self.assertIn("Key lives", add)
+        bots = _fn(js, "paintBots")
+        self.assertIn("Key on home machine", bots)
+        self.assertIn("Key on cloud computer", bots)
+        mode = _fn(js, "wireKeyMode")
+        self.assertIn("_kmLock", mode)
+        self.assertIn("needs_key", mode)
+        self.assertIn("keyModeFields(bot.key_mode)", _fn(js, "openBot"))
+        self.assertIn('name="blives"', _fn(js, "keyModeFields"))
+        self.assertIn("attn(", mode)
+        self.assertIn("Needs attention", _fn(js, "attn"))
+        self.assertIn("accent-color:var(--gs-teal)", css.replace(" ", ""))
+        docs = _read(os.path.join("docs", "bots.md"))
+        readme = _read("README.md")
+        for text in ("There is no hosted mailbox", "Add your main bot first.", "later update",
+                     "A key exists on only one machine"):
+            self.assertIn(text, docs, text)
+            self.assertIn(text, readme, text)
+
+    def test_0_2_0_notes_cover_wake_pins_level_and_home_key(self):
+        """Release notes name the wake pins, the level line, and where a bot key lives."""
+        notes = _read(os.path.join("docs", "versioning.md"))
+        section = notes.split("## 0.6.0", 1)[1].split("\n## ", 1)[0]
+        blurb = _read("README.md").split("**0.6.0**", 1)[1].split("\n\n", 1)[0]
+        for text in ("openwakeword 0.6.0", "onnxruntime 1.31.0", "numpy 2.5.4",
+                     "peak sample", "clipped=0.0012", "There is no hosted mailbox",
+                     "later update", "A key exists on only one machine",
+                     "Add your main bot first"):
+            self.assertIn(text, section, text)
+            self.assertIn(text, blurb, text)
+
+    def test_add_bot_shows_certificate_fingerprint(self):
+        step2 = self.js.split("const step2 = ", 1)[1].split("const step1 = ", 1)[0]
+        self.assertIn("Certificate fingerprint", step2)
+        self.assertIn("botKeyState", self.js)
+        state = _fn(self.js, "botKeyState")
+        self.assertIn("public_key", state)
+        self.assertIn("pubKeyOk", state)
+        fields = _fn(self.js, "pairFields")
+        self.assertIn("botKeyState(bot)", fields)
+        self.assertIn('staticValue("bpubshow", st.key, "bot public key")', fields)
+        self.assertIn("Replace key", fields)
+        self.assertIn('id="bpubrepl"', fields)
+        self.assertIn('id="bpubedit"', fields)
+        self.assertIn('id="bpub"', fields)
+        self.assertIn("Pair key", fields)
+        self.assertNotIn("<input", fields.split("Bot public key", 1)[1].split('id="bpubedit"', 1)[0])
+        self.assertIn("pairFields(el._stationPub, bot)", _fn(self.js, "openBot"))
+        wire = _fn(self.js, "wirePair")
+        self.assertIn("bpubrepl", wire)
+        self.assertIn("/key", wire)
+        self.assertIn("public_key: pub", wire)
+        self.assertIn('staticValue("afp", el._fingerprint, "certificate fingerprint", "n/a")', step2)
+        self.assertIn('staticValue("astapub"', step2)
+        between = step2.split("Certificate fingerprint", 1)[1].split("Bot public key", 1)[0]
+        self.assertNotIn("<input", between)
+        self.assertIn('data-copy', self.js.split("function staticValue", 1)[1].split("function clearTimers", 1)[0])
+        admin = _read(os.path.join("admin", "grok_admin.py"))
+        self.assertIn('"fingerprint": tls_info()["fingerprint"]', admin)
+
+    def test_audio_gain_save_omits_untouched(self):
+        """Sliders show the listener default. Save sends a gain only after that slider moves."""
+        audio = self.js.split("async function audioPanel", 1)[1].split("\nconst BUILTIN_TIP", 1)[0]
+        self.assertNotIn('|| "1"', audio)
+        self.assertNotIn("|| '1'", audio)
+        self.assertIn("gain_by_device", audio)
+        self.assertIn(".defaults", audio)
+        self.assertIn("wakeShown", audio)
+        self.assertIn("voiceShown", audio)
+        dev = audio.split('$("#dev", el).addEventListener("change"', 1)[1].split("every(", 1)[0]
+        self.assertIn("dataset.saved", dev)
+        self.assertIn("gainFor", dev)
+        save = audio.split('$("#asave", el).onclick', 1)[1].split('const r = await api("PUT", "/api/settings/audio"', 1)[0]
+        head, tail = save.split("if (", 1)
+        self.assertNotIn("WAKE_GAIN", head)
+        self.assertNotIn("VOICE_GAIN", head)
+        self.assertIn("body.WAKE_GAIN", tail)
+        self.assertIn("body.VOICE_GAIN", tail)
+        self.assertEqual(tail.count("dataset.saved"), 2)
+
     def test_no_secret_is_logged(self):
         js = self.js
         self.assertNotIn("console.log", js)

@@ -33,3 +33,18 @@ Minor: the display can dim from a light sensor, a clock schedule, or sunrise and
 ## 0.5.0
 
 Minor: `tools/build-image/build-image.sh` builds an SD image from the official Raspberry Pi OS Lite (64-bit) image. See [sd-image.md](sd-image.md).
+
+## 0.6.0
+
+Minor release. Installs over 0.5.0.
+
+- **Bot list import.** The station can ask the list-source bot for names only. On Bots, each name shows as New, Already set up, or Not on the last list. Set up opens Add bot with the name filled in. A list never changes a bot that is already configured, and nothing in it is run.
+- **Save consistency.** Switches apply as soon as you click them. Text, number, and select fields keep a Save button, which stays off until the field differs from what is saved. After a successful save the page shows "All changes saved".
+- **Add bot.** The webhook step shows a routine to paste into the bot (the same text as in [bots.md](bots.md)), with the station address and certificate fingerprint filled in. The fingerprint is also on the public-key step, with a copy button, so you do not leave the dialog.
+- **Audio gain.** The mic boost sliders show the gain the listener actually uses for the saved device (2 for an EMEET speakerphone, 4 otherwise; voice follows wake when voice has no line of its own). Save writes a gain only when that slider was moved.
+- **Wake dependencies.** The wake virtualenv pins openwakeword 0.6.0 (still with `--no-deps`), onnxruntime 1.31.0, and numpy 2.5.4.
+- **Mic level.** The periodic level line also reports the peak sample in that window and the clipped ratio, the fraction of samples at full scale (`clipped=0.0012`).
+- **No hosted mailbox.** There is no hosted mailbox. Replies are posted by Grok Bot running on a home machine on the station's LAN.
+- **Where the key lives.** Cloud is the default: the bot's cloud computer seals, and the home machine posts. A faster home mode (key, seal and post in one command on the home machine) comes in a later update. A key exists on only one machine. Switching the mode revokes the pinned key and asks for a new public key.
+- **Home key mode** is built but held back until its security review; the Add bot flow offers cloud mode only.
+- **Main bot first.** Add your main bot first. The add-bot dialog says so on the first step.

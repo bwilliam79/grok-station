@@ -479,6 +479,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(put.status, 200, await put.text())
         listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
         self.assertTrue(listed["bots"][0]["paired"])
+        self.assertEqual(listed["bots"][0]["public_key"], pub)
         self.assertEqual(len(base64.b64decode(listed["station_pub"])), 32)
         self.assertFalse(listed["killed"])
         station = botreply.load_or_create_station(r.SECRETS_DIR)
@@ -502,6 +503,9 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Is it raining?", audit)
         gone = await self.client.delete("/admin/bots/jules/key", headers=self.headers(), json={"actor": "admin"})
         self.assertEqual(gone.status, 200)
+        unpinned = await (await self.client.get("/admin/bots", headers=self.headers())).json()
+        self.assertFalse(unpinned["bots"][0]["paired"])
+        self.assertIsNone(unpinned["bots"][0]["public_key"])
         rid2 = self.handoff.new_request_id()
         self.handoff.write_pending(r.PENDING_DIR, rid2, "jules", "n2", int(time.time() * 1000) + 60000, question="q")
         raw2 = helper.build_outer("jules", rid2, "Later.", seed, botreply.station_pub_b64(station))
@@ -512,6 +516,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
         self.assertTrue(listed["killed"])
         self.assertFalse(listed["bots"][0]["paired"])
+        self.assertIsNone(listed["bots"][0]["public_key"])
 
     def test_admin_forwards_only_the_reply_path(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "grok_admin.py")).read()
@@ -713,6 +718,71 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(secret, audit)
         self.assertNotIn(self.relay.TEST_QUESTION, "\n".join(self.lines))
         self.assertIn(" test ", audit)
+
+    async def test_key_mode_defaults_cloud_and_switching_revokes(self):
+        """cloud is the default and is not stored. home is stored. A real switch revokes the pinned key."""
+        import botreply
+        from nacl.signing import SigningKey
+        h = self.headers()
+        listed = await (await self.client.get("/admin/bots", headers=h)).json()
+        self.assertEqual(listed["bots"][0]["key_mode"], "cloud")
+        voiced = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "rex", "actor": "admin"})
+        self.assertEqual(voiced.status, 200, await voiced.text())
+        self.assertNotIn(b"key_mode", open(self.relay.overlay_path(), "rb").read())
+        bad = await self.client.post("/admin/bots", headers=h,
+                                     json={"slug": "nova", "name": "Nova", "voice": "rex", "actor": "admin", "key_mode": "laptop"})
+        self.assertEqual(bad.status, 400)
+        self.assertEqual((await bad.json())["error"], "bad key mode")
+        made = await self.client.post("/admin/bots", headers=h,
+                                      json={"slug": "nova", "name": "Nova", "voice": "rex", "actor": "admin", "key_mode": "home"})
+        self.assertEqual(made.status, 201, await made.text())
+        disk = json.load(open(self.relay.overlay_path()))
+        self.assertEqual(disk["key_mode"], {"nova": "home"})
+        body = await (await self.client.get("/admin/bots", headers=h)).json()
+        modes = {b["slug"]: b["key_mode"] for b in body["bots"]}
+        self.assertEqual(modes["nova"], "home")
+        self.assertEqual(modes["jules"], "cloud")
+        signer = SigningKey.generate()
+        pub = base64.b64encode(bytes(signer.verify_key)).decode()
+        put = await self.client.put("/admin/bots/jules/key", headers=h, json={"public_key": pub, "actor": "admin"})
+        self.assertEqual(put.status, 200, await put.text())
+        same = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "cloud", "actor": "admin"})
+        self.assertEqual(same.status, 200)
+        self.assertEqual(await same.json(), {"ok": True})
+        still = await (await self.client.get("/admin/bots", headers=h)).json()
+        self.assertTrue(next(b["paired"] for b in still["bots"] if b["slug"] == "jules"))
+        switched = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "home", "actor": "admin"})
+        self.assertEqual(switched.status, 200)
+        self.assertEqual(await switched.json(), {"ok": True, "needs_key": True})
+        after = await (await self.client.get("/admin/bots", headers=h)).json()
+        jules = next(b for b in after["bots"] if b["slug"] == "jules")
+        self.assertEqual(jules["key_mode"], "home")
+        self.assertFalse(jules["paired"])
+        keys = botreply.load_keys(self.relay.bot_keys_path())
+        self.assertNotIn("jules", keys.get("keys") or {})
+        audit = self._audit()
+        self.assertRegex(audit, r"admin jules key-mode -\n")
+        self.assertNotIn(pub, audit)
+        for line in audit.splitlines():
+            if "key-mode" in line:
+                self.assertTrue(line.endswith(" -"))
+                self.assertNotIn("home", line)
+        put = await self.client.put("/admin/bots/jules/key", headers=h, json={"public_key": pub, "actor": "admin"})
+        self.assertEqual(put.status, 200, await put.text())
+        again = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "home", "actor": "admin"})
+        self.assertEqual(await again.json(), {"ok": True})
+        mid = await (await self.client.get("/admin/bots", headers=h)).json()
+        self.assertTrue(next(b["paired"] for b in mid["bots"] if b["slug"] == "jules"))
+        back = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "cloud", "actor": "admin"})
+        self.assertTrue((await back.json()).get("needs_key"))
+        disk = json.load(open(self.relay.overlay_path()))
+        self.assertNotIn("jules", disk.get("key_mode") or {})
+        self.assertEqual(disk["key_mode"]["nova"], "home")
+        gone = await self.client.delete("/admin/bots/nova", headers=h, json={"actor": "admin"})
+        self.assertEqual(gone.status, 200)
+        disk = json.load(open(self.relay.overlay_path()))
+        self.assertNotIn("key_mode", disk)
+        self.assertNotIn("nova", disk.get("added") or {})
 
 
 if __name__ == "__main__":

@@ -1,123 +1,64 @@
 # grok-station
 
-A Raspberry Pi voice station. Everything runs on the Pi: the display, the "Hey Grok" wake listener, the admin page (HTTPS) and the voice relay (loopback only). Connecting a bot is in [docs/bots.md](docs/bots.md).
+grok-station is a voice station you keep at home. It runs on a Raspberry Pi, listens for "Hey Grok", and shows the answer on its own screen. You set it up from a phone or laptop on your home network.
 
-This README covers installation.
+## What it looks like
 
-## Requirements
+![The station waiting, with nothing playing](docs/images/idle.jpg)
 
-- Raspberry Pi 4 with 2 GB RAM or more. A Pi 5 is recommended. A Pi 3B works as a small-hardware test.
-- 64-bit Raspberry Pi OS Lite (Trixie). The installer stops on anything that isn't 64-bit (aarch64).
-- A microSD card of 16 GB or more.
-- A USB microphone and a speaker.
-- A display attached to the Pi.
+![An answer on the station screen](docs/images/answer.jpg)
+
+![A weather answer](docs/images/weather.jpg)
+
+![Timers on the station](docs/images/timers.jpg)
+
+![A reply from another bot](docs/images/other-bot.jpg)
+
+## What you need
+
+- A Raspberry Pi 4 with 2 GB of memory or more. A Pi 5 is the one to get. A Pi 3B is only for a small test.
+- A display plugged into the Pi.
+- An EMEET speakerphone. That is the USB microphone and speaker.
+- A microSD card, 16 GB or larger.
+- A power supply for the Pi.
+- 64-bit Raspberry Pi OS Lite (Trixie).
 - An xAI API key.
 
-## 1. Image the card
+## Put it on the Pi
 
-In Raspberry Pi Imager, choose **Raspberry Pi OS Lite (64-bit)** and open the OS customisation settings:
+In Raspberry Pi Imager, choose **Raspberry Pi OS Lite (64-bit)**. Set a hostname, Wi-Fi (or use Ethernet), and SSH. Write the card, boot the Pi, and sign in.
 
-- Set a **hostname** that is unique on your network (for example `<hostname>`). You'll use it to reach the admin page at `https://<hostname>.local`.
-- Set up **Wi-Fi** (or use Ethernet).
-- Turn on **SSH** and create a user.
+You can instead build the card from this repository: see [docs/sd-image.md](docs/sd-image.md). That downloads the official Lite (64-bit) image and does not set Wi-Fi, SSH, a hostname, or a password.
 
-Write the card, boot the Pi, and SSH in: `ssh <user>@<hostname>.local`.
-
-You can instead build the card from this repository: see [docs/sd-image.md](docs/sd-image.md).
-That downloads the official Lite (64-bit) image and does not set Wi-Fi, SSH, a hostname, or a password.
-
-## 2. Install
-
-On the Pi, run:
+Then run:
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/bwilliam79/grok-station/main/bootstrap.sh | sudo sh
 ```
 
-`bootstrap.sh` checks that the system is 64-bit, installs `git` if it's missing, clones the repo into `/usr/local/src/grok-station` (or updates an existing clone at `~/grok-station`), and then runs `install.sh`. It never prompts.
-
-**Alternative (manual clone):**
+That checks the system, downloads grok-station, and runs `install.sh`. It does not ask questions. If you already have the files:
 
 ```bash
-sudo apt-get install -y git   # if git isn't installed yet
 git clone https://github.com/bwilliam79/grok-station && cd grok-station && sudo ./install.sh
 ```
 
-The installer prints one line per stage with a check or a cross. Everything else goes to `/var/log/grok-station-install.log`. Options: `--verbose` (`-v`) streams every command's output, and `--dry-run` shows what would run without changing anything (with the one-liner: `... | sudo sh -s -- --verbose`).
+When a fresh install finishes, it asks you to press Enter to reboot. After that, the screen shows where to open the admin page and a short code. The full install, update, and fix-it notes are in [docs/operations.md](docs/operations.md).
 
-### What the installer does
+## First steps
 
-- Installs the system packages it needs with `apt-get`.
-- Creates the service users and generates local secrets in `/etc/grok-station/secrets`. Secrets are never printed.
-- Installs the display app, the voice relay and the Hey Grok wake listener (the relay and the wake listener each in their own Python venv) under `/opt/grok-station`.
-- Sets quiet boot options in `cmdline.txt`, including `vt.global_cursor_default=0`, which hides the blinking console cursor. It adds `disable_splash=1` to `config.txt`, sets up the boot splash, and turns off the login prompt on the screen (tty1).
-- Installs the `grok-station` command and creates a self-signed certificate for the admin page.
-- Enables four systemd services: `grok-station`, `grok-station-wake`, `grok-station-relay` and `grok-station-admin`. On a fresh install they are not started; they start at the reboot.
-- Runs a static health check: unit files enabled, config and tokens present, venvs and Python imports working. If something fails, the installer prints its last log lines and exits with an error.
+1. **Wi-Fi.** If the Pi is not on a network, the screen shows a setup hotspot: a Wi-Fi name, a password, and a page to open. Join that Wi-Fi, open the page, and join your home Wi-Fi. The hotspot then turns off, and the page moves to your home network.
+2. **Sign in.** Open the address on the screen (`https://<hostname>.local`, or the address with the IP). The certificate is self-signed, so the browser warns you; continue past that. Enter the code from the screen, then choose an admin password. There is no username.
+3. **xAI key.** Paste your xAI API key and save it. The page will not show the key again. Voice starts once it is saved.
+4. **Add your main bot first.** The bot needs Grok Bot running on a home machine on the same network. There is no hosted mailbox.
 
-At the end of a fresh install it asks **Press Enter to reboot (Ctrl-C to skip)**. Without a terminal (or with `--no-reboot`, or `--dry-run`) it prints `Reboot to finish: sudo reboot` instead. After the reboot, open the addresses it printed and enter the code shown on the screen.
+## More detail
 
-Updates (setup already done, or run by the admin page's Update button) restart the services in place, never prompt and never reboot. If an update changed the boot options, the Updates page says a reboot is needed.
+- [What runs on the Pi](docs/architecture.md)
+- [Install, update, and troubleshooting](docs/operations.md)
+- [Connecting a bot](docs/bots.md)
+- [Recording a wake word](docs/enroll.md)
+- [Versions](docs/versioning.md)
 
-## 3. First-run setup in the browser
+Other notes in `docs/` cover the design, handoff between bots, and longer plans.
 
-After the install, the station screen shows the addresses to open, `https://<hostname>.local` and `https://<IP>`, along with a 6-character setup code.
-
-On a phone or laptop on the same network:
-
-1. Open one of those addresses. The certificate is self-signed, so your browser shows a warning. Accept it to continue. (Port 80 only redirects to HTTPS.)
-2. Enter the setup code from the station screen. It isn't case-sensitive and works once.
-3. Set the admin password (at least 10 characters). There is no username: you sign in with the password only.
-4. Paste your xAI API key. It is write-only: after saving, the Voice page then shows **Key set, ending ••••1234** with a **Replace key** button; the key itself is never shown.
-
-Voice starts once the key is saved.
-
-### Fallback: set the key from the command line
-
-If you can't use a browser, set the key on the Pi:
-
-```bash
-sudo grok-station set-key
-```
-
-## Updating
-
-Run the same one-liner again:
-
-```bash
-wget -qO- https://raw.githubusercontent.com/bwilliam79/grok-station/main/bootstrap.sh | sudo sh
-```
-
-Or, from the cloned repo: `git pull && sudo ./install.sh`. Both are safe to re-run and keep the existing secrets, admin password and key.
-
-Or use **Updates** on the admin page: **Check now** compares this station's version with `VERSION` on `main`, and **Update** installs a newer version (`grok-station-update.service`). It does not install an older `main`, and it does not ask for the admin password again. The page shows a spinner while that runs and the result when the admin page comes back. The full log stays in `journalctl -u grok-station-update` and `/var/log/grok-station-install.log`. The **Update** button only appears when a newer version is available, and History (collapsed by default) lists versions. If an update fails partway, the installer restarts every service so the station keeps running. The daily check only checks; it never installs. See [docs/versioning.md](docs/versioning.md).
-
-**Bots** on the admin page adds a bot in steps (name and ID, key, webhook, then a summary). Voice is optional: leave it on **Station default** and change it later on the bot's row. The admin password is asked once, on the summary, and not again during the grace period (**System**, default 10 minutes, 0 always asks; signing out ends it). The relay icon is always on the station display. Until the first bot is paired it shows dim grey with a broken link; after that it is green, or red (crossed out) only after the last bot request timed out or its webhook failed.
-
-A handoff says "Asking <name>…" from a clip cached for that bot's name and voice: at the end of speech on a direct wake, and when the handoff starts if Grok routes the question. The wait for the answer is unchanged. See [docs/handoff.md](docs/handoff.md).
-
-Say "set a pasta timer for ten minutes" to start one. Up to eight can run at once. They show as countdown rings, and a finished one pulses amber until you say "stop" or "stop the pasta timer". See [docs/timers.md](docs/timers.md).
-
-## Troubleshooting
-
-If a stage fails, the installer shows the failed stage, the last 20 log lines and the log path. The full log is `/var/log/grok-station-install.log`; re-run with `--verbose` to watch every command.
-
-| Service | What it runs |
-|---|---|
-| `grok-station` | The display |
-| `grok-station-wake` | The Hey Grok wake listener |
-| `grok-station-relay` | The voice relay (127.0.0.1 only) |
-| `grok-station-admin` | The admin page (HTTPS on 443) |
-| `grok-station-update` | One-off update started from the admin page (`journalctl -u grok-station-update`) |
-
-```bash
-systemctl status grok-station grok-station-wake grok-station-relay grok-station-admin
-journalctl -u grok-station-admin -n 50 --no-pager      # swap in any service name
-journalctl -u grok-station-wake -f                    # follow live
-sudo systemctl restart grok-station-relay              # restart one service
-```
-
-- **The admin page doesn't load:** check `grok-station-admin`, and try `https://<IP>` if `.local` names don't resolve on your network.
-- **"No framebuffer (/dev/fb0)":** reboot so the display driver loads.
-- **The installer says "Needs 64-bit Raspberry Pi OS (aarch64)":** re-image with the 64-bit Lite image.
-- **The screen stays bright at night:** open Display and set Brightness to Schedule, Sunrise, or Light sensor. Off leaves the backlight alone. With no backlight file, the station draws a dark layer instead. See [docs/dimming.md](docs/dimming.md).
+**0.6.0** adds bot list import, saves switches immediately (other fields keep a Save button), shows an add-bot routine to paste into the bot along with this station's certificate fingerprint, and leaves mic gain alone until that slider is moved. It also pins the wake packages (openwakeword 0.6.0, onnxruntime 1.31.0, numpy 2.5.4) and adds the peak sample and clipped ratio (`clipped=0.0012`) to the mic level line. There is no hosted mailbox: Grok Bot on a home machine on the station's LAN posts replies. The key lives on the cloud computer; a faster home-machine mode comes in a later update. A key exists on only one machine; switching mode revokes the pinned key. Add your main bot first. Notes are in [docs/versioning.md](docs/versioning.md).

@@ -21,7 +21,8 @@ html,body{background:var(--gs-bg);color:var(--gs-text);font:15px/1.45 var(--body
 .top h1{font:600 28px var(--disp);letter-spacing:-.01em}
 .top .r{margin-left:auto;display:flex;align-items:center;gap:14px}
 .stepup{color:var(--gs-teal);font:500 13px var(--body);white-space:nowrap}
-.saved{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--gs-muted)}
+.saved{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--gs-teal)}
+.saved[hidden]{display:none !important}
 .ex{font:600 11.5px var(--mono);letter-spacing:.12em;color:var(--gs-muted);border:1.5px dashed var(--gs-faint);border-radius:99px;padding:3px 12px;white-space:nowrap}
 .body{flex:1;padding:24px 32px;max-width:1144px;overflow:hidden;display:flex;flex-direction:column;gap:18px}
 .card{background:var(--gs-surface);border:1px solid var(--gs-rule);border-radius:16px;padding:20px 22px}
@@ -98,6 +99,10 @@ button.tog.on:disabled{background:var(--gs-surface-3);border-color:var(--gs-rule
 .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px}
 .field{display:flex;flex-direction:column;gap:6px;margin-top:14px}
 .field>label{font-weight:500;font-size:14px}
+fieldset.field{border:0;margin:14px 0 0;padding:0;min-width:0}
+fieldset.field legend{font-weight:500;font-size:14px;padding:0}
+.choice{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:14px}
+.choice input{accent-color:var(--gs-teal)}
 .inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .right{margin-left:auto}
 .err{color:var(--gs-red);font-size:13.5px;margin-top:8px}
@@ -209,6 +214,7 @@ form+.note{margin-top:12px}
 /* Read-only values: text plus a copy icon, never an input */
 .static{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .static-val{font-family:var(--mono,ui-monospace,monospace);font-size:13px;word-break:break-all;user-select:all;background:none;padding:0}
+pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .static-missing{color:var(--gs-amber)}
 .iconbtn{all:unset;cursor:pointer;display:inline-flex;padding:6px;border-radius:6px;color:var(--gs-muted)}
 .iconbtn:hover{color:var(--gs-text);background:var(--gs-rule)}

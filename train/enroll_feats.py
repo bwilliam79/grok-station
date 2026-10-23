@@ -11,10 +11,13 @@ ses, job = sys.argv[1], sys.argv[2]
 rounds = int(sys.argv[3]) if len(sys.argv) > 3 else 200
 import json
 clips = sorted(glob.glob(os.path.join(ses, "[0-9][0-9].wav")))
-try:  # top-up session: also train/evaluate on the earlier session it tops up (same phrase, same speaker)
-    prior = json.load(open(os.path.join(ses, "READY"))).get("prior")
+try:  # top-up: also train on the named earlier session of the same phrase. speaker/speakers are ignored.
+    ready = json.load(open(os.path.join(ses, "READY")))
 except (OSError, ValueError):
-    prior = None
+    ready = None
+prior = None
+if isinstance(ready, dict):
+    prior = ready.get("prior")
 if prior:
     clips = sorted(glob.glob(os.path.join(os.path.dirname(os.path.normpath(ses)), prior, "[0-9][0-9].wav"))) + clips
 assert len(clips) >= 10 or os.environ.get("TRAIN_N"), f"need 10+ clips, have {len(clips)}"

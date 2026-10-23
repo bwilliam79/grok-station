@@ -265,22 +265,38 @@ class _Wire(dict):
         return dict.__getitem__(self, key)
 
 
-def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False):
+def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False, kind=""):
     """Webhook body v1: v, request_id, persona, the cleaned question, reply_by. test only when asked.
 
     include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
     ["tier_max"] returns the tier argument (default 0) and is not on the wire.
+    kind is sent only for a list request (bot_list). Answer webhooks omit it.
     """
     del include_avatar
     body = {"v": 1, "request_id": rid, "persona": bot, "question": clean(question, Q_MAX),
             "reply_by": str(reply_by_iso or "")}
     if test:
         body["test"] = True
+    if kind == "bot_list":
+        body["kind"] = "bot_list"
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 
+def _list_ask_norm(raw):
+    """{"out": rid or "", "last": epoch}. A missing or odd value is no open ask and no previous time."""
+    ask = raw if isinstance(raw, dict) else {}
+    out = ask.get("out") if isinstance(ask.get("out"), str) else ""
+    last = ask.get("last")
+    if isinstance(last, bool) or not isinstance(last, (int, float)):
+        last = 0.0
+    return {"out": out, "last": float(last)}
+
+
 class Limits:
-    """B10, persisted per day: {"day": .., "bots": {bot: {"n": .., "last": ..}}, "total": .., "out": {bot: rid}}."""
+    """B10, persisted per day: {"day": .., "bots": {bot: {"n": .., "last": ..}}, "total": .., "out": {bot: rid}}.
+
+    list_ask is separate from the answer caps and survives the daily wipe: {"out": rid or "", "last": epoch}.
+    """
 
     def __init__(self, path, day_fn, per_bot_day=None, global_day=None, gap_s=None):
         self.path, self.day = path, day_fn
@@ -294,9 +310,13 @@ class Limits:
                 s = json.load(f)
         except (OSError, ValueError):
             s = {}
+        if not isinstance(s, dict):
+            s = {}
+        kept = _list_ask_norm(s.get("list_ask"))
         if s.get("day") != self.day():
             s = {"day": self.day(), "bots": {}, "total": 0, "out": {}}
         s.pop("guest", None)  # stale guest flag from an older file: ignored, not kept
+        s["list_ask"] = kept
         return s
 
     def _save(self, s):
@@ -345,16 +365,52 @@ class Limits:
         s["out"].pop(bot, None)
         self._save(s)
 
+    def list_open(self):
+        """Request id of the open list ask, or ""."""
+        return _list_ask_norm(self._load().get("list_ask"))["out"]
 
-def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True, test=False, reply_by=""):
+    def take_list(self, rid, now=None):
+        """Reserve one list request. None if allowed, else "too soon" or "outstanding".
+
+        Not counted against the answer caps. One open ask, and at most one per 60 seconds.
+        A future last (clock skew) is too soon. last 0 means there has not been an ask.
+        """
+        now = time.time() if now is None else now
+        s = self._load()
+        ask = _list_ask_norm(s.get("list_ask"))
+        out, last = ask["out"], ask["last"]
+        if last and last > now:
+            return "too soon"
+        if last and 0 < (now - last) < 60:
+            return "too soon"
+        if out:
+            return "outstanding"
+        if last and now - last < 60:
+            return "too soon"
+        s["list_ask"] = {"out": rid, "last": float(now)}
+        self._save(s)
+        return None
+
+    def release_list(self):
+        """Drop the open list slot. The 60 second gap (last) stays."""
+        s = self._load()
+        ask = _list_ask_norm(s.get("list_ask"))
+        s["list_ask"] = {"out": "", "last": ask["last"]}
+        self._save(s)
+
+
+def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True, test=False, reply_by="", kind=""):
     """Pending request the reply must match. tier_max is always 0.
 
     expires_ms is the accept-until time (clock-skew window), which may be later than reply_by.
+    kind is stored only for a list request. Answer pending files omit it.
     """
     os.makedirs(pdir, exist_ok=True)
     doc = {"v": 1, "request_id": rid, "persona": bot, "nonce": nonce, "expires_ms": int(expires_ms),
            "question": clean(question, Q_MAX), "pii_mode": True if pii_mode is None else bool(pii_mode),
            "tier_max": 0, "test": bool(test), "reply_by": str(reply_by or "")}
+    if kind == "bot_list":
+        doc["kind"] = "bot_list"
     tmp = os.path.join(pdir, f".{rid}.tmp")
     with open(tmp, "w") as f:
         json.dump(doc, f)

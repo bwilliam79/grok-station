@@ -96,6 +96,17 @@ class Install(unittest.TestCase):
         self.assertIn("$V/voice/ack", sh)  # cached "Asking <name>" clips; the relay unit already writes the state dir
         self.assertNotIn("jarvis", sh.lower())
 
+    def test_wake_venv_pins_exact_versions(self):
+        """openwakeword stays --no-deps. It, onnxruntime, and numpy are exact pins."""
+        wake = open(os.path.join(ROOT, "install.sh")).read().split("st_wake()", 1)[1].split("st_boot()", 1)[0]
+        self.assertIn('--no-deps "openwakeword==0.6.0"', wake)
+        self.assertIn('"onnxruntime==1.31.0"', wake)
+        self.assertIn('"numpy==2.5.4"', wake)
+        self.assertNotIn("onnxruntime>=", wake)
+        self.assertNotIn("numpy>=", wake)
+        self.assertNotIn("--no-deps openwakeword\n", wake)
+        self.assertNotIn("openwakeword>=", wake)
+
     def test_fresh_install_reboots_update_does_not(self):
         env = dict(os.environ, NO_COLOR="1")
         env.pop("GROK_STATION_NONINTERACTIVE", None)

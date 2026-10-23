@@ -1,7 +1,7 @@
 """Admin page API (admin/grok_admin.py): setup code, password rules, lockout, sessions, CSRF, LAN-only, write-only
-secrets, wake-word overrides, Pi-only speakers, reset (CLI + boot file), static files. In-process server on a free port;
+secrets, wake-word overrides, reset (CLI + boot file), static files. In-process server on a free port;
 the root helper and wake listener are fakes, so nothing touches the system. No browser."""
-import http.client, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading, time, unittest
+import base64, http.client, io, json, os, re, shutil, socket, stat, subprocess, sys, tempfile, threading, time, unittest
 from contextlib import redirect_stdout
 
 TMP = tempfile.mkdtemp(prefix="gs-admin-")
@@ -321,7 +321,7 @@ class Secrets(unittest.TestCase):
         self.assertNotIn("LOGTEST", blob); self.assertNotIn("pw-in-log-test", blob); self.assertNotIn(GOOD, blob)
 
 
-class WakeWordsAndSpeakers(unittest.TestCase):
+class WakeWords(unittest.TestCase):
     def test_overrides(self):
         c = signed_in()
         words = {w["name"]: w for w in c.req("GET", "/api/wakewords")[1]["words"]}
@@ -337,30 +337,37 @@ class WakeWordsAndSpeakers(unittest.TestCase):
         self.assertTrue(next(w for w in c.req("GET", "/api/wakewords")[1]["words"] if w["name"] == "hey_grok")["enabled"])
         self.assertEqual(c.req("PUT", "/api/wakewords/hey_finn", {"sensitivity": 2})[0], 400)
 
-    def test_speaker_names_stay_on_pi(self):
+    def test_enroll_ignores_speaker_and_leaves_old_files(self):
         c = signed_in()
-        st, j = c.req("POST", "/api/speakers", {"name": "  Alex   Example "})
-        self.assertEqual(st, 200)
-        self.assertRegex(j["id"], r"^spk-[0-9a-f]{4}$")
+        self.assertEqual(c.req("POST", "/api/speakers", {"name": "  Alex   Example "})[0], 404)
+        self.assertEqual(c.req("DELETE", "/api/speakers/spk-ab12")[0], 404)
+        state = os.environ["ADMIN_STATE_DIR"]
+        self.assertFalse(os.path.exists(os.path.join(state, "speakers.json")))
+        models_path = os.path.join(state, "models.json")
+        before = '{"hey_hank": {"speakers": ["spk-old"], "speaker": "old", "guest": true, "trained_at": 3}}\n'
+        open(models_path, "w").write(before)
         sent = []
         ga_wake = ga.wake
         ga.wake = lambda m, p, body=None, timeout=3: (sent.append(body), (202, {"ok": True}))[1]
         try:
-            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 25, "speaker": j["id"]})
+            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 25, "speaker": "spk-old"})
         finally:
             ga.wake = ga_wake
         self.assertEqual(st, 202)
-        self.assertNotIn("Alex", json.dumps(sent))  # nothing about the speaker leaves for training
-        self.assertNotIn(j["id"], json.dumps(sent))
-        sp = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json")))
-        self.assertEqual(sp[j["id"]]["name"], "Alex Example")
-        models = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "models.json")))
-        self.assertEqual(models["hey_hank"]["speakers"], [j["id"]])
-        self.assertNotIn("Alex", json.dumps(models))
-        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": j["id"]})[0], 400)
+        self.assertNotIn("speaker", json.dumps(sent))
+        self.assertNotIn("spk-old", json.dumps(sent))
+        self.assertNotIn("Alex", json.dumps(sent))
+        self.assertEqual(open(models_path).read(), before)  # enroll does not rewrite the note
+        body = c.req("GET", "/api/wakewords")[1]
+        self.assertNotIn("speakers", body)
+        words = {w["name"]: w for w in body["words"]}
+        self.assertEqual(words["hey_hank"]["trained_on"], {"trained_at": 3})
+        self.assertNotIn("spk-old", json.dumps(body))
+        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": "spk-old"})[0], 400)
         # "Hey Hank!" is the known word hey_hank, so this re-records it (the listener is down here).
         st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 25})
         self.assertEqual((st, out.get("id")), (503, "hey_hank"))
+        self.assertEqual(open(models_path).read(), before)
 
 
 class SystemAndSettings(unittest.TestCase):
@@ -433,13 +440,16 @@ class Reset(unittest.TestCase):
         self.assertEqual(c2.req("POST", "/api/setup/password", {"password": "after reset pass 9"})[0], 200)
         st, j = c2.req("GET", "/api/state")
         self.assertEqual(j["wizard"], {"step": 8, "done": True})  # other settings (and the finished wizard) kept
-        self.assertTrue(os.path.exists(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json")))
+        raw = open(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json")).read()
+        self.assertEqual(raw, '{"spk-keep": {"name": "Keep Me"}}\n')
         self.assertEqual(c.req("GET", "/api/home")[0], 401)  # the cookie from before the reset stays dead
 
     def prep(self):
         c = signed_in()
         c.req("POST", "/api/wizard", {"step": 8, "done": True})
-        c.req("POST", "/api/speakers", {"name": "Keep Me"})
+        # reset must leave an old speakers file byte-identical; the API no longer writes it
+        open(os.path.join(os.environ["ADMIN_STATE_DIR"], "speakers.json"), "w").write(
+            '{"spk-keep": {"name": "Keep Me"}}\n')
         return c
 
     def test_cli_reset_admin_wipes_only_password(self):
@@ -694,7 +704,57 @@ class Bots(unittest.TestCase):
         self.assertEqual(calls, [("POST", "/personas/sync", {}), ("POST", "/personas/sync", {})])
         self.assertEqual(C().req("POST", "/api/bots/refresh-avatars", {})[0], 401)
 
+    def test_key_mode_forwarded_only_when_sent(self):
+        st, j = self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "key_mode": "disk"})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], "Pick where the key lives.")
+        self.assertFalse(any(c[0] == "POST" for c in self.calls))
+        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
+        st, j = self.c.req("POST", "/api/bots", {"slug": "pip", "name": "Pip", "password": GOOD})
+        self.assertEqual(st, 201, j)
+        self.assertNotIn("key_mode", self.calls[-1][2])
+        self.assertNotIn("voice", self.calls[-1][2])
+        st, j = self.c.req("POST", "/api/bots", {"slug": "quo", "name": "Quo", "key_mode": "home"})
+        self.assertEqual(st, 201, j)
+        self.assertEqual(self.calls[-1][2]["key_mode"], "home")
+        self.assertNotIn("voice", self.calls[-1][2])
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(j["bots"][0]["key_mode"], "cloud")
 
+        def fake(method, path, payload=None, timeout=10):
+            self.calls.append((method, path, payload))
+            if path == "/admin/bots" and method == "GET":
+                return 200, {"bots": [{"slug": "kai", "name": "Kai", "voice": "eve", "source": "registry",
+                                       "key_mode": "home",
+                                       "webhook": {"configured": False},
+                                       "status": {"state": "not_configured"}}], "voices": ["eve"]}
+            if method == "PATCH" and isinstance(payload, dict) and payload.get("key_mode") in ("cloud", "home"):
+                return 200, {"ok": True, "needs_key": True}
+            return 200, {"ok": True}
+
+        ga.relay_call = fake
+        st, j = self.c.req("GET", "/api/bots")
+        self.assertEqual(j["bots"][0]["key_mode"], "home")
+        self.assertIsNone(j["bots"][0]["public_key"])  # unpaired, and a missing key is null
+        pub = base64.b64encode(b"\x11" * 32).decode()
+        pinned = ga.safe_bot({"slug": "kai", "name": "Kai", "paired": True, "public_key": " " + pub + "\n"})
+        self.assertEqual(pinned["public_key"], pub)
+        self.assertIsNone(ga.safe_bot({"slug": "kai", "name": "Kai", "paired": False, "public_key": pub})["public_key"])
+        self.assertIsNone(ga.safe_bot({"slug": "kai", "name": "Kai", "paired": True, "public_key": "not-a-key"})["public_key"])
+        self.assertIsNone(ga.local_bots()[0]["public_key"] if ga.local_bots() else ga.bot_public_key({}))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "cloud"})
+        self.assertEqual(st, 200, j)
+        self.assertIs(j.get("needs_key"), True)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"key_mode": "cloud", "actor": "admin"}))
+        before = len(self.calls)
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})
+        self.assertEqual(st, 200, j)
+        self.assertNotIn("needs_key", j)
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "eve", "actor": "admin"}))
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "sideways"})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], "Pick where the key lives.")
+        self.assertEqual(len(self.calls), before + 1)
 
 
 class WakePhraseAndStatus(unittest.TestCase):
@@ -764,17 +824,16 @@ class WakePhraseAndStatus(unittest.TestCase):
 
     def test_mapping_saved_and_rerecord_keeps_persona(self):
         c = signed_in()
-        st, sp = c.req("POST", "/api/speakers", {"name": "  Alex   Example "})
         self.enroll_up([(202, {"ok": True}), (503, {"error": "wake listener unreachable"})])
         CLOCK[0] = 1_700_000_000
         st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Kitchen!", "count": 25, "persona": "kitchen-bot",
-                                              "speaker": sp["id"]})
+                                              "speaker": "spk-legacy"})
         self.assertEqual(st, 202)
         self.assertEqual(j["id"], "hey_kitchen")
         self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
         self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 25, "topup": False, "persona": "kitchen-bot"})
-        self.assertNotIn("Alex", json.dumps(self.sent))
-        self.assertNotIn(sp["id"], json.dumps(self.sent))
+        self.assertNotIn("speaker", json.dumps(self.sent))
+        self.assertNotIn("spk-legacy", json.dumps(self.sent))
         ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
         ov = json.load(open(ov_path))
         self.assertEqual(ov["hey_kitchen"], {"persona": "kitchen-bot"})
@@ -785,9 +844,8 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(doc["hey_kitchen"]["state"], "recording")
         self.assertEqual(doc["hey_kitchen"]["persona"], "kitchen-bot")
         self.assertFalse(doc["hey_kitchen"]["had_model"])
-        models = json.load(open(os.path.join(os.environ["ADMIN_STATE_DIR"], "models.json")))
-        self.assertEqual(models["hey_kitchen"]["speakers"], [sp["id"]])
-        self.assertNotIn("Alex", json.dumps(models))
+        self.assertFalse(os.path.exists(os.path.join(os.environ["ADMIN_STATE_DIR"], "models.json")))
+        self.assertNotIn("speakers", c.req("GET", "/api/wakewords")[1])
         # a second phrase for the same bot, and a different bot on an existing word, are different checks
         st, j = c.req("POST", "/api/enroll", {"phrase": "hey finn", "count": 25, "persona": "grok"})
         self.assertEqual((st, j["error"]), (400, "“Hey Finn” is already a wake word."))
@@ -1329,8 +1387,6 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
 
     def test_guest_mode_is_gone_and_a_stale_key_is_dropped(self):
         c = signed_in()
-        st, sp = c.req("POST", "/api/speakers", {"name": "Alex Example", "guest": True})
-        self.assertEqual(st, 200)
         ga.write_json(ga.path("t1.json"), {"guest": True, "kept": 1}, 0o640)
         ga.drop_stale_guest()
         doc = json.load(open(ga.path("t1.json")))
@@ -1338,14 +1394,16 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertEqual(doc["kept"], 1)
         ga.drop_stale_guest()
         self.assertEqual(json.load(open(ga.path("t1.json"))), {"kept": 1})
-        speakers = json.load(open(ga.path("speakers.json")))
-        self.assertTrue(speakers[sp["id"]]["guest"])  # a speaker's own flag is not the station switch
+        self.assertEqual(c.req("POST", "/api/speakers", {"name": "Alex Example", "guest": True})[0], 404)
+        self.assertFalse(os.path.exists(ga.path("speakers.json")))
         self.assertEqual(c.req("GET", "/api/guest")[0], 404)
         self.assertEqual(c.req("PUT", "/api/t1", {"guest": True})[0], 404)
         js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
         self.assertNotIn("Guest mode", js)
         self.assertNotIn("/api/guest", js)
-        self.assertIn('id="spg"> Guest', js)
+        self.assertNotIn('id="spg"', js)
+        self.assertNotIn("Whose voice?", js)
+        self.assertNotIn("/api/speakers", js)
 
     def test_bot_id_helper_and_labels(self):
         self.assertEqual(ga.bot_id_from_name("Nix"), "nix")

@@ -34,8 +34,21 @@ MODEL = E("WAKE_MODEL", "/opt/grok-station/wake/models/hey_grok.onnx")  # the bu
 BUILTIN = "hey_grok"                             # always on: the admin page can't turn it off
 THRESH = float(E("WAKE_THRESHOLD", "0.5"))
 COOLDOWN = float(E("WAKE_COOLDOWN", "2"))
+def _station_gain():
+    """gain.py next to this file. The admin helper loads the same module (no numpy)."""
+    mod = getattr(_station_gain, "mod", None)
+    if mod is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gain.py")
+        spec = importlib.util.spec_from_file_location("grok_station_gain", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _station_gain.mod = mod
+    return mod
+
+
 def default_gain(device):
-    return "2" if "emeet" in device.lower() else "4"
+    return _station_gain().default_gain(device)
 
 
 DEVICE = E("WAKE_DEVICE_NAME", "EMEET")        # matched against `arecord -l` / `aplay -l` card names (capture + playback)
@@ -738,6 +751,7 @@ def parse_enroll(j):
     """The body of POST /enroll. None when the phrase is not one this station can record.
 
     persona on the body is only used for a phrase that isn't in the config or the overrides yet.
+    A speaker field from an older client is ignored. Top-up is per phrase, not per voice.
     """
     if not isinstance(j, dict):
         return None
@@ -866,8 +880,31 @@ def is_clipped(raw):
     return bool(np.mean(np.abs(raw.astype(np.int32)) >= 32000) > 0.001)
 
 
+def pcm_extremes(samples):
+    """(peak abs, clipped count, sample count) for one int16 chunk.
+
+    Peak is the max absolute sample. A sample is clipped when abs >= 32767.
+    int16 -32768 is widened before abs so it does not overflow.
+    """
+    a = np.asarray(samples)
+    if a.size == 0:
+        return 0, 0, 0
+    mag = np.abs(a.astype(np.int32, copy=False))
+    return int(mag.max()), int(np.count_nonzero(mag >= 32767)), int(mag.size)
+
+
+def format_level_line(avg, peak_score, frames, peaks, sample_peak, clipped):
+    """One periodic level line. clipped is a fraction, printed with 4 decimals (clipped=0.0012)."""
+    dbfs = 20 * np.log10(max(float(avg), 1.0) / 32768)
+    items = peaks.items() if isinstance(peaks, dict) else ()
+    top = " ".join(f"{k}={v:.3f}" for k, v in sorted(items, key=lambda kv: -kv[1]) if v >= 0.05)
+    tail = f" peaks {top}" if top else ""
+    return (f"level rms={float(avg):.0f} ({dbfs:.1f} dBFS) peak_score={float(peak_score):.3f} "
+            f"frames={int(frames)} peak_sample={int(sample_peak)} clipped={float(clipped):.4f}{tail}")
+
+
 def last_session(phrase):
-    """Newest earlier local session of phrase (for a top-up), or None."""
+    """Newest earlier local session of this phrase, or None. Top-up merges those clips; voice is not tracked."""
     try:
         ses = sorted(x for x in os.listdir(os.path.join(ENROLL_DIR, phrase)) if re.fullmatch(r"\d{8}-\d{6}", x))
     except OSError:
@@ -1061,6 +1098,7 @@ WORDS = {}  # model key -> {"name", "persona", "threshold", "patience", "provisi
 
 
 def _word(w):
+    """Settings the detector uses. Extra stored fields, including an old speaker id, are not copied."""
     return {"name": str(w["name"]), "persona": str(w.get("persona", "grok")), "threshold": float(w.get("threshold", 0.5)),
             "patience": max(1, int(w.get("patience", 1))), "provisional": bool(w.get("provisional", False)),
             "enrolled": bool(w.get("enrolled", False))}
@@ -1635,6 +1673,7 @@ def main():
                               "--period-time=" + E("WAKE_ALSA_PERIOD_US", "100000")],
                              stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
         last_hit, last_log, peak, rms_sum, n, peaks = 0.0, time.time(), 0.0, 0.0, 0, {}
+        sample_peak, clip_n, sample_n = 0, 0, 0
         tail = np.zeros(len(_K) - 1, np.float32)
         tail24 = np.zeros(len(_K24) - 1, np.float32)
         sess = None
@@ -1691,6 +1730,10 @@ def main():
             r = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
             rms_sum += r; n += 1
             LIVE["dbfs"], LIVE["at"] = round(float(20 * np.log10(max(r, 1) / 32768)), 1), time.time()  # admin mic meter
+            sp, cn, sn = pcm_extremes(pcm)
+            sample_peak = max(sample_peak, sp)
+            clip_n += cn
+            sample_n += sn
             peak = max(peak, s)
             for k, v in sc.items():
                 peaks[k] = max(peaks.get(k, 0.0), v)
@@ -1712,10 +1755,10 @@ def main():
                     sess = Session(play, persona=slug)
             if now - last_log >= LEVEL_EVERY:
                 avg = rms_sum / max(1, n)
-                dbfs = 20 * np.log10(max(avg, 1) / 32768)
-                top = " ".join(f"{k}={v:.3f}" for k, v in sorted(peaks.items(), key=lambda kv: -kv[1]) if v >= 0.05)
-                print(f"level rms={avg:.0f} ({dbfs:.1f} dBFS) peak_score={peak:.3f} frames={n}{' peaks ' + top if top else ''}", flush=True)
+                ratio = (clip_n / sample_n) if sample_n else 0.0
+                print(format_level_line(avg, peak, n, peaks, sample_peak, ratio), flush=True)
                 last_log, peak, rms_sum, n, peaks = now, 0.0, 0.0, 0, {}
+                sample_peak, clip_n, sample_n = 0, 0, 0
         p.kill()
         LIVE["capture"] = None
         print("capture ended; restarting", flush=True)

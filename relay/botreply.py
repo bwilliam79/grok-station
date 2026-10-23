@@ -3,7 +3,7 @@
 The relay calls these. Nothing here speaks, logs a body, or stores a bot's private key.
 A reply is SealedBox(station public key) around an Ed25519 attached signature of the reply JSON.
 """
-import base64, json, os, tempfile, time
+import base64, json, os, re, tempfile, time, unicodedata
 
 import handoff
 from nacl.exceptions import CryptoError
@@ -15,6 +15,9 @@ REPLY_BY_S = 60
 SKEW_S = 120  # accept a sealed reply this long after issue (clock skew / replay). The station stops waiting sooner.
 _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
 _REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class"))
+_LIST_KEYS = frozenset(("request_id", "kind", "tier", "action_class", "bots"))
+LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
+LIST_MAX = 24
 
 
 class Reject(Exception):
@@ -289,12 +292,133 @@ def _shape(bot="-"):
     raise Reject(400, "shape", bot)
 
 
+def list_name_clean(raw):
+    """Display name for one list entry, or None.
+
+    Control and format characters in the raw string reject (they are not stripped into a different
+    name). handoff.clean does not truncate-accept: longer than 32 after cleaning is a reject.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in raw):
+        return None
+    # Reject before NFKC. Fullwidth letters would otherwise fold into ASCII and pass LIST_NAME.
+    if any(ord(c) > 127 for c in raw):
+        return None
+    cleaned = handoff.clean(raw, 33)
+    if not cleaned or len(cleaned) > 32 or LIST_NAME.fullmatch(cleaned) is None:
+        return None
+    return cleaned
+
+
+def _pending_open(pending_for, rid, bot, now_ms):
+    """(pending, None) or (None, Reject) for a request that is not this bot's open ask."""
+    try:
+        pending = pending_for(rid) if pending_for is not None else None
+    except Exception:
+        pending = None
+    if not isinstance(pending, dict) or pending.get("request_id") != rid or pending.get("persona") != bot:
+        return None, Reject(403, "request", bot, rid)
+    exp = pending.get("expires_ms")
+    now = time.time() * 1000 if now_ms is None else now_ms
+    if type(exp) is not int:
+        return None, Reject(403, "request", bot, rid)
+    if exp < now:
+        return None, Reject(403, "expired", bot, rid)
+    return pending, None
+
+
+def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
+    """Today's answer schema. Order after the shared prefix: schema, duplicate, pending, lint."""
+    if not isinstance(doc, dict) or set(doc) != _REPLY_KEYS:
+        raise Reject(400, "schema", bot)
+    rid = doc.get("request_id")
+    if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
+        raise Reject(400, "schema", bot)
+    if type(doc.get("tier")) is not int or doc.get("tier") != 0 or doc.get("action_class") != "answer":
+        raise Reject(400, "schema", bot, rid)
+    text = doc.get("text")
+    if not isinstance(text, str):
+        raise Reject(400, "schema", bot, rid)
+    cleaned = handoff.clean(text, handoff.REPLY_MAX + 1)
+    if not cleaned or len(cleaned) > handoff.REPLY_MAX:
+        raise Reject(400, "schema", bot, rid)
+    if isinstance(seen, set) and rid in seen:
+        raise Reject(409, "duplicate", bot, rid)
+    pending, bad = _pending_open(pending_for, rid, bot, now_ms)
+    if bad is not None:
+        raise bad
+    if pending.get("kind") == "bot_list":
+        raise Reject(403, "request", bot, rid)
+    pii = pending.get("pii_mode")
+    if not isinstance(pii, bool):
+        pii = True
+    try:
+        why = handoff.lint_reply(cleaned, hosts, names, pii=pii)
+    except Exception:
+        why = "error"
+    if why:
+        raise Reject(400, "lint", bot, rid)
+    nonce = pending.get("nonce")
+    return {"request_id": rid, "text": cleaned, "tier": 0, "action_class": "answer", "bot": bot,
+            "nonce": nonce if isinstance(nonce, str) else ""}
+
+
+def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
+    """List schema. Order: exact keys, names, lint, duplicate, pending kind, list source."""
+    if not isinstance(doc, dict) or set(doc) != _LIST_KEYS:
+        raise Reject(400, "schema", bot)
+    rid = doc.get("request_id")
+    if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
+        raise Reject(400, "schema", bot)
+    if (doc.get("kind") != "bot_list" or type(doc.get("tier")) is not int or doc.get("tier") != 0
+            or doc.get("action_class") != "bot_list"):
+        raise Reject(400, "schema", bot, rid)
+    bots = doc.get("bots")
+    if not isinstance(bots, list) or len(bots) > LIST_MAX:
+        raise Reject(400, "schema", bot, rid)
+    names_out, folded = [], set()
+    for ent in bots:
+        if not isinstance(ent, dict) or set(ent) != {"name"}:
+            raise Reject(400, "schema", bot, rid)
+        cleaned = list_name_clean(ent.get("name"))
+        if cleaned is None:
+            raise Reject(400, "schema", bot, rid)
+        key = cleaned.casefold()
+        if key in folded:
+            raise Reject(400, "schema", bot, rid)
+        folded.add(key)
+        names_out.append(cleaned)
+    for cleaned in names_out:
+        try:
+            why = handoff.lint_reply(cleaned, hosts, names, pii=True)
+        except Exception:
+            why = "error"
+        if why:
+            raise Reject(400, "lint", bot, rid)
+    if isinstance(seen, set) and rid in seen:
+        raise Reject(409, "duplicate", bot, rid)
+    pending, bad = _pending_open(pending_for, rid, bot, now_ms)
+    if bad is not None:
+        raise bad
+    if pending.get("kind") != "bot_list":
+        raise Reject(403, "request", bot, rid)
+    src = source() if callable(source) else source
+    if not isinstance(src, str) or src != bot:
+        raise Reject(403, "source", bot, rid)
+    nonce = pending.get("nonce")
+    return {"request_id": rid, "kind": "bot_list", "tier": 0, "action_class": "bot_list", "bot": bot,
+            "nonce": nonce if isinstance(nonce, str) else "", "names": names_out}
+
+
 def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
-           rate_now=None):
+           rate_now=None, source=None):
     """Check one POST body. Returns the reply to hand to the waiter, or raises Reject.
 
-    Order: size and outer shape, kill switch, unknown bot, revoked key, rate limit, unseal,
-    signature (before the message is parsed), schema, duplicate, one open pending request, lint.
+    Shared prefix: size and outer shape, kill switch, unknown bot, revoked key, rate limit, unseal,
+    signature (before the message is parsed), JSON. Dispatch is on the signed kind field only.
+    Answers have no kind and keep today's order (schema, duplicate, pending, lint). A list uses
+    schema, names, lint, duplicate, pending, then the list source.
     seen and the pending file are not changed here. The limiter is charged only when a paired key
     would be unsealed. pending_for(rid) is called only after the signed message parses.
     """
@@ -342,42 +466,9 @@ def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(
         doc = json.loads(message)
     except ValueError:
         raise Reject(400, "schema", bot)
-    if not isinstance(doc, dict) or set(doc) != _REPLY_KEYS:
-        raise Reject(400, "schema", bot)
-    rid = doc.get("request_id")
-    if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
-        raise Reject(400, "schema", bot)
-    if type(doc.get("tier")) is not int or doc.get("tier") != 0 or doc.get("action_class") != "answer":
-        raise Reject(400, "schema", bot, rid)
-    text = doc.get("text")
-    if not isinstance(text, str):
-        raise Reject(400, "schema", bot, rid)
-    cleaned = handoff.clean(text, handoff.REPLY_MAX + 1)
-    if not cleaned or len(cleaned) > handoff.REPLY_MAX:
-        raise Reject(400, "schema", bot, rid)
-    if isinstance(seen, set) and rid in seen:
-        raise Reject(409, "duplicate", bot, rid)
-    try:
-        pending = pending_for(rid) if pending_for is not None else None
-    except Exception:
-        pending = None
-    if not isinstance(pending, dict) or pending.get("request_id") != rid or pending.get("persona") != bot:
-        raise Reject(403, "request", bot, rid)
-    exp = pending.get("expires_ms")
-    now = time.time() * 1000 if now_ms is None else now_ms
-    if type(exp) is not int:
-        raise Reject(403, "request", bot, rid)
-    if exp < now:
-        raise Reject(403, "expired", bot, rid)
-    pii = pending.get("pii_mode")
-    if not isinstance(pii, bool):
-        pii = True
-    try:
-        why = handoff.lint_reply(cleaned, hosts, names, pii=pii)
-    except Exception:
-        why = "error"
-    if why:
-        raise Reject(400, "lint", bot, rid)
-    nonce = pending.get("nonce")
-    return {"request_id": rid, "text": cleaned, "tier": 0, "action_class": "answer", "bot": bot,
-            "nonce": nonce if isinstance(nonce, str) else ""}
+    if isinstance(doc, dict) and "kind" in doc:
+        if doc.get("kind") != "bot_list":
+            rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
+            raise Reject(400, "schema", bot, rid)
+        return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source)
+    return _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms)

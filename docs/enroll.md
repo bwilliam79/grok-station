@@ -1,6 +1,6 @@
 # Enroll mode: real-voice wake-word training
 
-Goal: record 20-30 real clips of a wake phrase per person on the station, train on the training host with those
+Goal: record 20-30 real clips of a wake phrase on the station, train on the training host with those
 clips mixed into the synthetic set, gate on the same bar (recall >= 0.80, <= 1.0 false wakes per hour), and have
 the station load the new model and its threshold/patience automatically. Never started by voice.
 
@@ -29,7 +29,11 @@ the station load the new model and its threshold/patience automatically. Never s
 
 On the station screen, a wake word with no persona shows the Echo mark on a surface-2 circle (not a portrait file). The boot splash is the same Echo brand; `tools/install-splash.sh` installs it.
 
-Privacy: clips stay on the LAN (Pi local copy + training host inbox). No speaker names: sessions are timestamps.
+Privacy: clips stay on the LAN (Pi local copy + training host inbox). There is no speaker id. Sessions are
+timestamps, and a top-up merges earlier clips of the same phrase. The admin enroll request does not take a
+speaker. An older client that still sends `speaker` is ignored, not rejected. `/api/speakers` is gone. An existing
+`speakers.json` is left on disk and is never read or written. A stored model note may still contain old `speaker`,
+`speakers`, or `guest` fields; those are ignored when the note is loaded.
 Tokens stay in the existing secret files (`/etc/grok-station/env`, `/etc/grok-station/wake.env`, relay secrets).
 Phrases accepted: `^hey_[a-z]{2,16}$` and listed in `wakewords.json` (`words` or `enroll`). The station recorder
 also accepts `hey_<bot id>` (a letter first, then letters, digits, or hyphens). The relay upload may still only

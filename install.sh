@@ -172,12 +172,13 @@ for f in relay.py handoff.py tools.py t1.py botreply.py; do run install -m644 re
 st_wake() {
   run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
   sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
-  run $O/wake/venv/bin/pip install --quiet --no-deps openwakeword
-  # Lower bounds keep pip off ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name) while backtracking.
-  run $O/wake/venv/bin/pip install --quiet "onnxruntime>=1.20" "numpy>=2.1" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
+  # openwakeword stays --no-deps. These three are exact pins; the rest stay lower bounds so pip
+  # never considers ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name).
+  run $O/wake/venv/bin/pip install --quiet --no-deps "openwakeword==0.6.0"
+  run $O/wake/venv/bin/pip install --quiet "onnxruntime==1.31.0" "numpy==2.5.4" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
     requests "websockets>=17"
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
-  run install -o grok -g grok -m644 wake/grok_wake.py wake/wakewords.json $O/wake/
+  run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/wakewords.json $O/wake/
   run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
 }
 

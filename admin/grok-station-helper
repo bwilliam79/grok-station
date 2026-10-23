@@ -66,6 +66,33 @@ def station_sounds():
     return None
 
 
+def station_gain():
+    """wake/gain.py: device gain defaults. No numpy, so this helper can load it. None if it isn't there."""
+    import importlib.util
+    cached = getattr(station_gain, "_mod", None)
+    if cached:
+        return cached
+    cands = []
+    here = globals().get("__file__")
+    if here:
+        cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "wake", "gain.py"))
+    cands.append("/opt/grok-station/wake/gain.py")
+    for p in cands:
+        if not p or not os.path.isfile(p):
+            continue
+        spec = importlib.util.spec_from_file_location("grok_station_gain", p)
+        if not spec or not spec.loader:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except Exception:
+            continue
+        station_gain._mod = mod
+        return mod
+    return None
+
+
 def out(obj, code=0):
     print(json.dumps(obj))
     sys.exit(code)
@@ -160,6 +187,15 @@ def settings_get(sec):
             for key, default in (("ALARM_SOUND", ""), ("LISTEN_TONE", "none"), ("END_TONE", "none")):
                 if not isinstance(vals.get(key), str):
                     vals[key] = default
+        gmod = station_gain()
+        if gmod is not None:
+            # Effective gains for the saved device (blank device: the listener's EMEET default).
+            # Stored lines stay in values; defaults is what the sliders show. A save that omits
+            # WAKE_GAIN / VOICE_GAIN does not write them (settings_set only writes keys it was sent).
+            device = vals.get("WAKE_DEVICE_NAME") or "EMEET"
+            eff = gmod.effective_gains(device, vals.get("WAKE_GAIN"), vals.get("VOICE_GAIN"))
+            body["defaults"] = {"WAKE_GAIN": eff["WAKE_GAIN"], "VOICE_GAIN": eff["VOICE_GAIN"]}
+            body["gain_by_device"] = gmod.gain_by_device()
     out(body)
 
 
