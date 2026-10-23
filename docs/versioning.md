@@ -103,3 +103,8 @@ Patch release. Installs over 0.8.2.
 
 - **Plainer Add bot key step.** "Where the bot's key lives": Bot computer (default) or Home computer (replies come back faster), with one note that a computer on your home network must run the Grok Bot app and stay on and reachable 24/7. No commands or technical wording.
 - **Shorter setup prompt.** The human-facing background paragraph is gone from both routines and the home setup line; the bot is also asked to reply with its public key. Operative instructions unchanged.
+
+## 0.8.12
+
+Patch: the Updates page has a "View update log" button that shows the last 200 lines of the latest update attempt (admin sign-in only, passwords and keys hidden). A failed update now says why. When main on GitHub was rewritten, the updater moves to the official `origin/main` (only when `origin` is the grok-station GitHub repo) instead of failing; untracked files and the settings in `/etc/grok-station` and `/var/lib/grok-station` are kept. Stations on 0.8.10 or older need the one-time recovery in [update-recovery.md](update-recovery.md). pii-guard's push check now scans every commit not on a remote when the remote's old commit isn't known locally.
+

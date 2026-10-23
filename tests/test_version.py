@@ -75,7 +75,7 @@ class Semver(unittest.TestCase):
     def test_updater_refuses_before_pull(self):
         boot = open(os.path.join(ROOT, "bootstrap.sh"), encoding="utf-8").read()
         upd = open(os.path.join(ROOT, "tools", "grok-station-update"), encoding="utf-8").read()
-        self.assertLess(boot.index("semver_order"), boot.index("pull --quiet --ff-only"))
+        self.assertLess(boot.index("semver_order"), boot.index("merge --quiet --ff-only"))
         self.assertIn("Refusing to install", boot)
         self.assertIn("Already up to date.", boot)
         self.assertIn("Refusing to install", upd)

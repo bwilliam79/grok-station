@@ -49,7 +49,7 @@ case "$mode" in
     while read -r lref lsha rref rsha; do
       [ -n "$lsha" ] || continue
       [ "$lsha" = "$z" ] && continue
-      if [ "$rsha" = "$z" ]; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi
+      if [ "$rsha" = "$z" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi  # unknown remote sha (rewritten history): scan everything not on a remote
       for c in $(git rev-list $range); do
         git show -s --format='%an %ae %cn %ce%n%B' "$c" | scan "commit ${c:0:7} message/author" || hits=1
         git show --format= --name-only "$c" | scan "commit ${c:0:7} file names" || hits=1

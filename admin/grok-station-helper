@@ -304,6 +304,33 @@ def _one_line(text):
     return s
 
 
+_REDACT = [
+    (re.compile(r"(?i)\b(bearer|token|key|secret|password|passwd|authorization)\b(\s*[:=]\s*|\s+)\S.*"), r"\1\2[hidden]"),
+    (re.compile(r"(?i)(https?://)[^/\s:@]+:[^/\s@]+@"), r"\1[hidden]@"),
+    (re.compile(r"-----BEGIN[^-]*-----.*?(-----END[^-]*-----|$)", re.S), "[hidden]"),
+    (re.compile(r"\b(xai|gh[pousr]|github_pat|sk)[-_][A-Za-z0-9_\-]{10,}"), "[hidden]"),
+    (re.compile(r"\b[A-Za-z0-9+/_\-]{32,}={0,2}"), "[hidden]"),
+]
+LOG_LINES = 200
+
+
+def redact(line):
+    for rx, rep in _REDACT:
+        line = rx.sub(rep, line)
+    return line
+
+
+def update_log():
+    """The last LOG_LINES lines of the install log (the latest update attempt), secrets hidden. Read-only."""
+    try:
+        st = os.stat(INSTALL_LOG)
+        with open(INSTALL_LOG, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()[-LOG_LINES:]
+    except OSError:
+        out({"lines": [], "at": None})
+    out({"lines": [redact(ln.rstrip())[:400] for ln in lines], "at": int(st.st_mtime)})
+
+
 def update_remote():
     """Fetch origin/main in the clone install.sh recorded, and report its VERSION plus full commit id.
 
@@ -597,6 +624,8 @@ def main():
         update_start()
     if cmd == "update-status" and len(a) == 1:
         update_status()
+    if cmd == "update-log" and len(a) == 1:
+        update_log()
     if cmd == "net-status":
         net_status()
     if cmd == "wifi-scan":

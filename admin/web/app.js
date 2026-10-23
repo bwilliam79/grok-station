@@ -463,7 +463,9 @@ async function paintUpdates(el) {
       <div class="field inline updbtns">${spinning
         ? `<span class="spin" role="status" aria-label="Updating"></span>`
         : (d.update_available ? `<button type="button" class="btn p" id="upd">Update</button>` : "")}
-        <button type="button" class="btn" id="checknow"${spinning ? " disabled" : ""}>Check now</button></div>
+        <button type="button" class="btn" id="checknow"${spinning ? " disabled" : ""}>Check now</button>
+        <button type="button" class="btn" id="viewlog" aria-expanded="${el._logOpen ? "true" : "false"}">${el._logOpen ? "Hide update log" : "View update log"}</button></div>
+      <div id="updlog"${el._logOpen ? "" : " hidden"}></div>
       <div id="ue"></div>
       <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
         <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div>
@@ -479,7 +481,7 @@ async function paintUpdates(el) {
   const gen = el._paintGen;
   if (spinning) setTimeout(() => { if (document.body.contains(el) && el._paintGen === gen) paintUpdates(el); }, 2000);
   // Check and apply do not ask for the password again. The signed-in session is enough.
-  // The installer log stays on the station. This page shows a spinner, then one line on failure.
+  // A spinner, then one line on failure. The log (secrets hidden) only shows behind View update log.
   const run = async (btn, label, busy, path, okMsg) => {
     if (btn && btn.isConnected) busyBtn(btn, true, busy);
     const res = await api("POST", path, {});
@@ -499,6 +501,28 @@ async function paintUpdates(el) {
     if (!document.body.contains(el)) return;
     return run(null, "Update", "Starting…", "/api/updates/apply", "");
   };
+  const showLog = async () => {
+    const box = $("#updlog", el);
+    if (!box) return;
+    box.innerHTML = skel(2);
+    const res = await api("GET", "/api/updates/log");
+    if (!document.body.contains(box)) return;
+    const d2 = res.data || {};
+    const lines = Array.isArray(d2.lines) ? d2.lines : [];
+    if (!res.ok || d2.error) { box.innerHTML = `<p class="err" role="alert">${esc(d2.error || "Couldn't read the update log.")}</p>`; return; }
+    box.innerHTML = lines.length
+      ? `<p class="note">Latest update attempt${d2.at ? `, ${esc(localTime(d2.at))}` : ""}. Passwords and keys are hidden.</p><pre class="updlog" tabindex="0">${esc(lines.join("\n"))}</pre>`
+      : `<p class="note">No update has run yet.</p>`;
+  };
+  const vl = $("#viewlog", el);
+  if (vl) vl.onclick = () => {
+    el._logOpen = !el._logOpen;
+    vl.setAttribute("aria-expanded", el._logOpen ? "true" : "false");
+    vl.textContent = el._logOpen ? "Hide update log" : "View update log";
+    $("#updlog", el).hidden = !el._logOpen;
+    if (el._logOpen) showLog();
+  };
+  if (el._logOpen) showLog();
   const check = $("#checknow", el);
   if (check) check.onclick = () => run(check, "Check now", "Checking…", "/api/updates/check", "");
   $("#auto", el).onclick = () => {

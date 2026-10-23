@@ -141,6 +141,24 @@ class GuardTests(unittest.TestCase):
         finally:
             os.unlink(f.name)
 
+    def test_push_with_unknown_remote_sha_scans_all_new_commits(self):
+        # After a history rewrite the remote's old sha isn't in this clone. That must not skip the scan.
+        with tempfile.TemporaryDirectory() as d:
+            git = lambda *a: subprocess.run(["git", "-C", d, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null", *a],
+                                            check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            open(os.path.join(d, "a.txt"), "w").write("hello\n")
+            git("add", "a.txt")
+            git("commit", "-q", "-m", "route via 10.9.9.9")
+            head = git("rev-parse", "HEAD")
+            pat = os.path.join(d, ".git", "pat")
+            with open(pat, "w") as f:
+                f.write("zzqqxx-never-matches\n")
+            r = subprocess.run(["bash", os.path.join(ROOT, "tools", "pii-guard"), "push"], cwd=d,
+                               input=f"refs/heads/main {head} refs/heads/main {'1' * 40}\n",
+                               env=env(PII_GUARD_PATTERNS=pat), capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
     def test_hooks_installed(self):
         src = open(os.path.join(ROOT, "tools", "install-pii-hooks")).read()
         for hook in ("pre-commit", "commit-msg", "pre-push"):

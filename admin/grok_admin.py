@@ -2007,6 +2007,14 @@ def _short_error(text):
     return s
 
 
+def update_log():
+    """Latest update attempt's log, through the root helper (which hides secrets). Admin session only."""
+    ok, out = helper("update-log", timeout=10)
+    if not ok or not isinstance(out, dict) or not isinstance(out.get("lines"), list):
+        return {"lines": [], "at": None, "error": "Couldn't read the update log."}
+    return {"lines": [str(x)[:400] for x in out["lines"][-200:]], "at": out.get("at") if isinstance(out.get("at"), int) else None}
+
+
 def update_job(installed=None):
     """State of the update unit. A failure is one line; the log stays in the journal.
 
@@ -2030,7 +2038,9 @@ def update_job(installed=None):
             return {"state": "failed"}
     job = {"state": state}
     if state == "failed":
-        job["error"] = "The update didn't finish. Details are in the station's logs."
+        line = _short_error(out.get("error")) if out.get("error") else ""
+        job["error"] = ("The update didn't finish: " + line) if line and line != "The update failed." \
+            else "The update didn't finish. Use View update log to see why."
     return job
 
 
@@ -3298,6 +3308,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- updates
     def api_get_updates(self, p, q, j):
+        if p == "/api/updates/log":
+            return self.send(200, update_log())
         if p != "/api/updates":
             return self.send(404, {"error": "not found"})
         return self.send(200, updates_view())

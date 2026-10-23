@@ -89,7 +89,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn('class="spin"', up)
         self.assertIn("Reconnecting…", up)
         self.assertNotIn("job.log", up)
-        self.assertNotIn("<pre", up)
+        self.assertNotIn("<pre", up.split("const showLog")[0])  # the log only appears behind View update log (0.8.12)
         self.assertIn(".banner.up", self.css)
         self.assertIn(".uptodate", self.css)
         self.assertIn(".ver-new", self.css)

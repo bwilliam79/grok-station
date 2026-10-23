@@ -89,8 +89,20 @@ main() {
       printf '%s\n' "$msg" >> "$LOG" 2>/dev/null || true
       die "$msg"
     fi
-    { g pull --quiet --ff-only origin "$BRANCH"; } < /dev/null >> "$LOG" 2>&1 \
-      || { tail -n 20 "$LOG" >&2; die "Couldn't update $DIR (local changes? log: $LOG)"; }
+    # Fast-forward when possible. When main on GitHub was rewritten (not a fast-forward), move to the official
+    # origin/main only: origin must be the grok-station GitHub repo. reset --hard keeps untracked files, and the
+    # station's settings live outside the clone (/etc/grok-station, /var/lib/grok-station).
+    if ! { g merge --quiet --ff-only "origin/$BRANCH"; } < /dev/null >> "$LOG" 2>&1; then
+      url=$(g remote get-url origin 2>/dev/null || true)
+      case "$url" in
+        "$REPO_URL"|"$REPO_URL.git"|git@github.com:bwilliam79/grok-station.git|ssh://git@github.com/bwilliam79/grok-station.git) ;;
+        *) msg="Couldn't update: this copy doesn't download from the official grok-station GitHub page."
+           printf '%s\n' "$msg" >> "$LOG"; die "$msg" ;;
+      esac
+      printf '%s\n' "The main branch on GitHub was rewritten. Moving to the official version." >> "$LOG"
+      { g reset --quiet --hard "origin/$BRANCH"; } < /dev/null >> "$LOG" 2>&1 \
+        || { msg="Couldn't update: moving to the new version failed."; printf '%s\n' "$msg" >> "$LOG"; die "$msg"; }
+    fi
   else
     echo "  ... Downloading grok-station (into $DIR)"
     mkdir -p "$(dirname "$DIR")"
