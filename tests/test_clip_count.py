@@ -81,6 +81,14 @@ class ClipCount(unittest.TestCase):
         self.assertEqual(ga.clip_count("hey_kai"), 20)
         self.assertEqual(len(gw.phrase_clips("hey_kai")[0]), 20)
 
+    def test_topup_session_of_five_counts(self):
+        _session(self.tmp, "hey_finn", "20261023-080000", n=10, mark=1)
+        _session(self.tmp, "hey_finn", "20261023-090000", n=6, mark=2, marker_doc={"phrase": "hey_finn", "count": 6, "prior": "20261023-080000"})
+        _session(self.tmp, "hey_finn", "20261023-100000", n=6, mark=3)  # first session with only 6: not kept
+        got = gw.finished_sessions("hey_finn")
+        self.assertEqual([len(n) for _d, n, _z in got], [10, 6])
+        self.assertEqual(ga.clip_count("hey_finn"), 16)
+
     def test_outside_the_inbox_counts_as_nothing(self):
         other = tempfile.mkdtemp(prefix="gs-clips-out-")
         try:

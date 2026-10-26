@@ -121,6 +121,8 @@ class ListenerWiring(unittest.TestCase):
         gw.DROP_DIR = os.path.join(self.d, "drop"); os.makedirs(gw.DROP_DIR)
         gw.FEWSHOT_NEG = os.path.join(self.d, "none.npz")
         ses = os.path.join(gw.ENROLL_DIR, "hey_finn", "20261023-080000"); os.makedirs(ses)
+        with open(os.path.join(ses, "session.json"), "w") as f:
+            json.dump({"phrase": "hey_finn", "persona": "finn", "count": 10}, f)
         import wave
         for i in range(10):
             with wave.open(os.path.join(ses, f"{i:02d}.wav"), "wb") as w:

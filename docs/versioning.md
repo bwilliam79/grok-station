@@ -222,3 +222,17 @@ Patch release. Installs over 0.11.1.
 - **Night clock hours and the dim window are different. They were not merged.** Night clock from/until is `GROK_STATION_NIGHT` (whole hours, such as `22-6`). `night_face` in `app/grok_station.py` uses those hours only when Brightness is Off. Dim the screen from/until is `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO` (minute times, such as `22:00`). `select_level` in `app/dimming.py` uses them to lower the backlight in Schedule mode. `in_dim_period` in `app/dimming.py` uses that window for the night clock only while a dim mode is on. Sunrise follows sunset, and a light sensor follows the reading. Neither of those uses the night-clock hours.
 - **Time and location.** Once a town or ZIP is saved, it shows as text with Change location. Change location opens the field again, and Cancel puts the saved place back. Until a place is set, the field is unchanged.
 
+
+## 0.11.3
+
+Patch release. Installs over 0.11.2. The pinned download files are unchanged.
+
+- **Train more.** The not-good-enough screen switches to recording as soon as Train more is pressed.
+- **Recording dialog.** The running status log is gone. Each recording keeps its good or bad check mark.
+- **Pass line.** "It needs N" is ceil(0.8 x test clips), matching the 80% recall pass mark: "Hey Rhea woke on 19 of 30 test clips. It needs 24. Ten more recordings should help." Without numbers it says the word isn't good enough yet. The calibration gate itself is unchanged.
+- **Training dialog.** Only the header Close is left.
+- **Recording count.** A session counts when it has `session.json` and at least 10 clips (5 for a Train more session). Empty, unfinished, and byte-identical duplicate sessions are skipped, for training and for the count shown.
+- **Display.** Two columns on a desktop window: settings left, the two same-size previews right and sticky. Phones stay one column.
+- **Time and location.** A saved place is accent-colored with a pin.
+- **Hey Grok.** The built-in row uses the station logo.
+- Not in this release: wake-word delete cleanup (0.11.4), bot pictures sent by the bot (needs review), Configure redesign and the calibration gate (waiting for approval).

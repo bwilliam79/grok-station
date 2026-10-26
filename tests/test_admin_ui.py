@@ -879,11 +879,10 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertEqual(_read("VERSION").strip(), "0.11.2")
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
-        section = notes.split("## 0.11.2", 1)[1]
-        self.assertNotIn("\n## ", section)
+        section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
         for text in ("night_face", "app/grok_station.py", "select_level", "in_dim_period", "app/dimming.py",
                      "were not merged", "GROK_STATION_NIGHT", "GROK_STATION_DIM_FROM", "GROK_STATION_DIM_TO",
                      "No other bots yet. Hey Grok always works."):
@@ -997,3 +996,13 @@ class Release0113UI(unittest.TestCase):
         self.assertIn('avatar("grok", "Grok")', bots)
         self.assertIn(".avwrap.logo", self.css)
         self.assertIn("assets/mark.svg", self.css)
+
+
+class Release0113Docs(unittest.TestCase):
+    def test_version_and_notes(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+        self.assertEqual(open(os.path.join(root, "VERSION")).read().strip(), "0.11.3")
+        notes = open(os.path.join(root, "docs", "versioning.md")).read()
+        self.assertIn("## 0.11.3", notes)
+        self.assertIn("It needs 24", notes)
+        self.assertIn("**0.11.3**", open(os.path.join(root, "docs", "operations.md")).read())

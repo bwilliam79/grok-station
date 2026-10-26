@@ -10,10 +10,6 @@ from nacl.public import PrivateKey, SealedBox
 from nacl.signing import VerifyKey
 
 OUTER_MAX = 8192
-AVATAR_OUTER_MAX = 4 << 20  # sealed picture; a 2 MB image is about 3.7 MB once sealed
-AVATAR_IMAGE_MAX = 2 << 20
-_AVATAR_TYPES = frozenset(("image/png", "image/jpeg", "image/jpg", "image/webp"))
-_AVATAR_KEYS = frozenset(("kind", "nonce", "exp_ms", "content_type", "image_b64"))
 REPLY_BY_S = 60
 SKEW_S = 120  # accept a sealed reply this long after issue (clock skew / replay). The station stops waiting sooner.
 _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
@@ -427,20 +423,14 @@ def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
             "nonce": nonce if isinstance(nonce, str) else "", "names": names_out}
 
 
-def open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=None, *, limit=None, rate=True):
+def open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=None):
     """Open one sealed POST body. Returns (bot, message bytes) or raises Reject.
 
     Order: size and outer shape, kill switch, unknown bot, revoked key, rate limit, unseal,
     signature (before the message is parsed). The limiter is charged only when a paired key
     would be unsealed. The caller decides what the signed bytes mean.
-
-    limit raises the outer size cap (a picture is larger than a reply). rate=False skips the
-    reply limiter when the caller has its own cap. Neither is taken positionally.
     """
-    cap = OUTER_MAX if limit is None else limit
-    if type(cap) is not int or cap < 1 or cap > AVATAR_OUTER_MAX:
-        cap = OUTER_MAX
-    if not isinstance(raw, (bytes, bytearray)) or len(raw) > cap:
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > OUTER_MAX:
         _shape()
     try:
         outer = json.loads(raw)
@@ -468,7 +458,7 @@ def open_signed(raw, station_sk, keys_doc, known, limiter, rate_now=None, *, lim
     vk_raw = pinned_bytes(keys_doc, bot)
     if vk_raw is None:
         raise Reject(403, "revoked", bot)
-    if rate and (limiter is None or not limiter.allow(bot, now=rate_now)):
+    if limiter is None or not limiter.allow(bot, now=rate_now):
         raise Reject(429, "rate", bot)
     try:
         signed = SealedBox(station_sk).decrypt(blob)
@@ -617,41 +607,3 @@ def ingest_show(raw, station_sk, keys_doc, known, limiter, parse_show, rate_now=
     out = dict(show)
     out["bot"] = bot
     return out
-
-
-def ingest_avatar(raw, station_sk, keys_doc, known, seen=None, now_ms=None):
-    """Open a sealed profile picture. Returns bot, nonce, exp_ms, content_type, and image bytes.
-
-    The signed document is kind "avatar" plus nonce, exp_ms, content_type, and image_b64.
-    A bot field inside is rejected. The reply limiter is not charged. seen is not updated here.
-    """
-    bot, message = open_signed(raw, station_sk, keys_doc, known, None, limit=AVATAR_OUTER_MAX, rate=False)
-    try:
-        doc = json.loads(message)
-    except ValueError:
-        raise Reject(400, "schema", bot)
-    if not isinstance(doc, dict) or set(doc) != _AVATAR_KEYS or doc.get("kind") != "avatar":
-        raise Reject(400, "schema", bot)
-    nonce, exp = doc.get("nonce"), doc.get("exp_ms")
-    if not nonce_ok(nonce) or type(exp) is not int:
-        raise Reject(400, "schema", bot)
-    now = int(time.time() * 1000) if now_ms is None else now_ms
-    if type(now) is not int or exp < now or exp > now + SKEW_S * 1000:
-        raise Reject(403, "expired", bot)
-    if _seen_hit(seen, bot, nonce, now):
-        raise Reject(409, "duplicate", bot)
-    ctype = doc.get("content_type")
-    if not isinstance(ctype, str) or ctype not in _AVATAR_TYPES:
-        raise Reject(415, "type", bot)
-    b64 = doc.get("image_b64")
-    if not isinstance(b64, str) or not b64:
-        raise Reject(415, "type", bot)
-    try:
-        image = base64.b64decode(b64, validate=True)
-    except Exception:
-        raise Reject(415, "type", bot)
-    if not image:
-        raise Reject(415, "type", bot)
-    if len(image) > AVATAR_IMAGE_MAX:
-        raise Reject(413, "size", bot)
-    return {"bot": bot, "nonce": nonce, "exp_ms": exp, "content_type": ctype, "image": image}

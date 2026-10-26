@@ -795,7 +795,7 @@ def finished_clip_files(phrase_dir):
             names = sorted(fn for fn in os.listdir(real) if _CLIP_WAV.fullmatch(fn))
         except OSError:
             continue
-        if len(names) < _FULL_SESSION:
+        if len(names) < (5 if doc.get("prior") else _FULL_SESSION):  # Train more keeps 5+
             continue
         fp = _session_fingerprint(real, names)
         if fp is None or fp in seen:
@@ -2654,19 +2654,18 @@ class Handler(BaseHTTPRequestHandler):
         self.route("PATCH")
 
     def voice_ingress(self, method, p):
-        """POST /voice/reply, POST /voice/show, and POST /voice/avatar on this HTTPS port.
+        """POST /voice/reply and POST /voice/show on this HTTPS port, forwarded to the loopback relay.
 
-        Each is forwarded to the loopback relay. LAN only. No admin session. The body is a sealed box.
-        There is no reply token. The question rides on the webhook, so this port has no request route.
-        A picture may be larger than a reply. This port must never be port-forwarded.
+        LAN only. No admin session. The body is a sealed box. There is no reply token. The question rides
+        on the webhook, so this port has no request route. This port must never be port-forwarded.
         """
         if not lan_ok(self.client_address[0]):
             return self.send(403, {"error": "LAN only"})
-        caps = {"/voice/reply": 8192, "/voice/show": 8192, "/voice/avatar": 4 << 20}
-        if method != "POST" or p not in caps:
+        ok = method == "POST" and p == "/voice/reply" or method == "POST" and p == "/voice/show"
+        if not ok:
             return self.send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
-        if n > caps[p]:
+        if n > 8192:
             return self.send(413, {"error": "too large"})
         data = self.rfile.read(n) if n else b""
         headers = {"Accept": "application/json", "Content-Type": "application/json"}

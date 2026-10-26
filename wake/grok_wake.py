@@ -1016,7 +1016,7 @@ def finished_sessions(phrase):
     """Full, unique sessions for one phrase: (directory, clip names, noise path or None).
 
     A finished session is a YYYYMMDD-HHMMSS directory with a session.json object and at
-    least ENROLL_COUNT clip files (NN.wav). Empty directories, partial sessions, and
+    least ENROLL_COUNT clip files (NN.wav), or 5 for a Train more session (prior set), as enroll() keeps. Empty directories, partial sessions, and
     directories with no completion marker are skipped. Two sessions with the same clip
     bytes count once; the earlier directory is kept. Room noise is only from those.
     """
@@ -1036,7 +1036,8 @@ def finished_sessions(phrase):
         if not isinstance(doc, dict):
             continue
         names = _session_clip_names(d)
-        if len(names) < ENROLL_COUNT:
+        # enroll() keeps a first session at 10 saved clips and a Train more session at 5 (prior set)
+        if len(names) < (5 if doc.get("prior") else ENROLL_COUNT):
             continue
         fp = _session_fingerprint(d, names)
         if fp is None or fp in seen:

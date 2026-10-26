@@ -25,6 +25,7 @@ upload.
   This adds no audio processing (`wake/fewshot.py`).
 - **Templates.** Each recording becomes a template: the frames that cover the spoken phrase, up to 1.44 s.
   At most 20 recordings per word are kept, the ones most like the others.
+  Only finished sessions count: a session with its `session.json` and 10 clips (5 for Train more). Empty, unfinished and duplicate sessions are skipped, so the "N recordings" shown matches what you recorded.
 - **Matching.** Each new frame is compared with every template using streaming dynamic time warping with cosine
   distance, so a slower or faster delivery still lines up. The word's score is the mean of its best two template
   scores. It has to stay over the word's threshold for 2 frames in a row (patience). The listener's normal cooldown
