@@ -2441,7 +2441,8 @@ def _last4(token):
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
-                  "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask"}
+                  "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
+                  "update-reply", "update-bad"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
 _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too large",
                415: "unsupported media type", 422: "lint", 429: "too many"}
@@ -3208,6 +3209,7 @@ async def admin_bots_get(req):
                           "re-run the installer to create it")
     bots = []
     helpers = helper_versions()
+    updates = bot_updates()
     for slug in sorted(roster):
         p = roster[slug]
         ent = hooks.get(slug)
@@ -3221,6 +3223,8 @@ async def admin_bots_get(req):
                      "key_mode": "home" if modes.get(slug) == "home" else "cloud",
                      "reply_host": ov_now["reply_host"].get(slug),
                      "helper_version": helpers.get(slug),
+                     "update": updates.get(slug),
+                     "update_refused_at": _update_bad.get(slug),
                      "stats": stats.bot_view(slug)})
     if not VOICES:
         kick_voice_fetch()
@@ -3674,6 +3678,96 @@ def note_helper(bot, req, signed=None):
         pass
 
 
+UPDATE_ASK = "Update your instructions for this station."
+UPDATES_FILE = E("UPDATES_FILE", os.path.join(STATE_DIR, "bots", "updates.json"))
+UPDATE_STATUS = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) instr=([0-9a-f]{16}) "
+                           r"helper=(-|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) computer=(-|[0-9a-f]{16})$")
+_update_asked = {}
+_update_bad = {}  # slug -> when its last update reply was not a valid status line (shown as refused)
+
+
+def bot_updates():
+    """{slug: {release, instr, helper, computer, at}} from signed update_bot confirmations only."""
+    doc = read_json_file(UPDATES_FILE)
+    out = {}
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            if isinstance(k, str) and isinstance(v, dict) and UPDATE_STATUS.match(
+                    "%s instr=%s helper=%s computer=%s" % (v.get("release"), v.get("instr"), v.get("helper"),
+                                                          v.get("computer"))):
+                out[k] = {x: v[x] for x in ("release", "instr", "helper", "computer")} | {"at": v.get("at")}
+    return out
+
+
+def note_update(bot, text):
+    """Record a signed update_bot status line. Returns False for anything else (the text is not stored)."""
+    m = UPDATE_STATUS.match(text.strip()) if isinstance(text, str) else None
+    if not m:
+        return False
+    doc = bot_updates()
+    doc[bot] = {"release": m.group(1), "instr": m.group(2), "helper": m.group(3), "computer": m.group(4),
+                "at": int(time.time())}
+    try:
+        os.makedirs(os.path.dirname(UPDATES_FILE), exist_ok=True)
+        atomic_write(UPDATES_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+    except OSError:
+        return False
+    return True
+
+
+async def admin_bot_update(req):
+    """Ask one paired bot to update itself to this release. A webhook of kind update_bot.
+
+    The webhook carries only a release and a commit (checked formats), no text, command or link. The bot runs the
+    pinned update script from its own instructions; that script does every check. One ask per bot per
+    HELPER_ASK_GAP_S; a failed send frees the slot. Every send and reply is audited.
+    """
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if body is None or not actor_ok(body.get("actor", "admin")):
+        return web.json_response({"error": "bad request"}, status=400)
+    release, commit = body.get("release"), body.get("commit")
+    if not (isinstance(release, str) and HELPER_V.match(release) and isinstance(commit, str)
+            and re.fullmatch(r"[0-9a-f]{40}", commit)):
+        return web.json_response({"error": "bad request"}, status=400)
+    ent = current_webhooks().get(slug)
+    if not ent:
+        return web.json_response({"error": "not configured"}, status=400)
+    now = time.time()
+    if now - _update_asked.get(slug, 0) < HELPER_ASK_GAP_S:
+        return web.json_response({"error": "too soon"}, status=429)
+    _update_asked[slug] = now
+    rid = handoff.new_request_id()
+    reply_by = datetime.datetime.fromtimestamp(
+        now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + botreply.SKEW_S) * 1000),
+                              question=UPDATE_ASK, reply_by=reply_by, kind="update_bot")
+    except OSError:
+        _update_asked.pop(slug, None)
+        return web.json_response({"error": "unavailable"}, status=500)
+    posted = dict(handoff.payload(rid, slug, UPDATE_ASK, reply_by, kind="update_bot", release=release, commit=commit))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+            async with http.post(ent["url"], json=posted, allow_redirects=False,
+                                 headers={"Authorization": "Bearer " + ent["token"]}) as resp:
+                ok = 200 <= resp.status < 300
+    except Exception:
+        ok = False
+    if not ok:
+        handoff.remove_pending(PENDING_DIR, rid)
+        _update_asked.pop(slug, None)
+        audit(body.get("actor", "admin"), slug, "update-fail", "-")
+        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    audit(body.get("actor", "admin"), slug, "update-ask", "-")
+    return web.json_response({"ok": True}, status=202)
+
+
 async def admin_helper_update(req):
     """Ask one paired home bot to update its station helper. A webhook of kind update_helper.
 
@@ -3887,6 +3981,19 @@ async def voice_reply(req):
     pend = _pending_doc(rid) or {}
     _reply_seen.add(rid)
     handoff.remove_pending(PENDING_DIR, rid)
+    if pend.get("kind") == "update_bot":
+        ok = note_update(bot, reply.get("text"))
+        if ok:
+            m = UPDATE_STATUS.match(reply["text"].strip())
+            if m.group(3) != "-":
+                note_helper(bot, req, m.group(3))  # signed helper version
+        if ok:
+            _update_bad.pop(bot, None)
+        else:
+            _update_bad[bot] = int(time.time())
+        audit("bot", bot, "update-reply" if ok else "update-bad", "-")
+        audit_reply(bot, rid, "ok" if ok else "shape", len(raw))
+        return web.json_response({"ok": True}) if ok else _reply_error(400)
     is_update = pend.get("kind") == "update_helper"
     note_helper(bot, req, reply.get("text") if is_update else None)
     if is_update:
@@ -4097,6 +4204,7 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
     web.post("/admin/bots/{slug}/helper-update", admin_helper_update),
+    web.post("/admin/bots/{slug}/update", admin_bot_update),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
     web.get("/admin/cards", admin_cards_get), web.put("/admin/cards", admin_cards_put),
     web.post("/voice/reply", voice_reply),

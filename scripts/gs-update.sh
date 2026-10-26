@@ -1,0 +1,356 @@
+#!/bin/sh
+# Grok Station bot update (0.11.8). Run by a bot for a webhook of kind update_bot, from the one pinned
+# command in its own instructions. It takes only a release and a commit from the webhook.
+#
+#   sh gs-update.sh --release X.Y.Z --commit <40 hex> --mode home|cloud --persona <slug> \
+#     [--station https://<addr> --pin-sha256 <AB:CD:..> --station-pub <b64>]   (cloud only)
+#
+# Checks, all here in code (the instructions only say to run this):
+#   D  release and commit formats, and every other argument
+#   A  the commit is on the real repo's main branch (GitHub compare API); fails closed
+#   B  no downgrade: the release must be newer than the one this bot last installed
+#   C  every file is checked against the release's sha256 manifest before it is used
+#   F  the new instructions match the fixed allowed-sections template (gs_routine.py below)
+#   G  home: install-home.sh --update keeps the key, host binding and config
+# Stdout: BEGIN INSTRUCTIONS, the instructions, END INSTRUCTIONS, then one status line.
+set -eu
+umask 077
+OWNER_REPO=bwilliam79/grok-station
+RAW="https://raw.githubusercontent.com/$OWNER_REPO"
+API="https://api.github.com/repos/$OWNER_REPO"
+
+die() { printf 'gs-update: %s\n' "$1" >&2; exit 1; }
+
+release="" commit="" mode="" persona="" station="" pin="" pub=""
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || die "usage"
+  case "$1" in
+    --release) release=$2 ;;
+    --commit) commit=$2 ;;
+    --mode) mode=$2 ;;
+    --persona) persona=$2 ;;
+    --station) station=$2 ;;
+    --pin-sha256) pin=$2 ;;
+    --station-pub) pub=$2 ;;
+    *) die "usage" ;;
+  esac
+  shift 2
+done
+
+# D: formats. Python does the exact checks; the shell refuses anything with quoting characters first.
+case "$release$commit$mode$persona$station$pin$pub" in
+  *[\ \'\"\$\`\;\&\|\<\>\(\)\\]*) die "refusing unsafe characters" ;;
+esac
+command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v python3 >/dev/null 2>&1 || die "python3 is required"
+[ -n "${HOME:-}" ] && [ -d "$HOME" ] || die "HOME is not set"
+
+T=$(mktemp -d) || die "no temp folder"
+trap 'rm -rf "$T"' EXIT INT TERM
+CURL_HOME="$T/nocurlrc"; mkdir -m 700 "$CURL_HOME"; export CURL_HOME
+
+cat > "$T/gs_routine.py" <<'GS_ROUTINE_PY'
+"""Render and check a bot's instructions (0.11.8). Stdlib only.
+
+The station uses this module to show and hash the exact text a bot will adopt. scripts/gs-update.sh carries a
+byte-identical copy (a test keeps them equal) and runs it on the bot's computer, so both sides render the same
+bytes from the same pinned template. check() refuses any text that is not the fixed allowed-sections template:
+unknown paragraphs, links outside the allow list, commands outside the allow list, or risky words.
+"""
+import hashlib
+import re
+import sys
+
+REPO = "https://raw.githubusercontent.com/bwilliam79/grok-station/"
+RELEASE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+SHA = re.compile(r"^[0-9a-f]{64}$")
+SLUG = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
+STATION = re.compile(r"^https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$")
+FINGERPRINT = re.compile(r"^(?:[0-9A-F]{2}:){31}[0-9A-F]{2}$")
+PUB = re.compile(r"^[A-Za-z0-9+/]{43}=$")
+HEADER = re.compile(r"^Grok Station instructions, release ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.$")
+
+# Each paragraph (text between blank lines) must start with one of these.
+SECTIONS = (
+    "Grok Station instructions, release ",
+    "Answer as the bot named in the request's persona field",
+    "If kind is bot_list, do not answer a question",
+    "Then run exactly one command, and no others",
+    "Then run exactly two commands (four when you also send a card, below), and no others",
+    "printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona ",
+    "Set REQUEST_ID from the webhook's request_id",
+    "printf '%s' \"$NAMES\" | gs-seal-reply reply --persona ",
+    "The key is already on disk for this persona.",
+    "1. On the cloud computer, seal.",
+    "2. On the home machine, post that line unchanged",
+    "Only the sealed JSON goes to the home machine.",
+    "Display cards (optional).",
+    "Profile picture.",
+    "Station update.",
+)
+# Lines that are commands must match one of these exactly (after the placeholders are filled).
+_SL, _FP, _PUB, _ST = r"[a-z][a-z0-9-]{1,23}", r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}", r"[A-Za-z0-9+/]{43}=", \
+    r"https://[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?"
+COMMANDS = tuple(re.compile(p) for p in (
+    r"^printf '%s' \"\$(ANSWER|NAMES|STATUS)\" \| gs-seal-reply reply --persona " + _SL
+    + r" --request-id \"\$REQUEST_ID\"( --kind bot_list)?$",
+    r"^gs-seal-reply avatar --persona " + _SL + r" < PICTURE_FILE$",
+    r"^printf '%s' \"\$(ANSWER|NAMES|STATUS|CARD_JSON)\" \| grok-station-reply seal(-list|-show)? --bot " + _SL
+    + r" --station-pub '" + _PUB + r"'( --request-id \"\$REQUEST_ID\")?$",
+    r"^grok-station-reply seal-avatar --bot " + _SL + r" --station-pub '" + _PUB + r"' < PICTURE_FILE$",
+    r"^printf '%s' '(SEALED_JSON|SEALED_CARD|SEALED_PICTURE|SEALED_STATUS)' \| python3 ~/bin/grok-station-reply post"
+    r"( --show| --avatar)? --station " + _ST + r" --insecure --pin-sha256 '" + _FP + r"'$",
+    r"^d=\$\(mktemp -d\) && \( cd \"\$d\" && curl --proto '=https' --tlsv1\.2 -fsS -o gs-update\.sh '"
+    + re.escape(REPO) + r"[0-9a-f]{40}/scripts/gs-update\.sh' && \{ command -v sha256sum >/dev/null && "
+    r"s=\$\(sha256sum gs-update\.sh\) \|\| s=\$\(shasum -a 256 gs-update\.sh\); \} && \[ \"\$\{s%% \*\}\" = "
+    r"'[0-9a-f]{64}' \] && sh gs-update\.sh --release \"\$RELEASE\" --commit \"\$COMMIT\" --mode (home|cloud) "
+    r"--persona " + _SL + r"( --station '" + _ST + r"' --pin-sha256 '" + _FP + r"' --station-pub '" + _PUB
+    + r"')? \); r=\$\?; rm -rf \"\$d\"; \[ \"\$r\" = 0 \]$",
+))
+_CMD_START = re.compile(r"^(printf |gs-seal-reply|grok-station-reply|python3|d=\$\(|sh |curl |bash |\./|sudo |/)")
+URLS = (
+    re.compile(r"^https://a\.espncdn\.com/i/teamlogos/<league>/500/<abbr>\.png$"),
+    re.compile(r"^" + re.escape(REPO) + r"[0-9a-f]{40}/scripts/gs-update\.sh$"),
+)
+_URL = re.compile(r"https?://[^\s'\")]+")
+FORBIDDEN = ("sudo", "ssh ", "scp ", "eval ", "chmod", "chown", "crontab", "launchctl", "systemctl", "osascript",
+             "base64 -d", "| sh", "| bash", "bash -c", "sh -c", "python3 -c", "~/.ssh", ".bashrc", ".zshrc",
+             "keychain", "export ", "permission", "always allowed", "ignore previous", "ignore the above")
+
+
+class Bad(Exception):
+    pass
+
+
+def update_command(mode, slug, pin_commit, pin_sha, station="", fingerprint="", pub=""):
+    """The one command a bot runs for kind update_bot. Built from pins and checked values only."""
+    if mode not in ("home", "cloud") or not SLUG.match(slug or "") or slug == "grok":
+        raise Bad("slug")
+    if not COMMIT.match(pin_commit or "") or not SHA.match(pin_sha or ""):
+        raise Bad("pin")
+    tail = ""
+    if mode == "cloud":
+        if not (STATION.match(station or "") and FINGERPRINT.match(fingerprint or "") and PUB.match(pub or "")):
+            raise Bad("station")
+        tail = " --station '%s' --pin-sha256 '%s' --station-pub '%s'" % (station, fingerprint, pub)
+    return ("d=$(mktemp -d) && ( cd \"$d\" && curl --proto '=https' --tlsv1.2 -fsS -o gs-update.sh '"
+            + REPO + pin_commit + "/scripts/gs-update.sh' && { command -v sha256sum >/dev/null && "
+            "s=$(sha256sum gs-update.sh) || s=$(shasum -a 256 gs-update.sh); } && [ \"${s%% *}\" = '"
+            + pin_sha + "' ] && sh gs-update.sh --release \"$RELEASE\" --commit \"$COMMIT\" --mode " + mode
+            + " --persona " + slug + tail + " ); r=$?; rm -rf \"$d\"; [ \"$r\" = 0 ]")
+
+
+def render(template, mode, slug, pin_commit, pin_sha, station="", fingerprint="", pub=""):
+    """Fill one template for one bot. The same inputs give the same bytes on the station and on the bot."""
+    if not isinstance(template, str):
+        raise Bad("template")
+    cmd = update_command(mode, slug, pin_commit, pin_sha, station, fingerprint, pub)
+    text = template.replace("<update command>", cmd).replace("<slug>", slug)
+    if mode == "cloud":
+        text = text.replace("<station public key>", pub).replace("<station address>", station) \
+            .replace("<fingerprint>", fingerprint)
+    check(text, mode)
+    return text
+
+
+def check(text, mode):
+    """Refuse anything but the fixed allowed-sections template. Returns the release in the header."""
+    if not isinstance(text, str) or not text or len(text) > 12000 or "\r" in text or "\x00" in text:
+        raise Bad("shape")
+    if any(ord(c) < 0x20 and c != "\n" for c in text):
+        raise Bad("control")
+    low = text.lower()
+    for word in FORBIDDEN:
+        if word in low:
+            raise Bad("forbidden: " + word.strip())
+    paras = [p for p in text.split("\n\n") if p.strip()]
+    m = HEADER.match(paras[0].split("\n", 1)[0]) if paras else None
+    if not m:
+        raise Bad("header")
+    for p in paras:
+        if not p.startswith(SECTIONS):
+            raise Bad("section")
+    for url in _URL.findall(text):
+        if not any(u.match(url) for u in URLS):
+            if not (mode == "cloud" and STATION.match(url)):
+                raise Bad("link")
+    for line in text.split("\n"):
+        if _CMD_START.match(line) and not any(c.match(line) for c in COMMANDS):
+            raise Bad("command")
+    if text.count("--mode ") != 1 or ("--mode %s " % mode) not in text:
+        raise Bad("mode")
+    if re.search(r"<(slug|update command|station public key|station address|fingerprint)>", text):
+        raise Bad("placeholder")
+    return m.group(1)
+
+
+def instr_hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _main(argv):
+    """python3 -I gs_routine.py render TEMPLATE MODE SLUG PIN_COMMIT PIN_SHA [STATION FINGERPRINT PUB]"""
+    if len(argv) not in (7, 10) or argv[1] != "render":
+        sys.stderr.write("usage\n")
+        return 2
+    try:
+        with open(argv[2], encoding="utf-8") as fh:
+            template = fh.read()
+        text = render(template, *argv[3:])
+    except (Bad, OSError, UnicodeDecodeError, TypeError) as e:
+        sys.stderr.write("refused: %s\n" % e)
+        return 1
+    sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main(sys.argv))
+GS_ROUTINE_PY
+
+py() { python3 -I "$@"; }
+
+py - "$release" "$commit" "$mode" "$persona" "$station" "$pin" "$pub" <<'PY' || die "refusing arguments"
+import re, sys
+r, c, m, s, st, fp, pub = sys.argv[1:]
+ok = (re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", r) and re.fullmatch(r"[0-9a-f]{40}", c)
+      and m in ("home", "cloud") and re.fullmatch(r"[a-z][a-z0-9-]{1,23}", s) and s != "grok")
+if m == "cloud":
+    ok = ok and re.fullmatch(r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?", st) \
+        and re.fullmatch(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}", fp) and re.fullmatch(r"[A-Za-z0-9+/]{43}=", pub)
+else:
+    ok = ok and st == fp == pub == ""
+sys.exit(0 if ok else 1)
+PY
+
+get() {  # get URL FILE: one HTTPS GET, no redirects, 200 only
+  code=$(curl --proto '=https' --tlsv1.2 --max-redirs 0 -sS -o "$2" -w '%{http_code}' "$1") || return 1
+  [ "$code" = 200 ]
+}
+sha_of() {
+  if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum "$1"); else s=$(shasum -a 256 "$1"); fi
+  printf '%s\n' "${s%% *}"
+}
+
+# A: on main, or stop. A rate limit, an outage or any other answer is a refusal.
+get "$API/compare/$commit...main" "$T/compare.json" || die "can't confirm that commit is on main"
+py - "$T/compare.json" "$commit" <<'PY' || die "that commit is not on main"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+base = (doc.get("base_commit") or {}).get("sha")
+sys.exit(0 if doc.get("status") in ("ahead", "identical") and base == sys.argv[2] else 1)
+PY
+
+# C: the manifest for that commit, then each file against it.
+get "$RAW/$commit/scripts/update-manifest.txt" "$T/manifest" || die "no update manifest at that commit"
+py - "$T/manifest" "$release" "$mode" > "$T/plan" <<'PY' || die "bad update manifest"
+import re, sys
+lines = open(sys.argv[1], encoding="ascii").read().split("\n")
+rel, upd, files = None, None, {}
+for ln in lines:
+    if not ln:
+        continue
+    m = re.fullmatch(r"release ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", ln)
+    if m and rel is None:
+        rel = m.group(1); continue
+    m = re.fullmatch(r"update ([0-9a-f]{40}) ([0-9a-f]{64})", ln)
+    if m and upd is None:
+        upd = m.groups(); continue
+    m = re.fullmatch(r"file ([0-9a-f]{64}) (admin/routine-(?:home|cloud)\.txt|scripts/install-home\.sh|tools/grok-station-reply)", ln)
+    if m and m.group(2) not in files:
+        files[m.group(2)] = m.group(1); continue
+    sys.exit(1)
+need = ["admin/routine-%s.txt" % sys.argv[3], "scripts/install-home.sh" if sys.argv[3] == "home" else "tools/grok-station-reply"]
+if rel != sys.argv[2] or not upd or any(n not in files for n in need):
+    sys.exit(1)
+print(upd[0], upd[1])
+for n in need:
+    print(files[n], n)
+PY
+read -r upd_commit upd_sha < "$T/plan"
+sed -n '2,$p' "$T/plan" | while read -r want path; do
+  base=${path##*/}
+  get "$RAW/$commit/$path" "$T/$base" || die "download failed: $base"
+  [ "$(sha_of "$T/$base")" = "$want" ] || die "checksum mismatch: $base"
+done
+
+# B: no downgrade, per bot.
+STATE="$HOME/.local/share/grok-station"
+relf="$STATE/release-$persona"
+if [ -f "$relf" ] && [ ! -L "$relf" ]; then
+  have=$(head -c 16 "$relf" | tr -cd '0-9.')
+else
+  have=""
+fi
+py - "$release" "$have" <<'PY' || die "refusing: not newer than the installed release"
+import sys
+v = lambda s: tuple(int(x) for x in s.split("."))
+sys.exit(0 if not sys.argv[2] or v(sys.argv[1]) > v(sys.argv[2]) else 1)
+PY
+
+# F: render the new instructions with the shared checker; the release in its header must match.
+if [ "$mode" = home ]; then
+  py "$T/gs_routine.py" render "$T/routine-home.txt" home "$persona" "$upd_commit" "$upd_sha" > "$T/instructions" \
+    || die "the new instructions are not the allowed template"
+else
+  py "$T/gs_routine.py" render "$T/routine-cloud.txt" cloud "$persona" "$upd_commit" "$upd_sha" "$station" "$pin" "$pub" \
+    > "$T/instructions" || die "the new instructions are not the allowed template"
+fi
+head -n 1 "$T/instructions" | grep -qx "Grok Station instructions, release $release\." || die "instructions are for another release"
+
+# G and the tools. One update at a time per computer.
+mkdir -p "$STATE"
+lock="$STATE/.update-lock"
+n=0
+until mkdir "$lock" 2>/dev/null; do
+  n=$((n + 1)); [ "$n" -lt 60 ] || die "another update is running"
+  sleep 1
+done
+trap 'rmdir "$lock" 2>/dev/null; rm -rf "$T"' EXIT INT TERM
+helper="-"
+computer="-"
+if [ "$mode" = home ]; then
+  common="$STATE/bin/gs_seal_common.py"
+  [ -f "$common" ] || die "no home helper here; run the full install"
+  cur=$(sed -n 's/^HELPER_VERSION = "\([0-9][0-9.]*\)"$/\1/p' "$common")
+  if py - "$release" "${cur:-0.0.0}" <<'PY'
+import sys
+v = lambda s: tuple(int(x) for x in s.split("."))
+sys.exit(0 if v(sys.argv[2]) < v(sys.argv[1]) else 1)
+PY
+  then
+    helper=$(sh "$T/install-home.sh" --update --persona "$persona") || die "helper update failed"
+  else
+    helper=$cur  # another bot on this computer already updated the shared helper
+  fi
+  computer=$(py - "$HOME/.config/grok-station/host-id" <<'PY' || printf '%s' "-"
+import hashlib, re, sys
+raw = open(sys.argv[1], encoding="ascii").read().strip().upper()
+if not re.fullmatch(r"[0-9A-F-]{8,64}", raw):
+    sys.exit(1)
+print(hashlib.sha256(("grok-station computer v1\n" + raw).encode()).hexdigest()[:16], end="")
+PY
+)
+else
+  updated=0
+  for dest in "$STATE/bin/grok-station-reply" "$HOME/bin/grok-station-reply"; do
+    if [ -L "$dest" ]; then die "refusing symlink: $dest"; fi
+    [ -f "$dest" ] || continue
+    cp "$T/grok-station-reply" "$dest.new.$$" && chmod 700 "$dest.new.$$" && mv -f "$dest.new.$$" "$dest" \
+      || die "couldn't replace $dest"
+    updated=1
+  done
+  [ "$updated" = 1 ] || die "no reply tool here; run the setup script"
+fi
+
+printf '%s\n' "$release" > "$relf.new.$$" && mv -f "$relf.new.$$" "$relf"
+instr=$(py - "$T/instructions" <<'PY'
+import hashlib, sys
+print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest()[:16], end="")
+PY
+)
+printf '%s\n' "BEGIN INSTRUCTIONS"
+cat "$T/instructions"
+printf '\n%s\n' "END INSTRUCTIONS"
+printf '%s instr=%s helper=%s computer=%s\n' "$release" "$instr" "$helper" "$computer"

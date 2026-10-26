@@ -1544,6 +1544,107 @@ def silence_weak(doc):
     wake("POST", "/reload", {})
 
 
+sys.path.insert(0, HERE)
+import gs_routine  # noqa: E402  (shared with scripts/gs-update.sh; a test keeps them byte-identical)
+
+ROUTINES = {m: os.path.join(HERE, "routine-%s.txt" % m) for m in ("home", "cloud")}
+FINISH = "finish-update.json"
+
+
+def deploy_pins():
+    """commit, files and update_commit from web/deploy-pins.js. {} when it can't be read."""
+    try:
+        text = open(os.path.join(WEB, "deploy-pins.js"), encoding="utf-8").read()
+    except OSError:
+        return {}
+    commit = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M)
+    upd = re.search(r'^  update_commit: "([0-9a-f]{40})",$', text, re.M)
+    files = dict(re.findall(r'^    "([a-z0-9_./-]+)": "([0-9a-f]{64})",?$', text, re.M))
+    return {"commit": commit.group(1) if commit else "", "update_commit": upd.group(1) if upd else "", "files": files}
+
+
+def render_bot_routine(bot, station, fingerprint, pub, pins=None):
+    """Exactly the instructions this bot will adopt (F: only the allowed template renders). Raises gs_routine.Bad."""
+    pins = deploy_pins() if pins is None else pins
+    mode = "home" if bot.get("key_mode") == "home" else "cloud"
+    with open(ROUTINES[mode], encoding="utf-8") as fh:
+        template = fh.read()
+    fp = str(fingerprint or "").upper()
+    text = gs_routine.render(template, mode, bot.get("slug", ""), pins.get("commit", ""),
+                             pins.get("files", {}).get("scripts/gs-update.sh", ""),
+                             station if mode == "cloud" else "", fp if mode == "cloud" else "",
+                             pub if mode == "cloud" else "")
+    rel = gs_routine.check(text, mode)
+    if rel != version():
+        raise gs_routine.Bad("release")
+    return text
+
+
+def read_finish():
+    doc = read_json(path(FINISH), {})
+    if not isinstance(doc, dict):
+        doc = {}
+    doc.setdefault("sent", {}); doc.setdefault("copied", {}); doc.setdefault("updaters", {})
+    return doc
+
+
+def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
+    """The Finish update dialog: computers, each with its bots, the exact text, and each row's state.
+
+    E: a row is done only when the bot's signed status names this release and the hash of exactly this text.
+    """
+    pins = deploy_pins() if pins is None else pins
+    finish = read_finish() if finish is None else finish
+    rel = version()
+    groups, behind = {}, 0
+    for b in bots:
+        if not (b.get("paired") and (b.get("webhook") or {}).get("configured")):
+            continue
+        home = b.get("key_mode") == "home"
+        try:
+            text = render_bot_routine(b, station, fingerprint, pub, pins)
+            want, err = gs_routine.instr_hash(text), ""
+        except (gs_routine.Bad, OSError) as e:
+            text, want, err = "", "", "Can't build instructions: %s" % e
+        u = b.get("update") or {}
+        if u.get("release") == rel and want and u.get("instr") == want:
+            state = "done"
+        elif b.get("update_refused_at"):
+            state = "refused"
+        elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
+            state = "copy"  # set up before 0.11.8: its instructions don't know update_bot yet
+        elif u.get("release") == rel and u.get("instr") != want:
+            state = "different"
+        elif finish["sent"].get(b["slug"], {}).get("instr") == want:
+            state = "waiting"
+        else:
+            state = "needs"
+        if err:
+            state = "error"
+        if state != "done":
+            behind += 1
+        if home:
+            key = "c:" + u["computer"] if u.get("computer") else "h:" + (b.get("reply_host") or b["slug"])
+            label = b.get("reply_host") or "Home computer"
+        else:
+            key, label = "bot", "Bot computer"
+        g = groups.setdefault(key, {"key": key, "label": label, "home": home, "bots": [], "helper": None})
+        if home and (b.get("helper") or {}).get("version"):
+            g["helper"] = b["helper"]["version"]
+        g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home" if home else "cloud",
+                          "state": state, "message": text, "instr": want, "have": u.get("instr"),
+                          "have_release": u.get("release"), "error": err})
+    for g in groups.values():
+        g["bots"].sort(key=lambda r: r["name"].lower())
+        chosen = finish["updaters"].get(g["key"])
+        answered = [r["slug"] for r in g["bots"] if r["have"]]
+        names = [r["slug"] for r in g["bots"]]
+        g["updater"] = chosen if chosen in names else (answered[0] if answered else (names[0] if names else None))
+        g["want_helper"] = HELPER_RELEASE if g["home"] else None
+    order = sorted(groups.values(), key=lambda g: (g["key"] != "bot", g["label"].lower()))
+    return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order}
+
+
 def enroll_live(st):
     """Listener fields the set-wake dialog polls. All null when the listener didn't answer."""
     if not isinstance(st, dict):
@@ -2078,6 +2179,8 @@ def safe_bot(b):
         "key_mode": b.get("key_mode") if b.get("key_mode") in ("cloud", "home") else "cloud",
         "reply_host": b.get("reply_host") if host_name_ok(b.get("reply_host")) else None,
         "helper": helper_view(b),
+        "update": update_view(b.get("update")),
+        "update_refused_at": _epoch(b.get("update_refused_at")),
         "stats": stats_view(b.get("stats")),
     }
 
@@ -2099,6 +2202,19 @@ def helper_view(b):
     seen = b.get("helper_version") if HELPER_V.fullmatch(str(b.get("helper_version") or "")) else None
     cur = _vtuple(seen)
     return {"version": seen, "release": HELPER_RELEASE, "out_of_date": cur is None or cur < _vtuple(HELPER_RELEASE)}
+
+
+_UPD = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
+
+
+def update_view(u):
+    """A bot's last signed update status, or None. Only checked shapes reach the page."""
+    if not isinstance(u, dict) or not _UPD.fullmatch(str(u.get("release") or "")) \
+            or not re.fullmatch(r"[0-9a-f]{16}", str(u.get("instr") or "")):
+        return None
+    helper = u.get("helper") if _UPD.fullmatch(str(u.get("helper") or "")) else None
+    comp = u.get("computer") if re.fullmatch(r"[0-9a-f]{16}", str(u.get("computer") or "")) else None
+    return {"release": u["release"], "instr": u["instr"], "helper": helper, "computer": comp, "at": _epoch(u.get("at"))}
 
 
 def empty_imported():
@@ -3606,6 +3722,78 @@ class Handler(BaseHTTPRequestHandler):
         if status not in (200, 202) or (isinstance(data, dict) and data.get("ok") is False):
             return self.relay_fail(status, data)
         schedule_persona_sync(30)
+        return self.send(202, {"ok": True})
+
+    def _station_base(self):
+        host = (self.headers.get("Host") or "").strip()
+        return "https://" + host if gs_routine.STATION.match("https://" + host) else ""
+
+    def _finish_inputs(self):
+        got = relay_call("GET", "/admin/bots")
+        if got is None or got[0] != 200:
+            return None
+        data = got[1]
+        bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
+        pub = data.get("station_pub")
+        pub = "".join(pub.split()) if box_pub_ok(pub) else ""
+        return bots, self._station_base(), tls_info()["fingerprint"], pub
+
+    def api_get_finish_update(self, p, q, j):
+        if p != "/api/finish-update":
+            return self.send(404, {"error": "not found"})
+        got = self._finish_inputs()
+        if got is None:
+            return self.bots_unconfigured()
+        return self.send(200, finish_rows(*got))
+
+    def api_post_finish_update(self, p, q, j):
+        if not isinstance(j, dict):
+            return self.send(400, {"error": "bad request"})
+        if p == "/api/finish-update/updater":
+            key, slug = j.get("computer"), j.get("slug")
+            if not (isinstance(key, str) and re.fullmatch(r"(c:[0-9a-f]{16}|h:[A-Za-z0-9.-]{1,63}|bot)", key)
+                    and slug_ok(slug)):
+                return self.send(400, {"error": "bad request"})
+            doc = read_finish(); doc["updaters"][key] = slug
+            write_json(path(FINISH), doc)
+            return self.send(200, {"ok": True})
+        if p not in ("/api/finish-update/send", "/api/finish-update/copied"):
+            return self.send(404, {"error": "not found"})
+        slug, sha = j.get("slug"), j.get("message_sha")
+        if not slug_ok(slug) or not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{16}", sha)):
+            return self.send(400, {"error": "bad request"})
+        got = self._finish_inputs()
+        if got is None:
+            return self.bots_unconfigured()
+        view = finish_rows(*got)
+        row = next((r for g in view["computers"] for r in g["bots"] if r["slug"] == slug), None)
+        if row is None:
+            return self.send(404, {"error": "not found"})
+        if row["error"] or row["instr"] != sha:
+            return self.send(409, {"error": "The instructions changed. Reopen Finish update."})
+        doc = read_finish()
+        if p.endswith("/copied"):
+            doc["copied"][slug] = {"instr": sha, "at": int(time.time())}
+            write_json(path(FINISH), doc)
+            audit(slug, "finish-copy")
+            return self.send(200, {"ok": True})
+        if not re.fullmatch(r"[0-9a-f]{40}", view["commit"] or ""):
+            return self.send(500, {"error": "This release has no update commit pinned."})
+        r = relay_call("POST", "/admin/bots/" + slug + "/update",
+                       {"actor": RELAY_ACTOR, "release": view["release"], "commit": view["commit"]})
+        if r is None:
+            return self.bots_unconfigured()
+        status, data = r
+        if status == 429:
+            return self.send(429, {"error": "Asked a few minutes ago. Wait, then try again."})
+        if status == 502:
+            return self.send(502, {"error": "Couldn't reach the bot."})
+        if status not in (200, 202):
+            return self.relay_fail(status, data)
+        doc = read_finish()
+        doc["sent"][slug] = {"instr": sha, "release": view["release"], "at": int(time.time())}
+        write_json(path(FINISH), doc)
+        audit(slug, "finish-send")
         return self.send(202, {"ok": True})
 
     def bots_helper_update(self, slug):

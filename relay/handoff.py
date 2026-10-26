@@ -265,7 +265,8 @@ class _Wire(dict):
         return dict.__getitem__(self, key)
 
 
-def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False, kind=""):
+def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False, kind="", release="",
+            commit=""):
     """Webhook body v1: v, request_id, persona, the cleaned question, reply_by. test only when asked.
 
     include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
@@ -283,6 +284,11 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
         body["kind"] = "avatar"
     elif kind == "update_helper":
         body["kind"] = "update_helper"
+    elif kind == "update_bot":
+        if not (re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", release or "")
+                and re.fullmatch(r"[0-9a-f]{40}", commit or "")):
+            raise ValueError("update_bot needs a release and a commit")
+        body.update(kind="update_bot", release=release, commit=commit)
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 
@@ -413,7 +419,7 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
     doc = {"v": 1, "request_id": rid, "persona": bot, "nonce": nonce, "expires_ms": int(expires_ms),
            "question": clean(question, Q_MAX), "pii_mode": True if pii_mode is None else bool(pii_mode),
            "tier_max": 0, "test": bool(test), "reply_by": str(reply_by or "")}
-    if kind in ("bot_list", "update_helper"):
+    if kind in ("bot_list", "update_helper", "update_bot"):
         doc["kind"] = kind
     tmp = os.path.join(pdir, f".{rid}.tmp")
     with open(tmp, "w") as f:
