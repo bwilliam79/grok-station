@@ -237,7 +237,13 @@ Patch release. Installs over 0.11.2. The pinned download files are unchanged.
 - **Hey Grok.** The built-in row uses the station logo.
 - Not in this release: wake-word delete cleanup (0.11.4), bot pictures sent by the bot (needs review), Configure redesign and the calibration gate (waiting for approval).
 
-## Unreleased: bot pictures (needs review before release)
+## 0.11.4
+
+Patch release. Installs over 0.11.3. The pinned download files are re-pinned (the reply tools changed).
+
+- **Configure tabs.** Wake word, Voice and photo, Connection, More. One main button per wake-word state; Change phrase and Remove are links. Webhook fields sit under Edit connection (open until saved). Delete bot is last under More.
+- **Wake word delete.** Removes every enroll session, the recorded model and templates, the list entry, and the row. A word whose files are already gone is still removed, and a repeat delete returns success. Names are checked before any file path is built.
+- **Bot pictures** (reviewed):
 
 - A bot sends its own picture over a signed, sealed post to `/voice/avatar` on the admin HTTPS port (LAN only, 4 MB body cap). Ask bot for picture (Configure) sends a webhook of kind avatar. The old voice-token route returns 410.
-- `tools/grok-station-reply` (seal-avatar, post --avatar) and `scripts/gs-seal-reply` (avatar) changed, so `admin/web/deploy-pins.js` and `scripts/install-home.sh` must be re-pinned to the shipping commit at release.
+- `tools/grok-station-reply` (seal-avatar, post --avatar) and `scripts/gs-seal-reply` (avatar) changed, so `admin/web/deploy-pins.js` and `scripts/install-home.sh` are re-pinned in this release.

@@ -14,7 +14,7 @@ upload.
    - **Ready.** Say the phrase and the station starts that bot. It's on now.
    - **Not good enough yet.** Press **Train more** to record 10 more. The first 10 are kept, and the word is rebuilt. You can do this more than once.
    - Too close to Hey Grok, or already used by another bot. A word that already belongs to this bot, or to a bot that was deleted, can be used again. Otherwise pick a different phrase.
-6. **Remove wake word** stops listening and leaves the recordings under **Unused wake words** on the Bots page. **Delete** there removes the recordings and the trained model. Deleting the bot moves its wake word to Unused the same way; it does not delete the recordings. Adding that same bot id again reclaims the word. A word whose bot is gone, including one that was never finished or was switched off, is listed there too, and Delete works for it.
+6. **Remove wake word** stops listening and leaves the recordings under **Unused wake words** on the Bots page. **Delete** there removes every recording session, the trained model and the row. It still works when the recordings are already gone. Deleting the bot moves its wake word to Unused the same way; it does not delete the recordings. Adding that same bot id again reclaims the word. A word whose bot is gone, including one that was never finished or was switched off, is listed there too, and Delete works for it.
 
 "Hey Grok, ask Kai …" always works too, with no recording. You can also say "Hey Grok, can you connect me with Kai" and the station switches the conversation over. See [bots.md](bots.md).
 
