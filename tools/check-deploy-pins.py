@@ -38,6 +38,7 @@ FILES = (
     "scripts/gs_seal_common.py",
     "scripts/vendor-lock.txt",
     "scripts/install-home.sh",
+    "scripts/gs-update.sh",
 )
 
 
