@@ -287,6 +287,7 @@ class Station(unittest.TestCase):
         v, rows = self.rows([_bot("ann"), _bot("kit", update=ok), _bot("cat", mode="cloud")])
         self.assertIn("--station 'https://st.example'", rows["cat"]["message"])
         self.assertIn("--mode cloud", rows["cat"]["message"])
+        self.assertIsNone([g for g in v["computers"] if not g["home"]][0]["updater"])
         home = [g for g in v["computers"] if g["home"]]
         self.assertEqual(sorted(len(g["bots"]) for g in home), [1, 1])  # kit's computer id is known, ann's is not
         self.fin["updaters"]["c:" + "a" * 16] = "kit"

@@ -1640,6 +1640,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
         answered = [r["slug"] for r in g["bots"] if r["have"]]
         names = [r["slug"] for r in g["bots"]]
         g["updater"] = chosen if chosen in names else (answered[0] if answered else (names[0] if names else None))
+        if not g["home"]:
+            g["updater"] = None  # no shared helper on a bot computer
         g["want_helper"] = HELPER_RELEASE if g["home"] else None
     order = sorted(groups.values(), key=lambda g: (g["key"] != "bot", g["label"].lower()))
     return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order}
