@@ -1,4 +1,4 @@
-"""0.11.8 Finish update: the bot-side update script (A-D, F, G), the shared checker and the station view (E).
+"""0.11.8+ Finish update: the bot-side update script (A-D, F, G), the shared checker and the station view (E).
 
 The script runs for real under sh with a stub curl that serves a fake GitHub from a folder; nothing leaves the box.
 """
@@ -69,6 +69,9 @@ class Fake:
             open(os.path.join(st, "bin/gs_seal_common.py"), "w").write('HELPER_VERSION = "0.11.7"\n')
             os.makedirs(os.path.join(self.home, ".config/grok-station"))
             open(os.path.join(self.home, ".config/grok-station/host-id"), "w").write("1234ABCD-0000-1111\n")
+            for who in ("jules", "moose"):
+                open(os.path.join(self.home, ".config/grok-station/%s.json" % who), "w").write(
+                    json.dumps({"endpoint": "https://station.example", "pin": "ab" * 32, "station_pub": PUB}) + "\n")
             self.key = os.path.join(self.home, ".config/grok-station/bot.key")
         else:
             open(os.path.join(st, "bin/grok-station-reply"), "w").write("old\n")
@@ -99,10 +102,14 @@ class Fake:
         return {"HOME": self.home, "PATH": self.bin + ":/usr/bin:/bin", "FAKE_SRV": self.srv, "FAKE_LOG": self.log}
 
     def run(self, *extra, release=REL, commit=C, persona="jules"):
+        return subprocess.run(self.run_args(*extra, release=release, commit=commit, persona=persona), env=self.env(),
+                              capture_output=True, text=True, timeout=60)
+
+    def run_args(self, *extra, release=REL, commit=C, persona="jules"):
         args = ["sh", SCRIPT, "--release", release, "--commit", commit, "--mode", self.mode, "--persona", persona]
         if self.mode == "cloud":
             args += ["--station", "https://station.example", "--pin-sha256", FP, "--station-pub", PUB]
-        return subprocess.run(args + list(extra), env=self.env(), capture_output=True, text=True, timeout=60)
+        return args + list(extra)
 
     def urls(self):
         return open(self.log).read().split() if os.path.exists(self.log) else []
@@ -197,8 +204,31 @@ class Script(unittest.TestCase):
 
     def test_live_lock_is_respected_and_owner_recorded(self):
         src = open(SCRIPT).read()
-        self.assertIn('printf \'%s %s\\n\' "$$" "$(date +%s)" > "$lock/owner"', src)
+        self.assertIn('printf \'%s %s\\n\' "$$" "$(date +%s)" > "$nl/owner"', src)
+        self.assertIn('mktemp -d "$STATE/.update-lock.new.XXXXXX"', src)
+        self.assertIn('[ "$(read_owner)" = "$owner" ]', src)
         self.assertIn("-gt 900", src)
+
+    def test_two_waiters_on_a_stale_lock_both_finish_one_at_a_time(self):
+        import time
+        f = Fake("home")
+        lock = os.path.join(f.state, ".update-lock")
+        os.makedirs(lock)
+        open(os.path.join(lock, "owner"), "w").write("999999 %d\n" % int(time.time()))  # dead owner
+        # Each waiter's install step records when it holds the lock; overlapping windows would mean a race.
+        f.files["scripts/install-home.sh"] = (b'#!/bin/sh\nprintf "start %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
+                                              b'sleep 1\nprintf "end %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
+                                              b'printf "%s\\n" 0.11.7\n')
+        f.publish()
+        procs = [subprocess.Popen(f.run_args(persona=p), env=f.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True) for p in ("jules", "moose")]
+        outs = [p.communicate(timeout=90) for p in procs]
+        for p, (o, e) in zip(procs, outs):
+            self.assertEqual(p.returncode, 0, e)
+        ev = [l.split() for l in open(os.path.join(f.home, "windows")).read().split("\n") if l]
+        self.assertEqual([e[0] for e in ev], ["start", "end", "start", "end"])  # never two holders at once
+        self.assertFalse(os.path.exists(lock))
+        self.assertEqual([x for x in os.listdir(f.state) if x.startswith(".update-lock")], [])
 
     def test_c_a_file_off_the_manifest_is_refused(self):
         for tamper in ("admin/routine-home.txt", "scripts/install-home.sh"):
@@ -266,15 +296,48 @@ class FetchedTemplate(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0, (old, new))
             self.assertIn("not the allowed template", r.stderr)
 
-    def test_template_not_in_manifest_is_not_used_fallback_is_embedded(self):
-        f = Fake("home"); self.reword(f); f.publish(omit=("admin/routine-home.txt",))
-        r = f.run()
+    def test_template_not_in_manifest_is_refused(self):
+        for mode in ("home", "cloud"):
+            f = Fake(mode); f.publish(omit=("admin/routine-%s.txt" % mode,))
+            r = f.run()
+            self.assertNotEqual(r.returncode, 0, mode)
+            self.assertIn("manifest lists no template", r.stderr)
+            self.assertNotIn("BEGIN INSTRUCTIONS", r.stdout)
+            self.assertNotIn(RAW + C + "/admin/routine-%s.txt" % mode, f.urls())
+        self.assertNotIn("render-embedded", open(SCRIPT).read())
+        self.assertFalse(hasattr(gs_routine, "embedded"))
+
+    def test_template_missing_a_safety_line_is_refused(self):
+        for line in gs_routine._REQUIRED_LINES:
+            for mode in ("home", "cloud"):
+                t = open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode)).read()
+                self.assertIn("\n" + line, t)
+                bad = t.replace(line, line.replace("Never", "Always").replace("do not answer", "answer"), 1)
+                with self.assertRaises(gs_routine.Bad, msg=(mode, line[:20])):
+                    gs_routine.render(bad, mode, "jules", U, "f" * 64, *(("https://st.example", FP, PUB) if mode == "cloud" else ()))
+            f = Fake("home")
+            f.files["admin/routine-home.txt"] = f.files["admin/routine-home.txt"].replace(line.encode(), b"", 1)
+            f.publish()
+            r = f.run()
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("not the allowed template", r.stderr)
+
+    def test_computer_id_is_keyed_with_the_station_key(self):
+        import hmac, base64
+        f = Fake("home"); r = f.run()
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("Reply as the bot named", r.stdout)  # the unlisted file is ignored
-        self.assertIn("Answer as the bot named", r.stdout)
-        self.assertNotIn(RAW + C + "/admin/routine-home.txt", f.urls())
-        f = Fake("cloud"); f.publish(omit=("admin/routine-cloud.txt",))
-        self.assertEqual(f.run().returncode, 0)
+        cid = status(r.stdout).rsplit("computer=", 1)[1]
+        want = hmac.new(base64.b64decode(PUB), b"grok-station computer v2\n1234ABCD-0000-1111", hashlib.sha256).hexdigest()[:16]
+        self.assertEqual(cid, want)
+        self.assertNotEqual(cid, sha(b"grok-station computer v1\n1234ABCD-0000-1111")[:16])
+        g = Fake("home")
+        open(os.path.join(g.home, ".config/grok-station/jules.json"), "w").write(json.dumps({"station_pub": "B" * 43 + "="}))
+        self.assertNotEqual(status(g.run().stdout).rsplit("computer=", 1)[1], cid)  # differs per station
+        os.remove(os.path.join(g.home, ".config/grok-station/jules.json"))
+        os.remove(os.path.join(g.state, "release-jules"))
+        r = g.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(status(r.stdout).endswith(" computer=-"))  # no station key: no id
 
     def test_station_text_must_equal_the_fetched_template(self):
         tpl = open(os.path.join(ROOT, "admin", "routine-home.txt")).read()
@@ -489,6 +552,18 @@ class ReleaseManifest(unittest.TestCase):
         self.assertIn("update %s " % commit, have)  # the next update command equals what the station renders
         for path in gum.FILES + ("scripts/gs-update.sh",):
             self.assertEqual(gum.blob(upd, path), open(os.path.join(ROOT, path), "rb").read(), path)
+
+
+@unittest.skipUnless(os.environ.get("GS_RELEASE_CHECK") == "1", "release check (GS_RELEASE_CHECK=1)")
+class ReleaseTemplates(unittest.TestCase):
+    """0.11.9: the pinned manifest lists both templates (gs-update.sh refuses a manifest without them)."""
+
+    def test_manifest_lists_both_templates(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cdp", os.path.join(ROOT, "tools", "check-deploy-pins.py"))
+        cdp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cdp)
+        self.assertEqual(cdp.manifest_templates(), [])
+        self.assertEqual(cdp.TEMPLATES, ("admin/routine-home.txt", "admin/routine-cloud.txt"))
 
 
 @unittest.skipUnless(os.environ.get("GS_RELEASE_CHECK") == "1", "release check (GS_RELEASE_CHECK=1)")

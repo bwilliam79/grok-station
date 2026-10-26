@@ -94,6 +94,18 @@ def pinned_commits(pins_path=PINS, rev="HEAD"):
     return out
 
 
+TEMPLATES = ("admin/routine-home.txt", "admin/routine-cloud.txt")
+
+
+def manifest_templates(pins_path=PINS):
+    """Problems unless the pinned update manifest lists both templates (0.11.9: gs-update.sh has no fallback)."""
+    text = open(pins_path, encoding="utf-8").read()
+    m = re.search(r'^  update_commit: "([0-9a-f]{40})",$', text, re.M)
+    man = (blob(m.group(1), "scripts/update-manifest.txt") or b"").decode("ascii", "replace") if m else ""
+    return [f"update manifest lists no {t}" for t in TEMPLATES
+            if not re.search(r"^file [0-9a-f]{64} " + re.escape(t) + "$", man, re.M)]
+
+
 def ancestry(main_ref="origin/main", pins_path=PINS, rev="HEAD"):
     """Problems for any pinned commit that is not an ancestor of main_ref (git merge-base --is-ancestor)."""
     problems = []
@@ -135,6 +147,7 @@ def check(remote=False, rev="HEAD", pins_path=PINS):
                 problems.append(f"{path}: GitHub returned HTTP {status}")
             elif hashlib.sha256(data).hexdigest() != want:
                 problems.append(f"{path}: GitHub bytes do not match the pin")
+    problems += manifest_templates(pins_path)
     return commit, files, problems, notes
 
 
