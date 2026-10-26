@@ -139,11 +139,15 @@ printf '%s' "$ANSWER" | grok-station-reply send \
 
 There is no separate Wake words page. Opening `#wake` goes to Bots.
 
-Hey Grok is the first row: built in, always on, and not configurable. Then the main bot (an amber star and a Main bot pill), then the other bots in saved order. Each of those rows shows its wake word. The switch turns that word on or off. **Configure** is where you set a wake word, train more, remove it, change the computer, and change the voice, photo, and connection. Removing a wake word, or deleting the bot, keeps the recordings under **Unused wake words** until you delete that row.
+Hey Grok is the first row: built in, always on, and not configurable. Then the main bot (an amber star and a Main bot pill), then the other bots in saved order. Each of those rows shows its wake word. The switch turns that word on or off. **Configure** opens the tabbed drawer below. Removing a wake word, or deleting the bot, keeps the recordings under **Unused wake words** until you delete that row.
 
 Adding a bot again with the same id reclaims that bot's old wake word. The station does not say it is already in use when the word belongs to that same bot, or when the bot that owned it is gone. A word left behind by a deleted bot, including one that was never finished or was switched off, is listed under Unused wake words. Delete there removes it. Hey Finn stays a wake word when the station does not have a bot list.
 
 Recording a word is in [enroll.md](enroll.md).
+
+## Configure
+
+Configure keeps the same header — photo, name, Main bot, Replies from, and Close — and puts everything else in four tabs: Wake word, Voice and photo, Connection, and More. Only one tab is visible; Wake word is selected when the drawer opens, and switching tabs does not reload it, so unsaved typing stays until you close the drawer. Wake word shows the phrase and status on one line: Set wake word when there is no word, Train more with Change phrase and Remove when the word is not ready, and the on/off switch plus those links when it is ready. Voice and photo is the voice list with Save, and Upload photo; Connection shows the computer and Test relay, with the webhook, key, and pairing inside Edit connection (open on its own only when the webhook is not saved). More has Copy updated instructions, team setup for the main bot, Set as Main Bot, Rename, and Delete bot.
 
 ## Connect me with a bot
 

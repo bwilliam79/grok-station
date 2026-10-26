@@ -315,7 +315,7 @@ class AdminUI(unittest.TestCase):
             "wifi": chunk("async function wifiPanel", "\nfunction joinForm"),
             "time": chunk("async function timePanel", "\nfunction soundLabel"),
             "audio": chunk("async function audioPanel", "\nfunction wordLabel"),
-            "bots-voice": voice.split('<label for="bvoice">', 1)[1].split("<h3>Connection</h3>", 1)[0],
+            "bots-voice": voice.split('<label for="bvoice">', 1)[1].split('id="panel-conn"', 1)[0],
             "display": disp,
             "system": chunk("async function pageSystem", "\nfunction pageMore"),
             "xai": chunk("async function xaiKeyPanel", "\nasync function wizard"),
@@ -1020,3 +1020,76 @@ class BotPictureUI(unittest.TestCase):
         self.assertIn("gs-seal-reply avatar --persona <slug> < PICTURE_FILE", self.js)
         self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 2)
         self.assertIn("kind is avatar", self.js)
+
+
+class ConfigureTabs(unittest.TestCase):
+    """Configure drawer: four tabs, wake-word actions by state, connection folded away."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+
+    def test_tablist_and_labels(self):
+        fn = _fn(self.js, "openBot")
+        self.assertIn('role="tablist"', fn)
+        bar = fn.split('role="tablist"', 1)[1].split('role="tabpanel"', 1)[0]
+        for label in (">Wake word<", ">Voice and photo<", ">Connection<", ">More<"):
+            self.assertIn(label, bar, label)
+        self.assertEqual(bar.count('role="tab"'), 4)
+        self.assertIn('aria-selected="true"', bar)
+        self.assertIn('aria-selected="false"', bar)
+        self.assertEqual(fn.count('role="tabpanel"'), 4)
+        self.assertIn('<div role="tabpanel" id="panel-wake" class="cpanel">', fn)
+        for pid in ("panel-voice", "panel-conn", "panel-more"):
+            self.assertIn(f'<div role="tabpanel" id="{pid}" class="cpanel" hidden>', fn)
+        self.assertIn("panel.hidden = !on", fn)
+        self.assertNotIn("localStorage", fn)
+
+    def test_picture_ask_shows_refav(self):
+        self.assertIn("const PICTURE_ASK = true;", self.js)
+        fn = _fn(self.js, "openBot")
+        self.assertIn(
+            "${PICTURE_ASK ? '<button class=\"btn sm\" id=\"refav\" type=\"button\">Ask bot for picture</button>' : \"\"}",
+            fn)
+        self.assertIn('const refav = $("#refav", d);', fn)
+        self.assertIn("if (refav) refav.onclick", fn)
+
+    def test_wake_primary_follows_state(self):
+        fn = _fn(self.js, "openBot")
+        self.assertIn('wst !== "training"', fn)
+        self.assertIn('wst !== "weak"', fn)
+        self.assertIn("word.has_model", fn)
+        body = fn.split("let wakeActs;", 1)[1].split("d.innerHTML", 1)[0]
+        chunks = [c.split("`;", 1)[0] for c in body.split("wakeActs = `")[1:]]
+        self.assertEqual(len(chunks), 3, body)
+        no_word, not_ready, ready = chunks
+        self.assertIn('class="btn p sm" id="wset"', no_word)
+        self.assertIn(">Set wake word<", no_word)
+        self.assertNotIn("wmore", no_word)
+        self.assertNotIn("wrem", no_word)
+        self.assertNotIn("Change phrase", no_word)
+        self.assertLess(not_ready.find('class="btn p sm" id="wmore"'), not_ready.find('id="wset"'))
+        self.assertIn(">Train more<", not_ready)
+        self.assertIn('class="btn g sm linkish" id="wset"', not_ready)
+        self.assertIn(">Change phrase<", not_ready)
+        self.assertIn('class="btn g sm linkish" id="wrem"', not_ready)
+        self.assertIn(">Remove<", not_ready)
+        self.assertNotIn("btn p", ready)
+        self.assertLess(ready.find('id="wmore"'), ready.find('id="wset"'))
+        self.assertLess(ready.find('id="wset"'), ready.find('id="wrem"'))
+        self.assertIn(">Train more<", ready)
+        self.assertIn(">Change phrase<", ready)
+        self.assertIn(">Remove<", ready)
+        self.assertIn("linkish", ready)
+        self.assertIn("if (!wexists)", fn)
+        self.assertIn("else if (!wakeReady)", fn)
+
+    def test_edit_connection_and_delete_in_more(self):
+        fn = _fn(self.js, "openBot")
+        self.assertIn('<details class="editconn"', fn)
+        self.assertIn(">Edit connection</summary>", fn)
+        self.assertIn('saved ? "" : " open"', fn)
+        more = fn.split('id="panel-more"', 1)[1].split("document.body.appendChild", 1)[0]
+        self.assertLess(more.find(">Rename<"), more.find(">Delete bot<"))
+        self.assertIn('class="btn dg" id="delbot"', more)
+        self.assertNotIn(">Delete bot<", more[:more.find(">Rename<")])

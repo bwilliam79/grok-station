@@ -1431,6 +1431,7 @@ const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-w
 const COMPUTER_HINT = "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.";
 // Home key mode (scripts/gs-seal-setup, scripts/gs-seal-reply) is available since 0.8.2, after its validation run. Cloud stays the default.
 const HOME_MODE = true;
+const PICTURE_ASK = true;
 function botIdFromName(name) {
   // ASCII only. A non-ASCII letter is a dash, not a lowercase or a transliteration. "" if it is not a bot id.
   let s = "";
@@ -2110,58 +2111,87 @@ function openBot(bot, el) {
   const mpill = bot.main ? ` <span class="pill off mainpill">Main bot</span>` : "";
   const keyKind = bot.key_mode === "home" ? "Home key" : "Cloud key";
   const compWarn = !bot.reply_host ? "Choose a computer in Configure." : replyWarning(bot);
+  // Same branch as the on/off switch inside wakeControlHTML.
+  const wakeReady = wst !== "training" && wst !== "weak" && !!(word && word.has_model);
+  let wakeActs;
+  if (!wexists) {
+    wakeActs = `<div class="wacts"><button class="btn p sm" id="wset" type="button">Set wake word</button></div>`;
+  } else if (!wakeReady) {
+    wakeActs = `<div class="wacts"><button class="btn p sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><span class="wlinks"><button class="btn g sm linkish" id="wset" type="button">Change phrase</button><button class="btn g sm linkish" id="wrem" type="button">Remove</button></span></div>`;
+  } else {
+    wakeActs = `<div class="wacts"><span class="wlinks"><button class="btn g sm linkish" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><button class="btn g sm linkish" id="wset" type="button">Change phrase</button><button class="btn g sm linkish" id="wrem" type="button">Remove</button></span></div>`;
+  }
   d.innerHTML = `<div class="inline">${avatar(bot.slug, bot.name, true)}
       <div style="min-width:0"><div class="lbl">${star}${esc(bot.name)}${mpill}</div><div class="help">${esc(repliesFrom(bot))}</div></div>
       <button class="btn g sm right" id="dx" type="button">Close</button></div>
     <div id="bdbody">
-    <section class="dsec"><h3>Wake word</h3>
-      ${wakeControlHTML(bot, word, wst)}
+    <div class="ctabs" role="tablist">
+      <button class="ctab" id="tab-wake" type="button" role="tab" aria-selected="true" aria-controls="panel-wake">Wake word</button>
+      <button class="ctab" id="tab-voice" type="button" role="tab" aria-selected="false" aria-controls="panel-voice">Voice and photo</button>
+      <button class="ctab" id="tab-conn" type="button" role="tab" aria-selected="false" aria-controls="panel-conn">Connection</button>
+      <button class="ctab" id="tab-more" type="button" role="tab" aria-selected="false" aria-controls="panel-more">More</button>
+    </div>
+    <div role="tabpanel" id="panel-wake" class="cpanel">
+      <div class="wwhead"><span class="wwphrase">“${esc(hey)}”</span>${wakeControlHTML(bot, word, wst)}</div>
       <p class="help">Say “${esc(hey)}” and the station hands the question to ${esc(bot.name)}.</p>
-      <div class="inline">
-        <button class="btn sm" id="wset" type="button">${wexists ? "Set a new wake word" : "Set wake word"}</button>
-        ${wexists ? `<button class="btn sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button>` : ""}
-        ${wexists ? `<button class="btn g sm" id="wrem" type="button">Remove wake word</button>` : ""}
-      </div></section>
-    <section class="dsec"><h3>Computer</h3>
-      <div class="lbl">${esc(repliesFrom(bot))} · ${keyKind}</div>
-      ${lastReplyLine(bot) ? `<p class="help">${esc(lastReplyLine(bot))}</p>` : ""}
-      ${compWarn ? `<div class="need">${ICO_TRI}${esc(compWarn)}</div>` : ""}
-      <div class="field"><button class="btn sm" id="chcomp" type="button">Change computer</button></div>
-      <div id="chbox" hidden></div></section>
-    <section class="dsec"><h3>Voice and photo</h3>
+      ${wakeActs}
+    </div>
+    <div role="tabpanel" id="panel-voice" class="cpanel" hidden>
       <div class="field"><label for="bvoice">Voice</label>
         <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<button class="btn sm" id="vsave" type="button" disabled>Save</button></div>
         <div id="ve"></div></div>
       <div class="field inline">
         <label class="btn sm" for="photo">Upload photo</label>
         <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
-        <button class="btn sm" id="refav" type="button">Ask bot for picture</button>
+        ${PICTURE_ASK ? '<button class="btn sm" id="refav" type="button">Ask bot for picture</button>' : ""}
       </div>
-      <p class="note">png, jpeg, or webp, up to 2 MB.</p></section>
-    <section class="dsec"><h3>Connection</h3>
-      <p class="note">Copy these from the bot's routine panel in Grok Bot.</p>
-      <div id="saved"${saved ? "" : " hidden"} class="secret"><span class="dots">•••• ${esc((bot.webhook && bot.webhook.last4) || "")}</span>
-        <span class="pill ok"><i></i>Saved</span><button class="btn sm" id="repl" type="button">Replace</button></div>
-      <div id="fields"${saved ? " hidden" : ""}>
-        <div class="field"><label for="burl">Webhook URL</label><input class="inp" id="burl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
-        <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
-        <p class="note" id="pasted" hidden>Pasted · not saved</p>
-      </div>
-      <div class="field inline"><button class="btn" id="test" type="button">Test relay</button><button class="btn p" id="save" type="button">Save</button></div>
+      <p class="note">png, jpeg, or webp, up to 2 MB.</p>
+    </div>
+    <div role="tabpanel" id="panel-conn" class="cpanel" hidden>
+      <div class="lbl">${esc(repliesFrom(bot))} · ${keyKind}</div>
+      ${lastReplyLine(bot) ? `<p class="help">${esc(lastReplyLine(bot))}</p>` : ""}
+      ${compWarn ? `<div class="need">${ICO_TRI}${esc(compWarn)}</div>` : ""}
+      <div class="field"><button class="btn sm" id="chcomp" type="button">Change computer</button></div>
+      <div id="chbox" hidden></div>
+      <div class="field"><button class="btn p" id="test" type="button">Test relay</button></div>
       <div id="tbox"></div>
-      ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
-      ${keyModeFields(bot.key_mode)}
-      ${pairFields(el._stationPub, bot)}
+      <details class="editconn"${saved ? "" : " open"}>
+        <summary>Edit connection</summary>
+        <p class="note">Copy these from the bot's routine panel in Grok Bot.</p>
+        <div id="saved"${saved ? "" : " hidden"} class="secret"><span class="dots">•••• ${esc((bot.webhook && bot.webhook.last4) || "")}</span>
+          <span class="pill ok"><i></i>Saved</span><button class="btn sm" id="repl" type="button">Replace</button></div>
+        <div id="fields"${saved ? " hidden" : ""}>
+          <div class="field"><label for="burl">Webhook URL</label><input class="inp" id="burl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+          <div class="field"><label for="bkey">Webhook key</label><input class="inp" id="bkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+          <p class="note" id="pasted" hidden>Pasted · not saved</p>
+        </div>
+        <div class="field inline"><button class="btn p" id="save" type="button">Save</button></div>
+        ${saved ? `<div class="field"><button class="btn dg" id="delhook" type="button">Remove…</button></div>` : ""}
+        ${keyModeFields(bot.key_mode)}
+        ${pairFields(el._stationPub, bot)}
+      </details>
+    </div>
+    <div role="tabpanel" id="panel-more" class="cpanel" hidden>
       <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
-        <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div></section>
-    ${(bot.main && pendingTeammates(el).length) ? `<section class="dsec"><h3>Team setup</h3>
+        <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div>
+      ${(bot.main && pendingTeammates(el).length) ? `<h3>Team setup</h3>
       <p class="note">Paste this to ${esc(bot.name)}. It messages each teammate their setup. This station sends nothing.</p>
-      <div class="inline"><button class="btn sm" id="copyteamd" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></section>` : ""}
-    <section class="dsec"><h3>Main bot and removal</h3>
-      ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<button class="btn sm" id="setmain" type="button">Set as Main Bot</button>`}
-      <div class="inline"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm right" id="delbot" type="button">Delete bot</button></div>
-    </section></div>`;
+      <div class="inline"><button class="btn sm" id="copyteamd" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div>` : ""}
+      ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<div class="field"><button class="btn sm" id="setmain" type="button">Set as Main Bot</button></div>`}
+      <div class="field"><button class="btn g sm" id="ren" type="button">Rename</button></div>
+      <div class="field"><button class="btn dg" id="delbot" type="button">Delete bot</button></div>
+    </div></div>`;
   document.body.appendChild(d);
+  d.querySelectorAll('[role="tab"]').forEach(tab => {
+    tab.onclick = () => {
+      d.querySelectorAll('[role="tab"]').forEach(t => {
+        const on = t === tab;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        const panel = $("#" + t.getAttribute("aria-controls"), d);
+        if (panel) panel.hidden = !on;
+      });
+    };
+  });
   bindAvatars(d);
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
@@ -2251,7 +2281,8 @@ function openBot(bot, el) {
     if (stepupOpen()) send("").then(r => { if (r && r.status === 403) askPassword("Upload photo?", "Enter the admin password to save this photo.", "Upload", async pw => done(await send(pw))); else done(r); });
     else askPassword("Upload photo?", "Enter the admin password to save this photo.", "Upload", async pw => done(await send(pw)));
   };
-  $("#refav", d).onclick = async () => {
+  const refav = $("#refav", d);
+  if (refav) refav.onclick = async () => {
     const btn = $("#refav", d);
     busyBtn(btn, true, "Asking…");
     const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/avatar-request`, {});
@@ -2354,7 +2385,9 @@ function openBot(bot, el) {
           const holder = document.createElement("div");
           holder.className = "field";
           holder.innerHTML = `<button class="btn dg" id="delhook" type="button">Remove…</button>`;
-          $("#tbox", d).insertAdjacentElement("afterend", holder);
+          const km = $("#kmlive", d);
+          if (km) km.insertAdjacentElement("beforebegin", holder);
+          else $("#tbox", d).insertAdjacentElement("afterend", holder);
           $("#delhook", d).onclick = removeHook;
         }
         markSaved();
