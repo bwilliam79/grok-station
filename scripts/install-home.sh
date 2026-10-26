@@ -3,7 +3,7 @@
 # macOS or Linux. Not Alpine (musl).
 # The station never pushes code. You run this script yourself.
 #
-# Pins below are commit b9cdcffdc5ba9b3b380ec9deb0244fc4ed25dba0, the 0.11.7 scripts
+# Pins below are commit 8320874267da674cd2bb79efc173b8226ba195dc, the 0.11.7 scripts
 # (macOS and Linux). A commit cannot name itself, so the pins name the commit
 # before the pin commit. To re-pin after a release changes these files:
 #   python3 tools/gen-deploy-pins.py "$(git rev-parse origin/main)"
@@ -30,8 +30,8 @@
 set -eu
 umask 077
 
-COMMIT=b9cdcffdc5ba9b3b380ec9deb0244fc4ed25dba0
-HASH_SETUP=45443a25aa6965be5b68b71ba1a296ae57716cd20ac9e5d5e86897df0e5ff6c8
+COMMIT=8320874267da674cd2bb79efc173b8226ba195dc
+HASH_SETUP=15565f30203b6772d41557190b426dc973167b1c15f6b238da4e4d6ee5aeae5f
 HASH_REPLY=6f43cc11a6bb1e8c9a036e83a95acc920928ff04ba0afc1c87766b37e31e54bb
 HASH_COMMON=b94f45215dc3ffa4bbfd0069ee5aea92db1148d8ba922515a6d20247ae8acc27
 HASH_LOCK=2dcfee350776443e774da1ff0c6ab833cd26f3c0a629c8559d250ce07ad34426
