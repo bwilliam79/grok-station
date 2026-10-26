@@ -18,7 +18,9 @@ def blob(ref, path):
 
 def build(update_commit, ref="HEAD"):
     rel = open(os.path.join(ROOT, "VERSION")).read().strip()
-    out = ["release " + rel, "update %s %s" % (update_commit, hashlib.sha256(blob(update_commit, "scripts/gs-update.sh")).hexdigest())]
+    common = blob(ref, "scripts/gs_seal_common.py").decode()
+    helper = re.search(r'^HELPER_VERSION = "([0-9]+\.[0-9]+\.[0-9]+)"$', common, re.M).group(1)
+    out = ["release " + rel, "helper " + helper, "update %s %s" % (update_commit, hashlib.sha256(blob(update_commit, "scripts/gs-update.sh")).hexdigest())]
     out += ["file %s %s" % (hashlib.sha256(blob(ref, p)).hexdigest(), p) for p in FILES]
     return "\n".join(out) + "\n"
 

@@ -80,7 +80,7 @@ class Fake:
         open(os.path.join(self.srv, urllib.parse.quote(url, safe="")), "wb").write(body)
 
     def manifest(self, release=REL, tamper=None):
-        lines = ["release " + release, "update %s %s" % (U, sha(open(SCRIPT, "rb").read()))]
+        lines = ["release " + release, "helper 9.9.9", "update %s %s" % (U, sha(open(SCRIPT, "rb").read()))]
         for p, b in self.files.items():
             lines.append("file %s %s" % (("0" * 64) if p == tamper else sha(b), p))
         return ("\n".join(lines) + "\n").encode()
@@ -332,3 +332,24 @@ class Station(unittest.TestCase):
         r = subprocess.run(["sh", "-c", cmd[0]], env=env, capture_output=True, text=True, timeout=60)
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("pwned", r.stdout)
+
+
+@unittest.skipUnless(os.environ.get("GS_RELEASE_CHECK") == "1", "release check (GS_RELEASE_CHECK=1)")
+class ReleaseManifest(unittest.TestCase):
+    """The pinned update: deploy-pins commit holds gs-update.sh, update_commit holds a manifest that matches git."""
+
+    def test_manifest_matches_git(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("gum", os.path.join(ROOT, "tools", "gen-update-manifest.py"))
+        gum = importlib.util.module_from_spec(spec); spec.loader.exec_module(gum)
+        pins = open(os.path.join(ROOT, "admin", "web", "deploy-pins.js")).read()
+        commit = re.search(r'^  commit: "([0-9a-f]{40})",$', pins, re.M).group(1)
+        upd = re.search(r'^  update_commit: "([0-9a-f]{40})",$', pins, re.M).group(1)
+        have = gum.blob(upd, "scripts/update-manifest.txt").decode()
+        self.assertEqual(have, gum.build(commit, ref=upd).replace(
+            "release " + open(os.path.join(ROOT, "VERSION")).read().strip(),
+            "release " + gum.blob(upd, "VERSION").decode().strip()))
+        self.assertIn("release %s\n" % open(os.path.join(ROOT, "VERSION")).read().strip(), have)
+        self.assertIn("update %s " % commit, have)  # the next update command equals what the station renders
+        for path in gum.FILES + ("scripts/gs-update.sh",):
+            self.assertEqual(gum.blob(upd, path), open(os.path.join(ROOT, path), "rb").read(), path)

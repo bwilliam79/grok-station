@@ -256,13 +256,16 @@ get "$RAW/$commit/scripts/update-manifest.txt" "$T/manifest" || die "no update m
 py - "$T/manifest" "$release" "$mode" > "$T/plan" <<'PY' || die "bad update manifest"
 import re, sys
 lines = open(sys.argv[1], encoding="ascii").read().split("\n")
-rel, upd, files = None, None, {}
+rel, upd, helper, files = None, None, None, {}
 for ln in lines:
     if not ln:
         continue
     m = re.fullmatch(r"release ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", ln)
     if m and rel is None:
         rel = m.group(1); continue
+    m = re.fullmatch(r"helper ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})", ln)
+    if m and helper is None:
+        helper = m.group(1); continue
     m = re.fullmatch(r"update ([0-9a-f]{40}) ([0-9a-f]{64})", ln)
     if m and upd is None:
         upd = m.groups(); continue
@@ -271,13 +274,13 @@ for ln in lines:
         files[m.group(2)] = m.group(1); continue
     sys.exit(1)
 need = ["admin/routine-%s.txt" % sys.argv[3], "scripts/install-home.sh" if sys.argv[3] == "home" else "tools/grok-station-reply"]
-if rel != sys.argv[2] or not upd or any(n not in files for n in need):
+if rel != sys.argv[2] or not upd or not helper or any(n not in files for n in need):
     sys.exit(1)
-print(upd[0], upd[1])
+print(upd[0], upd[1], helper)
 for n in need:
     print(files[n], n)
 PY
-read -r upd_commit upd_sha < "$T/plan"
+read -r upd_commit upd_sha want_helper < "$T/plan"
 sed -n '2,$p' "$T/plan" | while read -r want path; do
   base=${path##*/}
   get "$RAW/$commit/$path" "$T/$base" || die "download failed: $base"
@@ -323,7 +326,7 @@ if [ "$mode" = home ]; then
   common="$STATE/bin/gs_seal_common.py"
   [ -f "$common" ] || die "no home helper here; run the full install"
   cur=$(sed -n 's/^HELPER_VERSION = "\([0-9][0-9.]*\)"$/\1/p' "$common")
-  if py - "$release" "${cur:-0.0.0}" <<'PY'
+  if py - "$want_helper" "${cur:-0.0.0}" <<'PY'
 import sys
 v = lambda s: tuple(int(x) for x in s.split("."))
 sys.exit(0 if v(sys.argv[2]) < v(sys.argv[1]) else 1)
