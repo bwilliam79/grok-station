@@ -302,7 +302,7 @@ function wirePw(id1, id2, btn) {
 }
 function passwordScreen() {  // wizard step 1 (forced)
   root().innerHTML = `<div class="center"><form class="card auth" id="f" autocomplete="off">
-    <div class="phonestep" style="display:block">Step 1 of 6 · Code and password</div>
+    <div class="phonestep" style="display:block">Step 1 of 5 · Code and password</div>
     <h2 style="font-size:24px">Choose the admin password</h2>
     <p class="sub">You'll sign in as <b>admin</b> with this password. It's stored on the station as a salted hash only.</p>
     ${pwFields("p1", "p2")}<div id="e"></div>
@@ -1297,11 +1297,12 @@ async function displayPanel(el) {
   };
 }
 
-/* ---------------------------------------------------------------- wizard. Backend steps still run 2..8. */
-const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"];
-const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 6: 5, 7: 6};
-const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 6, 6: 7, 7: 8};
-const WIZ_BACK = {3: 2, 4: 2, 5: 3, 6: 5, 7: 6};
+/* ---------------------------------------------------------------- wizard. Backend steps still run 2..8.
+   0.11.7: no Wake words step (backend 6); wake words are set per bot on the Bots page. A saved step 6 resumes at 7. */
+const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Audio test"];
+const WIZ_VIEW = {2: 2, 3: 3, 4: 3, 5: 4, 7: 5};
+const WIZ_NEXT = {2: 3, 3: 5, 4: 5, 5: 7, 7: 8};
+const WIZ_BACK = {3: 2, 4: 2, 5: 3, 7: 5};
 /* xAI key: write-only. The page never receives the key back, only whether one is set. */
 async function xaiKeyPanel(el, onSaved, replacing) {
   const st = (await api("GET", "/api/xai-key")).data || {};
@@ -1342,6 +1343,7 @@ async function xaiKeyPanel(el, onSaved, replacing) {
 async function wizard(step) {
   clearTimers();
   step = Math.max(2, Math.min(8, step));
+  if (step === 6) step = 7;  // an older wizard saved the removed Wake words step
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
     root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
@@ -1355,9 +1357,9 @@ async function wizard(step) {
   const view = WIZ_VIEW[step] || 2;
   const skip = step === 2 && !hotspot ? `<button class="btn g" id="skip">Skip (wired)</button>`
     : (step === 3 || step === 4) ? `<button class="btn g" id="skip">Set up later</button>`
-    : step === 6 ? `<button class="btn g" id="skip">Skip, record later</button>` : "";
+    : "";
   root().innerHTML = `<div class="wiz"><nav class="rail" aria-label="Setup steps">${STEPS.map((t, i) => `<div class="st${i + 1 < view ? " done" : ""}${i + 1 === view ? " on" : ""}"><b>${i + 1 < view ? "✓" : i + 1}</b>${t}</div>`).join("")}</nav>
-    <div class="pane"><div class="phonestep">Step ${view} of 6 · ${STEPS[view - 1]}</div><div class="meterbar phonestep" style="height:6px"><b style="width:${view / 6 * 100}%"></b></div>
+    <div class="pane"><div class="phonestep">Step ${view} of ${STEPS.length} · ${STEPS[view - 1]}</div><div class="meterbar phonestep" style="height:6px"><b style="width:${view / STEPS.length * 100}%"></b></div>
       <h1 style="font:600 28px var(--disp);margin-bottom:16px">${STEPS[view - 1]}</h1><div id="wp"></div>
       <div class="inline" style="margin-top:20px">${view > 2 ? `<button class="btn g" id="back">Back</button>` : ""}
         <span class="right inline">${skip}<button class="btn p" id="next">Next</button></span></div></div></div>`;
@@ -1377,9 +1379,6 @@ async function wizard(step) {
     next.disabled = !(S.state && S.state.xai_key_set);
   } else if (step === 5) {
     await timePanel(wp, {onOk: () => {}});
-  } else if (step === 6) {
-    wp.innerHTML = `<div class="card"><h2>Wake words</h2>
-      <p class="sub">Hey Grok is built in and always on. Set a wake word for each other bot on the Bots page, after setup.</p></div>`;
   } else if (step === 7) {
     await audioPanel(wp);
   }

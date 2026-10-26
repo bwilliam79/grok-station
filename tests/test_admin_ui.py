@@ -42,7 +42,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn('data-p="xai">xAI API</a>', js)
         self.assertIn('["xai", "xAI API"]', _fn(js, "pageMore"))
         self.assertNotIn("xAI key and relay", js)
-        self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Wake words", "Audio test"]', js)
+        self.assertIn('const STEPS = ["Code and password", "Wi-Fi", "xAI key", "Time and location", "Audio test"]', js)
         self.assertIn("xAI key", js.split("const STEPS = ", 1)[1].split("];", 1)[0])
 
     def test_every_input_and_select_uses_the_dark_theme(self):
@@ -1242,3 +1242,41 @@ async function portraitSig() { ticks++; if (ticks >= OPEN_AFTER) open = false; r
         self.assertIn("overflow-x:auto;overflow-y:hidden;scrollbar-width:none}", self.css)
         self.assertIn(".ctabs::-webkit-scrollbar{display:none}", self.css)
         self.assertIn("  .ctabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;", self.css)
+
+
+class WizardNoWakeWords(unittest.TestCase):
+    """0.11.7: the setup wizard has no Wake words step, and an older saved step still resumes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+
+    def _maps(self):
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        a = self.js.find("const STEPS ="); b = self.js.find("/* xAI key", a)
+        out = subprocess.run(["node", "-e", self.js[a:b] + "\nconsole.log(JSON.stringify({STEPS, WIZ_VIEW, WIZ_NEXT, WIZ_BACK}))"],
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout)
+
+    def test_steps_renumbered(self):
+        m = self._maps()
+        self.assertNotIn("Wake words", m["STEPS"])
+        self.assertEqual(len(m["STEPS"]), 5)
+        self.assertNotIn("6", m["WIZ_VIEW"])
+        # walk forward from Wi-Fi: every backend step shows 2..5 in order, then finishes at 8
+        s, seen = 2, []
+        while s != 8:
+            seen.append(m["WIZ_VIEW"][str(s)])
+            s = m["WIZ_NEXT"][str(s)]
+        self.assertEqual(seen, [2, 3, 4, 5])
+        self.assertEqual(m["WIZ_BACK"]["7"], 5)
+        self.assertIn("Step 1 of 5", _fn(self.js, "passwordScreen"))
+
+    def test_old_saved_step_resumes(self):
+        fn = self.js[self.js.find("async function wizard("):]
+        fn = fn[:fn.find("\n}\n")]
+        self.assertIn("if (step === 6) step = 7;", fn)
+        self.assertNotIn("<h2>Wake words</h2>", fn)
+        self.assertIn("of ${STEPS.length}", fn)
