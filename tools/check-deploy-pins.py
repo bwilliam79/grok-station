@@ -71,6 +71,39 @@ def fetch(url):
         return e.code, b""
 
 
+def pinned_commits(pins_path=PINS, rev="HEAD"):
+    """Every commit a bot or the station fetches by id: deploy-pins commit and update_commit, the update
+    manifest's update line, and install-home.sh's COMMIT (at the deploy-pins commit and at rev)."""
+    text = open(pins_path, encoding="utf-8").read()
+    out = {}
+    m = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M)
+    if m:
+        out["deploy-pins commit"] = m.group(1)
+    m = re.search(r'^  update_commit: "([0-9a-f]{40})",$', text, re.M)
+    if m:
+        out["deploy-pins update_commit"] = m.group(1)
+        man = blob(m.group(1), "scripts/update-manifest.txt") or b""
+        u = re.search(rb"^update ([0-9a-f]{40}) ", man, re.M)
+        if u:
+            out["manifest update"] = u.group(1).decode()
+    for where, ref in (("deploy-pins commit", out.get("deploy-pins commit")), (rev, rev)):
+        ih = blob(ref, "scripts/install-home.sh") if ref else None
+        c = re.search(rb"^COMMIT=([0-9a-f]{40})$", ih or b"", re.M)
+        if c:
+            out["install-home COMMIT at " + where] = c.group(1).decode()
+    return out
+
+
+def ancestry(main_ref="origin/main", pins_path=PINS, rev="HEAD"):
+    """Problems for any pinned commit that is not an ancestor of main_ref (git merge-base --is-ancestor)."""
+    problems = []
+    for name, sha in sorted(pinned_commits(pins_path, rev).items()):
+        r = subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", sha, main_ref], capture_output=True)
+        if r.returncode != 0:
+            problems.append(f"{name} {sha[:12]} is not on {main_ref}")
+    return problems
+
+
 def check(remote=False, rev="HEAD", pins_path=PINS):
     """Return (commit, files, problems, notes).
 
@@ -109,8 +142,15 @@ def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument("--remote", action="store_true")
     ap.add_argument("--rev", default="HEAD")
+    ap.add_argument("--main-ref", default="origin/main", help="ref every pinned commit must be on (with --remote)")
     args = ap.parse_args(argv)
     commit, files, problems, notes = check(args.remote, args.rev)
+    if args.remote:
+        subprocess.run(["git", "-C", ROOT, "fetch", "-q", "origin", "main"], capture_output=True)
+        anc = ancestry(args.main_ref, rev=args.rev)
+        problems += anc
+        if not anc:
+            print(f"ok: {len(pinned_commits(rev=args.rev))} pinned commits are on {args.main_ref}")
     for note in notes:
         print("NOTE " + note)
     for p in problems:

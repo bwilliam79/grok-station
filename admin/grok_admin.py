@@ -1935,6 +1935,15 @@ def station_urls():
     return out
 
 
+def station_base():
+    """The station address written into bot instructions: ADMIN_STATION_ADDRESS when set, else this station's
+    own name (station_urls). Never the request's Host header, which the browser or a proxy controls."""
+    for cand in [os.environ.get("ADMIN_STATION_ADDRESS", "").strip()] + station_urls():
+        if cand and gs_routine.STATION.match(cand):
+            return cand
+    return ""
+
+
 def local_relay_settings():
     """Single device: the relay runs on this Pi on loopback. Token file is readable by this user only."""
     try:
@@ -3727,8 +3736,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(202, {"ok": True})
 
     def _station_base(self):
-        host = (self.headers.get("Host") or "").strip()
-        return "https://" + host if gs_routine.STATION.match("https://" + host) else ""
+        return station_base()
 
     def _finish_inputs(self):
         got = relay_call("GET", "/admin/bots")
