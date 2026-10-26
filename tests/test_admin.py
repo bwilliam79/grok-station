@@ -2336,6 +2336,23 @@ class FewshotEnrollFlow(unittest.TestCase):
         words = {w["name"]: w for w in self.c.req("GET", "/api/wakewords")[1]["words"]}
         self.assertIn("hey_rhea", words)
 
+    def test_deleted_word_does_not_reappear_a_minute_later(self):
+        """0.11.7: the listener still reports the word as its last enroll after a delete; the row stays gone."""
+        done = self.last("hey_ash", "failed_quality", "Not good enough yet.", False)
+        self.listener([done])
+        self.assertEqual(self.status("hey_ash").get("state"), "failed_quality")
+        self.assertEqual(self.c.req("DELETE", "/api/wakewords/hey_ash", {})[0], 200)
+        self.assertEqual(self.status("hey_ash"), {})
+        CLOCK[0] += 60
+        self.assertEqual(self.status("hey_ash"), {})
+        self.assertNotIn("hey_ash", ga.read_enroll_status())
+        # recording it again brings it back
+        self.listener([self.last("hey_ash", "recording", "", True)])
+        st, _ = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "persona": "grok"})
+        self.assertEqual(st, 202)
+        self.assertNotIn("hey_ash", ga.read_deleted_phrases())
+        self.assertEqual(self.status("hey_ash").get("state"), "recording")
+
     def test_build_failure_is_shown(self):
         msg = "Couldn't build the wake word on the station. Press Record voice to try again."
         self.listener([self.last("hey_ash", "training", "Saved. Checking the recordings.", True),

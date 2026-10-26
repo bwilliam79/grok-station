@@ -1410,6 +1410,8 @@ def forget_word(name):
         return False, "bad name"
     if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
         return False, "busy"
+    if (ENROLL_STATE.get("last") or {}).get("phrase") == name:
+        ENROLL_STATE["last"] = None  # or /status keeps reporting it and the admin re-creates the row
     shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
     for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
         try:

@@ -1251,6 +1251,24 @@ def write_enroll_status(doc):
     write_json(path("enroll-status.json"), doc, 0o640)
 
 
+def read_deleted_phrases():
+    """Phrases deleted since they were last recorded. The listener's last_enroll is ignored for these."""
+    doc = read_json(path("deleted-phrases.json"), {})
+    return {k: v for k, v in doc.items() if isinstance(k, str)} if isinstance(doc, dict) else {}
+
+
+def mark_phrase_deleted(name):
+    doc = read_deleted_phrases()
+    doc[name] = int(now())
+    write_json(path("deleted-phrases.json"), doc, 0o640)
+
+
+def clear_phrase_deleted(name):
+    doc = read_deleted_phrases()
+    if doc.pop(name, None) is not None:
+        write_json(path("deleted-phrases.json"), doc, 0o640)
+
+
 def enrolled_phrase_ids():
     return {w.get("name") for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
 
@@ -1403,7 +1421,7 @@ ENROLL_STALE_S = 180
 ENROLL_STALLED = "The station stopped before this wake word was finished. Press Record voice to try again, or delete it."
 
 
-def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
+def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None):
     """Fold the listener's enroll stage and any published model into the persisted per-phrase status.
 
     wake_status None means the listener didn't answer: keep what was saved, and still notice a model
@@ -1432,6 +1450,8 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
     if isinstance(wake_status, dict):
         busy = bool(wake_status.get("enrolling"))
         last = wake_status.get("last_enroll") if isinstance(wake_status.get("last_enroll"), dict) else {}
+    if isinstance(deleted, dict) and last.get("phrase") in deleted and not busy:
+        last = {}  # deleted since: an older listener still reports it; don't bring the row back
     phrase = str(last.get("phrase") or "")
     stage = str(last.get("stage") or "")
     msg = str(last.get("message") or "")[:240]
@@ -1539,7 +1559,7 @@ def refresh_enroll_status():
     code, st = wake("GET", "/status")
     wake_status = st if code == 200 and isinstance(st, dict) else None
     prev = read_enroll_status()
-    doc = derive_enroll_status(prev, wake_status, enrolled_entries(), int(now()))
+    doc = derive_enroll_status(prev, wake_status, enrolled_entries(), int(now()), read_deleted_phrases())
     if doc != prev:
         write_enroll_status(doc)
     silence_weak(doc)
@@ -3161,6 +3181,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             ov.pop(name, None)
         write_json(path("wake-overrides.json"), ov, 0o640)
+        if safe:
+            mark_phrase_deleted(name)
         doc = read_enroll_status()
         if doc.pop(name, None) is not None:
             write_enroll_status(doc)
@@ -3227,6 +3249,7 @@ class Handler(BaseHTTPRequestHandler):
         if code != 202 and creating:
             drop_phrase_persona(mid)
         elif code == 202:
+            clear_phrase_deleted(mid)
             set_enroll_state(mid, "recording", "Say it on the station.", who,
                              had_model=mid in enrolled_phrase_ids())
         elif not creating:

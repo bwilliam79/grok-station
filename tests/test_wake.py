@@ -647,7 +647,9 @@ class ForgetWord(unittest.TestCase):
         try:
             self.assertEqual(gw.forget_word("hey_grok"), (False, "bad name"))
             self.assertEqual(gw.forget_word("../etc"), (False, "bad name"))
+            gw.ENROLL_STATE["last"] = {"phrase": "gstest_word", "stage": "failed_quality"}
             self.assertEqual(gw.forget_word("gstest_word"), (True, None))
+            self.assertIsNone(gw.ENROLL_STATE["last"])  # /status no longer reports the deleted word
         finally:
             gw.ENROLL_DIR, gw.ENROLLED_DIR = old
         self.assertFalse(os.path.exists(os.path.join(inbox, "gstest_word")))
