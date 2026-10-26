@@ -963,6 +963,17 @@ class WakePhraseAndStatus(unittest.TestCase):
                                      "persona": "grok", "had_model": True}}
         self.assertEqual(ga.derive_enroll_status(old_model, None, {"hey_kitchen"}, 900)["hey_kitchen"]["state"], "training")
 
+    def test_queued_recording_replaces_not_good_enough(self):
+        """Train more stamps recording before the worker is busy, so the old screen does not stick."""
+        prev = {"hey_rhea": {"state": "failed_quality",
+                             "message": "Not good enough yet. It heard 19 of 30 recordings.",
+                             "updated_at": 1, "persona": "rhea", "had_model": True}}
+        wake = {"enrolling": False, "last_enroll": {"phrase": "hey_rhea", "stage": "recording",
+                                                    "message": "Say it on the station.", "persona": "rhea"}}
+        got = ga.derive_enroll_status(prev, wake, {"hey_rhea"}, 100)
+        self.assertEqual(got["hey_rhea"]["state"], "recording")
+        self.assertEqual(got["hey_rhea"]["message"], "Say it on the station.")
+
     def test_status_persists_across_a_new_handler(self):
         c = signed_in()
         CLOCK[0] = 1_700_000_100
@@ -2009,9 +2020,11 @@ class DeleteWakeWord(unittest.TestCase):
         ov = self.ov()
         ov["hey_mira"] = {"persona": "mira", "enabled": True}
         ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
-        clip = os.path.join(self.inbox, "hey_mira", "s1")
+        clip = os.path.join(self.inbox, "hey_mira", "20261026-120000")
         os.makedirs(clip)
-        open(os.path.join(clip, "00.wav"), "wb").write(b"RIFF")
+        for i in range(10):
+            open(os.path.join(clip, f"{i:02d}.wav"), "wb").write(b"RIFF-mira")
+        json.dump({"phrase": "hey_mira", "count": 10}, open(os.path.join(clip, "session.json"), "w"))
         try:
             self.assertEqual(c.req("PUT", "/api/wakewords/hey_grok", {"unlink": True})[0], 409)
             st, j = c.req("PUT", "/api/wakewords/hey_mira", {"unlink": True})
@@ -2020,7 +2033,7 @@ class DeleteWakeWord(unittest.TestCase):
             self.assertNotIn("hey_mira", {w["name"] for w in body["words"]})
             parked = {w["name"]: w for w in body["unused"]}
             self.assertEqual(parked["hey_mira"]["reason"], "unlinked")
-            self.assertGreaterEqual(parked["hey_mira"]["recordings"], 1)
+            self.assertEqual(parked["hey_mira"]["recordings"], 10)
             self.assertTrue(os.path.isfile(os.path.join(clip, "00.wav")))
             self.assertEqual(c.req("PUT", "/api/wakewords/no_such_word", {"unlink": True})[0], 404)
         finally:
@@ -2031,9 +2044,11 @@ class DeleteWakeWord(unittest.TestCase):
         ov = self.ov()
         ov["hey_kai"] = {"persona": "kai", "enabled": True}
         ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
-        clip = os.path.join(self.inbox, "hey_kai", "s1")
+        clip = os.path.join(self.inbox, "hey_kai", "20261026-120100")
         os.makedirs(clip)
-        open(os.path.join(clip, "00.wav"), "wb").write(b"RIFF")
+        for i in range(10):
+            open(os.path.join(clip, f"{i:02d}.wav"), "wb").write(b"RIFF-kai")
+        json.dump({"phrase": "hey_kai", "count": 10}, open(os.path.join(clip, "session.json"), "w"))
         old = ga.relay_call
         ga.relay_call = lambda *a, **k: (200, {"ok": True, "bots": []})
         try:
@@ -2043,7 +2058,7 @@ class DeleteWakeWord(unittest.TestCase):
             self.assertNotIn("hey_kai", {w["name"] for w in body["words"]})
             parked = {w["name"]: w for w in body["unused"]}
             self.assertEqual(parked["hey_kai"]["reason"], "deleted")
-            self.assertGreaterEqual(parked["hey_kai"]["recordings"], 1)
+            self.assertEqual(parked["hey_kai"]["recordings"], 10)
             self.assertTrue(os.path.isfile(os.path.join(clip, "00.wav")))
         finally:
             ga.relay_call = old

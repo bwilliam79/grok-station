@@ -797,12 +797,10 @@ function fieldCheckSentence(err, words, bots) {
   if (text.indexOf("Needs attention") === 0) return text;
   return "Needs attention: " + text;
 }
-function clipWhy(why) {
-  if (why === "loud") return "Too loud. Step back a little.";
-  if (why === "quiet") return "Too quiet. Move closer.";
-  if (why === "noise") return "Too much background noise. Try again when it’s quieter.";
-  if (why === "cut" || why === "cutoff") return "Cut off. Say it all after the chime.";
-  return "Didn’t hear it. Speak after the chime.";
+function clipsNeeded(total) {
+  const n = Number(total);
+  if (!Number.isFinite(n) || n < 1) return 0;
+  return Math.ceil(0.8 * n);
 }
 function clipSquares(kept, recording, rejected) {
   const k = typeof kept === "number" ? kept : 0;
@@ -829,14 +827,6 @@ function levelMeter(db) {
 function barHTML(pct, lav) {
   const w = Math.max(0, Math.min(100, Math.round(pct)));
   return `<div class="ebar${lav ? " lav" : ""}"><i style="width:${w}%"></i></div>`;
-}
-function clipFeed(recent) {
-  if (!recent || !recent.length) return "";
-  const lines = recent.map(item => {
-    if (item.ok) return `<div class="help" style="color:var(--gs-teal)">✓ Clip ${esc(item.n)} · Got it</div>`;
-    return `<div class="need">${esc(clipWhy(item.why))}</div><div class="help">We’ll record it again at the end.</div>`;
-  }).join("");
-  return `<div class="feed"><div class="help">Last few</div>${lines}</div>`;
 }
 function confirmSheet(opts) {
   const d = document.createElement("div");
@@ -981,7 +971,7 @@ function openSetWake(bot, el, d, opts) {
         $("#lvl", body).outerHTML = levelMeter(level);
         return;
       }
-      if ((state === "training" || state === "processing" || state === "uploading") && $("#wwclose", body)) return;
+      if ((state === "training" || state === "processing" || state === "uploading") && $("#wwtrain", body)) return;
       if ((state === "ready" || state === "published") && $("#wwdone", body)) return;
       if (state === "failed_quality" && $("#wwnot", body)) return;
     }
@@ -1008,8 +998,8 @@ function openSetWake(bot, el, d, opts) {
       stop();
       const m = String(row.message || "").match(/(\d+) of (\d+)/);
       const heard = m
-        ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs 8. Ten more recordings should get it there."
-        : esc(label) + " needs 8 of 10 test clips. Ten more recordings should get it there.";
+        ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs " + clipsNeeded(m[2]) + ". Ten more recordings should help."
+        : esc(label) + " isn't good enough yet. Ten more recordings should help.";
       body.innerHTML = `<h2 style="font:600 22px var(--disp)">Not good enough yet</h2>
         <p>${heard}</p>
         <p class="note">${esc(label)} stays off until it’s ready. Other wake words keep working.</p>
@@ -1028,13 +1018,10 @@ function openSetWake(bot, el, d, opts) {
       return showError("train");
     }
     if (state === "training" || state === "processing" || state === "uploading") {
-      body.innerHTML = `<h2 style="font:600 22px var(--disp)">Training ${esc(label)}…</h2>
+      body.innerHTML = `<h2 id="wwtrain" style="font:600 22px var(--disp)">Training ${esc(label)}…</h2>
         <p>All 10 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
         ${barHTML(100, true)}
-        <p class="help">Training · about 3 min left</p>
-        <div class="acts"><button class="btn g" id="wwclose" type="button">Close</button></div>`;
-      const close = $("#wwclose", body);
-      if (close) close.onclick = back;
+        <p class="help">Training · about 3 min left</p>`;
       return;
     }
     const kept = progress ? row.kept : 0;
@@ -1053,7 +1040,6 @@ function openSetWake(bot, el, d, opts) {
       ${first}${grid}
       ${levelMeter(level)}
       ${barHTML(progress ? (kept / 10) * 100 : 0, false)}
-      ${clipFeed(recent)}
       <div class="acts"><button class="btn" id="wwpause" type="button">Pause</button>
         <button class="btn g" id="wwstop" type="button">Stop and discard</button></div>`;
     const pause = $("#wwpause", body);
@@ -1089,6 +1075,12 @@ function openSetWake(bot, el, d, opts) {
     }
     const payload = {phrase: phraseId || typed, persona: bot.slug};
     if (topup) payload.topup = true;
+    // Leave the not-good-enough screen as soon as Train more starts, before the station answers.
+    if (topup) {
+      finished = false;
+      body.dataset.sig = "";
+      paintRow({state: "recording", kept: 0, index: 1, recent: [], topup: true}, null);
+    }
     const r = await api("POST", "/api/enroll", payload);
     if (r.status === 409) return showError("busy");
     if (r.status === 503 || netDown(r.status)) return showError("mic");
@@ -1139,21 +1131,26 @@ async function displayPanel(el) {
   const modes = ["off", "schedule", "sun", "auto-sensor"];
   const mode = modes.includes(v.GROK_STATION_DIM_MODE) ? v.GROK_STATION_DIM_MODE : "off";
   const day = pct(v.GROK_STATION_DIM_DAY, 90), night = pct(v.GROK_STATION_DIM_NIGHT, 20);
-  el.innerHTML = `<div class="cols"><div class="card dispcard"><h2>Display</h2>
+  el.classList.add("dispbody");
+  el.innerHTML = `<div class="dispcols"><div class="card dispcard"><h2>Display</h2>
     <h3 class="dgrp">Clock and night clock</h3>
     <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-checked="${v.GROK_STATION_NIGHT === "" ? "false" : "true"}" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock on a black screen. These hours apply only when Brightness is Off.</div></div></div>
     <div class="row inline"><label class="help">Night clock from <select class="sel" id="nf" style="width:130px">${hours(nf)}</select></label><label class="help">until <select class="sel" id="nt" style="width:130px">${hours(nt)}</select></label></div>
     <p class="help">Schedule, sunrise, and a light sensor ignore these hours. The night clock then follows the brightness window: the dim times, sunset to sunrise, or a dark sensor.</p>
     <h3 class="dgrp">Screens</h3>
+    <div class="pair">
     <div class="field"><label for="hold">Message hold time <span class="help" id="holdv"></span></label><input type="range" id="hold" min="5" max="120" value="${esc(v.GROK_STATION_HOLD || "30")}"></div>
     <div class="field"><label for="crot">Card rotation <span class="help" id="crotv"></span></label><input type="range" id="crot" min="5" max="120" value="${esc(rot)}"></div>
+    </div>
     <div class="row"><button class="tog${v.GROK_STATION_FADE === "0" ? "" : " on"}" role="switch" id="fade" aria-checked="${v.GROK_STATION_FADE === "0" ? "false" : "true"}" aria-label="Fade"></button><div class="lbl">Fade between screens</div></div>
     <h3 class="dgrp">Brightness</h3>
     <div class="field"><label for="dmode">Brightness</label><select class="sel" id="dmode">
       <option value="off">Off</option><option value="schedule">Schedule</option><option value="sun">Sunrise and sunset</option><option value="auto-sensor">Light sensor</option></select>
       <div class="help">Off leaves the backlight alone. Schedule and sunrise need no sensor. A light sensor is used only when the kernel already exposes one.</div></div>
+    <div class="pair">
     <div class="field"><label for="dday">Day brightness <span class="help" id="ddayv"></span></label><input type="range" id="dday" min="0" max="100" value="${day}"></div>
     <div class="field"><label for="dnight">Night brightness <span class="help" id="dnightv"></span></label><input type="range" id="dnight" min="0" max="100" value="${night}"></div>
+    </div>
     <div class="row inline"><label class="help">Dim the screen from <input class="inp" type="time" id="dfrom" value="${hhmm(v.GROK_STATION_DIM_FROM, "22:00")}"></label><label class="help">until <input class="inp" type="time" id="dto" value="${hhmm(v.GROK_STATION_DIM_TO, "06:00")}"></label></div>
     <p class="help">Schedule uses these times to lower the backlight. They are not the Night clock hours. A light sensor with no reading falls back to them.</p>
     <div class="row inline"><label class="help">Sunrise offset <input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"></label><label class="help">Sunset offset <input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"></label></div>
@@ -1164,7 +1161,7 @@ async function displayPanel(el) {
     <details class="field disp-adv"><summary class="help">Advanced: team logo sources</summary><label for="chosts">Logo hosts</label><textarea class="inp" id="chosts" rows="3" placeholder="a.espncdn.com">${esc(hosts)}</textarea>
       <div class="help">Sports cards load team logos only from these HTTPS hosts. The default, a.espncdn.com, covers ESPN's team logos. Anything else stays a monogram.</div></details>
     <div id="de"></div><div id="ce"></div><div class="field inline"><button class="btn p" id="dsave" type="button" disabled>Save</button></div></div>
-    <div class="card"><h2>Live preview</h2><div class="prevstack">
+    <div class="card dispprev"><h2>Live preview</h2><div class="prevstack">
       <div class="prev"><div class="prevframe"><img class="thumb" id="pv" alt="What the station screen shows now"></div><p class="note">Day clock</p></div>
       <div class="prev"><div class="prevframe"><div class="nightprev" id="nprev"><div class="tm">11:24</div><div class="dt">Thu, Oct 22</div><div class="dim-overlay" id="nov"></div></div></div>
       <p class="note">Example night clock. The black layer is the night brightness.</p></div>
@@ -1824,8 +1821,10 @@ function bindSheet(d, close) {
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
   const v = S.avatarV ? "?v=" + S.avatarV : "";
-  const fb = esc(defaultAvatarSrc(slug));
-  return `<span class="avwrap${lg ? " lg" : ""}" data-slug="${esc(slug)}" data-fallback="${fb}"><img class="av" alt="" src="/api/portrait/${esc(slug)}${v}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
+  const logo = slug === "grok";
+  const fb = logo ? "/assets/mark.svg" : defaultAvatarSrc(slug);
+  const src = logo ? "/assets/mark.svg" : ("/api/portrait/" + esc(slug) + v);
+  return `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}" data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
 }
 function askPassword(title, text, label, send, onCancel) {
   const d = document.createElement("div");

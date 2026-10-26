@@ -900,3 +900,100 @@ class Release0112UI(unittest.TestCase):
         bots = _read(os.path.join("docs", "bots.md"))
         self.assertIn("No other bots yet. Hey Grok always works.", bots)
         self.assertIn("Revoke all bots?", bots)
+
+
+class Release0113UI(unittest.TestCase):
+    """0.11.3 admin: wake dialog, pass mark, display columns, location accent, Hey Grok logo."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+        cls.css = _read(os.path.join("admin", "web", "admin.css"))
+
+    def test_train_more_leaves_the_not_good_enough_screen_immediately(self):
+        fn = _fn(self.js, "openSetWake")
+        begin = fn.split("const begin = async topup", 1)[1].split("const poll =", 1)[0]
+        paint = begin.index('paintRow({state: "recording"')
+        post = begin.index('api("POST", "/api/enroll"')
+        self.assertLess(paint, post)
+        self.assertIn("if (topup)", begin[:paint])
+
+    def test_recording_dialog_keeps_check_marks_not_a_status_log(self):
+        self.assertNotIn("function clipFeed", self.js)
+        self.assertNotIn("Last few", self.js)
+        self.assertNotIn("function clipWhy", self.js)
+        self.assertIn("function clipSquares", self.js)
+        fn = _fn(self.js, "openSetWake")
+        self.assertIn("clipSquares", fn)
+        self.assertNotIn("clipFeed", fn)
+
+    def test_pass_mark_is_eighty_percent_of_the_clips(self):
+        fn = self.js.split("function clipsNeeded", 1)[1].split("function clipSquares", 1)[0]
+        self.assertIn("Math.ceil(0.8 * n)", fn)
+        weak = self.js.split('state === "failed_quality"', 1)[1].split("if (state === \"failed\")", 1)[0]
+        self.assertIn("clipsNeeded(m[2])", weak)
+        self.assertIn("Ten more recordings should help.", weak)
+        self.assertIn("isn't good enough yet. Ten more recordings should help.", weak)
+        self.assertNotIn("It needs 8", weak)
+        self.assertNotIn("needs 8 of 10", self.js)
+        script = "function clipsNeeded" + fn + "\nprocess.stdout.write([10, 30, 40].map(clipsNeeded).join(','));"
+        try:
+            out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            self.skipTest("node not installed")
+        if out.returncode != 0 and "not found" in (out.stderr or "").lower():
+            self.skipTest("node not installed")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "8,24,32")
+
+    def test_training_dialog_has_one_close(self):
+        fn = _fn(self.js, "openSetWake")
+        self.assertNotIn('id="wwclose"', fn)
+        self.assertNotIn(">Close<", fn)
+        self.assertIn('id="wwtrain"', fn)
+        self.assertIn(">Cancel<", fn)
+        self.assertIn(">Not now<", fn)
+        self.assertIn(">Done<", fn)
+        bot = _fn(self.js, "openBot")
+        self.assertIn(">Close<", bot)
+        self.assertEqual(bot.count(">Close<"), 1)
+
+    def test_display_fits_one_desktop_screen_in_two_columns(self):
+        panel = self.js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
+        self.assertIn('class="dispcols"', panel)
+        self.assertIn("dispbody", panel)
+        self.assertIn('class="card dispprev"', panel)
+        self.assertIn('class="prevstack"', panel)
+        screens = panel.split(">Screens<", 1)[1].split(">Brightness<", 1)[0]
+        self.assertIn('class="pair"', screens)
+        self.assertIn('id="hold"', screens)
+        self.assertIn('id="crot"', screens)
+        bright = panel.split(">Brightness<", 1)[1].split(">Units<", 1)[0]
+        self.assertIn('id="dday"', bright)
+        self.assertIn('id="dnight"', bright)
+        wide = self.css.split("@media (min-width:1024px)", 1)[1].split("@media", 1)[0]
+        self.assertIn("grid-template-columns:minmax(0,1fr) minmax(168px,210px)", wide)
+        self.assertIn(".dispprev{position:sticky;top:8px}", wide)
+        self.assertIn(".dispprev{position:static}", self.css)
+        self.assertIn("grid-template-columns:minmax(0,1fr)", self.css.split(".dispcols{", 1)[1].split("}", 1)[0])
+        frame = self.css.split(".prevstack .prevframe{", 1)[1].split("}", 1)[0]
+        self.assertIn("aspect-ratio:3/2", frame)
+
+    def test_saved_location_uses_the_accent_and_a_pin(self):
+        block = self.css.split(".locset{", 1)[1].split("}", 1)[0]
+        self.assertIn("color:var(--gs-teal)", block)
+        before = self.css.split(".locset::before{", 1)[1].split("}", 1)[0]
+        self.assertIn("mask:", before)
+        self.assertIn("M12 2a7 7 0", before)
+
+    def test_hey_grok_uses_the_station_logo(self):
+        start = self.js.index("function avatar(")
+        fn = self.js[start:self.js.index("\nfunction ", start + 1)]
+        self.assertIn('slug === "grok"', fn)
+        self.assertIn('"/assets/mark.svg"', fn)
+        self.assertIn('class="avwrap', fn)
+        self.assertIn(" logo", fn)
+        bots = _fn(self.js, "paintBots")
+        self.assertIn('avatar("grok", "Grok")', bots)
+        self.assertIn(".avwrap.logo", self.css)
+        self.assertIn("assets/mark.svg", self.css)

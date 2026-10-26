@@ -68,6 +68,22 @@ class TestWake(unittest.TestCase):
         d.reset(); d.feed({"hey_kitchen": 0.9})
         self.assertIsNone(d.feed({"hey_kitchen": 0.5}))
 
+    def test_note_enroll_queued_reports_recording_before_busy(self):
+        busy, last = gw.ENROLL_STATE.get("busy"), gw.ENROLL_STATE.get("last")
+        try:
+            gw.ENROLL_STATE["busy"] = False
+            gw.ENROLL_STATE["last"] = {"phrase": "hey_rhea", "stage": "failed_quality", "message": "Not good enough"}
+            gw.note_enroll_queued({"phrase": "hey_rhea", "count": 10, "persona": "rhea", "topup": True})
+            stamped = gw.ENROLL_STATE["last"]
+            self.assertEqual(stamped["stage"], "recording")
+            self.assertEqual(stamped["message"], "Say it on the station.")
+            self.assertIsNone(stamped["session"])
+            self.assertTrue(stamped["topup"])
+            self.assertFalse(gw.ENROLL_STATE["busy"])
+        finally:
+            gw.ENROLL_STATE["busy"] = busy
+            gw.ENROLL_STATE["last"] = last
+
     def test_repo_config(self):
         cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "wake", "wakewords.json")))
         names = {w["name"]: w for w in cfg["words"]}
