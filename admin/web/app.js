@@ -1925,7 +1925,8 @@ function paintSummary(el, bots) {
   const n = (bots || []).length + 1;
   let attn = 0;
   (bots || []).forEach(b => { if (rowNeeds(b, el._words, el._train)) attn += 1; });
-  sum.textContent = attn ? n + " bots · " + attn + " needs attention" : n + " bots";
+  const botsTxt = n + (n === 1 ? " bot" : " bots");
+  sum.textContent = attn ? botsTxt + " · " + attn + (attn === 1 ? " needs attention" : " need attention") : botsTxt;
 }
 function paintUnused(el) {
   const wrap = $("#unusedwrap", el);
