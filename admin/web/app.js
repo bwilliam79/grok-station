@@ -2119,6 +2119,37 @@ async function refreshBots(el) {
   paintBots(el, el._bots);
   return r.data;
 }
+/* Fingerprint of the portrait the station serves now: "" when there is none. */
+async function portraitSig(slug) {
+  try {
+    const r = await fetch("/api/portrait/" + encodeURIComponent(slug) + "?v=" + Date.now(), {cache: "no-store", credentials: "same-origin"});
+    if (!r.ok) return "";
+    return sha256Hex(new Uint8Array(await r.arrayBuffer()));
+  } catch (e) { return null; }
+}
+/* One picture watch per bot. Polls ~2 minutes; stops when the card (d) closes. */
+const PICTURE_POLLS = {};
+const PICTURE_WAIT_MS = 120000, PICTURE_EVERY_MS = 5000;
+function stopPicturePoll(slug) {
+  if (PICTURE_POLLS[slug]) { clearTimeout(PICTURE_POLLS[slug].t); delete PICTURE_POLLS[slug]; }
+}
+function watchPicture(slug, before, d, done) {
+  stopPicturePoll(slug);
+  const t0 = Date.now(), me = {t: 0};
+  const mine = () => PICTURE_POLLS[slug] === me;
+  const tick = async () => {
+    if (!mine()) return;
+    if (!document.body.contains(d)) return stopPicturePoll(slug);
+    const now = await portraitSig(slug);
+    if (!mine()) return;
+    if (!document.body.contains(d)) return stopPicturePoll(slug);
+    if (now !== null && now !== "" && now !== before) { stopPicturePoll(slug); return done("updated"); }
+    if (Date.now() - t0 >= PICTURE_WAIT_MS) { stopPicturePoll(slug); return done("timeout"); }
+    me.t = setTimeout(tick, PICTURE_EVERY_MS);
+  };
+  PICTURE_POLLS[slug] = me;
+  me.t = setTimeout(tick, PICTURE_EVERY_MS);
+}
 function bustPortraits(el) {
   S.avatarV = Date.now();
   // A portrait that failed to load earlier removed its <img>; put one back so a new upload shows.
@@ -2195,6 +2226,7 @@ function openBot(bot, el) {
         <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
         ${PICTURE_ASK ? '<button class="btn sm" id="refav" type="button">Ask bot for picture</button>' : ""}
       </div>
+      <p class="note" id="refmsg" hidden></p>
       <p class="note">png, jpeg, or webp, up to 2 MB.</p>
     </div>
     <div role="tabpanel" id="panel-conn" class="cpanel" hidden>
@@ -2333,13 +2365,20 @@ function openBot(bot, el) {
   };
   const refav = $("#refav", d);
   if (refav) refav.onclick = async () => {
-    const btn = $("#refav", d);
+    const btn = $("#refav", d), who = bot.name || bot.slug;
+    const say = t => { const m = $("#refmsg", d); if (m) { m.hidden = !t; m.textContent = t; } };
+    stopPicturePoll(bot.slug);
     busyBtn(btn, true, "Asking…");
+    const before = await portraitSig(bot.slug);
     const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/avatar-request`, {});
     busyBtn(btn, false, "Ask bot for picture");
-    if (!(r.ok || r.status === 202)) return toast((r.data && r.data.error) || "Couldn't ask for the picture.", "bad");
-    toast("Asked for the picture.");
-    setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 30000);
+    if (r.status === 502) return say("Couldn't reach " + who + ".");
+    if (!(r.ok || r.status === 202)) return say((r.data && r.data.error) || "Couldn't ask for the picture.");
+    say("Asked " + who + " for its picture…");
+    watchPicture(bot.slug, before, d, res => {
+      if (res === "updated") { say("Picture updated."); bustPortraits(el); }
+      else say(who + " didn't send a picture. Its station helper may be out of date: use More, Copy updated instructions, and send them to " + who + ".");
+    });
   };
   const showResult = (res) => {
     stopPoll();

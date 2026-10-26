@@ -255,3 +255,10 @@ Patch release. Installs over 0.11.4. The pinned download files are unchanged.
 - **Reload after an update.** The Updates page no longer reloads the moment the installed version changes. It waits until `/api/state` and `/api/updates` both answer (backoff up to 5 s, about 90 s cap) and shows Reconnecting… meanwhile.
 - **Recovery repaint.** A page drawn while the station was down (dashes and "The station isn't answering") is redrawn once when the station answers again. The repaint waits while a field on the page has focus or a drawer or sheet is open.
 - **Fresh page while down.** Updates shows Reconnecting… instead of the error banner.
+
+## 0.11.6
+
+Patch release. Installs over 0.11.5. The pinned download files are unchanged.
+
+- **Ask bot for picture.** After the station accepts the ask (202) the card shows "Asked <Bot> for its picture…" and checks the served portrait every 5 s for about 2 minutes, one watch per bot, stopped when the card closes. A new picture shows "Picture updated."; no new picture shows that the bot's station helper may be out of date and how to send it updated instructions; 502 shows "Couldn't reach <Bot>."
+- **Configure tabs.** The tab row hides its scrollbar and clips vertical overflow, so the -1px tab underline no longer adds a vertical scrollbar. Narrow screens still scroll sideways.

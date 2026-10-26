@@ -260,7 +260,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .need{color:var(--gs-amber);font-size:13px;display:flex;align-items:center;gap:6px;margin-top:4px}
 .mainpill{margin-left:8px}
 .note.amber,.chpanel .note.amber{background:var(--gs-amber-bg);color:var(--gs-text);border-radius:12px;padding:12px 14px}
-.ctabs{display:flex;align-items:flex-end;gap:2px;margin:12px 0 0;border-bottom:1px solid var(--gs-rule);flex-wrap:nowrap;overflow-x:auto}
+.ctabs{display:flex;align-items:flex-end;gap:2px;margin:12px 0 0;border-bottom:1px solid var(--gs-rule);flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+.ctabs::-webkit-scrollbar{display:none}
 .ctab{flex:none;appearance:none;background:none;border:0;border-bottom:2px solid transparent;margin:0 0 -1px;padding:8px 12px;font:500 14px var(--body);color:var(--gs-muted);cursor:pointer;white-space:nowrap}
 .ctab[aria-selected="true"]{color:var(--gs-text);font-weight:600;border-bottom-color:var(--gs-teal)}
 .ctab:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;border-radius:4px}
@@ -313,7 +314,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
   .sheet .acts{flex-direction:column-reverse}
   .sheet .acts .btn{width:100%}
   #toast{top:16px;bottom:auto}
-  .ctabs{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .ctabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
   .ctab{flex:none}
   .btn.sm.linkish{min-height:0;height:auto}
 }

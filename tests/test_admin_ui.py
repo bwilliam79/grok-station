@@ -879,7 +879,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1001,7 +1001,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1170,3 +1170,75 @@ console.log(JSON.stringify({shells, timers, pageLoadedDown}));
         self.assertIn("!PAGE_INSTALLED.v) && netDown(r.status)", upd)
         self.assertIn('offline ? "Reconnecting…"', upd)
         self.assertIn("!r.ok && !offline", upd)
+
+
+class PictureAskHonest(unittest.TestCase):
+    """0.11.6: Ask bot for picture waits for a new picture and says what happened."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+        cls.css = _read(os.path.join("admin", "web", "admin.css"))
+
+    def _src(self, name):
+        start = self.js.find("function " + name)
+        if self.js[start - 6:start] == "async ":
+            start -= 6
+        return self.js[start:self.js.find("\n}\n", start) + 3]
+
+    def _watch(self, sigs, open_after=99):
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        setup = self.js[self.js.find("const PICTURE_POLLS"):self.js.find("function stopPicturePoll")]
+        script = setup + """
+let clock = 0, ticks = 0, open = true, out = [];
+const SIGS = %s, OPEN_AFTER = %d;
+Date.now = () => clock;
+const queue = [];
+let seq = 0;
+global.setTimeout = (f, ms) => { queue.push([f, ms, ++seq]); return seq; };
+global.clearTimeout = (id) => { const i = queue.findIndex(q => q[2] === id); if (i >= 0) queue.splice(i, 1); };
+const d = {};
+const document = {body: {contains: () => open}};
+async function portraitSig() { ticks++; if (ticks >= OPEN_AFTER) open = false; return SIGS[Math.min(ticks - 1, SIGS.length - 1)]; }
+""" % (json.dumps(sigs), open_after) + self._src("stopPicturePoll") + self._src("watchPicture") + """
+(async () => {
+  watchPicture("kai", "old", d, r => out.push(r));
+  watchPicture("kai", "old", d, r => out.push(r));  // second ask replaces the first
+  while (queue.length) { const [f, ms] = queue.shift(); clock += ms; await f(); }
+  console.log(JSON.stringify({out, ticks, polls: Object.keys(PICTURE_POLLS).length}));
+})();
+"""
+        res = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout.strip().splitlines()[-1])
+
+    def test_new_picture_reports_updated(self):
+        got = self._watch(["old", "old", "new"])
+        self.assertEqual(got["out"], ["updated"])
+        self.assertEqual(got["polls"], 0)
+
+    def test_timeout_after_two_minutes(self):
+        got = self._watch(["old"])
+        self.assertEqual(got["out"], ["timeout"])
+        self.assertEqual(got["ticks"], 24)  # 120 s / 5 s, one poll for the bot
+        self.assertEqual(got["polls"], 0)
+
+    def test_stops_when_card_closes(self):
+        got = self._watch(["old"], open_after=3)
+        self.assertEqual(got["out"], [])
+        self.assertEqual(got["ticks"], 3)
+        self.assertEqual(got["polls"], 0)
+
+    def test_messages(self):
+        fn = _fn(self.js, "openBot")
+        self.assertIn('"Asked " + who + " for its picture…"', fn)
+        self.assertIn('say("Picture updated.")', fn)
+        self.assertIn("didn't send a picture. Its station helper may be out of date: use More, Copy updated instructions, and send them to", fn)
+        self.assertIn('if (r.status === 502) return say("Couldn\'t reach " + who + ".")', fn)
+        self.assertNotIn("setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 30000)", fn)
+
+    def test_config_tabs_no_vertical_scrollbar(self):
+        self.assertIn("overflow-x:auto;overflow-y:hidden;scrollbar-width:none}", self.css)
+        self.assertIn(".ctabs::-webkit-scrollbar{display:none}", self.css)
+        self.assertIn("  .ctabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;", self.css)
