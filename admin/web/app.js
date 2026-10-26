@@ -2965,9 +2965,9 @@ function helperUpdateCommand(pins, slug) {
   if (!pins || !/^[0-9a-f]{40}$/.test(pins.commit || "") || !/^[0-9a-f]{64}$/.test(sum || "")) return "";
   if (typeof slug !== "string" || slug === "grok" || !/^[a-z][a-z0-9-]{1,23}$/.test(slug)) return "";
   const url = "https://raw.githubusercontent.com/bwilliam79/grok-station/" + pins.commit + "/scripts/install-home.sh";
-  return "d=$(mktemp -d) && cd \"$d\" && curl --proto '=https' --tlsv1.2 -fsS -o install-home.sh '" + url + "'"
+  return "d=$(mktemp -d) && ( cd \"$d\" && curl --proto '=https' --tlsv1.2 -fsS -o install-home.sh '" + url + "'"
     + " && { command -v sha256sum >/dev/null && s=$(sha256sum install-home.sh) || s=$(shasum -a 256 install-home.sh); }"
-    + " && [ \"${s%% *}\" = '" + sum + "' ] && sh install-home.sh --update --persona " + slug;
+    + " && [ \"${s%% *}\" = '" + sum + "' ] && sh install-home.sh --update --persona " + slug + " ); r=$?; rm -rf \"$d\"; [ \"$r\" = 0 ]";
 }
 function fillHelperCommand(body, slug) {
   const pins = typeof DEPLOY_PINS === "undefined" ? null : DEPLOY_PINS;

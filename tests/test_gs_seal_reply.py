@@ -1558,6 +1558,49 @@ class SealReply(unittest.TestCase):
         self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])
         gsc.assert_vendor_trusted(self.home, os.geteuid())
 
+    def _vendor_run(self, files):
+        blob = self._wheel(files)
+        lock = os.path.join(self.home, "vendor-lock.txt")
+        self._lock(lock, hashlib.sha256(blob).hexdigest())
+        with _patched(su, "fetch_wheel", lambda *a: blob):
+            return self.cli(["vendor-install", "--lock", lock])
+
+    def test_vendor_swap_rolls_back_when_the_manifest_write_fails(self):
+        self.assertEqual(self._vendor_run([("nacl/__init__.py", b"V = 1\n")])[0], 0)
+        root, vendor = self.root(), os.path.join(self.root(), "vendor")
+        man = open(os.path.join(root, "vendor-manifest.json"), "rb").read()
+        real = os.replace
+
+        def boom(src, dst, *a, **k):
+            if str(dst).endswith("vendor-manifest.json") and str(src).endswith(".new"):
+                raise OSError("disk full")
+            return real(src, dst, *a, **k)
+
+        with _patched(su.os, "replace", boom):
+            rc = self._vendor_run([("nacl/__init__.py", b"V = 2\n")])
+        self.assertEqual(rc, (1, "", "refused\n"))
+        self.assertEqual(self.slurp(os.path.join(vendor, "nacl", "__init__.py"), binary=True), b"V = 1\n")
+        self.assertEqual(open(os.path.join(root, "vendor-manifest.json"), "rb").read(), man)
+        self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])
+        gsc.assert_vendor_trusted(self.home, os.geteuid())
+
+    def test_vendor_recover_restores_an_interrupted_swap_and_keeps_old_until_valid(self):
+        self.assertEqual(self._vendor_run([("nacl/__init__.py", b"V = 1\n")])[0], 0)
+        root, vendor = self.root(), os.path.join(self.root(), "vendor")
+        # interrupted between moving vendor/ aside and putting the new one in
+        aside = tempfile.mkdtemp(prefix=".vendor-old.", dir=root)
+        os.rename(vendor, os.path.join(aside, "vendor"))
+        su._recover_vendor(root, vendor)
+        self.assertEqual(self.slurp(os.path.join(vendor, "nacl", "__init__.py"), binary=True), b"V = 1\n")
+        self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])  # valid now: cleaned up
+        gsc.assert_vendor_trusted(self.home, os.geteuid())
+        # an old set beside a vendor/ that doesn't match its manifest is kept
+        keep = tempfile.mkdtemp(prefix=".vendor-old.", dir=root)
+        with open(os.path.join(vendor, "nacl", "__init__.py"), "ab") as fh:
+            fh.write(b"# changed\n")
+        su._recover_vendor(root, vendor)
+        self.assertTrue(os.path.isdir(keep))
+
     def test_vendor_install_refuses_a_symlink_wheel_and_a_bad_fetch(self):
         home = tempfile.mkdtemp(dir=self.home)
         os.chmod(home, 0o700)

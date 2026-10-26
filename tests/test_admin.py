@@ -1575,6 +1575,24 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()
         self.assertIn('HELPER_VERSION = "%s"' % ga.HELPER_RELEASE, common)
 
+    def test_voice_ingress_content_length_is_digits_only(self):
+        """0.11.7: "1_0" and "+5" are not lengths, though int() takes them."""
+        h = ga.Handler.__new__(ga.Handler)
+        sent = []
+        h.client_address = ("127.0.0.1", 5000)
+        h.send = lambda code, body=None, **k: sent.append(code)
+        h.rfile = io.BytesIO(b"")
+        for bad in ("1_0", "+5", "-1", " 1 0", "0x10", "1e3"):
+            h.headers = {"Content-Length": bad}
+            sent.clear()
+            old = ga.lan_ok
+            ga.lan_ok = lambda ip: True
+            try:
+                h.voice_ingress("POST", "/voice/reply")
+            finally:
+                ga.lan_ok = old
+            self.assertEqual(sent, [400], bad)
+
     def test_wake_entries_keep_existing_enabled_state(self):
         signed_in()
         old_cfg = ga.WAKE_CONFIG

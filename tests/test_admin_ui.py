@@ -1303,7 +1303,8 @@ class HelperUpdateUI(unittest.TestCase):
         cmd = self._cmd(pins, "rhea")
         self.assertIn("https://raw.githubusercontent.com/bwilliam79/grok-station/" + "a" * 40 + "/scripts/install-home.sh", cmd)
         self.assertIn("= '" + "b" * 64 + "' ]", cmd)
-        self.assertTrue(cmd.endswith("sh install-home.sh --update --persona rhea"))
+        self.assertIn("sh install-home.sh --update --persona rhea )", cmd)
+        self.assertTrue(cmd.endswith('; r=$?; rm -rf "$d"; [ "$r" = 0 ]'))  # temp folder goes, pass or fail
         self.assertLess(cmd.index("b" * 64), cmd.index("sh install-home.sh --update"))  # checked before it runs
         for bad_slug in ("grok", "Rhea", "r; rm -rf ~", "../x", ""):
             self.assertEqual(self._cmd(pins, bad_slug), "", bad_slug)

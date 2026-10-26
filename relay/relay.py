@@ -3652,9 +3652,15 @@ def helper_versions():
         if isinstance(doc, dict) else {}
 
 
-def note_helper(bot, req):
-    """Record the X-GS-Helper release for a bot whose sealed post just verified. A missing or odd header is ignored."""
-    v = (req.headers.get("X-GS-Helper") or "").strip()
+def note_helper(bot, req, signed=None):
+    """Record a bot's helper release after its sealed post verified. Advisory: it only drives a label.
+
+    signed is the version from the signed, sealed text of an update_helper confirmation; it wins. Otherwise the
+    unsigned X-GS-Helper header is used. A version field inside every signed body would be a protocol change:
+    older stations reject unknown signed keys, so a new helper could no longer talk to them.
+    """
+    v = signed.strip() if isinstance(signed, str) and HELPER_V.match(signed.strip()) else \
+        (req.headers.get("X-GS-Helper") or "").strip()
     if not HELPER_V.match(v) or not isinstance(bot, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,23}", bot):
         return
     doc = helper_versions()
@@ -3700,6 +3706,7 @@ async def admin_helper_update(req):
         handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + botreply.SKEW_S) * 1000),
                               question=HELPER_ASK, reply_by=reply_by, kind="update_helper")
     except OSError:
+        _helper_asked.pop(slug, None)
         return web.json_response({"error": "unavailable"}, status=500)
     posted = dict(handoff.payload(rid, slug, HELPER_ASK, reply_by, kind="update_helper"))
     try:
@@ -3711,6 +3718,7 @@ async def admin_helper_update(req):
         ok = False
     if not ok:
         handoff.remove_pending(PENDING_DIR, rid)
+        _helper_asked.pop(slug, None)  # a failed send doesn't use up the 10-minute slot
         return web.json_response({"error": "Couldn't reach the bot."}, status=502)
     audit(body.get("actor", "admin"), slug, "helper-ask", "-")
     return web.json_response({"ok": True}, status=202)
@@ -3879,8 +3887,9 @@ async def voice_reply(req):
     pend = _pending_doc(rid) or {}
     _reply_seen.add(rid)
     handoff.remove_pending(PENDING_DIR, rid)
-    note_helper(bot, req)
-    if pend.get("kind") == "update_helper":
+    is_update = pend.get("kind") == "update_helper"
+    note_helper(bot, req, reply.get("text") if is_update else None)
+    if is_update:
         log("helper update confirmed")  # the confirmation is not an answer: nothing waits on it
         audit_reply(bot, rid, "ok", len(raw))
         return web.json_response({"ok": True})

@@ -2739,12 +2739,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         if self.headers.get("Transfer-Encoding"):
             return self.send(411, {"error": "length required"})  # no chunked bodies; Content-Length only
-        try:
-            n = int((self.headers.get("Content-Length") or "0").strip())
-        except ValueError:
-            return self.send(400, {"error": "bad request"})
-        if n < 0:
-            return self.send(400, {"error": "bad request"})
+        cl = (self.headers.get("Content-Length") or "0").strip()
+        if not re.fullmatch(r"[0-9]{1,9}", cl):
+            return self.send(400, {"error": "bad request"})  # digits only: int() would take "1_0" and "+5"
+        n = int(cl)
         if n > caps[p]:
             return self.send(413, {"error": "too large"})
         data = self.rfile.read(n) if n else b""

@@ -125,6 +125,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             web.post("/admin/bots/{slug}/avatar", r.admin_avatar_post),
             web.post("/admin/bots/{slug}/avatar-request", r.admin_avatar_request),
             web.post("/admin/bots/{slug}/helper-update", r.admin_helper_update),
+            web.post("/voice/reply", r.voice_reply),
         ])
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -344,6 +345,55 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             self.assertIn("admin jules helper-ask", open(r.audit_path()).read())
         finally:
             await srv.close()
+
+    async def test_helper_update_failed_send_frees_the_slot(self):
+        r = self.relay
+        r.key_mode_of = lambda doc, slug: "home"
+        self.assertTrue(r.write_webhooks({"jules": {"url": "http://127.0.0.1:9/hook", "token": "hook-token-dddd",
+                                                   "saved_at": 1}}))
+        ask = lambda: self.client.post("/admin/bots/jules/helper-update", headers=self.admin("application/json"),
+                                       json={"actor": "admin"})
+        self.assertEqual((await ask()).status, 502)
+        self.assertNotIn("jules", r._helper_asked)
+        self.assertEqual((await ask()).status, 502)  # not 429: the failed send didn't use the slot
+        self.assertEqual(os.listdir(r.PENDING_DIR), [])
+
+    async def test_update_helper_confirmation_end_to_end(self):
+        """The bot's sealed reply to an update_helper ask goes through botreply.ingest into the version record."""
+        r = self.relay
+        r.key_mode_of = lambda doc, slug: "home"
+        seen = []
+
+        async def hook(req):
+            seen.append(await req.json())
+            return web.json_response({"ok": True})
+
+        app = web.Application()
+        app.router.add_post("/hook", hook)
+        srv = TestServer(app)
+        await srv.start_server()
+        try:
+            self.assertTrue(r.write_webhooks({"jules": {"url": str(srv.make_url("/hook")), "token": "hook-token-eeee",
+                                                       "saved_at": 1}}))
+            got = await self.client.post("/admin/bots/jules/helper-update", headers=self.admin("application/json"),
+                                         json={"actor": "admin"})
+            self.assertEqual(got.status, 202, await got.text())
+        finally:
+            await srv.close()
+        rid = seen[-1]["request_id"]
+        doc = {"action_class": "answer", "kind": "reply", "request_id": rid, "text": "0.11.7", "tier": 0}
+        signed = self.signer.sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode())
+        sealed = SealedBox(self.station.public_key).encrypt(signed)
+        outer = json.dumps({"v": 1, "bot": "jules", "sealed": base64.b64encode(sealed).decode()}).encode()
+        # the unsigned header says something else; the signed text wins
+        res = await self.client.post("/voice/reply", data=outer,
+                                     headers={"Content-Type": "application/json", "X-GS-Helper": "0.11.6"})
+        self.assertEqual(res.status, 200, await res.text())
+        self.assertEqual(r.helper_versions(), {"jules": "0.11.7"})
+        self.assertFalse(os.path.exists(os.path.join(r.PENDING_DIR, rid + ".json")))
+        self.assertFalse(os.path.exists(os.path.join(r.REPLIES_DIR, rid + ".json")))  # not an answer
+        again = await self.client.post("/voice/reply", data=outer, headers={"Content-Type": "application/json"})
+        self.assertNotEqual(again.status, 200)  # replay refused
 
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay

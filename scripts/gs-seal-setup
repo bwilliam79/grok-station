@@ -154,7 +154,7 @@ from gs_seal_common import (
     _pin, _b64_32, station_ok,
     refuse_unsafe_location, refuse_musl, _command_root,
     hardware_uuid, host_id_path, _read_host_uuid, _same_uuid,
-    vendor_dir, vendor_manifest_path, vendor_file_hashes, load_nacl,
+    vendor_dir, vendor_manifest_path, vendor_file_hashes, load_nacl, assert_vendor_trusted,
     CACHEDIR_TAG, CACHEDIR_SIGNATURE, NOBACKUP_NAME,
 )
 
@@ -789,10 +789,8 @@ def cmd_vendor_install(lock):
     vendor = vendor_dir()
     reqs = parse_vendor_lock(_read_lock(lock))
     # Build the whole set in a fresh private directory beside vendor/, then swap it in by rename. An existing
-    # vendor/ (an update) is replaced as a unit, never written over file by file.
-    for stale in os.listdir(root):
-        if stale.startswith((".vendor-new.", ".vendor-old.")):
-            _remove_tree(os.path.join(root, stale))
+    # vendor/ (an update) is replaced as a unit, never written over file by file, and put back if the swap fails.
+    _recover_vendor(root, vendor)
     new = tempfile.mkdtemp(prefix=".vendor-new.", dir=root)
     os.chmod(new, 0o700)
     try:
@@ -804,20 +802,73 @@ def cmd_vendor_install(lock):
         _remove_tree(new)
         raise
     raw = (json.dumps(mapping, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    man = vendor_manifest_path()
     old = None
     if os.path.lexists(vendor):
         _require_dir(vendor, 0o700)
         old = tempfile.mkdtemp(prefix=".vendor-old.", dir=root)
+        if os.path.lexists(man):
+            _require_file(man, 0o600)
+            with open(man, "rb") as fh:
+                _write_private(os.path.join(old, "manifest.json"), fh.read())
         os.rename(vendor, os.path.join(old, "vendor"))
-    os.rename(new, vendor)
-    tmp = vendor_manifest_path() + ".new"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    _write_private(tmp, raw)
-    os.replace(tmp, vendor_manifest_path())
+    try:
+        os.rename(new, vendor)
+        tmp = man + ".new"
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        _write_private(tmp, raw)
+        os.replace(tmp, man)
+    except BaseException:
+        _rollback_vendor(root, vendor, old)
+        _remove_tree(new)
+        raise Refused()
     if old:
         _remove_tree(old)
     return 0
+
+
+def _rollback_vendor(root, vendor, old):
+    """Put the previous vendor/ and its manifest back after a failed swap. No previous set: leave none."""
+    if os.path.lexists(vendor) and not os.path.islink(vendor):
+        trash = tempfile.mkdtemp(prefix=".vendor-new.", dir=root)
+        os.rename(vendor, os.path.join(trash, "vendor"))
+        _remove_tree(trash)
+    if not old:
+        return
+    os.rename(os.path.join(old, "vendor"), vendor)
+    saved = os.path.join(old, "manifest.json")
+    if os.path.isfile(saved) and not os.path.islink(saved):
+        os.replace(saved, vendor_manifest_path())
+    _remove_tree(old)
+
+
+def _recover_vendor(root, vendor):
+    """Before an install: drop half-built sets; put back a previous set an interrupted swap left aside.
+
+    A .vendor-old.* folder is removed only once vendor/ is present and matches its manifest.
+    """
+    for stale in os.listdir(root):
+        if stale.startswith(".vendor-new."):
+            _remove_tree(os.path.join(root, stale))
+    olds = sorted(n for n in os.listdir(root) if n.startswith(".vendor-old."))
+    if not os.path.lexists(vendor):
+        for n in reversed(olds):
+            prev = os.path.join(root, n, "vendor")
+            if os.path.isdir(prev) and not os.path.islink(prev):
+                os.rename(prev, vendor)
+                saved = os.path.join(root, n, "manifest.json")
+                if os.path.isfile(saved) and not os.path.islink(saved):
+                    os.replace(saved, vendor_manifest_path())
+                break
+    if not olds or not os.path.lexists(vendor):
+        return
+    try:
+        assert_vendor_trusted(os.path.expanduser("~"), os.geteuid(), vendor, vendor_manifest_path())
+    except Exception:
+        return  # keep the old set until the current one checks out
+    for n in olds:
+        _remove_tree(os.path.join(root, n))
 
 
 def _remove_tree(path):
