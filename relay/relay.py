@@ -2724,7 +2724,7 @@ def _declared_image_kind(ctype):
     return ctype
 
 
-def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now_ms=None):
+async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now_ms=None):
     """Open a sealed profile picture and hand the bytes to save(bot, image) -> {ok, sha8|status}.
 
     Order: the seal (which checks seen but does not write it), then the 6/hour cap, then the nonce
@@ -2760,7 +2760,7 @@ def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now_ms=No
         release()
         return 415, {"error": "unsupported media type"}
     try:
-        result = save(opened["bot"], opened["image"])
+        result = await save(opened["bot"], opened["image"])
     except Exception:
         result = {"ok": False, "status": 500}
     if not isinstance(result, dict) or result.get("ok") is not True:
@@ -2988,21 +2988,37 @@ def save_avatar(slug, png, actor):
 _AVATAR_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 
 
+async def _read_capped(req, cap):
+    """Read the body up to cap bytes. None when it is larger. For the picture routes only;
+    every other route keeps aiohttp's default client_max_size."""
+    if isinstance(req.content_length, int) and req.content_length > cap:
+        return None
+    chunks, total = [], 0
+    while True:
+        chunk = await req.content.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 async def _avatar_raw(req):
     """(bytes, None) or (None, error response). JSON is {"image_b64": "..."}."""
     ctype = req.content_type
     if ctype in _AVATAR_TYPES:
-        if (req.content_length or 0) > AVATAR_MAX:
-            return None, web.json_response({"error": "too large"}, status=413)
-        raw = await req.read()
-        if len(raw) > AVATAR_MAX:
+        raw = await _read_capped(req, AVATAR_MAX)
+        if raw is None:
             return None, web.json_response({"error": "too large"}, status=413)
         return raw, None
     if ctype == "application/json":
-        if (req.content_length or 0) > AVATAR_MAX * 2:
+        text = await _read_capped(req, AVATAR_MAX * 2)
+        if text is None:
             return None, web.json_response({"error": "too large"}, status=413)
         try:
-            body = await req.json()
+            body = json.loads(text)
         except Exception:
             return None, web.json_response({"error": "unsupported media type"}, status=415)
         if not isinstance(body, dict) or not isinstance(body.get("image_b64"), str):
@@ -3020,8 +3036,8 @@ async def _avatar_raw(req):
     return None, web.json_response({"error": "unsupported media type"}, status=415)
 
 
-def _avatar_result(slug, raw, actor):
-    png, status = transcode_avatar(raw)
+async def _avatar_result(slug, raw, actor):
+    png, status = await asyncio.to_thread(transcode_avatar, raw)
     if png is None:
         err = "too large" if status == 413 else "unsupported media type"
         return web.json_response({"error": err}, status=status or 415)
@@ -3046,13 +3062,12 @@ async def voice_avatar(req):
     auth = req.headers.get("Authorization", "")
     if auth.startswith("Bearer ") and (req.content_type or "") in _AVATAR_TYPES:
         return web.json_response({"error": "retired"}, status=410)
-    n_hdr = req.content_length if isinstance(req.content_length, int) else 0
-    if n_hdr > botreply.AVATAR_OUTER_MAX:
-        return web.json_response({"error": "too large"}, status=413)
     try:
-        raw = await req.read()
+        raw = await _read_capped(req, botreply.AVATAR_OUTER_MAX)
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
+    if raw is None:
+        return web.json_response({"error": "too large"}, status=413)
     if not isinstance(raw, (bytes, bytearray)):
         raw = b""
     try:
@@ -3060,8 +3075,8 @@ async def voice_avatar(req):
     except (botreply.StationKeyError, OSError):
         return web.json_response({"error": "unavailable"}, status=500)
 
-    def save(bot, image):
-        png, status = transcode_avatar(image)
+    async def save(bot, image):
+        png, status = await asyncio.to_thread(transcode_avatar, image)  # Pillow off the event loop
         if png is None:
             return {"ok": False, "status": status or 415}
         try:
@@ -3070,7 +3085,7 @@ async def voice_avatar(req):
             return {"ok": False, "status": 500}
         return {"ok": True, "sha8": sha8}
 
-    status, body = accept_avatar(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+    status, body = await accept_avatar(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
                                  avatar_seen(), _avatar_allow, save)
     return web.json_response(body, status=status)
 
@@ -3617,7 +3632,7 @@ async def admin_avatar_post(req):
             return err
     else:
         return web.json_response({"error": "unsupported media type"}, status=415)
-    return _avatar_result(slug, raw, actor)
+    return await _avatar_result(slug, raw, actor)
 
 
 AVATAR_ASK = "Send your profile picture image file."
@@ -4001,7 +4016,7 @@ if __name__ == "__main__":
     except OSError as e:
         log("policy init failed", type(e).__name__)
     seed_offered_voices()
-    app = web.Application(client_max_size=8 << 20)  # avatar bodies are checked again at 2 MB
+    app = web.Application()  # default body cap; the picture routes read with their own cap (_read_capped)
     app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),
                     *ADMIN_ROUTES])

@@ -2664,7 +2664,14 @@ class Handler(BaseHTTPRequestHandler):
         caps = {"/voice/reply": 8192, "/voice/show": 8192, "/voice/avatar": 4 << 20}  # a picture may be larger
         if method != "POST" or p not in caps:
             return self.send(404, {"error": "not found"})
-        n = int(self.headers.get("Content-Length") or 0)
+        if self.headers.get("Transfer-Encoding"):
+            return self.send(411, {"error": "length required"})  # no chunked bodies; Content-Length only
+        try:
+            n = int((self.headers.get("Content-Length") or "0").strip())
+        except ValueError:
+            return self.send(400, {"error": "bad request"})
+        if n < 0:
+            return self.send(400, {"error": "bad request"})
         if n > caps[p]:
             return self.send(413, {"error": "too large"})
         data = self.rfile.read(n) if n else b""

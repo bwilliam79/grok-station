@@ -332,3 +332,5 @@ On Linux, `keygen` writes `CACHEDIR.TAG` (the cache-directory signature line `Si
 ## Bot pictures
 
 A paired bot sends its own profile picture: the routine tells it to send the picture once after pairing, and again when the station's webhook has kind avatar. **Ask bot for picture** in Configure sends that webhook. The picture is signed with the bot's key and sealed to the station, like a reply, and posted to `/voice/avatar` on the station's LAN-only HTTPS port. PNG, JPEG or WebP, 2 MB or less, at most 6 an hour per bot. The station re-encodes it to 512 px with no metadata. The old voice-token picture route is retired (410).
+
+With the key on the bot computer, the sealed picture is pasted by hand into the home-computer command, and it is about 1.4 times the image size. Use a small picture (a few hundred KB, for example 512 x 512). The station stores 512 px anyway.

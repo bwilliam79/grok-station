@@ -114,7 +114,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         with open(r.PERSONAS_FILE, "w") as f:
             json.dump({"personas": [{"slug": "jules", "name": "Jules", "voice": "ara", "portrait": "jules.png",
                                      "prompt": "The notes helper."}]}, f)
-        app = web.Application(client_max_size=8 << 20)
+        app = web.Application()  # default cap, as in relay main()
         app.add_routes([
             web.post("/voice/avatar", r.voice_avatar),
             web.get("/portrait/{slug}", r.portrait_route),
