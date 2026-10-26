@@ -746,7 +746,7 @@ def wakewords():
 
 _SESSION_DIR = re.compile(r"^\d{8}-\d{6}$")
 _CLIP_WAV = re.compile(r"^\d{2}\.wav$")
-_FULL_SESSION = 10  # a finished session has at least this many clips; same as ENROLL_REPS
+_FULL_SESSION = ENROLL_REPS  # a finished session has at least this many clips
 
 
 def _session_fingerprint(directory, names):
@@ -810,45 +810,6 @@ def clip_count(name):
     if not wake_name_ok(name):
         return 0
     return len(finished_clip_files(os.path.join(ENROLL_INBOX, name)))
-
-
-def _drop_enrolled_name(name):
-    """Remove one phrase from the enrolled list. A missing file or row is success."""
-    doc = read_json(ENROLLED, {})
-    if not isinstance(doc, dict) or not isinstance(doc.get("words"), list):
-        return
-    words = [w for w in doc["words"] if not (isinstance(w, dict) and w.get("name") == name)]
-    if len(words) == len(doc["words"]):
-        return
-    write_json(ENROLLED, {"words": words}, 0o640)
-
-
-def _unlink_phrase_files(directory, name):
-    """Delete model files for one phrase. Missing files are success. Never leaves the directory."""
-    if not directory or not wake_name_ok(name):
-        return
-    parent = os.path.realpath(directory)
-    for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
-        path = os.path.realpath(os.path.join(directory, fn))
-        if not path.startswith(parent + os.sep):
-            continue
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-
-
-def _drop_phrase_files(name):
-    """Delete session dirs and model files for one valid phrase. Missing paths are success."""
-    if not wake_name_ok(name):
-        return
-    root = os.path.realpath(ENROLL_INBOX)
-    base = os.path.realpath(os.path.join(root, name))
-    if base.startswith(root + os.sep):
-        shutil.rmtree(base, ignore_errors=True)
-    _unlink_phrase_files(os.path.dirname(ENROLLED), name)
-    _unlink_phrase_files(WAKE_DROP_DIR, name)
-    _drop_enrolled_name(name)
 
 
 def unused_wakewords():
@@ -1444,9 +1405,7 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts):
     msg = str(last.get("message") or "")[:240]
     persona = str(last.get("persona")) if persona_ok(str(last.get("persona") or "")) else None
     session = last.get("session") if isinstance(last.get("session"), str) else None
-    # A removed word must not come back from a finished listener stage. A live recording,
-    # upload, or train still shows, including one that was just queued and is not busy yet.
-    if wake_name_ok(phrase) and (phrase in out or stage in ACTIVE_ENROLL):
+    if wake_name_ok(phrase):
         entry = out.get(phrase) or {}
         state, new_msg = None, msg
         if busy:
@@ -3130,36 +3089,27 @@ class Handler(BaseHTTPRequestHandler):
     def api_delete_wakewords(self, p, q, j):
         """Delete one wake word: clips, trained model, config entry. Hey Grok can't be deleted.
 
-        Missing files and rows are success, so deleting twice returns ok. A name that cannot be a
-        wake word is refused unless that exact key is already stored, and then only the row is removed.
-        Shipped and bot entries stay hidden so they are not re-added.
+        Works for orphaned or untrained entries too. Shipped and bot entries stay hidden so they are not re-added.
         """
         name = urllib.parse.unquote(p.split("/")[3]) if p.count("/") >= 3 else ""
         if name == BUILTIN_WORD:
             return self.send(409, {"error": "Hey Grok is built in and can't be deleted."})
+        known = {w["name"] for w in wakewords()}
         ov = read_json(path("wake-overrides.json"), {})
         if not isinstance(ov, dict):
             ov = {}
-        status = read_enroll_status()
-        enrolled = enrolled_entries()
-        known = {w["name"] for w in wakewords()}
-        stored = name in known or name in ov or name in status or name in enrolled
-        if not wake_name_ok(name):
-            if not stored:
-                return self.send(400, {"error": "bad name"})
-            ov.pop(name, None)
-            write_json(path("wake-overrides.json"), ov, 0o640)
-            if status.pop(name, None) is not None:
-                write_enroll_status(status)
-            _drop_enrolled_name(name)
-            models = read_json(path("models.json"), {})
-            if isinstance(models, dict) and models.pop(name, None) is not None:
-                write_json(path("models.json"), models, 0o640)
-            return self.send(200, {"ok": True})
-        code, _out = wake("POST", "/forget", {"name": name})
+        if name not in known and name not in ov and name not in read_enroll_status() and name not in enrolled_entries():
+            return self.send(404, {"error": "No such wake word."})
+        if not wake_name_ok(name) and name not in ov:
+            return self.send(400, {"error": "bad name"})
+        code, out = wake("POST", "/forget", {"name": name}) if wake_name_ok(name) else (200, {})
         if code == 409:
             return self.send(409, {"error": "That word is recording right now. Try again when it finishes."})
-        _drop_phrase_files(name)
+        for fn in (name + ".onnx", name + ".json"):
+            try:
+                os.remove(os.path.join(WAKE_DROP_DIR, fn))
+            except OSError:
+                pass
         cfg = read_json(WAKE_CONFIG, {})
         keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
         if keep_hidden:

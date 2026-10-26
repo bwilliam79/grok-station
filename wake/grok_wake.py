@@ -1410,13 +1410,6 @@ def forget_word(name):
     if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
         return False, "busy"
     shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
-    try:
-        os.remove(_marker(name))
-    except OSError:
-        pass
-    last = ENROLL_STATE.get("last")
-    if isinstance(last, dict) and last.get("phrase") == name:
-        ENROLL_STATE["last"] = None
     for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
         try:
             os.remove(os.path.join(ENROLLED_DIR, fn))
