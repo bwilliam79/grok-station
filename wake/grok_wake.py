@@ -28,7 +28,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 10 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -887,6 +887,9 @@ def control_server():
                 ENROLL_Q.put_nowait(req)
             except queue.Full:
                 return self._r(409, {"error": "an enrollment is already queued"})
+            # Stamp recording before 202. The worker has not set busy yet, and the previous
+            # last_enroll is often still failed_quality. The admin page would keep that screen.
+            note_enroll_queued(req)
             print(f"enroll queued: {req['phrase']} x{req['count']}{' (top-up)' if req.get('topup') else ''}", flush=True)
             return self._r(202, {"ok": True, "phrase": req["phrase"], "persona": req["persona"], "count": req["count"]})
 
@@ -974,22 +977,88 @@ def _read_wav(path):
         return np.frombuffer(w.readframes(w.getnframes()), "<i2")
 
 
-def phrase_clips(phrase):
-    """Every kept recording of this phrase on the station (all sessions, so Train more adds to them), and room noise."""
-    clips, noise = [], []
+def note_enroll_queued(req):
+    """Report recording as soon as a session is queued, before the worker sets busy.
+
+    session stays empty until enroll() opens the directory. A later stage from the
+    previous attempt must not be what the admin page reads in that gap.
+    """
+    ENROLL_STATE["last"] = {
+        "phrase": req["phrase"], "session": None, "count": int(req["count"]), "started": time.time(),
+        "persona": req["persona"], "stage": "recording", "message": "Say it on the station.",
+        "index": 0, "kept": 0, "phase": "prompt", "topup": bool(req.get("topup")), "recent": [],
+    }
+
+
+def _session_clip_names(directory):
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    return sorted(fn for fn in names if re.fullmatch(r"\d{2}\.wav", fn))
+
+
+def _session_fingerprint(directory, names):
+    """sha256 of each clip, in name order. None if a clip cannot be read."""
+    digest = hashlib.sha256()
+    for fn in names:
+        digest.update(fn.encode())
+        digest.update(b"\0")
+        try:
+            with open(os.path.join(directory, fn), "rb") as f:
+                digest.update(hashlib.sha256(f.read()).digest())
+        except OSError:
+            return None
+    return digest.digest()
+
+
+def finished_sessions(phrase):
+    """Full, unique sessions for one phrase: (directory, clip names, noise path or None).
+
+    A finished session is a YYYYMMDD-HHMMSS directory with a session.json object and at
+    least ENROLL_COUNT clip files (NN.wav). Empty directories, partial sessions, and
+    directories with no completion marker are skipped. Two sessions with the same clip
+    bytes count once; the earlier directory is kept. Room noise is only from those.
+    """
     root = os.path.join(ENROLL_DIR, phrase)
     try:
         sessions = sorted(x for x in os.listdir(root) if re.fullmatch(r"\d{8}-\d{6}", x))
     except OSError:
-        return clips, noise
+        return []
+    out, seen = [], set()
     for ses in sessions:
         d = os.path.join(root, ses)
-        for fn in sorted(os.listdir(d)):
+        try:
+            with open(os.path.join(d, "session.json")) as f:
+                doc = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        names = _session_clip_names(d)
+        if len(names) < ENROLL_COUNT:
+            continue
+        fp = _session_fingerprint(d, names)
+        if fp is None or fp in seen:
+            continue
+        seen.add(fp)
+        noise = os.path.join(d, "noise.wav")
+        out.append((d, names, noise if os.path.isfile(noise) else None))
+    return out
+
+
+def phrase_clips(phrase):
+    """Kept recordings of this phrase (finished unique sessions only), and their room noise."""
+    clips, noise = [], []
+    for d, names, noise_path in finished_sessions(phrase):
+        for fn in names:
             try:
-                if re.fullmatch(r"\d{2}\.wav", fn):
-                    clips.append(_read_wav(os.path.join(d, fn)))
-                elif fn == "noise.wav":
-                    noise.append(_read_wav(os.path.join(d, fn)))
+                clips.append(_read_wav(os.path.join(d, fn)))
+            except (OSError, EOFError, wave.Error):
+                pass
+        if noise_path:
+            try:
+                noise.append(_read_wav(noise_path))
             except (OSError, EOFError, wave.Error):
                 pass
     return clips, noise
@@ -1341,6 +1410,13 @@ def forget_word(name):
     if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
         return False, "busy"
     shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
+    try:
+        os.remove(_marker(name))
+    except OSError:
+        pass
+    last = ENROLL_STATE.get("last")
+    if isinstance(last, dict) and last.get("phrase") == name:
+        ENROLL_STATE["last"] = None
     for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
         try:
             os.remove(os.path.join(ENROLLED_DIR, fn))

@@ -270,7 +270,7 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
 
     include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
     ["tier_max"] returns the tier argument (default 0) and is not on the wire.
-    kind is sent only for a list request (bot_list). Answer webhooks omit it.
+    kind is sent for a list request (bot_list) or a picture ask (avatar). Answer webhooks omit it.
     """
     del include_avatar
     body = {"v": 1, "request_id": rid, "persona": bot, "question": clean(question, Q_MAX),
@@ -279,6 +279,8 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
         body["test"] = True
     if kind == "bot_list":
         body["kind"] = "bot_list"
+    elif kind == "avatar":
+        body["kind"] = "avatar"
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 
