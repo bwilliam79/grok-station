@@ -2135,7 +2135,7 @@ function openBot(bot, el) {
       <div class="field inline">
         <label class="btn sm" for="photo">Upload photo</label>
         <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
-        <button class="btn sm" id="refav" type="button">Refresh avatar</button>
+        <button class="btn sm" id="refav" type="button">Ask bot for picture</button>
       </div>
       <p class="note">png, jpeg, or webp, up to 2 MB.</p></section>
     <section class="dsec"><h3>Connection</h3>
@@ -2253,11 +2253,11 @@ function openBot(bot, el) {
   };
   $("#refav", d).onclick = async () => {
     const btn = $("#refav", d);
-    busyBtn(btn, true, "Refreshing…");
+    busyBtn(btn, true, "Asking…");
     const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/avatar-request`, {});
-    busyBtn(btn, false, "Refresh avatar");
-    if (!(r.ok || r.status === 202)) return toast((r.data && r.data.error) || "Couldn't refresh the avatar.", "bad");
-    toast("Refreshing avatar.");
+    busyBtn(btn, false, "Ask bot for picture");
+    if (!(r.ok || r.status === 202)) return toast((r.data && r.data.error) || "Couldn't ask for the picture.", "bad");
+    toast("Asked for the picture.");
     setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 30000);
   };
   const showResult = (res) => {
@@ -2759,7 +2759,13 @@ To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Un
 For a card, run two more commands the same way. On the cloud computer:
 printf '%s' "$CARD_JSON" | grok-station-reply seal-show --bot <slug> --station-pub '<station public key>'
 Then on the home machine, the output line unchanged:
-printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'`;
+printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'
+
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the commands above). Use your own profile picture image file (PNG, JPEG or WebP, 2 MB or less). On the cloud computer:
+grok-station-reply seal-avatar --bot <slug> --station-pub '<station public key>' < PICTURE_FILE
+Then on the home machine, the output line unchanged:
+printf '%s' 'SEALED_PICTURE' | python3 ~/bin/grok-station-reply post --avatar --station <station address> --insecure --pin-sha256 '<fingerprint>'
+Replace PICTURE_FILE with the path to that image. The station takes at most 6 pictures an hour.`;
 const BOT_ROUTINE_HOME = `Answer as the bot named in the request's persona field, in that bot's voice.
 
 If kind is bot_list, do not answer a question and do not invent names. The names you send are the bots you know, one per line. Otherwise answer the question in the persona's voice, as plain speech, in 400 characters or fewer. No secrets, no keys, no passwords, no codes.
@@ -2783,7 +2789,11 @@ sports: {"v":1,"type":"sports","league":(24),"home":TEAM,"away":TEAM,"home_score
 calendar: {"v":1,"type":"calendar","date":"YYYY-MM-DD","events":[0-8 of {"time":(16),"title":(48)}]}
 home: {"v":1,"type":"home","title":(24),"items":[1-6 of {"label":(32),"value":(24),"trend":"up|down" optional}]}
 To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Unknown fields are rejected. Send at most one card per answer.
-Cards need the bot computer key mode for now; with the key on this home computer, skip cards.`;
+Cards need the bot computer key mode for now; with the key on this home computer, skip cards.
+
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the reply command). Use your own profile picture image file (PNG, JPEG or WebP, 2 MB or less):
+gs-seal-reply avatar --persona <slug> < PICTURE_FILE
+Replace PICTURE_FILE with the path to that image. The station takes at most 6 pictures an hour.`;
 function stationAddress() {
   const host = location && location.host;
   return host ? "https://" + host : "<station address>";

@@ -1,20 +1,24 @@
-"""POST /voice/avatar and the owner upload: decode, centre crop, 512 PNG, no metadata, caps.
+"""POST /voice/avatar is a sealed picture. The voice-token upload is retired.
 
-Import relay inside the tests so collection does not bind its environment before the other suites.
+Owner upload (certificate + admin token) is unchanged. Import relay inside the tests so collection
+does not bind its environment before the other suites.
 """
-import asyncio, base64, hashlib, io, json, os, stat, sys, tempfile, unittest
+import asyncio, base64, hashlib, io, json, os, secrets, stat, sys, tempfile, unittest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from nacl.public import SealedBox
+from nacl.signing import SigningKey
 from PIL import Image, PngImagePlugin
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay"))
 
 
 def _mods():
+    import botreply
     import handoff
     import relay
-    return handoff, relay
+    return botreply, handoff, relay
 
 
 def _png(size=(80, 40), color=(10, 20, 30), text=None):
@@ -49,8 +53,8 @@ def _webp():
 
 class Avatar(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        handoff, relay = _mods()
-        self.handoff, self.relay = handoff, relay
+        botreply, handoff, relay = _mods()
+        self.botreply, self.handoff, self.relay = botreply, handoff, relay
         self.tmp = tempfile.mkdtemp()
         r = relay
         self.snap = {
@@ -60,7 +64,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             "REPLIES_DIR": r.REPLIES_DIR, "PERSONAS_FILE": r.PERSONAS_FILE, "ADMIN_TOKEN": r.ADMIN_TOKEN,
             "REPLY_WAIT": r.REPLY_WAIT, "HANDOFF": r.HANDOFF, "log": r.log, "_limits": r._limits,
             "TOKENS": r.TOKENS, "version": r._portraits_version, "hits": dict(r._avatar_hits),
-            "policy": dict(r._policy), "voices": set(r.VOICES),
+            "policy": dict(r._policy), "voices": set(r.VOICES), "SECRETS_DIR": r.SECRETS_DIR,
+            "avatar_seen": r._avatar_seen,
             "personas": {k: (dict(v) if isinstance(v, dict) else (list(v) if isinstance(v, list) else v))
                          for k, v in r._personas.items()},
             "hooks": {"mtime": r._hooks.get("mtime"), "map": dict(r._hooks.get("map") or {})},
@@ -75,15 +80,23 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PENDING_DIR = os.path.join(self.tmp, "pending")
         r.REPLIES_DIR = os.path.join(self.tmp, "replies")
         r.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
+        r.SECRETS_DIR = os.path.join(self.tmp, "secrets")
         os.makedirs(r.PORTRAIT_WRITE)
         os.makedirs(r.PORTRAIT_DIRS[0])
         os.makedirs(os.path.dirname(r.AUDIT_MIRROR))
         os.makedirs(os.path.dirname(r.MINTED_FILE))
+        os.makedirs(r.SECRETS_DIR)
+        os.makedirs(r.PENDING_DIR)
         r.ADMIN_TOKEN = b"admin-secret"
         r.TOKENS = [b"test-token"]
         r.HANDOFF = True
         r.REPLY_WAIT = 2
         r._avatar_hits.clear()
+        r._avatar_seen = botreply.ShowSeen(os.path.join(self.tmp, "avatar-seen.json"))
+        self.station = botreply.load_or_create_station(r.SECRETS_DIR)
+        self.signer = SigningKey.generate()
+        self.assertTrue(botreply.pin_key(
+            r.bot_keys_path(), "jules", base64.b64encode(bytes(self.signer.verify_key)).decode()))
         r._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), r.today)
         r._policy.update(mtime=None, pii=True)
         r.VOICES.clear()
@@ -129,6 +142,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PERSONAS_FILE, r.ADMIN_TOKEN = s["PERSONAS_FILE"], s["ADMIN_TOKEN"]
         r.REPLY_WAIT, r.HANDOFF, r.log, r._limits = s["REPLY_WAIT"], s["HANDOFF"], s["log"], s["_limits"]
         r.TOKENS = s["TOKENS"]
+        r.SECRETS_DIR = s["SECRETS_DIR"]
+        r._avatar_seen = s["avatar_seen"]
         r._portraits_version = s["version"]
         r._avatar_hits.clear()
         r._avatar_hits.update(s["hits"])
@@ -141,12 +156,6 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r._hooks.clear()
         r._hooks.update(s["hooks"])
 
-    def voice(self, token=None, slug="jules", ctype="image/png"):
-        h = {"Authorization": "Bearer " + (self.token if token is None else token), "X-Grok-Persona": slug}
-        if ctype:
-            h["Content-Type"] = ctype
-        return h
-
     def admin(self, ctype="image/png"):
         h = {"Authorization": "Bearer admin-secret", "X-Client-Cert-Fp": "ab" * 32}
         if ctype:
@@ -156,8 +165,24 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
     def _saved(self):
         return os.path.join(self.relay.PORTRAIT_WRITE, "jules.png")
 
-    async def _post(self, raw, ctype="image/png", token=None, slug="jules"):
-        return await self.client.post("/voice/avatar", data=raw, headers=self.voice(token, slug, ctype))
+    def _seal(self, image, ctype, slug="jules"):
+        doc = {"content_type": ctype, "exp_ms": int(__import__("time").time() * 1000) + 60_000,
+               "image_b64": base64.b64encode(image).decode("ascii"), "kind": "avatar",
+               "nonce": secrets.token_urlsafe(16)}
+        signed = self.signer.sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode())
+        sealed = SealedBox(self.station.public_key).encrypt(signed)
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        return json.dumps(outer, separators=(",", ":")).encode()
+
+    async def _post(self, image, ctype="image/png", slug="jules"):
+        body = self._seal(image, ctype, slug=slug)
+        return await self.client.post("/voice/avatar", data=body, headers={"Content-Type": "application/json"})
+
+    async def _post_body(self, body, headers=None):
+        h = {"Content-Type": "application/json"}
+        if headers:
+            h.update(headers)
+        return await self.client.post("/voice/avatar", data=body, headers=h)
 
     def _png_ok(self, body, marker=b"SECRET_PNG_TEXT"):
         self.assertTrue(body.startswith(b"\x89PNG\r\n\x1a\n"))
@@ -171,8 +196,9 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
     async def test_png_jpeg_webp_become_512_without_metadata(self):
         marked = _png(text="SECRET_PNG_TEXT")
         self.assertIn(b"SECRET_PNG_TEXT", marked)
-        r = await self._post(marked)
-        self.assertEqual(r.status, 200)
+        sealed = self._seal(marked, "image/png")
+        r = await self._post_body(sealed)
+        self.assertEqual(r.status, 200, await r.text())
         doc = await r.json()
         body = open(self._saved(), "rb").read()
         self._png_ok(body)
@@ -183,13 +209,14 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"bot jules avatar-upload {doc['sha8']}", audit)
         self.assertNotIn(self.token, audit)
         self.assertIn(f"avatar-upload {doc['sha8']}", open(self.relay.audit_mirror_path()).read())
-        # registry decoy loses to the upload
         got = await self.client.get("/portrait/jules", headers={"Authorization": "Bearer test-token"})
         self.assertEqual(got.status, 200)
         self.assertEqual(await got.read(), body)
         self.assertNotEqual(body, self.decoy)
         listed = await (await self.client.get("/personas", headers={"Authorization": "Bearer test-token"})).json()
         self.assertGreaterEqual(listed["portraits_version"], 1)
+        again = await self._post_body(sealed)
+        self.assertEqual(again.status, 409, await again.text())
 
         jpeg = _jpeg()
         src = Image.open(io.BytesIO(jpeg))
@@ -208,35 +235,56 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status, 200, await r.text())
         self._png_ok(open(self._saved(), "rb").read())
 
-        b64 = base64.b64encode(_png(color=(1, 2, 3))).decode()
-        self.relay._avatar_hits.clear()
-        r = await self.client.post("/voice/avatar", json={"image_b64": b64},
-                                   headers=self.voice(ctype=None))
-        self.assertEqual(r.status, 200, await r.text())
-        self._png_ok(open(self._saved(), "rb").read())
-
-    async def test_bad_token_oversize_non_image_and_rate_limit(self):
+    async def test_retired_route_and_picture_limits(self):
         png = _png()
-        self.assertEqual((await self._post(png, token="not-the-token")).status, 401)
-        self.assertEqual((await self._post(png, slug="hank")).status, 404)
-        self.assertEqual((await self.client.post("/voice/avatar", data=png, headers={"Content-Type": "image/png"})).status, 401)
-        missing = await self.client.post("/voice/avatar", data=png, headers=self.voice(slug="nope"))
-        self.assertEqual(missing.status, 404)
+        retired = await self.client.post(
+            "/voice/avatar", data=png,
+            headers={"Authorization": "Bearer " + self.token, "X-Grok-Persona": "jules", "Content-Type": "image/png"})
+        self.assertEqual(retired.status, 410)
+        self.assertEqual((await retired.json())["error"], "retired")
+        self.assertFalse(os.path.exists(self._saved()))
+        leftover = await self.client.post(
+            "/voice/avatar", json={"image_b64": base64.b64encode(png).decode()},
+            headers={"Authorization": "Bearer " + self.token, "X-Grok-Persona": "jules"})
+        self.assertNotEqual(leftover.status, 410)
+        self.assertEqual(leftover.status, 400)
+        self.assertEqual((await self._post(png, slug="hank")).status, 403)
+        raw = await self.client.post("/voice/avatar", data=png, headers={"Content-Type": "image/png"})
+        self.assertEqual(raw.status, 400)
+        self.assertNotEqual(raw.status, 401)
+
+        self.relay._avatar_hits.clear()
         huge = b"\x89PNG\r\n\x1a\n" + b"x" * self.relay.AVATAR_MAX
+        self.assertGreater(len(huge), self.botreply.AVATAR_IMAGE_MAX)
         self.assertEqual((await self._post(huge)).status, 413)
-        self.assertEqual((await self._post(b"not-an-image")).status, 415)
-        plain = await self.client.post("/voice/avatar", data=b"hello",
-                                      headers=self.voice(ctype="text/plain"))
-        self.assertEqual(plain.status, 415)
+        self.assertEqual(self.relay._avatar_hits.get("jules", []), [])
+
+        outer = b"{" + b"x" * (self.botreply.AVATAR_OUTER_MAX + 1)
+        too_big = await self._post_body(outer)
+        self.assertEqual(too_big.status, 413)
+
+        lied = self._seal(b"hello", "image/png")
+        self.assertEqual((await self._post_body(lied)).status, 415)
+        self.assertEqual((await self._post_body(lied)).status, 415)  # nonce released, not a replay
+
+        self.relay._avatar_hits.clear()
         wide = io.BytesIO()
         Image.new("RGB", (2100, 2100), (4, 5, 6)).save(wide, format="PNG")
-        self.assertLess(len(wide.getvalue()), self.relay.AVATAR_MAX)
-        self.assertEqual((await self._post(wide.getvalue())).status, 413)
+        blob = wide.getvalue()
+        self.assertLess(len(blob), self.relay.AVATAR_MAX)
+        sealed_wide = self._seal(blob, "image/png")
+        self.assertEqual((await self._post_body(sealed_wide)).status, 413)
+        self.assertEqual((await self._post_body(sealed_wide)).status, 413)
+        self.assertEqual(len(self.relay._avatar_hits.get("jules", [])), 2)
+
         self.relay._avatar_hits.clear()
         for i in range(6):
             got = await self._post(_png(color=(i, 0, 0)))
             self.assertEqual(got.status, 200, await got.text())
         self.assertEqual((await self._post(png)).status, 429)
+        # The owner's upload is not the bot's 6/hour.
+        owner = await self.client.post("/admin/bots/jules/avatar", data=png, headers=self.admin())
+        self.assertEqual(owner.status, 200, await owner.text())
 
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay
@@ -252,55 +300,79 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.token, open(r.audit_path()).read())
         after = (await (await self.client.get("/personas", headers={"Authorization": "Bearer test-token"})).json())["portraits_version"]
         self.assertEqual(after, before + 1)
-        # no X-Actor was sent; actor defaults to admin. A bad actor is refused.
         bad_actor = await self.client.post("/admin/bots/jules/avatar", data=raw,
                                           headers={**self.admin(), "X-Actor": "has space"})
         self.assertEqual(bad_actor.status, 400)
 
+        missing = await self.client.post("/admin/bots/jules/avatar-request", headers=self.admin("application/json"),
+                                        json={"actor": "admin"})
+        self.assertEqual(missing.status, 400)
+        self.assertEqual((await missing.json())["error"], "not configured")
+        unknown = await self.client.post("/admin/bots/hank/avatar-request", headers=self.admin("application/json"),
+                                        json={"actor": "admin"})
+        self.assertEqual(unknown.status, 404)
+        spaced = await self.client.post("/admin/bots/jules/avatar-request", headers=self.admin("application/json"),
+                                       json={"actor": "has space"})
+        self.assertEqual(spaced.status, 400)
+
         seen = {}
 
         async def hook(req):
-            body = await req.json()
-            pend = json.load(open(os.path.join(r.PENDING_DIR, body["request_id"] + ".json")))
-            seen["body"], seen["pend"] = body, pend
-
-            async def later():
-                await asyncio.sleep(0.05)
-                os.makedirs(r.REPLIES_DIR, exist_ok=True)
-                json.dump({"request_id": body["request_id"], "agent": pend["persona"], "nonce": pend["nonce"],
-                           "tier": 0, "action_class": "answer", "text": "ok"},
-                          open(os.path.join(r.REPLIES_DIR, body["request_id"] + ".json"), "w"))
-
-            asyncio.get_running_loop().create_task(later())
+            seen["auth"] = req.headers.get("Authorization", "")
+            seen["body"] = await req.json()
             return web.json_response({"ok": True})
 
         app = web.Application()
         app.router.add_post("/hook", hook)
         srv = TestServer(app)
         await srv.start_server()
+        limits = r._limits.path
         try:
+            self.assertFalse(os.path.exists(limits))
             self.assertTrue(r.write_webhooks({"jules": {"url": str(srv.make_url("/hook")), "token": "hook-token-aaaa",
                                                        "saved_at": 1}}))
             req = await self.client.post("/admin/bots/jules/avatar-request", headers=self.admin("application/json"),
                                         json={"actor": "admin"})
             self.assertEqual(req.status, 202, await req.text())
-            tid = (await req.json())["test_id"]
-            deadline = asyncio.get_running_loop().time() + 3
-            while asyncio.get_running_loop().time() < deadline:
-                rec = r._runs.get(tid)
-                if rec and rec["state"] != "waiting":
-                    break
-                await asyncio.sleep(0.05)
-            self.assertEqual(r._runs[tid]["state"], "ok")
-            self.assertEqual(set(seen["body"]), {"v", "request_id", "persona", "question", "reply_by", "test"})
-            self.assertIs(seen["body"]["test"], True)
+            self.assertEqual(await req.json(), {"ok": True})
+            self.assertEqual(set(seen["body"]), {"v", "request_id", "persona", "question", "reply_by", "kind"})
+            self.assertEqual(seen["body"]["kind"], "avatar")
             self.assertEqual(seen["body"]["v"], 1)
+            self.assertEqual(seen["body"]["persona"], "jules")
+            self.assertEqual(seen["body"]["question"], r.AVATAR_ASK)
+            self.assertNotIn("test", seen["body"])
             self.assertNotIn("include_avatar", seen["body"])
-            self.assertEqual(seen["body"]["question"], r.TEST_QUESTION)
             self.assertNotIn("pii_mode", seen["body"])
-            self.assertIs(seen["pend"]["test"], True)
-            self.assertIn(r.TEST_QUESTION, seen["pend"]["question"])
-            self.assertEqual(json.load(open(r._limits.path))["bots"]["jules"]["n"], 1)
-            self.assertNotIn("hook-token-aaaa", open(r.audit_path()).read())
+            self.assertEqual(seen["auth"], "Bearer hook-token-aaaa")
+            self.assertEqual(os.listdir(r.PENDING_DIR), [])
+            self.assertFalse(os.path.exists(limits))
+            audit = open(r.audit_path()).read()
+            self.assertIn("admin jules avatar-ask", audit)
+            self.assertNotIn("hook-token-aaaa", audit)
+            self.assertNotIn(str(srv.make_url("/hook")), audit)
         finally:
             await srv.close()
+
+        async def down(_req):
+            return web.json_response({"ok": False}, status=500)
+
+        bad = web.Application()
+        bad.router.add_post("/hook", down)
+        bad_srv = TestServer(bad)
+        await bad_srv.start_server()
+        try:
+            self.assertTrue(r.write_webhooks({"jules": {"url": str(bad_srv.make_url("/hook")), "token": "hook-token-bbbb",
+                                                       "saved_at": 2}}))
+            refused = await self.client.post("/admin/bots/jules/avatar-request", headers=self.admin("application/json"),
+                                            json={"actor": "admin"})
+            self.assertEqual(refused.status, 502, await refused.text())
+            self.assertNotIn("hook-token-bbbb", open(r.audit_path()).read())
+        finally:
+            await bad_srv.close()
+
+        self.assertTrue(r.write_webhooks({"jules": {"url": "http://127.0.0.1:9/hook", "token": "hook-token-cccc",
+                                                   "saved_at": 3}}))
+        closed = await self.client.post("/admin/bots/jules/avatar-request", headers=self.admin("application/json"),
+                                       json={"actor": "admin"})
+        self.assertEqual(closed.status, 502, await closed.text())
+        self.assertNotIn("hook-token-cccc", open(r.audit_path()).read())

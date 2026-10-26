@@ -609,6 +609,13 @@ class SealReply(unittest.TestCase):
         self.assertIsNone(gs.secret_lint(ANSWER))
         self.assertEqual(gs.secret_lint(None), "error")
         self.assertEqual(gs.ANSWER_MAX, 400)
+        self.assertEqual(gs.STDIN_MAX, 1024 * 1024)
+        self.assertEqual(gs.AVATAR_IMAGE_MAX, 2 << 20)
+        self.assertIn('add_parser("avatar"', src)
+        avatar_body = src.split("def cmd_avatar", 1)[1].split("\ndef ", 1)[0]
+        self.assertNotIn("claim_rid", avatar_body)
+        self.assertLess(avatar_body.index("require_time_machine_exclusion(root)"), avatar_body.index("read_key("))
+        self.assertLess(avatar_body.index("require_same_host()"), avatar_body.index("read_key("))
 
     def test_keygen_is_once_and_a_wide_dir_is_not_tightened(self):
         seed = self.provision()
@@ -698,6 +705,62 @@ class SealReply(unittest.TestCase):
         self.assertEqual((rc2, err2), (1, "refused\n"))
         self.assertEqual(tls2.connects, [])
         self.assertNotIn(RID2, self.slurp(self.sent_path()))
+
+    def test_avatar_posts_once_without_a_request_id(self):
+        seed = self.provision()
+        self.rewrite_endpoint("https://127.0.0.1:9443")
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        verify = base64.b64encode(bytes(SigningKey(seed).verify_key)).decode()
+        keys = {"killed": False, "keys": {"kai": verify}}
+
+        def once(stdin, status=200):
+            old_station, old_key = os.environ.get("GS_STATION"), os.environ.get("GROK_STATION_BOT_KEY")
+            os.environ["GS_STATION"] = "https://192.0.2.9"
+            os.environ["GROK_STATION_BOT_KEY"] = base64.b64encode(b"\x22" * 32).decode()
+            tls = LocalTLS(self.server_ctx, status)
+            tls.__enter__()
+            try:
+                result = self.call(["avatar", "--persona", "kai"], stdin)
+            finally:
+                tls.close()
+                if old_station is None:
+                    os.environ.pop("GS_STATION", None)
+                else:
+                    os.environ["GS_STATION"] = old_station
+                if old_key is None:
+                    os.environ.pop("GROK_STATION_BOT_KEY", None)
+                else:
+                    os.environ["GROK_STATION_BOT_KEY"] = old_key
+            return result, tls
+
+        (rc, out, err), tls = once(png)
+        self.assertEqual((rc, out, err), (0, "", ""), err)
+        self.assertEqual(tls.errors, [])
+        self.assertEqual(tls.connects, [("127.0.0.1", 9443)])
+        self.assertEqual(len(tls.posts), 1)
+        head, body = tls.posts[0]
+        self.assertTrue(head.startswith(b"POST /voice/avatar HTTP/1.1\r\n"))
+        self.assertNotIn(b"192.0.2.9", head)
+        opened = botreply.ingest_avatar(body, self.station, keys, {"kai"})
+        self.assertEqual(opened["image"], png)
+        self.assertEqual(opened["content_type"], "image/png")
+        self.assertEqual(opened["bot"], "kai")
+        self.assertFalse(os.path.exists(self.sent_path()))
+        (rc2, out2, err2), tls2 = once(png)
+        self.assertEqual((rc2, out2, err2), (0, "", ""))
+        self.assertEqual(len(tls2.posts), 1)
+        self.assertNotEqual(tls.posts[0][1], tls2.posts[0][1])
+        self.assertFalse(os.path.exists(self.sent_path()))
+        log = self.slurp(self.log_path())
+        self.assertRegex(log, r"^request_id=avatar persona=kai status=200 ms=\d+\n"
+                          r"request_id=avatar persona=kai status=200 ms=\d+\n$")
+        self.assertNotIn(base64.b64encode(png).decode(), log)
+        self.assertNotIn(base64.b64encode(seed).decode(), log)
+        (rc3, out3, err3), tls3 = once(b"not-an-image")
+        self.assertEqual((rc3, out3, err3), (1, "", "refused\n"))
+        self.assertEqual(tls3.connects, [])
+        self.assertEqual(self.slurp(self.log_path()), log)
 
     def test_bad_request_id_and_overlong_answer_do_not_post(self):
         self.provision()
@@ -981,7 +1044,7 @@ class SealReply(unittest.TestCase):
         for action in su._parser()._actions:
             if isinstance(action, argparse._SubParsersAction):
                 setup_cmds = set(action.choices)
-        self.assertEqual(reply_cmds, {"reply"})
+        self.assertEqual(reply_cmds, {"reply", "avatar"})
         self.assertEqual(setup_cmds, {"keygen", "init", "vendor-install"})
 
     def test_init_refuses_to_overwrite_config(self):

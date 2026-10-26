@@ -1006,3 +1006,17 @@ class Release0113Docs(unittest.TestCase):
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
         self.assertIn("**0.11.3**", open(os.path.join(root, "docs", "operations.md")).read())
+
+
+class BotPictureUI(unittest.TestCase):
+    def setUp(self):
+        self.js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "web", "app.js")).read()
+
+    def test_ask_bot_for_picture_and_routines(self):
+        self.assertIn(">Ask bot for picture<", self.js)
+        self.assertNotIn("Refresh avatar<", self.js)
+        self.assertIn("grok-station-reply seal-avatar --bot <slug>", self.js)
+        self.assertIn("post --avatar --station <station address>", self.js)
+        self.assertIn("gs-seal-reply avatar --persona <slug> < PICTURE_FILE", self.js)
+        self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 2)
+        self.assertIn("kind is avatar", self.js)

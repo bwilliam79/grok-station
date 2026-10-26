@@ -2661,11 +2661,11 @@ class Handler(BaseHTTPRequestHandler):
         """
         if not lan_ok(self.client_address[0]):
             return self.send(403, {"error": "LAN only"})
-        ok = method == "POST" and p == "/voice/reply" or method == "POST" and p == "/voice/show"
-        if not ok:
+        caps = {"/voice/reply": 8192, "/voice/show": 8192, "/voice/avatar": 4 << 20}  # a picture may be larger
+        if method != "POST" or p not in caps:
             return self.send(404, {"error": "not found"})
         n = int(self.headers.get("Content-Length") or 0)
-        if n > 8192:
+        if n > caps[p]:
             return self.send(413, {"error": "too large"})
         data = self.rfile.read(n) if n else b""
         headers = {"Accept": "application/json", "Content-Type": "application/json"}

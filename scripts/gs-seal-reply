@@ -2,9 +2,11 @@
 """Seal and post one reply from the home Grok Bot machine. macOS or Linux.
 
   gs-seal-reply reply --persona <slug> --request-id <rid> [--kind answer|bot_list]
+  gs-seal-reply avatar --persona <slug>
 
-Reply text is stdin only. The station address and certificate pin come from the config file
-written by gs-seal-setup. One pinned HTTPS POST per request id. No retry and no second host.
+Reply text is stdin only. A profile picture is the image file on stdin. The station address
+and certificate pin come from the config file written by gs-seal-setup. One pinned HTTPS POST
+per reply. A picture does not use a request id. No retry and no second host.
 """
 import os, stat, sys
 
@@ -141,7 +143,7 @@ sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
 
-import base64, hashlib, http.client, json, math, re, ssl, time, unicodedata
+import base64, hashlib, http.client, json, math, re, secrets, ssl, time, unicodedata
 from urllib.parse import urlsplit
 
 try:
@@ -161,6 +163,7 @@ from gs_seal_common import (
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 LIST_MAX = 24
 STDIN_MAX = 1024 * 1024
+AVATAR_IMAGE_MAX = 2 << 20  # a picture; replies stay on STDIN_MAX
 ANSWER_MAX = 400
 SENT_KEEP_SECONDS = 7 * 24 * 60 * 60
 
@@ -293,6 +296,60 @@ def seal_outer(slug, request_id, kind, payload, seed, station_pub):
         del material
 
 
+def seal_avatar(slug, image, content_type, seed, station_pub):
+    """Seal a profile picture. Does not take a request id. Wipes the seed copy."""
+    load_nacl()
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    material = bytearray(seed)
+    if isinstance(seed, bytearray):
+        _wipe(seed)
+    sk = None
+    try:
+        sk = SigningKey(bytes(material))
+        doc = {"content_type": content_type, "exp_ms": int(time.time() * 1000) + 60_000,
+               "image_b64": base64.b64encode(bytes(image)).decode("ascii"), "kind": "avatar",
+               "nonce": secrets.token_urlsafe(16)}
+        signed = sk.sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode("ascii"))
+        sealed = SealedBox(PublicKey(station_pub)).encrypt(signed)
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        return json.dumps(outer, separators=(",", ":")).encode("ascii")
+    finally:
+        _wipe(material)
+        del sk
+        del material
+
+
+def sniff_image(raw):
+    """png, jpeg, or webp from the file's own bytes. Empty otherwise."""
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return ""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def read_image():
+    """Image bytes from stdin, capped at 2 MB. Replies still use STDIN_MAX."""
+    try:
+        src = sys.stdin.buffer if hasattr(sys.stdin, "buffer") else sys.stdin
+        data = src.read(AVATAR_IMAGE_MAX + 1)
+    except Exception:
+        raise Refused()
+    if isinstance(data, str):
+        try:
+            data = data.encode("latin-1")
+        except Exception:
+            raise Refused()
+    if not isinstance(data, (bytes, bytearray)) or not data or len(data) > AVATAR_IMAGE_MAX:
+        raise Refused()
+    return bytes(data)
+
+
 def read_stdin():
     try:
         data = sys.stdin.buffer.read(STDIN_MAX + 1)
@@ -381,8 +438,10 @@ class _Pinned(http.client.HTTPSConnection):
             raise ssl.SSLError("pin")
 
 
-def post_once(endpoint, body, pin):
-    """Exactly one POST /voice/reply. Raises on a pin miss. Does not retry."""
+def post_once(endpoint, body, pin, path="/voice/reply"):
+    """Exactly one POST. path is /voice/reply, /voice/show, or /voice/avatar. Raises on a pin miss. Does not retry."""
+    if path not in ("/voice/reply", "/voice/show", "/voice/avatar"):
+        raise Refused()
     parts = urlsplit(endpoint)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.query or parts.fragment:
         raise Refused()
@@ -391,7 +450,7 @@ def post_once(endpoint, body, pin):
     ctx.verify_mode = ssl.CERT_NONE
     conn = _Pinned(parts.hostname, parts.port or 443, ctx, pin, 15)
     try:
-        conn.request("POST", "/voice/reply", body=body, headers={"Content-Type": "application/json"})
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
         resp.read(8192)
         return resp.status
@@ -458,6 +517,23 @@ def append_log(rid, persona, status, ms):
     if not REQUEST_ID.fullmatch(rid) or not slug_ok(persona):
         raise Refused()
     line = "request_id=%s persona=%s status=%d ms=%d\n" % (rid, persona, int(status), int(ms))
+    fd = _open_private(log_path())
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_END)
+        _write_all(fd, line.encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def append_avatar_log(persona, status, ms):
+    """One line for a profile picture: request_id=avatar, persona, status, timing. No image and no path."""
+    if fcntl is None:
+        raise Refused()
+    if not slug_ok(persona):
+        raise Refused()
+    line = "request_id=avatar persona=%s status=%d ms=%d\n" % (persona, int(status), int(ms))
     fd = _open_private(log_path())
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
@@ -557,6 +633,51 @@ def cmd_reply(slug, request_id, kind):
         del seed
 
 
+def cmd_avatar(slug):
+    """Seal the image on stdin and post it once. Does not claim a request id."""
+    if not slug_ok(slug):
+        raise Refused()
+    image = read_image()
+    kind = sniff_image(image)
+    if not kind:
+        raise Refused()
+    _check_tree()
+    root = root_dir()
+    _require_dir(root, 0o700)
+    _require_dir(keys_dir(), 0o700)
+    _require_file(key_path(slug), 0o600)
+    _require_file(config_path(slug), 0o600)
+    for path in (sent_path(), log_path()):
+        if os.path.lexists(path):
+            _require_file(path, 0o600)
+    refuse_unsafe_location(root)
+    require_time_machine_exclusion(root)
+    require_same_host()
+    seed = read_key(slug)
+    try:
+        endpoint, pin, station_pub = read_config(slug)
+        try:
+            body = seal_avatar(slug, image, kind, seed, station_pub)
+        except Refused:
+            raise
+        except Exception:
+            raise Refused()
+        t0 = time.monotonic()
+        status = 0
+        try:
+            status = post_once(endpoint, body, pin, "/voice/avatar")
+        except Exception:
+            status = 0
+        ms = int((time.monotonic() - t0) * 1000)
+        append_avatar_log(slug, status, ms)
+        if status != 200:
+            raise Refused()
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
 def _parser():
     p = QuietParser(prog="gs-seal-reply")
     sub = p.add_subparsers(dest="cmd", required=True, parser_class=QuietParser)
@@ -564,6 +685,8 @@ def _parser():
     reply.add_argument("--persona", required=True)
     reply.add_argument("--request-id", required=True, dest="request_id")
     reply.add_argument("--kind", default="answer", choices=("answer", "bot_list"))
+    avatar = sub.add_parser("avatar")
+    avatar.add_argument("--persona", required=True)
     return p
 
 
@@ -575,6 +698,8 @@ def main(argv=None):
         args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
         if args.cmd == "reply":
             return cmd_reply(args.persona, args.request_id, args.kind)
+        if args.cmd == "avatar":
+            return cmd_avatar(args.persona)
         raise Refused()
     except Unsupported as exc:
         sys.stderr.write(exc.message + "\n")

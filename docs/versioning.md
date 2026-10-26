@@ -236,3 +236,8 @@ Patch release. Installs over 0.11.2. The pinned download files are unchanged.
 - **Time and location.** A saved place is accent-colored with a pin.
 - **Hey Grok.** The built-in row uses the station logo.
 - Not in this release: wake-word delete cleanup (0.11.4), bot pictures sent by the bot (needs review), Configure redesign and the calibration gate (waiting for approval).
+
+## Unreleased: bot pictures (needs review before release)
+
+- A bot sends its own picture over a signed, sealed post to `/voice/avatar` on the admin HTTPS port (LAN only, 4 MB body cap). Ask bot for picture (Configure) sends a webhook of kind avatar. The old voice-token route returns 410.
+- `tools/grok-station-reply` (seal-avatar, post --avatar) and `scripts/gs-seal-reply` (avatar) changed, so `admin/web/deploy-pins.js` and `scripts/install-home.sh` must be re-pinned to the shipping commit at release.

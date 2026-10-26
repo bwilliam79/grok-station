@@ -521,7 +521,9 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
     def test_admin_forwards_only_the_reply_path(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "grok_admin.py")).read()
         self.assertIn('if p.startswith("/voice/"):\n            return self.voice_ingress(method, p)', src)
-        self.assertIn('method == "POST" and p == "/voice/reply"', src)
+        self.assertIn('"/voice/reply": 8192', src)
+        self.assertIn('"/voice/avatar": 4 << 20', src)  # sealed picture, larger cap
+        self.assertIn('if method != "POST" or p not in caps:', src)
         self.assertNotIn("/voice/request", src)
         self.assertIn('if not lan_ok(self.client_address[0]):\n            return self.send(403', src)
         self.assertIn("never be port-forwarded", src)

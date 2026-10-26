@@ -3,7 +3,9 @@
 
   seal  answer on stdin, seed from GROK_STATION_BOT_KEY only; prints the outer {v,bot,sealed} JSON.
   seal-list  bot names, one per line on stdin; same outer JSON, inner kind bot_list.
+  seal-avatar  a png, jpeg, or webp on stdin; same outer JSON, inner kind avatar.
   post  sealed JSON on stdin; validates it and POSTs it. No key, no PyNaCl (stdlib only).
+  post --avatar  a sealed picture, to /voice/avatar. Larger than a reply.
   send  seal | post on one machine.
 
 The seed is never taken from an argument or a file. This does not import the station relay.
@@ -12,6 +14,8 @@ import argparse, base64, hashlib, http.client, json, os, re, secrets, ssl, sys, 
 from urllib.parse import urlsplit
 
 MAX_BODY = 8192
+AVATAR_IMAGE_MAX = 2 << 20
+AVATAR_OUTER_MAX = 4 << 20
 _REFUSED = ("--key", "--seed", "--bot-key", "--private-key", "--secret")
 _LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 _RID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
@@ -115,12 +119,18 @@ def keygen_lines():
     return f"GROK_STATION_BOT_KEY={seed}", f"public: {pub}"
 
 
-def check_outer(raw):
-    """Return canonical bytes if raw is exactly {v:1,bot,sealed} and <= 8 KiB, else None."""
+def check_outer(raw, limit=None):
+    """Return canonical bytes if raw is exactly {v:1,bot,sealed} and within the size cap, else None.
+
+    The default cap is 8 KiB (a reply or a card). A profile picture passes a larger cap.
+    """
+    cap = MAX_BODY if limit is None else limit
+    if type(cap) is not int or cap < 1 or cap > AVATAR_OUTER_MAX:
+        cap = MAX_BODY
     if isinstance(raw, str):
         raw = raw.encode()
     raw = raw.strip()
-    if not raw or len(raw) > MAX_BODY:
+    if not raw or len(raw) > cap:
         return None
     try:
         obj = json.loads(raw)
@@ -137,7 +147,7 @@ def check_outer(raw):
     except Exception:
         return None
     out = json.dumps(obj, separators=(",", ":")).encode()
-    return out if len(out) <= MAX_BODY else None
+    return out if len(out) <= cap else None
 
 
 def _refused(argv):
@@ -200,9 +210,48 @@ def build_show(bot, doc, seed_b64, station_pub_b64):
     return json.dumps(outer, separators=(",", ":")).encode()
 
 
+def sniff_image(raw):
+    """png, jpeg, or webp from the file's own bytes. Empty when it is not one of those."""
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return ""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def build_avatar(bot, image, seed_b64, station_pub_b64):
+    """Outer JSON bytes for a profile picture. Raises ValueError on a bad key, type, or size.
+
+    The signed document is kind avatar, a fresh nonce, exp_ms about 60 seconds ahead, the file
+    type, and the image. The same bytes sealed twice are two different blobs.
+    """
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    if not isinstance(image, (bytes, bytearray)) or not image or len(image) > AVATAR_IMAGE_MAX:
+        raise ValueError("image")
+    kind = sniff_image(image)
+    if kind not in ("image/png", "image/jpeg", "image/webp"):
+        raise ValueError("type")
+    seed = base64.b64decode("".join(str(seed_b64).split()), validate=True)
+    pub = base64.b64decode("".join(str(station_pub_b64).split()), validate=True)
+    if len(seed) != 32 or len(pub) != 32:
+        raise ValueError("key")
+    doc = {"content_type": kind, "exp_ms": int(time.time() * 1000) + 60_000,
+           "image_b64": base64.b64encode(bytes(image)).decode("ascii"), "kind": "avatar",
+           "nonce": secrets.token_urlsafe(16)}
+    signed = SigningKey(seed).sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode())
+    sealed = SealedBox(PublicKey(pub)).encrypt(signed)
+    outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
+    return json.dumps(outer, separators=(",", ":")).encode()
+
+
 def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
-    """POST /voice/reply (or /voice/show). Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
-    if path not in ("/voice/reply", "/voice/show"):
+    """POST /voice/reply, /voice/show, or /voice/avatar. Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
+    if path not in ("/voice/reply", "/voice/show", "/voice/avatar"):
         raise ValueError("path")
     parts = urlsplit(origin)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
@@ -220,6 +269,7 @@ def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
     finally:
         conn.close()
     verdict = {200: "ok", 400: "bad request", 403: "forbidden", 409: "conflict",
+               413: "too large", 415: "unsupported media type",
                429: "too many", 404: "not found"}.get(status, "bad request" if status >= 400 else "ok")
     return status, verdict
 
@@ -284,6 +334,39 @@ def _post_args(args):
     return pin
 
 
+def _read_image():
+    """Image bytes from stdin, at most 2 MB. None when missing, too big, or not png, jpeg, or webp."""
+    cap = AVATAR_IMAGE_MAX + 1
+    src = sys.stdin.buffer if hasattr(sys.stdin, "buffer") else sys.stdin
+    try:
+        raw = src.read(cap)
+    except Exception:
+        return None
+    if isinstance(raw, str):
+        raw = raw.encode("latin-1")
+    if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) > AVATAR_IMAGE_MAX:
+        return None
+    if not sniff_image(raw):
+        return None
+    return bytes(raw)
+
+
+def _seal_avatar_body(args):
+    image = _read_image()
+    if image is None:
+        print("400 bad request")
+        return None, 1
+    seed = os.environ.get("GROK_STATION_BOT_KEY", "")
+    if not seed.strip():
+        print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+        return None, 2
+    try:
+        return build_avatar(args.bot, image, seed, args.station_pub), 0
+    except Exception:
+        print("400 bad request")
+        return None, 1
+
+
 def _read_show():
     raw = sys.stdin.buffer.read(9000) if hasattr(sys.stdin, "buffer") else sys.stdin.read(9000).encode()
     if not raw or len(raw) > MAX_BODY:
@@ -332,9 +415,13 @@ def main(argv=None):
         sp.add_argument("--station-pub", required=True)
         sp.add_argument("--request-id", required=True)
     post.add_argument("--show", action="store_true", help="post a sealed card (from seal-show) to /voice/show")
+    post.add_argument("--avatar", action="store_true", help="post a sealed picture (from seal-avatar) to /voice/avatar")
     seal_show = sub.add_parser("seal-show")
     seal_show.add_argument("--bot", required=True)
     seal_show.add_argument("--station-pub", required=True)
+    seal_avatar = sub.add_parser("seal-avatar")
+    seal_avatar.add_argument("--bot", required=True)
+    seal_avatar.add_argument("--station-pub", required=True)
     show = sub.add_parser("show")
     show.add_argument("--bot", required=True)
     show.add_argument("--station-pub", required=True)
@@ -377,15 +464,26 @@ def main(argv=None):
             return 1
         print(body.decode())
         return 0
+    if args.cmd == "seal-avatar":  # cloud computer: seal a picture; the home machine posts it with post --avatar
+        body, rc = _seal_avatar_body(args)
+        if body is None:
+            return rc
+        print(body.decode())
+        return 0
     if args.cmd == "post":
+        if args.show and args.avatar:
+            print("400 bad request")
+            return 1
         pin = _post_args(args)
         if pin is None:
             return 2
-        body = check_outer(sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read())
+        incoming = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read()
+        body = check_outer(incoming, limit=AVATAR_OUTER_MAX if args.avatar else None)
         if body is None:
             print("400 bad request")
             return 1
-        return _do_post(args, body, pin, path="/voice/show" if args.show else "/voice/reply")
+        path = "/voice/avatar" if args.avatar else ("/voice/show" if args.show else "/voice/reply")
+        return _do_post(args, body, pin, path=path)
     if args.cmd == "send":
         pin = _post_args(args)
         if pin is None:

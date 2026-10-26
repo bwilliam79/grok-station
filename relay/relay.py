@@ -210,6 +210,7 @@ _limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "ha
 _seen_rids = set()
 _reply_seen = set()       # request ids that already took a sealed reply; not the take_reply set
 _show_seen = None          # persisted (bot, nonce) pairs for sealed cards
+_avatar_seen = None        # persisted (bot, nonce) pairs for sealed profile pictures
 _reply_rate = None
 _card_rate = None
 _rtt = None
@@ -2440,9 +2441,10 @@ def _last4(token):
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
-                  "import", "dismiss", "list-source", "key-mode", "reply-host"}
+                  "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
-_REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 422: "lint", 429: "too many"}
+_REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too large",
+               415: "unsupported media type", 422: "lint", 429: "too many"}
 
 
 def actor_ok(s):
@@ -2693,6 +2695,82 @@ def show_seen():
     if _show_seen is None:
         _show_seen = botreply.ShowSeen(E("SHOW_SEEN", os.path.join(STATE_DIR, "state", "show-seen.json")))
     return _show_seen
+
+
+def avatar_seen():
+    """Bounded file of profile-picture nonces. One store per process. Tests point this at a temp file."""
+    global _avatar_seen
+    if _avatar_seen is None:
+        _avatar_seen = botreply.ShowSeen(E("AVATAR_SEEN", os.path.join(STATE_DIR, "state", "avatar-seen.json")))
+    return _avatar_seen
+
+
+def image_kind(raw):
+    """Declared file type from magic bytes. Empty when the bytes are not png, jpeg, or webp."""
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return ""
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def _declared_image_kind(ctype):
+    if ctype in ("image/jpeg", "image/jpg"):
+        return "image/jpeg"
+    return ctype
+
+
+def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now_ms=None):
+    """Open a sealed profile picture and hand the bytes to save(bot, image) -> {ok, sha8|status}.
+
+    Order: the seal (which checks seen but does not write it), then the 6/hour cap, then the nonce
+    reservation, then the file type, then save. A bad image keeps the rate slot and releases the
+    nonce so a corrected picture can be tried until the cap. The reply limiter is not charged.
+    """
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    try:
+        opened = botreply.ingest_avatar(raw, station_sk, keys_doc, known, seen=seen, now_ms=now)
+    except botreply.Reject as rej:
+        err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
+        return rej.status, {"error": err}
+    if not allow(opened["bot"]):
+        return 429, {"error": "too many"}
+    reserved = False
+    if isinstance(seen, botreply.ShowSeen):
+        got = seen.reserve(opened["bot"], opened["nonce"], opened["exp_ms"], now)
+        if got is None:
+            return 503, {"error": "unavailable"}
+        if not got:
+            return 409, {"error": "conflict"}
+        reserved = True
+
+    def release():
+        if not reserved:
+            return
+        try:
+            seen.release(opened["bot"], opened["nonce"], now)
+        except OSError:
+            pass
+
+    if image_kind(opened["image"]) != _declared_image_kind(opened["content_type"]):
+        release()
+        return 415, {"error": "unsupported media type"}
+    try:
+        result = save(opened["bot"], opened["image"])
+    except Exception:
+        result = {"ok": False, "status": 500}
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        release()
+        status = result.get("status") if isinstance(result, dict) else None
+        if status not in (413, 415, 500):
+            status = 500
+        err = {413: "too large", 415: "unsupported media type", 500: "unavailable"}[status]
+        return status, {"error": err}
+    return 200, {"ok": True, "sha8": result.get("sha8")}
 
 
 def _reject_show(rej):
@@ -2960,20 +3038,41 @@ def _is_response(resp):
 
 
 async def voice_avatar(req):
-    """POST /voice/avatar. Voice-token bearer + X-Grok-Persona. No admin token, no client certificate."""
-    slug = req.headers.get("X-Grok-Persona", "")
-    if not req.headers.get("Authorization", "").startswith("Bearer "):
-        return web.json_response({"error": "unauthorized"}, status=401)
-    if not handoff.bot_slug_ok(slug) or slug not in load_minted()["agents"]:
-        return web.json_response({"error": "not found"}, status=404)
-    if not _voice_token_ok(slug, req.headers.get("Authorization", "")):
-        return web.json_response({"error": "unauthorized"}, status=401)
-    if not _avatar_allow(slug):
-        return web.json_response({"error": "too many"}, status=429)
-    raw, err = await _avatar_raw(req)
-    if _is_response(err):
-        return err
-    return _avatar_result(slug, raw, "bot")
+    """POST /voice/avatar. A sealed picture, the same shape as a sealed card. No voice token.
+
+    A bearer token with an image content type is the retired route: 410, not a picture.
+    The admin HTTPS port forwards this path. The 6/hour cap is the bot's, charged only after the seal.
+    """
+    auth = req.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and (req.content_type or "") in _AVATAR_TYPES:
+        return web.json_response({"error": "retired"}, status=410)
+    n_hdr = req.content_length if isinstance(req.content_length, int) else 0
+    if n_hdr > botreply.AVATAR_OUTER_MAX:
+        return web.json_response({"error": "too large"}, status=413)
+    try:
+        raw = await req.read()
+    except Exception:
+        return web.json_response({"error": "bad request"}, status=400)
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = b""
+    try:
+        station = botreply.load_or_create_station(SECRETS_DIR)
+    except (botreply.StationKeyError, OSError):
+        return web.json_response({"error": "unavailable"}, status=500)
+
+    def save(bot, image):
+        png, status = transcode_avatar(image)
+        if png is None:
+            return {"ok": False, "status": status or 415}
+        try:
+            sha8 = save_avatar(bot, png, "bot")
+        except OSError:
+            return {"ok": False, "status": 500}
+        return {"ok": True, "sha8": sha8}
+
+    status, body = accept_avatar(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+                                 avatar_seen(), _avatar_allow, save)
+    return web.json_response(body, status=status)
 
 
 def load_minted():
@@ -3521,8 +3620,15 @@ async def admin_avatar_post(req):
     return _avatar_result(slug, raw, actor)
 
 
+AVATAR_ASK = "Send your profile picture image file."
+
+
 async def admin_avatar_request(req):
-    """Test-flagged webhook with include_avatar. Own request id, same caps, cannot bind some other request."""
+    """Ask one paired bot for its profile picture. A webhook of kind avatar, not a test question.
+
+    Nothing is stored as a pending answer, and this does not use an answer cap. The bot sends the
+    picture itself on the sealed picture route.
+    """
     bad = await admin_gate(req)
     if _is_response(bad):
         return bad
@@ -3538,15 +3644,21 @@ async def admin_avatar_request(req):
     ent = current_webhooks().get(slug)
     if not ent:
         return web.json_response({"error": "not configured"}, status=400)
-    hook = {"url": ent["url"], "token": ent["token"]}
-    tid = "t_" + secrets.token_urlsafe(12)
-    _runs[tid] = {"slug": slug, "state": "waiting", "t0": time.monotonic(), "elapsed_s": 0.0,
-                  "answered_in_s": None, "error": None, "cancel": asyncio.Event(), "hook": hook, "detail": {},
-                  "include_avatar": True}
-    task = asyncio.create_task(_run_bot_test(tid))
-    _run_tasks.add(task)
-    task.add_done_callback(_run_tasks.discard)
-    return web.json_response({"test_id": tid}, status=202)
+    rid = handoff.new_request_id()
+    reply_by = datetime.datetime.fromtimestamp(
+        time.time() + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    posted = dict(handoff.payload(rid, slug, AVATAR_ASK, reply_by, kind="avatar"))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+            async with http.post(ent["url"], json=posted, allow_redirects=False,
+                                 headers={"Authorization": "Bearer " + ent["token"]}) as resp:
+                ok = 200 <= resp.status < 300
+    except Exception:
+        ok = False
+    if not ok:
+        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    audit(actor, slug, "avatar-ask", "-")
+    return web.json_response({"ok": True}, status=202)
 
 
 async def healthz(_req):

@@ -379,6 +379,23 @@ if __name__ == "__main__":
     unittest.main()
 
 
+def _run_bytes(argv, stdin=b"", env=None):
+    """Like _run, but stdin is raw bytes (a picture has no text encoding)."""
+    old = (sys.stdin, sys.stdout, sys.stderr, os.environ.get("GROK_STATION_BOT_KEY"))
+    try:
+        sys.stdin, sys.stdout, sys.stderr = io.BytesIO(stdin), io.StringIO(), io.StringIO()
+        os.environ.pop("GROK_STATION_BOT_KEY", None)
+        if env:
+            os.environ["GROK_STATION_BOT_KEY"] = env
+        rc = helper.main(argv)
+        return rc, sys.stdout.getvalue(), sys.stderr.getvalue()
+    finally:
+        sys.stdin, sys.stdout, sys.stderr, key = old
+        os.environ.pop("GROK_STATION_BOT_KEY", None)
+        if key is not None:
+            os.environ["GROK_STATION_BOT_KEY"] = key
+
+
 def _run(argv, stdin="", env=None):
     old = (sys.stdin, sys.stdout, sys.stderr, os.environ.get("GROK_STATION_BOT_KEY"))
     try:
@@ -472,3 +489,64 @@ class SealPost(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], input=body, capture_output=True, text=True, env=env, timeout=30)
         self.assertNotIn("nacl", p.stderr.lower())
         self.assertIn("tls error", p.stderr)
+
+    def test_seal_avatar_then_post_avatar(self):
+        seed = _b64(bytes(self.signer))
+        pub = botreply.station_pub_b64(self.station)
+        png = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+        rc, out, err = _run_bytes(["seal-avatar", "--bot", "jules", "--station-pub", pub], png, env=seed)
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn(seed, out + err)
+        self.assertNotIn("image_b64", out)
+        self.assertEqual(set(json.loads(out)), {"v", "bot", "sealed"})
+        opened = botreply.ingest_avatar(out.encode(), self.station, self.keys, self.known)
+        self.assertEqual(opened["image"], png)
+        self.assertEqual(opened["content_type"], "image/png")
+        self.assertEqual(opened["bot"], "jules")
+        again, out2, _ = _run_bytes(["seal-avatar", "--bot", "jules", "--station-pub", pub], png, env=seed)
+        self.assertEqual(again, 0)
+        self.assertNotEqual(out, out2)  # a fresh nonce, so the same file is not a replay
+        sent = {}
+
+        def fake_post(origin, body, insecure=False, pin="", path="/voice/reply"):
+            sent.update(origin=origin, body=body, insecure=insecure, pin=pin, path=path)
+            return 200, "ok"
+
+        real = helper.post_reply
+        helper.post_reply = fake_post
+        try:
+            rc, pout, _ = _run(["post", "--avatar", "--station", "https://127.0.0.1",
+                                "--insecure", "--pin-sha256", "ab" * 32], out)
+            self.assertEqual((rc, pout.strip(), sent.get("path"), sent.get("pin")),
+                             (0, "200 ok", "/voice/avatar", "ab" * 32))
+            called = []
+            helper.post_reply = lambda *a, **k: called.append(1) or (200, "ok")
+            rc, bout, _ = _run(["post", "--show", "--avatar", "--station", "https://127.0.0.1"], out)
+            self.assertEqual((rc, bout.strip(), called), (1, "400 bad request", []))
+        finally:
+            helper.post_reply = real
+        rc, bad, err = _run_bytes(["seal-avatar", "--bot", "jules", "--station-pub", pub], b"hello", env=seed)
+        self.assertEqual((rc, bad.strip()), (1, "400 bad request"))
+        self.assertNotIn(seed, bad + err)
+        rc, empty, err = _run_bytes(["seal-avatar", "--bot", "jules", "--station-pub", pub], png)
+        self.assertEqual(rc, 2)
+        self.assertEqual(empty, "")
+        self.assertIn("GROK_STATION_BOT_KEY", err)
+        huge = b"\x89PNG\r\n\x1a\n" + b"x" * helper.AVATAR_IMAGE_MAX
+        rc, _, _ = _run_bytes(["seal-avatar", "--bot", "jules", "--station-pub", pub], huge, env=seed)
+        self.assertEqual(rc, 1)
+        big = json.dumps({"v": 1, "bot": "jules", "sealed": _b64(b"x" * 7000)})
+        self.assertIsNone(helper.check_outer(big))
+        self.assertIsNotNone(helper.check_outer(big, limit=helper.AVATAR_OUTER_MAX))
+
+    def test_picture_commands_stay_on_the_reply_tools(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tool = open(os.path.join(root, "tools", "grok-station-reply")).read()
+        home = open(os.path.join(root, "scripts", "gs-seal-reply")).read()
+        self.assertIn('sub.add_parser("seal-avatar")', tool)
+        self.assertIn('"/voice/show" if args.show else "/voice/reply"', tool)
+        self.assertIn('"/voice/avatar" if args.avatar else', tool)
+        self.assertIn('add_parser("avatar")', home)
+        self.assertIn("STDIN_MAX = 1024 * 1024", home)
+        self.assertEqual(home.count(".request("), 1)

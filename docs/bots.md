@@ -218,6 +218,12 @@ For a card, run two more commands the same way. On the cloud computer:
 printf '%s' "$CARD_JSON" | grok-station-reply seal-show --bot <slug> --station-pub '<station public key>'
 Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'
+
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the commands above). Use your own profile picture image file (PNG, JPEG or WebP, 2 MB or less). On the cloud computer:
+grok-station-reply seal-avatar --bot <slug> --station-pub '<station public key>' < PICTURE_FILE
+Then on the home machine, the output line unchanged:
+printf '%s' 'SEALED_PICTURE' | python3 ~/bin/grok-station-reply post --avatar --station <station address> --insecure --pin-sha256 '<fingerprint>'
+Replace PICTURE_FILE with the path to that image. The station takes at most 6 pictures an hour.
 ```
 
 Home mode (gs-seal-setup once, then one reply command on the home machine):
@@ -247,6 +253,10 @@ calendar: {"v":1,"type":"calendar","date":"YYYY-MM-DD","events":[0-8 of {"time":
 home: {"v":1,"type":"home","title":(24),"items":[1-6 of {"label":(32),"value":(24),"trend":"up|down" optional}]}
 To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Unknown fields are rejected. Send at most one card per answer.
 Cards need the bot computer key mode for now; with the key on this home computer, skip cards.
+
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the reply command). Use your own profile picture image file (PNG, JPEG or WebP, 2 MB or less):
+gs-seal-reply avatar --persona <slug> < PICTURE_FILE
+Replace PICTURE_FILE with the path to that image. The station takes at most 6 pictures an hour.
 ```
 
 `<station address>` is the admin page origin, `https://` plus the host you opened (no path). `<fingerprint>` is the certificate SHA-256 from the System page. A cloud-mode list still uses exactly those two commands: `seal-list`, then `post`. A home-mode list is the one `gs-seal-reply reply` command with `--kind bot_list`.
@@ -318,3 +328,7 @@ On Linux, `keygen` writes `CACHEDIR.TAG` (the cache-directory signature line `Si
 - The relay keeps the station X25519 private key in its secrets directory (`station_box_key`, mode 0600). It stores only the bot's Ed25519 verify key. Bot private keys never live on the station.
 - The audit log records time, bot, request id, verdict, and byte count. It does not record the question, the answer, or any key.
 - Round trip (webhook send until a verified reply) is kept for the last 10 asks per bot. The Bots page shows the average and the timeout count.
+
+## Bot pictures
+
+A paired bot sends its own profile picture: the routine tells it to send the picture once after pairing, and again when the station's webhook has kind avatar. **Ask bot for picture** in Configure sends that webhook. The picture is signed with the bot's key and sealed to the station, like a reply, and posted to `/voice/avatar` on the station's LAN-only HTTPS port. PNG, JPEG or WebP, 2 MB or less, at most 6 an hour per bot. The station re-encodes it to 512 px with no metadata. The old voice-token picture route is retired (410).
