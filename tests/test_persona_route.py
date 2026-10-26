@@ -343,6 +343,13 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
     def _acks(self, events):
         return [e for e in events if e.get("type") == "ack"]
 
+    def _assert_no_ack(self, out):
+        """0.11.8: a bot's own wake word goes straight to it. No Asking clip, no Asking TTS."""
+        self.assertEqual(self._acks(out["events"]), [], [e.get("type") for e in out["events"]])
+        self.assertNotIn("ack", out["order"])
+        self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
+        self.assertNotIn(MODEL_PCM, out["binaries"])
+
     def _assert_one_ack(self, out, name="Jules", before_post=True):
         acks = self._acks(out["events"])
         self.assertEqual(len(acks), 1, [e.get("type") for e in out["events"]])
@@ -388,7 +395,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("xai error" in l for l in self.lines))
 
     async def test_wake_route_drops_model_and_speaks_webhook(self):
-        out = await self.drive(DINNER, persona="jules", function_call=True, expect_ack=True)
+        out = await self.drive(DINNER, persona="jules", function_call=True, expect_ack=False)
         updates = self._updates(out["upstream"])
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0]["turn_detection"],
@@ -399,7 +406,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("shared family room", updates[0]["instructions"])
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
-        self._assert_one_ack(out)  # woken as Jules: one clip at end of speech, not a second from check_notes
+        self._assert_no_ack(out)  # woken as Jules: straight to Jules, no Asking (0.11.8)
         self.assertEqual(replies[-1], TACOS)
         self.assertNotIn("Still asking Jules.", [t for t, _ in self.tts])
         self.assertEqual(self.tts[-1], (TACOS, "ara"))
@@ -424,26 +431,26 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
     async def test_a_slow_reply_does_not_say_still(self):
         """The ack replaces the old cue. A slow reply still does not speak "still asking"; the wait itself is unchanged."""
         self.reply_delay = 0.45
-        out = await self.drive(DINNER, persona="jules", expect_ack=True)
+        out = await self.drive(DINNER, persona="jules", expect_ack=False)
         self._assert_routed_silence(out)
-        self._assert_one_ack(out)
+        self._assert_no_ack(out)
         self.assertEqual([t for t, _v in self.tts if t.startswith("Still ")], [])
         self.assertFalse(any(e.get("type") == "handoff_still" for e in out["events"]))
         self.assertTrue(any(e.get("type") == "handoff_wait" and e.get("direct") is True for e in out["events"]))
         self.assertEqual(self._replies(out["events"])[-1], TACOS)
         # The reply still arrives inside the wait. Nothing is inserted between the ack and handoff_wait.
         self.assertEqual([t for t in out["order"] if t in ("ack", "handoff_still", "handoff_wait")],
-                         ["ack", "handoff_wait"])
+                         ["handoff_wait"])
         self._canary(True)
         self._quiet(DINNER, TACOS, TOKEN, out["url"])
 
     async def test_check_notes_acks_once(self):
-        """check_notes is a route: one ack. Speech already ended on this persona, so the tool does not play a second."""
-        out = await self.drive(DINNER, persona="jules", function_call=True, tool_first=True, expect_ack=True)
+        """check_notes on a bot woken by its own word: no ack (0.11.8)."""
+        out = await self.drive(DINNER, persona="jules", function_call=True, tool_first=True, expect_ack=False)
         self._assert_routed_silence(out)
         replies = self._replies(out["events"])
-        self._assert_one_ack(out)
-        self.assertEqual([t for t, _ in self.tts if t.startswith("Asking ")], [relay.asking_line("Jules")])
+        self._assert_no_ack(out)
+        self.assertEqual([t for t, _ in self.tts if t.startswith("Asking ")], [])
         self.assertFalse(any(t.startswith("Still ") for t, _ in self.tts))
         self.assertEqual(replies[-1], TACOS)
         self.assertEqual(self.calls[0]["question"], TOOL_Q)
@@ -517,7 +524,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         types = [e.get("type") for e in out["events"]]
         self.assertLess(types.index("comms_fail"), types.index("reply"))
         self.assertFalse(relay.icon_view()["ok"])
-        self._assert_one_ack(out)  # the wait started, so the ack played; the timeout line is the reply
+        self._assert_no_ack(out)  # own wake word: no Asking; the timeout line is the reply
         self.assertFalse(any(t.startswith("Still ") for t, _ in self.tts))
         self.assertEqual(self.tts[-1][0], line)
         self.assertNotIn("response.create", [e.get("type") for e in out["upstream"]])
@@ -610,7 +617,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_cached_clip_is_not_rendered_again(self):
         relay.write_ack_cache("jules", "Jules", "ara", b"CACHED-PCM")
-        out = await self.drive(DINNER, persona="jules", expect_ack=True)
+        out = await self.drive(ASK_JULES, expect_ack=True)  # a Grok route still acks
         self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
         self.assertEqual(base64.b64decode(self._acks(out["events"])[0]["audio"]), b"CACHED-PCM")
         self.assertEqual(self._replies(out["events"])[-1], TACOS)

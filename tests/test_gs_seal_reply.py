@@ -706,6 +706,40 @@ class SealReply(unittest.TestCase):
         self.assertEqual(tls2.connects, [])
         self.assertNotIn(RID2, self.slurp(self.sent_path()))
 
+    def test_show_posts_a_sealed_score_card_from_home(self):
+        """0.11.8 regression: a home-key bot (custom wake word or not) could not send a score card at all."""
+        from nacl.public import SealedBox
+        seed = self.provision()
+        self.rewrite_endpoint("https://127.0.0.1:9443")
+        card = {"v": 1, "op": "put", "id": "score", "priority": 10, "ttl_s": 600, "card": {
+            "v": 1, "type": "sports", "league": "NFL", "home_score": 21, "away_score": 17, "status": "final",
+            "home": {"name": "Bears", "abbr": "CHI", "logo_url": "https://a.espncdn.com/i/teamlogos/nfl/500/chi.png"},
+            "away": {"name": "Packers", "abbr": "GB"}}}
+        tls = LocalTLS(self.server_ctx, 200)
+        tls.__enter__()
+        try:
+            rc, out, err = self.call(["show", "--persona", "kai"], json.dumps(card).encode())
+        finally:
+            tls.close()
+        self.assertEqual((rc, out, err), (0, "", ""), err)
+        self.assertEqual(len(tls.posts), 1)
+        head, body = tls.posts[0]
+        self.assertTrue(head.startswith(b"POST /voice/show HTTP/1.1\r\n"))
+        outer = json.loads(body)
+        self.assertEqual(outer["bot"], "kai")
+        signed = SealedBox(self.station).decrypt(base64.b64decode(outer["sealed"]))
+        doc = json.loads(SigningKey(seed).verify_key.verify(signed))
+        self.assertEqual((doc["kind"], doc["op"], doc["card"]["type"]), ("show", "put", "sports"))
+        self.assertEqual(doc["card"]["home"]["logo_url"], card["card"]["home"]["logo_url"])
+        for bad in (b"not json", json.dumps({"op": "put", "kind": "reply"}).encode(), b"[1]"):
+            tls = LocalTLS(self.server_ctx, 200)
+            tls.__enter__()
+            try:
+                self.assertEqual(self.call(["show", "--persona", "kai"], bad)[0], 1)
+            finally:
+                tls.close()
+            self.assertEqual(tls.posts, [])
+
     def test_avatar_posts_once_without_a_request_id(self):
         seed = self.provision()
         self.rewrite_endpoint("https://127.0.0.1:9443")
@@ -1044,7 +1078,7 @@ class SealReply(unittest.TestCase):
         for action in su._parser()._actions:
             if isinstance(action, argparse._SubParsersAction):
                 setup_cmds = set(action.choices)
-        self.assertEqual(reply_cmds, {"reply", "avatar", "version"})
+        self.assertEqual(reply_cmds, {"reply", "avatar", "show", "version"})
         self.assertEqual(setup_cmds, {"keygen", "init", "vendor-install"})
 
     def test_version_prints_the_release_and_posts_send_it(self):

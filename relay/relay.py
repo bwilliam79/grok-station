@@ -1779,14 +1779,17 @@ async def session(req):
                 st["drop_model"] = True  # before any model audio is forwarded for this turn
                 name = roster[bot]["name"]
                 voice = roster[bot].get("voice") or VOICE
-                # Before the ask, so a cap or a missing webhook never plays Asking.
-                await emit_ack(bot, question)
+                # A bot's own wake word goes straight to it: no "Asking <name>" (0.11.8). Any other route acks once,
+                # before the ask, so a cap or a missing webhook never plays Asking.
+                direct = bot == st.get("woke") and bot != "grok"
+                if not direct:
+                    await emit_ack(bot, question)
                 st.update(hold=True, responding=True)
                 h0 = time.monotonic()
 
                 async def waiting():
                     # Ring only. The ack already played; do not TTS again and do not re-send to undo "speaking".
-                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": not cue})
+                    await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct or not cue})
 
                 try:
                     text, verdict = await ask_teammate(http, bot, question, waiting)
@@ -3498,6 +3501,11 @@ async def _run_bot_test(tid):
             rec["state"] = "ok"
             rec["answered_in_s"] = float(time.monotonic() - rec["t0"])
             rec["error"] = None
+            if rec.get("then_avatar"):  # post-add check: ask for the picture once, silently; a miss changes nothing
+                try:
+                    rec["avatar_asked"] = await ask_avatar(rec["slug"], rec.get("actor") or "admin")
+                except Exception:
+                    rec["avatar_asked"] = False
         else:
             rec["state"] = "failed"
             rec["error"] = _test_error(verdict, detail)
@@ -3543,9 +3551,11 @@ async def admin_test_post(req):
         if not handoff.webhook_target_ok(url, key):
             return web.json_response({"error": "bad webhook"}, status=400)
         hook = {"url": url, "token": key}
+    then_avatar = body.get("then_avatar") is True and url is None  # only the saved webhook
     tid = "t_" + secrets.token_urlsafe(12)
     _runs[tid] = {"slug": slug, "state": "waiting", "t0": time.monotonic(), "elapsed_s": 0.0,
-                  "answered_in_s": None, "error": None, "cancel": asyncio.Event(), "hook": hook, "detail": {}}
+                  "answered_in_s": None, "error": None, "cancel": asyncio.Event(), "hook": hook, "detail": {},
+                  "then_avatar": then_avatar, "actor": actor}
     audit(actor, slug, "test", _last4(hook["token"]))
     task = asyncio.create_task(_run_bot_test(tid))
     _run_tasks.add(task)
@@ -3836,9 +3846,22 @@ async def admin_avatar_request(req):
     actor = body.get("actor", "admin")
     if not actor_ok(actor):
         return web.json_response({"error": "bad request"}, status=400)
+    if not current_webhooks().get(slug):
+        return web.json_response({"error": "not configured"}, status=400)
+    if not await ask_avatar(slug, actor):
+        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    return web.json_response({"ok": True}, status=202)
+
+
+async def ask_avatar(slug, actor):
+    """One webhook of kind avatar to the saved webhook. True when the bot's webhook took it. Audited on success.
+
+    Used by Ask bot for picture and, silently, by the post-add connection test (0.11.8). The picture itself
+    comes back on the sealed picture route with its own limits.
+    """
     ent = current_webhooks().get(slug)
     if not ent:
-        return web.json_response({"error": "not configured"}, status=400)
+        return False
     rid = handoff.new_request_id()
     reply_by = datetime.datetime.fromtimestamp(
         time.time() + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -3850,10 +3873,9 @@ async def admin_avatar_request(req):
                 ok = 200 <= resp.status < 300
     except Exception:
         ok = False
-    if not ok:
-        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
-    audit(actor, slug, "avatar-ask", "-")
-    return web.json_response({"ok": True}, status=202)
+    if ok:
+        audit(actor, slug, "avatar-ask", "-")
+    return ok
 
 
 async def healthz(_req):

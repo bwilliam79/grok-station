@@ -2187,7 +2187,7 @@ def safe_bot(b):
     }
 
 
-HELPER_RELEASE = "0.11.7"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.11.8"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -4015,6 +4015,8 @@ class Handler(BaseHTTPRequestHandler):
             if not webhook_key_ok(key):
                 return self.send(400, {"error": "That webhook key isn't valid."})
             body["key"] = key
+        if j.get("then_avatar") is True and "url" not in body and "key" not in body:
+            body["then_avatar"] = True  # post-add check: the relay asks for the picture after a passing test
         got = relay_call("POST", "/admin/bots/" + slug + "/test", body)
         if got is None:
             return self.bots_unconfigured()

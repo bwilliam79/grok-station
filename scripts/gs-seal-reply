@@ -320,6 +320,34 @@ def seal_avatar(slug, image, content_type, seed, station_pub):
         del material
 
 
+SHOW_MAX = 8192  # same cap as grok-station-reply seal-show
+
+
+def seal_show(slug, doc, seed, station_pub):
+    """Seal a display card put/clear (0.11.8). kind, nonce and exp_ms are written here. Wipes the seed copy."""
+    load_nacl()
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    material = bytearray(seed)
+    if isinstance(seed, bytearray):
+        _wipe(seed)
+    sk = None
+    try:
+        sk = SigningKey(bytes(material))
+        doc = dict(doc)
+        doc["kind"] = "show"
+        doc["nonce"] = secrets.token_urlsafe(16)
+        doc["exp_ms"] = int(time.time() * 1000) + 60_000
+        signed = sk.sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+        sealed = SealedBox(PublicKey(station_pub)).encrypt(signed)
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        return json.dumps(outer, separators=(",", ":")).encode("ascii")
+    finally:
+        _wipe(material)
+        del sk
+        del material
+
+
 def sniff_image(raw):
     """png, jpeg, or webp from the file's own bytes. Empty otherwise."""
     if not isinstance(raw, (bytes, bytearray)) or not raw:
@@ -679,6 +707,54 @@ def cmd_avatar(slug):
         del seed
 
 
+def cmd_show(slug):
+    """Seal the card JSON on stdin and post it once to /voice/show. The station checks the card itself."""
+    if not slug_ok(slug):
+        raise Refused()
+    text = read_stdin()
+    if not text or len(text.encode("utf-8")) > SHOW_MAX:
+        raise Refused()
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        raise Refused()
+    if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
+        raise Refused()
+    _reject_if_secret(text)
+    _check_tree()
+    root = root_dir()
+    _require_dir(root, 0o700)
+    _require_dir(keys_dir(), 0o700)
+    _require_file(key_path(slug), 0o600)
+    _require_file(config_path(slug), 0o600)
+    for path in (sent_path(), log_path()):
+        if os.path.lexists(path):
+            _require_file(path, 0o600)
+    refuse_unsafe_location(root)
+    require_time_machine_exclusion(root)
+    require_same_host()
+    seed = read_key(slug)
+    try:
+        endpoint, pin, station_pub = read_config(slug)
+        try:
+            body = seal_show(slug, doc, seed, station_pub)
+        except Refused:
+            raise
+        except Exception:
+            raise Refused()
+        status = 0
+        try:
+            status = post_once(endpoint, body, pin, "/voice/show")
+        except Exception:
+            status = 0
+        if status != 200:
+            raise Refused()
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
 def _parser():
     p = QuietParser(prog="gs-seal-reply")
     sub = p.add_subparsers(dest="cmd", required=True, parser_class=QuietParser)
@@ -688,6 +764,8 @@ def _parser():
     reply.add_argument("--kind", default="answer", choices=("answer", "bot_list"))
     avatar = sub.add_parser("avatar")
     avatar.add_argument("--persona", required=True)
+    show = sub.add_parser("show")
+    show.add_argument("--persona", required=True)
     sub.add_parser("version")
     return p
 
@@ -702,6 +780,8 @@ def main(argv=None):
             return cmd_reply(args.persona, args.request_id, args.kind)
         if args.cmd == "avatar":
             return cmd_avatar(args.persona)
+        if args.cmd == "show":
+            return cmd_show(args.persona)
         if args.cmd == "version":
             sys.stdout.write(HELPER_VERSION + "\n")
             return 0

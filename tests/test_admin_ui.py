@@ -412,7 +412,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("The bot needs Grok Bot", home)
         self.assertTrue(cloud.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in cloud)
         self.assertTrue(home.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in home)
-        self.assertIn("Cards need the bot computer key mode for now; with the key on this home computer, skip cards.", home)
+        self.assertIn("printf '%s' \"$CARD_JSON\" | gs-seal-reply show --persona <slug>", home)
         self.assertIn("macOS or Linux", fn)
         self.assertIn("macOS or Linux", installer)
         self.assertNotIn("Home mode runs on macOS only.", installer)
@@ -1280,6 +1280,29 @@ class WizardNoWakeWords(unittest.TestCase):
         self.assertIn("if (step === 6) step = 7;", fn)
         self.assertNotIn("<h2>Wake words</h2>", fn)
         self.assertIn("of ${STEPS.length}", fn)
+
+
+class PostAddCheckUI(unittest.TestCase):
+    """0.11.8: adding a bot runs the connection test; one state until it returns; the picture swaps in silently."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+
+    def test_add_flow_runs_the_check(self):
+        js = self.js
+        self.assertIn("if (connected) startBotCheck(draft.slug, el);", js)
+        fn = _fn(js, "startBotCheck")
+        self.assertIn("{then_avatar: true}", fn)
+        self.assertIn("/test/", fn)
+        self.assertIn('watchPicture(slug, before, document.body, res => { if (res === "updated") bustPortraits(el); });', fn)
+        html = _fn(js, "botCheckHTML")
+        self.assertIn("Checking connection…", html)
+        self.assertIn(">Online<", html)
+        self.assertIn("Offline: ", html)
+        for extra in ("avatar", "picture", "Getting"):
+            self.assertNotIn(extra, html.lower() if extra != "Getting" else html)
+        self.assertIn('const warn = check ? "" :', _fn(js, "paintBots"))  # no stale offline while checking
 
 
 class FinishUpdateUI(unittest.TestCase):

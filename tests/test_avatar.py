@@ -488,6 +488,34 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.assertIn("jules", r._update_bad)
         self.assertIn("bot jules update-bad", open(r.audit_path()).read())
 
+    async def test_post_add_check_asks_for_the_picture_only_after_a_pass(self):
+        """0.11.8: the post-add connection test asks for the picture silently, once, and only when it passed."""
+        r = self.relay
+        asked = []
+        real_ask, real_teammate = r.ask_avatar, r.ask_teammate
+
+        async def fake_ask(slug, actor):
+            asked.append((slug, actor))
+            return True
+        try:
+            r.ask_avatar = fake_ask
+            for verdict, want in (("ok", 1), ("timeout", 0)):
+                asked.clear()
+
+                async def fake_teammate(http, slug, q, **kw):
+                    return ("hello" if verdict == "ok" else None), verdict
+                r.ask_teammate = fake_teammate
+                for then in (True, False):
+                    tid = "t_" + secrets.token_urlsafe(12)
+                    r._runs[tid] = {"slug": "jules", "state": "waiting", "t0": 0.0, "elapsed_s": 0.0, "answered_in_s": None,
+                                    "error": None, "cancel": asyncio.Event(), "hook": None, "detail": {},
+                                    "then_avatar": then, "actor": "admin"}
+                    await r._run_bot_test(tid)
+                    self.assertEqual(r._runs[tid]["state"], "ok" if verdict == "ok" else "failed")
+                self.assertEqual(asked, [("jules", "admin")] * want)
+        finally:
+            r.ask_avatar, r.ask_teammate = real_ask, real_teammate
+
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay
         before = (await (await self.client.get("/personas", headers={"Authorization": "Bearer test-token"})).json())["portraits_version"]

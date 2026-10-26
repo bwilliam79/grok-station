@@ -76,7 +76,7 @@ SECTIONS = (
     "Grok Station instructions, release ",
     "Answer as the bot named in the request's persona field",
     "If kind is bot_list, do not answer a question",
-    "Then run exactly one command, and no others",
+    "Then run exactly one command (two when you also send a card, below), and no others",
     "Then run exactly two commands (four when you also send a card, below), and no others",
     "printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona ",
     "Set REQUEST_ID from the webhook's request_id",
@@ -96,6 +96,7 @@ COMMANDS = tuple(re.compile(p) for p in (
     r"^printf '%s' \"\$(ANSWER|NAMES|STATUS)\" \| gs-seal-reply reply --persona " + _SL
     + r" --request-id \"\$REQUEST_ID\"( --kind bot_list)?$",
     r"^gs-seal-reply avatar --persona " + _SL + r" < PICTURE_FILE$",
+    r"^printf '%s' \"\$CARD_JSON\" \| gs-seal-reply show --persona " + _SL + r"$",
     r"^printf '%s' \"\$(ANSWER|NAMES|STATUS|CARD_JSON)\" \| grok-station-reply seal(-list|-show)? --bot " + _SL
     + r" --station-pub '" + _PUB + r"'( --request-id \"\$REQUEST_ID\")?$",
     r"^grok-station-reply seal-avatar --bot " + _SL + r" --station-pub '" + _PUB + r"' < PICTURE_FILE$",
