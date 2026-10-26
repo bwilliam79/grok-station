@@ -1569,6 +1569,8 @@ def render_bot_routine(bot, station, fingerprint, pub, pins=None):
     mode = "home" if bot.get("key_mode") == "home" else "cloud"
     with open(ROUTINES[mode], encoding="utf-8") as fh:
         template = fh.read()
+    if template != gs_routine.TEMPLATES[mode]:  # the station's file ships with its code; anything else is tampering
+        raise gs_routine.Bad("station template file differs from this release")
     fp = str(fingerprint or "").upper()
     text = gs_routine.render(template, mode, bot.get("slug", ""), pins.get("commit", ""),
                              pins.get("files", {}).get("scripts/gs-update.sh", ""),
@@ -3610,7 +3612,8 @@ class Handler(BaseHTTPRequestHandler):
                                    "killed": False,
                                    "stats": stats_view(None), "list_source": "", "routed": [],
                                    "imported": empty_imported(),
-                                   "fingerprint": tls_info()["fingerprint"]})
+                                   "station_address": station_base(),
+                               "fingerprint": tls_info()["fingerprint"]})
         status, data = got
         if status != 200:
             return self.relay_fail(status, data)
@@ -3630,6 +3633,7 @@ class Handler(BaseHTTPRequestHandler):
                                "killed": data.get("killed") is True, "stats": stats_view(data.get("stats")),
                                "list_source": src, "routed": safe_routed(data.get("routed")),
                                "imported": safe_imported(data.get("imported")),
+                               "station_address": station_base(),
                                "fingerprint": tls_info()["fingerprint"]})
 
     def bots_imported(self):

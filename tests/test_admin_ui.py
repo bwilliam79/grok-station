@@ -419,7 +419,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Home mode is faster and depends", fn)
         self.assertNotIn("old-hostname", js)
         self.assertIn("printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
-        self.assertIn("https://", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
+        self.assertIn("STATION_ADDR.v", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
         self.assertIn('id="aroutine"', js)
         self.assertIn("<pre ", js)
         self.assertIn('data-copy="aroutine"', js)
@@ -879,7 +879,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1001,7 +1001,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1303,6 +1303,20 @@ class PostAddCheckUI(unittest.TestCase):
         for extra in ("avatar", "picture", "Getting"):
             self.assertNotIn(extra, html.lower() if extra != "Getting" else html)
         self.assertIn('const warn = check ? "" :', _fn(js, "paintBots"))  # no stale offline while checking
+
+
+class StationAddressUI(unittest.TestCase):
+    """0.11.9: Add bot and More copy use the station's own address, the same source as Finish update."""
+
+    def test_no_browser_host(self):
+        js = _read(os.path.join("admin", "web", "app.js"))
+        fn = _fn(js, "stationAddress")
+        self.assertNotIn("location", fn)
+        self.assertIn("STATION_ADDR.v", fn)
+        self.assertNotIn("location.host", js)
+        self.assertIn("data.station_address", js)
+        py = _read(os.path.join("admin", "grok_admin.py"))
+        self.assertEqual(py.count('"station_address": station_base(),'), 2)
 
 
 class FinishUpdateUI(unittest.TestCase):
