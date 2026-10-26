@@ -10,6 +10,8 @@ const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w =>
 const ENROLL_ACTIVE = ["recording", "uploading", "training"];
 let stationOffline = false, lastOkAt = 0, offlineTimer = 0, retryBusy = false;
 let reachSeq = 0, lastGoodSeq = 0, offlineSeq = 0;
+// A page drawn while the station was down shows dashes. Repaint it once the station answers again.
+let pageLoadedDown = false, repaintTimer = 0, reloadWaiting = false;
 
 function netDown(status) { return status === 0 || status === 502 || status === 503 || status === 504; }
 function offlineText() {
@@ -22,6 +24,7 @@ function showOffline() {
   const main = document.querySelector("main.main");
   if (!main) return;
   stationOffline = true;
+  pageLoadedDown = true;
   main.classList.add("offline");
   let n = document.getElementById("offline");
   if (!n) {
@@ -38,6 +41,50 @@ function hideOffline() {
   if (n) n.remove();
   const main = document.querySelector("main.main");
   if (main) main.classList.remove("offline");
+  repaintIfLoadedDown();
+}
+function userEditing() {
+  // Typing in the page, or a drawer or sheet open: don't redraw under the user.
+  const a = document.activeElement;
+  const pg = document.getElementById("pg");
+  if (a && pg && pg.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+  return !!document.querySelector("body > .drawer, body > .sheet");
+}
+function repaintIfLoadedDown() {
+  if (!pageLoadedDown || stationOffline) return;
+  if (userEditing()) {
+    // Deferred: check again until focus leaves the field or the drawer closes.
+    if (!repaintTimer) repaintTimer = setInterval(() => {
+      if (userEditing()) return;
+      clearInterval(repaintTimer); repaintTimer = 0;
+      repaintIfLoadedDown();
+    }, 1500);
+    return;
+  }
+  pageLoadedDown = false;  // cleared before the repaint, so a repaint only follows a new outage
+  if (S.state && S.state.signed_in) shell();
+}
+async function stationAnswers() {
+  // Plain fetches, so a wait never shows or hides the banner.
+  const one = async p => {
+    try { const r = await fetch(p, {credentials: "same-origin", headers: {"X-GS-Admin": "1"}}); return r.ok; }
+    catch (e) { return false; }
+  };
+  const [a, b] = await Promise.all([one("/api/state"), one("/api/updates")]);
+  return a && b;
+}
+async function reloadWhenReady() {
+  // After an update the services restart. Reload only once /api/state and /api/updates both answer (about 90 s cap).
+  if (reloadWaiting) return;
+  reloadWaiting = true;
+  const t0 = Date.now();
+  let wait = 1000;
+  while (Date.now() - t0 < 90000) {
+    if (await stationAnswers()) break;
+    await new Promise(res => setTimeout(res, wait));
+    wait = Math.min(wait * 1.5, 5000);
+  }
+  location.reload();
 }
 async function retryStation() {
   if (!stationOffline || retryBusy) return;
@@ -55,6 +102,7 @@ async function api(method, path, body) {
   try { r = await fetch(path, opt); }
   catch (e) {
     // A response that already succeeded is newer than this throw: leave the banner down.
+    pageLoadedDown = true;
     if (seq > lastGoodSeq) { offlineSeq = seq; showOffline(); }
     return {status: 0, data: {error: "The station isn't answering. Check it's on and on this network."}};
   }
@@ -62,6 +110,7 @@ async function api(method, path, body) {
   try { data = await r.json(); } catch (e) { /* image or empty */ }
   if (r.status === 401 && !/^\/api\/(login|setup)/.test(path)) { boot(); }
   if (netDown(r.status)) {
+    pageLoadedDown = true;
     if (seq > lastGoodSeq) { offlineSeq = seq; showOffline(); }
   } else {
     lastOkAt = Date.now();
@@ -431,10 +480,11 @@ async function paintUpdates(el) {
   if (r.ok && r.data) el._snap = r.data;
   if (r.ok && r.data && r.data.installed) {
     // The update replaced this page's own code. Reload so the new page (not the old script) draws the result.
-    if (PAGE_INSTALLED.v && PAGE_INSTALLED.v !== r.data.installed) { location.reload(); return; }
-    PAGE_INSTALLED.v = r.data.installed;
+    if (PAGE_INSTALLED.v && PAGE_INSTALLED.v !== r.data.installed) { el._reconnecting = true; reloadWhenReady(); }
+    else PAGE_INSTALLED.v = r.data.installed;
   }
-  const offline = !!(el._applying && r.status === 0);
+  // Reconnecting, not an error: during an update, while waiting to reload, or a fresh page loaded while down.
+  const offline = !!((el._applying || el._reconnecting || !PAGE_INSTALLED.v) && netDown(r.status)) || !!el._reconnecting;
   const d = r.ok && r.data ? r.data : (offline && el._snap ? el._snap : {});
   const job = d.job || {};
   if (el._applying && r.ok && (job.state === "succeeded" || job.state === "failed")) el._applying = false;

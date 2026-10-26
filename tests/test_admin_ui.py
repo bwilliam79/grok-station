@@ -879,7 +879,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1001,7 +1001,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertEqual(open(os.path.join(root, "VERSION")).read().strip(), "0.11.4")
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1093,3 +1093,80 @@ class ConfigureTabs(unittest.TestCase):
         self.assertLess(more.find(">Rename<"), more.find(">Delete bot<"))
         self.assertIn('class="btn dg" id="delbot"', more)
         self.assertNotIn(">Delete bot<", more[:more.find(">Rename<")])
+
+
+class RecoverAfterUpdate(unittest.TestCase):
+    """0.11.5: reload waits for the station; a page drawn while it was down repaints on recovery."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+
+    def _node(self, script):
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return json.loads(out.stdout.strip().splitlines()[-1])
+
+    def _fns(self, *names):
+        src = self.js
+        parts = []
+        for n in names:
+            start = src.find("function " + n)
+            if src[start - 6:start] == "async ":
+                start -= 6
+            end = src.find("\n}\n", start) + 3
+            parts.append(src[start:end])
+        return "\n".join(parts)
+
+    def test_reload_waits_for_ok(self):
+        fns = self._fns("stationAnswers", "reloadWhenReady")
+        script = """
+let reloadWaiting = false, calls = 0, reloaded = 0;
+const location = {reload() { reloaded = calls; }};
+global.setTimeout = (f) => f();
+global.fetch = async (p) => { calls++; return {ok: calls > 4}; };
+""" + fns + """
+reloadWhenReady().then(() => console.log(JSON.stringify({reloaded, calls})));
+"""
+        got = self._node(script)
+        self.assertGreaterEqual(got["reloaded"], 5)  # both /api/state and /api/updates ok before reload
+        upd = _fn(self.js, "paintUpdates")
+        self.assertNotIn("location.reload()", upd)
+        self.assertIn("reloadWhenReady()", upd)
+        self.assertIn("90000", self._fns("reloadWhenReady"))
+
+    def _repaint(self, active_tag, drawer):
+        fns = self._fns("userEditing", "repaintIfLoadedDown")
+        script = """
+let pageLoadedDown = true, stationOffline = false, repaintTimer = 0, shells = 0, timers = 0;
+const S = {state: {signed_in: true}};
+function shell() { shells++; }
+global.setInterval = () => { timers++; return 1; };
+const pg = {contains: () => true};
+const document = {activeElement: %s, getElementById: () => pg, querySelector: () => %s};
+""" % (json.dumps({"tagName": active_tag}) if active_tag else "null", "({})" if drawer else "null") + fns + """
+repaintIfLoadedDown(); repaintIfLoadedDown();
+console.log(JSON.stringify({shells, timers, pageLoadedDown}));
+"""
+        return self._node(script)
+
+    def test_recovery_repaints_once(self):
+        got = self._repaint(None, False)
+        self.assertEqual(got, {"shells": 1, "timers": 0, "pageLoadedDown": False})
+        self.assertIn("repaintIfLoadedDown()", _fn(self.js, "hideOffline"))
+        self.assertIn("pageLoadedDown = true;", _fn(self.js, "showOffline"))
+
+    def test_no_repaint_while_typing_or_drawer_open(self):
+        for tag, drawer in (("INPUT", False), ("TEXTAREA", False), ("SELECT", False), (None, True)):
+            got = self._repaint(tag, drawer)
+            self.assertEqual(got["shells"], 0, (tag, drawer))
+            self.assertEqual(got["timers"], 1, (tag, drawer))  # deferred, one timer only
+            self.assertTrue(got["pageLoadedDown"])
+
+    def test_fresh_page_down_shows_reconnecting_not_error(self):
+        upd = _fn(self.js, "paintUpdates")
+        self.assertIn("!PAGE_INSTALLED.v) && netDown(r.status)", upd)
+        self.assertIn('offline ? "Reconnecting…"', upd)
+        self.assertIn("!r.ok && !offline", upd)

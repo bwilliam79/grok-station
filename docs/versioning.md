@@ -247,3 +247,11 @@ Patch release. Installs over 0.11.3. The pinned download files are re-pinned (th
 
 - A bot sends its own picture over a signed, sealed post to `/voice/avatar` on the admin HTTPS port (LAN only, 4 MB body cap). Ask bot for picture (Configure) sends a webhook of kind avatar. The old voice-token route returns 410.
 - `tools/grok-station-reply` (seal-avatar, post --avatar) and `scripts/gs-seal-reply` (avatar) changed, so `admin/web/deploy-pins.js` and `scripts/install-home.sh` are re-pinned in this release.
+
+## 0.11.5
+
+Patch release. Installs over 0.11.4. The pinned download files are unchanged.
+
+- **Reload after an update.** The Updates page no longer reloads the moment the installed version changes. It waits until `/api/state` and `/api/updates` both answer (backoff up to 5 s, about 90 s cap) and shows Reconnecting… meanwhile.
+- **Recovery repaint.** A page drawn while the station was down (dashes and "The station isn't answering") is redrawn once when the station answers again. The repaint waits while a field on the page has focus or a drawer or sheet is open.
+- **Fresh page while down.** Updates shows Reconnecting… instead of the error banner.
