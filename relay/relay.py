@@ -2441,7 +2441,7 @@ def _last4(token):
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
-                  "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask"}
+                  "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
 _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too large",
                415: "unsupported media type", 422: "lint", 429: "too many"}
@@ -3076,6 +3076,7 @@ async def voice_avatar(req):
         return web.json_response({"error": "unavailable"}, status=500)
 
     async def save(bot, image):
+        note_helper(bot, req)
         png, status = await asyncio.to_thread(transcode_avatar, image)  # Pillow off the event loop
         if png is None:
             return {"ok": False, "status": status or 415}
@@ -3206,6 +3207,7 @@ async def admin_bots_get(req):
         _station_key_warn(f"station key unreadable ({type(e).__name__}, errno {getattr(e, 'errno', '?')}); "
                           "re-run the installer to create it")
     bots = []
+    helpers = helper_versions()
     for slug in sorted(roster):
         p = roster[slug]
         ent = hooks.get(slug)
@@ -3218,6 +3220,7 @@ async def admin_bots_get(req):
                      "public_key": base64.b64encode(raw_key).decode() if pinned else None,
                      "key_mode": "home" if modes.get(slug) == "home" else "cloud",
                      "reply_host": ov_now["reply_host"].get(slug),
+                     "helper_version": helpers.get(slug),
                      "stats": stats.bot_view(slug)})
     if not VOICES:
         kick_voice_fetch()
@@ -3636,6 +3639,81 @@ async def admin_avatar_post(req):
 
 
 AVATAR_ASK = "Send your profile picture image file."
+HELPER_ASK = "Update your station helper."
+HELPER_FILE = E("HELPER_FILE", os.path.join(STATE_DIR, "bots", "helpers.json"))
+HELPER_V = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
+HELPER_ASK_GAP_S = 600  # one update ask per bot per 10 minutes
+_helper_asked = {}
+
+
+def helper_versions():
+    doc = read_json_file(HELPER_FILE)
+    return {k: v for k, v in doc.items() if isinstance(k, str) and isinstance(v, str) and HELPER_V.match(v)} \
+        if isinstance(doc, dict) else {}
+
+
+def note_helper(bot, req):
+    """Record the X-GS-Helper release for a bot whose sealed post just verified. A missing or odd header is ignored."""
+    v = (req.headers.get("X-GS-Helper") or "").strip()
+    if not HELPER_V.match(v) or not isinstance(bot, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,23}", bot):
+        return
+    doc = helper_versions()
+    if doc.get(bot) == v:
+        return
+    doc[bot] = v
+    try:
+        os.makedirs(os.path.dirname(HELPER_FILE), exist_ok=True)
+        atomic_write(HELPER_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+    except OSError:
+        pass
+
+
+async def admin_helper_update(req):
+    """Ask one paired home bot to update its station helper. A webhook of kind update_helper.
+
+    The webhook carries no command and no URL; the bot runs only the pinned installer named in its own routine,
+    then confirms with one sealed reply to this request id. At most one ask per bot per HELPER_ASK_GAP_S.
+    """
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    slug = req.match_info.get("slug", "")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    body = await admin_json(req)
+    if body is None or not actor_ok(body.get("actor", "admin")):
+        return web.json_response({"error": "bad request"}, status=400)
+    if key_mode_of(load_overlay_doc(), slug) != "home":
+        return web.json_response({"error": "This bot doesn't use a home helper."}, status=400)
+    ent = current_webhooks().get(slug)
+    if not ent:
+        return web.json_response({"error": "not configured"}, status=400)
+    now = time.time()
+    if now - _helper_asked.get(slug, 0) < HELPER_ASK_GAP_S:
+        return web.json_response({"error": "too soon"}, status=429)
+    _helper_asked[slug] = now
+    rid = handoff.new_request_id()
+    nonce = secrets.token_urlsafe(24)
+    reply_by = datetime.datetime.fromtimestamp(
+        now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + botreply.SKEW_S) * 1000),
+                              question=HELPER_ASK, reply_by=reply_by, kind="update_helper")
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    posted = dict(handoff.payload(rid, slug, HELPER_ASK, reply_by, kind="update_helper"))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+            async with http.post(ent["url"], json=posted, allow_redirects=False,
+                                 headers={"Authorization": "Bearer " + ent["token"]}) as resp:
+                ok = 200 <= resp.status < 300
+    except Exception:
+        ok = False
+    if not ok:
+        handoff.remove_pending(PENDING_DIR, rid)
+        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    audit(body.get("actor", "admin"), slug, "helper-ask", "-")
+    return web.json_response({"ok": True}, status=202)
 
 
 async def admin_avatar_request(req):
@@ -3798,8 +3876,14 @@ async def voice_reply(req):
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
         return _reply_error(rej.status)
     rid, bot = reply["request_id"], reply["bot"]
+    pend = _pending_doc(rid) or {}
     _reply_seen.add(rid)
     handoff.remove_pending(PENDING_DIR, rid)
+    note_helper(bot, req)
+    if pend.get("kind") == "update_helper":
+        log("helper update confirmed")  # the confirmation is not an answer: nothing waits on it
+        audit_reply(bot, rid, "ok", len(raw))
+        return web.json_response({"ok": True})
     if reply.get("kind") == "bot_list":
         try:
             counts = merge_imported(reply.get("names") or [], bot)
@@ -4003,6 +4087,7 @@ ADMIN_ROUTES = [
     web.delete("/admin/bots/{slug}/test/{test_id}", admin_test_delete),
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
+    web.post("/admin/bots/{slug}/helper-update", admin_helper_update),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
     web.get("/admin/cards", admin_cards_get), web.put("/admin/cards", admin_cards_put),
     web.post("/voice/reply", voice_reply),

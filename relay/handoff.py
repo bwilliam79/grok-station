@@ -281,6 +281,8 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
         body["kind"] = "bot_list"
     elif kind == "avatar":
         body["kind"] = "avatar"
+    elif kind == "update_helper":
+        body["kind"] = "update_helper"
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 
@@ -411,8 +413,8 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
     doc = {"v": 1, "request_id": rid, "persona": bot, "nonce": nonce, "expires_ms": int(expires_ms),
            "question": clean(question, Q_MAX), "pii_mode": True if pii_mode is None else bool(pii_mode),
            "tier_max": 0, "test": bool(test), "reply_by": str(reply_by or "")}
-    if kind == "bot_list":
-        doc["kind"] = "bot_list"
+    if kind in ("bot_list", "update_helper"):
+        doc["kind"] = kind
     tmp = os.path.join(pdir, f".{rid}.tmp")
     with open(tmp, "w") as f:
         json.dump(doc, f)

@@ -262,3 +262,14 @@ Patch release. Installs over 0.11.5. The pinned download files are unchanged.
 
 - **Ask bot for picture.** After the station accepts the ask (202) the card shows "Asked <Bot> for its picture…" and checks the served portrait every 5 s for about 2 minutes, one watch per bot, stopped when the card closes. A new picture shows "Picture updated."; no new picture shows that the bot's station helper may be out of date and how to send it updated instructions; 502 shows "Couldn't reach <Bot>."
 - **Configure tabs.** The tab row hides its scrollbar and clips vertical overflow, so the -1px tab underline no longer adds a vertical scrollbar. Narrow screens still scroll sideways.
+
+## 0.11.7
+
+Installs over 0.11.6. The pinned home-helper files and the installer change, so the deploy pins move.
+
+- **Deleted wake word stays deleted.** The listener forgets its last enroll for a deleted word, and the admin keeps a deleted-phrase note (`deleted-phrases.json`) so an older listener's report can't re-create the row. Recording the word again clears the note.
+- **Installer update mode.** `sh install-home.sh --update [--persona SLUG]` needs no station details. It finds the installed bot from the existing config, refuses if the key or config is missing, checks every downloaded file against the pins, and replaces the helper files. The key, host binding and config are not touched.
+- **Vendored libraries update.** `gs-seal-setup vendor-install` builds the locked libraries in a fresh private folder and swaps it in by rename, so it works over an existing install and a failed update leaves the old set in place.
+- **Helper version.** `gs-seal-reply version` prints the helper release, and each post sends it as an `X-GS-Helper` header. The header is not signed and older stations ignore it; the station records it only for a post whose seal checks out. Helpers that send no header still work and show as out of date.
+- **Update helper.** Home bots behind the release show Helper out of date and an Update helper button. The station sends a webhook of kind `update_helper` with a fixed question and no command or link, at most once per bot every 10 minutes. The bot's routine runs only the pinned, sha256-checked installer command written into its own instructions, then replies with the new version. The sheet also shows that command to copy and run by hand. Each bot needs Copy updated instructions once before this works.
+- **Setup wizard.** The Wake words step is gone (5 steps). A wizard saved at the old step resumes at Audio test.

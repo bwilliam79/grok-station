@@ -71,6 +71,9 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             "hooks": {"mtime": r._hooks.get("mtime"), "map": dict(r._hooks.get("map") or {})},
             "runs": dict(r._runs),
         }
+        self.snap.update(HELPER_FILE=r.HELPER_FILE, key_mode_of=r.key_mode_of, helper_asked=dict(r._helper_asked))
+        r.HELPER_FILE = os.path.join(self.tmp, "helpers.json")
+        r._helper_asked.clear()
         r.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
         r.MINTED_FILE = os.path.join(self.tmp, "minted", "voice-tokens.json")
         r.PORTRAIT_WRITE = os.path.join(self.tmp, "portraits")
@@ -121,6 +124,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             web.get("/personas", r.personas_route),
             web.post("/admin/bots/{slug}/avatar", r.admin_avatar_post),
             web.post("/admin/bots/{slug}/avatar-request", r.admin_avatar_request),
+            web.post("/admin/bots/{slug}/helper-update", r.admin_helper_update),
         ])
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
@@ -142,6 +146,9 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PERSONAS_FILE, r.ADMIN_TOKEN = s["PERSONAS_FILE"], s["ADMIN_TOKEN"]
         r.REPLY_WAIT, r.HANDOFF, r.log, r._limits = s["REPLY_WAIT"], s["HANDOFF"], s["log"], s["_limits"]
         r.TOKENS = s["TOKENS"]
+        r.HELPER_FILE, r.key_mode_of = s["HELPER_FILE"], s["key_mode_of"]
+        r._helper_asked.clear()
+        r._helper_asked.update(s["helper_asked"])
         r.SECRETS_DIR = s["SECRETS_DIR"]
         r._avatar_seen = s["avatar_seen"]
         r._portraits_version = s["version"]
@@ -285,6 +292,58 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         # The owner's upload is not the bot's 6/hour.
         owner = await self.client.post("/admin/bots/jules/avatar", data=png, headers=self.admin())
         self.assertEqual(owner.status, 200, await owner.text())
+
+    async def test_helper_version_header_is_recorded_after_the_seal_only(self):
+        """0.11.7: X-GS-Helper is optional. An old helper (no header) still works; an odd header is ignored."""
+        r = self.relay
+        old = await self._post(_png(color=(1, 2, 3)))
+        self.assertEqual(old.status, 200, await old.text())
+        self.assertEqual(r.helper_versions(), {})
+        new = await self._post_body(self._seal(_png(color=(3, 2, 1)), "image/png"), {"X-GS-Helper": "0.11.7"})
+        self.assertEqual(new.status, 200, await new.text())
+        self.assertEqual(r.helper_versions(), {"jules": "0.11.7"})
+        odd = await self._post_body(self._seal(_png(color=(4, 2, 1)), "image/png"), {"X-GS-Helper": "1.0; rm -rf"})
+        self.assertEqual(odd.status, 200)
+        self.assertEqual(r.helper_versions(), {"jules": "0.11.7"})
+        forged = await self._post_body(b'{"v":1,"bot":"jules","sealed":"AAAA"}', {"X-GS-Helper": "9.9.9"})
+        self.assertNotEqual(forged.status, 200)
+        self.assertEqual(r.helper_versions(), {"jules": "0.11.7"})  # a post that fails the seal records nothing
+
+    async def test_helper_update_webhook_has_no_command_and_is_rate_limited(self):
+        r = self.relay
+        seen = []
+
+        async def hook(req):
+            seen.append(await req.json())
+            return web.json_response({"ok": True})
+
+        app = web.Application()
+        app.router.add_post("/hook", hook)
+        srv = TestServer(app)
+        await srv.start_server()
+        try:
+            self.assertTrue(r.write_webhooks({"jules": {"url": str(srv.make_url("/hook")), "token": "hook-token-cccc",
+                                                       "saved_at": 1}}))
+            ask = lambda: self.client.post("/admin/bots/jules/helper-update", headers=self.admin("application/json"),
+                                           json={"actor": "admin"})
+            cloud = await ask()
+            self.assertEqual(cloud.status, 400)  # a cloud-key bot has no home helper
+            r.key_mode_of = lambda doc, slug: "home"
+            got = await ask()
+            self.assertEqual(got.status, 202, await got.text())
+            body = seen[-1]
+            self.assertEqual(set(body), {"v", "request_id", "persona", "question", "reply_by", "kind"})
+            self.assertEqual(body["kind"], "update_helper")
+            self.assertEqual(body["question"], r.HELPER_ASK)
+            self.assertNotIn("http", json.dumps(body["question"]))
+            pend = json.load(open(os.path.join(r.PENDING_DIR, body["request_id"] + ".json")))
+            self.assertEqual(pend["kind"], "update_helper")
+            again = await ask()
+            self.assertEqual(again.status, 429)
+            self.assertEqual(len(seen), 1)
+            self.assertIn("admin jules helper-ask", open(r.audit_path()).read())
+        finally:
+            await srv.close()
 
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay

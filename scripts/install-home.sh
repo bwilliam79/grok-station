@@ -20,6 +20,13 @@
 #
 # Set UPGRADE=1 to download and verify again before replacing existing files.
 # An upgrade does not replace a key or config that is already there.
+#
+# Update an existing install (keeps the key, host binding and station pairing):
+#   sh scripts/install-home.sh --update [--persona <slug>]
+# It needs no station details: it reads which bot is installed from the
+# existing config, refuses if there is no key and config, downloads the pinned
+# files, checks every sha256, updates the vendored libraries as one swap, then
+# replaces the helper files. Stdout is only the new helper version.
 set -eu
 umask 077
 
@@ -52,7 +59,13 @@ persona=""
 station=""
 pin=""
 pub=""
+update=0
 while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--update" ]; then
+    update=1
+    shift
+    continue
+  fi
   if [ "$#" -lt 2 ]; then
     die "usage: sh install-home.sh --persona SLUG --station URL --pin-sha256 HEX --station-pub B64"
   fi
@@ -72,6 +85,30 @@ case "$persona$station$pin$pub" in
     ;;
 esac
 
+CFG="$HOME/.config/grok-station"
+if [ "$update" = "1" ]; then
+  if [ -n "$station$pin$pub" ]; then
+    die "--update keeps the existing pairing; don't pass --station, --pin-sha256 or --station-pub"
+  fi
+  if [ -z "$persona" ]; then
+    found=""
+    for f in "$CFG"/*.json; do
+      [ -f "$f" ] || continue
+      b=${f##*/}
+      b=${b%.json}
+      [ "$b" = "vendor-manifest" ] && continue
+      if [ -n "$found" ]; then
+        die "more than one bot is installed here; pass --persona SLUG"
+      fi
+      found=$b
+    done
+    persona=$found
+  fi
+  if [ -z "$persona" ]; then
+    die "no home install found to update; run the full install"
+  fi
+fi
+
 case "$persona" in
   grok) die "refusing persona" ;;
   [a-z]*)
@@ -84,6 +121,19 @@ esac
 npersona=$(printf '%s' "$persona" | wc -c | tr -cd '0-9')
 if [ "$npersona" -lt 2 ] || [ "$npersona" -gt 24 ]; then
   die "refusing persona"
+fi
+
+if [ "$update" = "1" ]; then
+  for f in "$CFG/keys/$persona.key" "$CFG/$persona.json"; do
+    if [ -L "$f" ] || [ ! -f "$f" ]; then
+      die "no home install for $persona here; run the full install"
+    fi
+  done
+  UPGRADE=1
+  # init is skipped in update mode; these placeholders only satisfy the checks below and are never used.
+  station=https://update.invalid
+  pin=0000000000000000000000000000000000000000000000000000000000000000
+  pub=update
 fi
 
 case "$station" in
@@ -295,7 +345,11 @@ cfgf="$HOME/.config/grok-station/$persona.json"
 if [ -L "$keyf" ] || [ -L "$cfgf" ]; then
   die "refusing symlink in ~/.config/grok-station"
 fi
-if [ -e "$keyf" ] && [ -e "$cfgf" ]; then
+if [ "$update" = "1" ]; then
+  if [ ! -f "$keyf" ] || [ ! -f "$cfgf" ]; then
+    die "key or config went missing during the update"
+  fi
+elif [ -e "$keyf" ] && [ -e "$cfgf" ]; then
   printf '%s\n' "Key and config are already in place. Not minting a new key." >&2
 else
   if [ ! -e "$keyf" ]; then
@@ -330,4 +384,9 @@ PY
 mv -f "$stage/wrapper" "$wrapdir/gs-seal-reply"
 chmod 700 "$wrapdir/gs-seal-reply"
 phase=done
+if [ "$update" = "1" ]; then
+  "$BIN/gs-seal-reply" version || die "updated, but the helper didn't report its version"
+  printf '%s\n' "Updated $BIN" >&2
+  exit 0
+fi
 printf '%s\n' "Installed into $BIN" >&2

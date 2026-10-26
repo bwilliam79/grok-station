@@ -143,7 +143,7 @@ sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
 
-import base64, hashlib, io, json, re, shutil, subprocess, zipfile
+import base64, hashlib, io, json, re, shutil, subprocess, tempfile, zipfile
 from urllib.parse import urlsplit
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
@@ -787,15 +787,44 @@ def cmd_vendor_install(lock):
     refuse_unsafe_location(root)
     _ensure_private_dir(root)
     vendor = vendor_dir()
-    _ensure_private_dir(vendor)
     reqs = parse_vendor_lock(_read_lock(lock))
-    for name, version, hashes in reqs:
-        blob = fetch_wheel(name, version, hashes)
-        extract_wheel(blob, vendor)
-    mapping = vendor_file_hashes(vendor, os.geteuid())
+    # Build the whole set in a fresh private directory beside vendor/, then swap it in by rename. An existing
+    # vendor/ (an update) is replaced as a unit, never written over file by file.
+    for stale in os.listdir(root):
+        if stale.startswith((".vendor-new.", ".vendor-old.")):
+            _remove_tree(os.path.join(root, stale))
+    new = tempfile.mkdtemp(prefix=".vendor-new.", dir=root)
+    os.chmod(new, 0o700)
+    try:
+        for name, version, hashes in reqs:
+            blob = fetch_wheel(name, version, hashes)
+            extract_wheel(blob, new)
+        mapping = vendor_file_hashes(new, os.geteuid())
+    except BaseException:
+        _remove_tree(new)
+        raise
     raw = (json.dumps(mapping, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-    _write_private(vendor_manifest_path(), raw)
+    old = None
+    if os.path.lexists(vendor):
+        _require_dir(vendor, 0o700)
+        old = tempfile.mkdtemp(prefix=".vendor-old.", dir=root)
+        os.rename(vendor, os.path.join(old, "vendor"))
+    os.rename(new, vendor)
+    tmp = vendor_manifest_path() + ".new"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    _write_private(tmp, raw)
+    os.replace(tmp, vendor_manifest_path())
+    if old:
+        _remove_tree(old)
     return 0
+
+
+def _remove_tree(path):
+    """Remove a staging directory this program made. Refuses a symlink."""
+    if os.path.islink(path):
+        raise Refused()
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _parser():

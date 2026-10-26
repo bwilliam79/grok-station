@@ -152,6 +152,8 @@ case "$cmd" in
       printf '%s\n' "init failed" >&2
       exit 1
     fi
+    printf '%s\n' '{}' > "$HOME/.config/grok-station/$persona.json"
+    chmod 600 "$HOME/.config/grok-station/$persona.json"
     exit 0
     ;;
   keygen)
@@ -420,12 +422,13 @@ class DeployKeySetup(unittest.TestCase):
         self.__class__.so = so_path
         self.__class__.setup_stub = stub
 
-    def _prepare(self, mode, alter=None, preexist=None, script_text=None):
+    def _prepare(self, mode, alter=None, preexist=None, script_text=None, home=None):
         stage = tempfile.mkdtemp(prefix="gs-stage-")
-        home = tempfile.mkdtemp(prefix="gs-home-")
-        os.chmod(home, 0o700)
+        if home is None:
+            home = tempfile.mkdtemp(prefix="gs-home-")
+            os.chmod(home, 0o700)
+            self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         self.addCleanup(shutil.rmtree, stage, ignore_errors=True)
-        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
         stub = os.path.join(stage, "stub")
         os.mkdir(stub, 0o755)
         fix = os.path.join(stage, "fixtures")
@@ -472,8 +475,8 @@ class DeployKeySetup(unittest.TestCase):
             "planted": planted,
         }
 
-    def _run(self, mode, args=(), home_mode=False, curl_404=False, alter=None, upgrade=None, preexist=None, extra_env=None, script_text=None):
-        ctx = self._prepare(mode, alter=alter, preexist=preexist, script_text=script_text)
+    def _run(self, mode, args=(), home_mode=False, curl_404=False, alter=None, upgrade=None, preexist=None, extra_env=None, script_text=None, home=None):
+        ctx = self._prepare(mode, alter=alter, preexist=preexist, script_text=script_text, home=home)
         env = {
             "HOME": ctx["home"],
             "PATH": ctx["stub"] + os.pathsep + "/usr/bin" + os.pathsep + "/bin",
@@ -795,6 +798,40 @@ class DeployKeySetup(unittest.TestCase):
         self.assertNotEqual(bad["proc"].returncode, 0)
         self.assertIn("refusing unsafe characters", bad["proc"].stderr)
         self.assertEqual(bad["curl_log"], "")
+
+    def test_install_home_update_keeps_key_and_config(self):
+        """0.11.7: --update needs no station details, keeps the key and config, and swaps in the pinned files."""
+        text = self._install_home_text()
+        env = {"FAKE_UNAME_S": "Linux"}
+        first = self._run("home", args=self._home_args(), home_mode=True, script_text=text, extra_env=env)
+        self.assertEqual(first["proc"].returncode, 0, first["proc"].stderr)
+        home = first["home"]
+        cfg = os.path.join(home, ".config", "grok-station")
+        keep = [os.path.join(cfg, "keys", PERSONA + ".key"), os.path.join(cfg, PERSONA + ".json")]
+        before = {p: (os.stat(p).st_mtime_ns, open(p, "rb").read()) for p in keep}
+        reply = os.path.join(self._bin(home), "gs-seal-reply")
+        with open(reply, "ab") as fh:
+            fh.write(b"# stale\n")  # an older helper on disk
+        up = self._run("home", args=["--update"], home_mode=True, script_text=text, extra_env=env, home=home)
+        self.assertEqual(up["proc"].returncode, 0, up["proc"].stderr)
+        self._secret_hidden(up["proc"])
+        self.assertNotIn(HOME_PUB, up["proc"].stdout)  # no new key is minted or printed
+        for p in keep:
+            self.assertEqual((os.stat(p).st_mtime_ns, open(p, "rb").read()), before[p], p)
+        self.assertEqual(hashlib.sha256(open(reply, "rb").read()).hexdigest(), self.pins["files"]["scripts/gs-seal-reply"])
+        self._assert_mode(reply, 0o700, "file")
+        self.assertEqual([n for n in os.listdir(self._bin(home)) if n.startswith(".stage")], [])
+        # station details are refused in update mode; no install means no update
+        mixed = self._run("home", args=["--update", "--station", STATION], home_mode=True, script_text=text,
+                          extra_env=env, home=home)
+        self.assertNotEqual(mixed["proc"].returncode, 0)
+        empty = self._run("home", args=["--update", "--persona", PERSONA], home_mode=True, script_text=text, extra_env=env)
+        self.assertNotEqual(empty["proc"].returncode, 0)
+        self.assertIn("run the full install", empty["proc"].stderr)
+        self.assertEqual(empty["curl_log"], "")
+        bad = self._run("home", args=["--update", "--persona", "../x"], home_mode=True, script_text=text,
+                        extra_env=env, home=home)
+        self.assertNotEqual(bad["proc"].returncode, 0)
 
     def test_pins_match_git_show(self):
         commit = self.pins["commit"]

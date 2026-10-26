@@ -1542,6 +1542,39 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         finally:
             ga.relay_call, ga.schedule_persona_sync = old_rc, old_sync
 
+    def test_helper_update_ask_and_out_of_date_view(self):
+        """0.11.7: Update helper reaches the relay with only the actor; 429 and 502 keep their meaning."""
+        c = signed_in()
+        calls, answer = [], [(202, {"ok": True})]
+
+        def fake(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            calls.append((method, path, payload))
+            return answer[0]
+
+        old = ga.relay_call
+        ga.relay_call = fake
+        try:
+            st, _ = c.req("POST", "/api/bots/kai/helper-update", {"command": "rm -rf /", "url": "https://evil"})
+            self.assertEqual(st, 202)
+            self.assertEqual(calls[-1], ("POST", "/admin/bots/kai/helper-update", {"actor": "admin"}))
+            answer[0] = (429, {"error": "too soon"})
+            self.assertEqual(c.req("POST", "/api/bots/kai/helper-update", {})[0], 429)
+            answer[0] = (502, {"error": "Couldn't reach the bot."})
+            st, j = c.req("POST", "/api/bots/kai/helper-update", {})
+            self.assertEqual((st, j["error"]), (502, "Couldn't reach the bot."))
+            st, j = c.req("POST", "/api/bots/kai/avatar-request", {})
+            self.assertEqual((st, j["error"]), (502, "Couldn't reach the bot."))
+        finally:
+            ga.relay_call = old
+        self.assertIsNone(ga.helper_view({"key_mode": "cloud"}))
+        self.assertTrue(ga.helper_view({"key_mode": "home"})["out_of_date"])  # old helper: never sent a version
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": ga.HELPER_RELEASE})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])
+        common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()
+        self.assertIn('HELPER_VERSION = "%s"' % ga.HELPER_RELEASE, common)
+
     def test_wake_entries_keep_existing_enabled_state(self):
         signed_in()
         old_cfg = ga.WAKE_CONFIG

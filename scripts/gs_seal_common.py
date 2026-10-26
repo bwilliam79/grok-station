@@ -55,6 +55,10 @@ class QuietParser(argparse.ArgumentParser):
         raise SystemExit(2)
 
 
+# The home helper's release. Sent as the X-GS-Helper header on each post (not signed; older stations
+# ignore it). The station shows "Helper out of date" when this is behind its own helper release.
+HELPER_VERSION = "0.11.7"
+
 def root_dir():
     return os.path.join(os.path.expanduser("~"), ".config", "grok-station")
 

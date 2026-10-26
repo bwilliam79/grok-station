@@ -157,7 +157,7 @@ from gs_seal_common import (
     _require_dir, _require_file, _check_tree, _open_private, _write_all,
     _pin, _b64_32, station_ok,
     refuse_unsafe_location, require_time_machine_exclusion, require_same_host,
-    load_nacl,
+    load_nacl, HELPER_VERSION,
 )
 
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
@@ -450,7 +450,8 @@ def post_once(endpoint, body, pin, path="/voice/reply"):
     ctx.verify_mode = ssl.CERT_NONE
     conn = _Pinned(parts.hostname, parts.port or 443, ctx, pin, 15)
     try:
-        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json",
+                                                         "X-GS-Helper": HELPER_VERSION})
         resp = conn.getresponse()
         resp.read(8192)
         return resp.status
@@ -687,6 +688,7 @@ def _parser():
     reply.add_argument("--kind", default="answer", choices=("answer", "bot_list"))
     avatar = sub.add_parser("avatar")
     avatar.add_argument("--persona", required=True)
+    sub.add_parser("version")
     return p
 
 
@@ -700,6 +702,9 @@ def main(argv=None):
             return cmd_reply(args.persona, args.request_id, args.kind)
         if args.cmd == "avatar":
             return cmd_avatar(args.persona)
+        if args.cmd == "version":
+            sys.stdout.write(HELPER_VERSION + "\n")
+            return 0
         raise Refused()
     except Unsupported as exc:
         sys.stderr.write(exc.message + "\n")

@@ -1044,8 +1044,15 @@ class SealReply(unittest.TestCase):
         for action in su._parser()._actions:
             if isinstance(action, argparse._SubParsersAction):
                 setup_cmds = set(action.choices)
-        self.assertEqual(reply_cmds, {"reply", "avatar"})
+        self.assertEqual(reply_cmds, {"reply", "avatar", "version"})
         self.assertEqual(setup_cmds, {"keygen", "init", "vendor-install"})
+
+    def test_version_prints_the_release_and_posts_send_it(self):
+        """0.11.7: gs-seal-reply version prints only the release; every post carries it as X-GS-Helper."""
+        self.assertEqual(self.call(["version"]), (0, gsc.HELPER_VERSION + "\n", ""))
+        self.assertRegex(gsc.HELPER_VERSION, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        src = open(os.path.join(ROOT, "scripts", "gs-seal-reply"), encoding="utf-8").read()
+        self.assertIn('"X-GS-Helper": HELPER_VERSION', src)
 
     def test_init_refuses_to_overwrite_config(self):
         self.provision()
@@ -1519,6 +1526,36 @@ class SealReply(unittest.TestCase):
         self.assertEqual(self.mode(manifest), 0o600)
         doc = json.loads(self.slurp(manifest))
         self.assertEqual(doc["nacl/__init__.py"], hashlib.sha256(body).hexdigest())
+        gsc.assert_vendor_trusted(self.home, os.geteuid())
+
+    def test_vendor_install_updates_an_existing_vendor_atomically(self):
+        """0.11.7: a second vendor-install replaces vendor/ as a unit; a failed one leaves the old set working."""
+        def run(files):
+            blob = self._wheel(files)
+            digest = hashlib.sha256(blob).hexdigest()
+            lock = os.path.join(self.home, "vendor-lock.txt")
+            self._lock(lock, digest)
+            with _patched(su, "fetch_wheel", lambda *a: blob):
+                return self.cli(["vendor-install", "--lock", lock])
+        self.assertEqual(run([("nacl/__init__.py", b"V = 1\n"), ("nacl/old_only.py", b"")])[0], 0)
+        root = self.root()
+        os.makedirs(os.path.join(root, "keys"), mode=0o700, exist_ok=True)
+        keyf = os.path.join(root, "keys", "demo.key")
+        open(keyf, "wb").write(b"k"); os.chmod(keyf, 0o600)
+        before = os.stat(keyf).st_mtime_ns
+        self.assertEqual(run([("nacl/__init__.py", b"V = 2\n")]), (0, "", ""))
+        vendor = os.path.join(root, "vendor")
+        self.assertEqual(self.slurp(os.path.join(vendor, "nacl", "__init__.py"), binary=True), b"V = 2\n")
+        self.assertFalse(os.path.exists(os.path.join(vendor, "nacl", "old_only.py")))
+        self.assertEqual(self.mode(vendor), 0o700)
+        self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])
+        gsc.assert_vendor_trusted(self.home, os.geteuid())
+        self.assertEqual(os.stat(keyf).st_mtime_ns, before)
+        # a bad update (symlink in the wheel) is refused and the working set stays
+        link = [("nacl/link", b"x", (stat.S_IFLNK | 0o777) << 16)]
+        self.assertEqual(run(link)[0], 1)
+        self.assertEqual(self.slurp(os.path.join(vendor, "nacl", "__init__.py"), binary=True), b"V = 2\n")
+        self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])
         gsc.assert_vendor_trusted(self.home, os.geteuid())
 
     def test_vendor_install_refuses_a_symlink_wheel_and_a_bad_fetch(self):

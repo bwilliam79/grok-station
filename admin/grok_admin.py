@@ -1418,6 +1418,7 @@ def map_train_state(state, log="", scores=None):
 
 
 ENROLL_STALE_S = 180
+HELPER_V = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
 ENROLL_STALLED = "The station stopped before this wake word was finished. Press Record voice to try again, or delete it."
 
 
@@ -2076,8 +2077,28 @@ def safe_bot(b):
         "public_key": bot_public_key(b),
         "key_mode": b.get("key_mode") if b.get("key_mode") in ("cloud", "home") else "cloud",
         "reply_host": b.get("reply_host") if host_name_ok(b.get("reply_host")) else None,
+        "helper": helper_view(b),
         "stats": stats_view(b.get("stats")),
     }
+
+
+HELPER_RELEASE = "0.11.7"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+
+
+def _vtuple(v):
+    return tuple(int(x) for x in v.split(".")) if isinstance(v, str) and HELPER_V.fullmatch(v) else None
+
+
+def helper_view(b):
+    """Home bots only: the helper release last seen on a signed post, and whether it is behind ours.
+
+    None seen means a helper older than 0.11.7 (it never sent a version), so that is out of date too.
+    """
+    if b.get("key_mode") != "home":
+        return None
+    seen = b.get("helper_version") if HELPER_V.fullmatch(str(b.get("helper_version") or "")) else None
+    cur = _vtuple(seen)
+    return {"version": seen, "release": HELPER_RELEASE, "out_of_date": cur is None or cur < _vtuple(HELPER_RELEASE)}
 
 
 def empty_imported():
@@ -2728,6 +2749,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(413, {"error": "too large"})
         data = self.rfile.read(n) if n else b""
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        hv = (self.headers.get("X-GS-Helper") or "").strip()
+        if HELPER_V.fullmatch(hv):
+            headers["X-GS-Helper"] = hv  # the home helper's release; the relay records it only after the seal checks
         req = urllib.request.Request(LOCAL_RELAY_ORIGIN + p, data=data, headers=headers, method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
         try:
@@ -3393,6 +3417,9 @@ class Handler(BaseHTTPRequestHandler):
         am = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/avatar-request", p)
         if am and slug_ok(am.group(1)):
             return self.bots_avatar_request(am.group(1))
+        hm = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/helper-update", p)
+        if hm and slug_ok(hm.group(1)):
+            return self.bots_helper_update(hm.group(1))
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -3576,9 +3603,26 @@ class Handler(BaseHTTPRequestHandler):
         if got is None:
             return self.bots_unconfigured()
         status, data = got
+        if status == 502:
+            return self.send(502, {"error": "Couldn't reach the bot."})  # the bot's webhook, not the relay
         if status not in (200, 202) or (isinstance(data, dict) and data.get("ok") is False):
             return self.relay_fail(status, data)
         schedule_persona_sync(30)
+        return self.send(202, {"ok": True})
+
+    def bots_helper_update(self, slug):
+        """Ask a home bot to update its helper. The webhook carries only kind update_helper: no command, no URL."""
+        got = relay_call("POST", "/admin/bots/" + slug + "/helper-update", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status == 429:
+            return self.send(429, {"error": "Asked a few minutes ago. Wait, then try again."})
+        if status == 502:
+            return self.send(502, {"error": "Couldn't reach the bot."})
+        if status not in (200, 202) or (isinstance(data, dict) and data.get("ok") is False):
+            return self.relay_fail(status, data)
+        audit(slug, "helper-update")
         return self.send(202, {"ok": True})
 
     def bots_add(self, j):
