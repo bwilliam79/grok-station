@@ -385,7 +385,11 @@ mv -f "$stage/wrapper" "$wrapdir/gs-seal-reply"
 chmod 700 "$wrapdir/gs-seal-reply"
 phase=done
 if [ "$update" = "1" ]; then
-  "$BIN/gs-seal-reply" version || die "updated, but the helper didn't report its version"
+  ver=$(sed -n 's/^HELPER_VERSION = "\([0-9][0-9.]*\)"$/\1/p' "$BIN/gs_seal_common.py")
+  if [ -z "$ver" ]; then
+    die "updated, but the helper version is missing"
+  fi
+  printf '%s\n' "$ver"
   printf '%s\n' "Updated $BIN" >&2
   exit 0
 fi

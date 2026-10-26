@@ -816,6 +816,7 @@ class DeployKeySetup(unittest.TestCase):
         self.assertEqual(up["proc"].returncode, 0, up["proc"].stderr)
         self._secret_hidden(up["proc"])
         self.assertNotIn(HOME_PUB, up["proc"].stdout)  # no new key is minted or printed
+        self.assertRegex(up["proc"].stdout, r"^[0-9]+\.[0-9]+\.[0-9]+\n$")  # stdout is only the helper version
         for p in keep:
             self.assertEqual((os.stat(p).st_mtime_ns, open(p, "rb").read()), before[p], p)
         self.assertEqual(hashlib.sha256(open(reply, "rb").read()).hexdigest(), self.pins["files"]["scripts/gs-seal-reply"])
