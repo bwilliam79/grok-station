@@ -211,3 +211,14 @@ Patch release. Installs over 0.11.0. The pinned download files are unchanged.
 - **Not set up.** Each imported name that is not a bot yet is a Bots row, state "Not set up", with Set up and Remove. The old Imported bots box is gone.
 - **Team setup message.** When a main bot has teammates that are not set up, Configure and the Bots page can copy one message for that bot to send. It includes each teammate's routine and the deploy step. A home-computer key says the user must approve that local run in Grok Bot, and not to skip the approval. The station sends nothing. You paste the webhook URL, webhook key, webhook header and public keys into the station yourself.
 
+## 0.11.2
+
+Patch release. Installs over 0.11.1.
+
+- **Security certificate.** On System, SHA-256, the fingerprint, and the copy button are one row. The fingerprint stays on one line at a desktop width.
+- **Bots.** Revoke all bots is in the header next to Add bot. The confirmation is unchanged. With no other bots and no Not set up rows, the page shows one line: "No other bots yet. Hey Grok always works."
+- **Audio.** Related settings are grouped, in two columns on a wide window. Play test sound sits next to the microphone and speaker. The settings themselves are unchanged.
+- **Display.** Settings are grouped under Clock and night clock, Screens, Brightness, and Units. Advanced: team logo sources is at the bottom. The day and night previews are the same size.
+- **Night clock hours and the dim window are different. They were not merged.** Night clock from/until is `GROK_STATION_NIGHT` (whole hours, such as `22-6`). `night_face` in `app/grok_station.py` uses those hours only when Brightness is Off. Dim the screen from/until is `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO` (minute times, such as `22:00`). `select_level` in `app/dimming.py` uses them to lower the backlight in Schedule mode. `in_dim_period` in `app/dimming.py` uses that window for the night clock only while a dim mode is on. Sunrise follows sunset, and a light sensor follows the reading. Neither of those uses the night-clock hours.
+- **Time and location.** Once a town or ZIP is saved, it shows as text with Change location. Change location opens the field again, and Cancel puts the saved place back. Until a place is set, the field is unchanged.
+

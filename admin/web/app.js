@@ -568,10 +568,13 @@ async function pageUpdates(el) {
 async function timePanel(el, opts = {}) {
   const [g, z] = await Promise.all([api("GET", "/api/settings/time"), api("GET", "/api/timezones")]);
   const v = (g.data || {}).values || {};
+  const hasLoc = !!v.location;
   el.innerHTML = `<div class="card"><h2>Time and location</h2><p class="sub">Used for the clock, the weather on the station, and Grok's time and weather answers.</p>
     <div class="field"><label for="tz">Time zone</label><select class="sel" id="tz">${(z.data.zones || []).map(x => `<option${x === v.timezone ? " selected" : ""}>${esc(x)}</option>`).join("")}</select></div>
-    <div class="field"><label for="town">Town or ZIP</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" id="town" placeholder="Town or ZIP code"><button class="btn sm" id="find">Find</button></div>
-      <div id="found" class="note">${v.location ? `Current location: ${esc(v.location)}` : "No location yet."}</div></div>
+    <div class="field"><label for="town">Town or ZIP</label>
+      <div id="locshow" class="inline"${hasLoc ? "" : " hidden"}><span id="loctext" class="locset">${esc(v.location || "")}</span><button class="btn sm" id="locchange" type="button">Change location</button></div>
+      <div id="townedit"${hasLoc ? " hidden" : ""}><div class="inline" style="flex-wrap:nowrap"><input class="inp" id="town" placeholder="Town or ZIP code"><button class="btn sm" id="find" type="button">Find</button><button class="btn g sm" id="loccancel" type="button"${hasLoc ? "" : " hidden"}>Cancel</button></div>
+      <div id="found" class="note">${hasLoc ? "" : "No location yet."}</div></div></div>
     <div class="field"><label for="un">Temperature</label><select class="sel" id="un"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
     <div id="te"></div><div class="field inline"><button class="btn p" id="tsave" type="button" disabled>Save</button></div></div>`;
   let pick = null;
@@ -582,9 +585,33 @@ async function timePanel(el, opts = {}) {
     const dirty = !!pick || $("#tz", el).value !== savedTime.tz || $("#un", el).value !== savedTime.units;
     b.disabled = !dirty;
   };
+  // A saved place is plain text. Change location opens the field; Cancel puts the text back.
+  const showPlace = (label) => {
+    const text = label || "";
+    $("#loctext", el).textContent = text;
+    $("#locshow", el).hidden = !text;
+    $("#townedit", el).hidden = !!text;
+    $("#loccancel", el).hidden = !text;
+    $("#town", el).value = "";
+    $("#found", el).textContent = text ? "" : "No location yet.";
+    pick = null;
+  };
   $("#tz", el).addEventListener("change", syncTime);
   $("#un", el).addEventListener("change", syncTime);
   syncTime();
+  $("#locchange", el).onclick = () => {
+    $("#locshow", el).hidden = true;
+    $("#townedit", el).hidden = false;
+    $("#loccancel", el).hidden = false;
+    $("#found", el).textContent = "";
+    const town = $("#town", el);
+    if (town) town.focus();
+  };
+  $("#loccancel", el).onclick = () => {
+    showPlace($("#loctext", el).textContent);
+    attn($("#te", el), "");
+    syncTime();
+  };
   $("#find", el).onclick = async () => {
     const r = await api("GET", "/api/geocode?q=" + encodeURIComponent($("#town", el).value));
     if (!r.ok) return attn($("#te", el), (r.data && r.data.error) || "Couldn't look that up.");
@@ -601,11 +628,11 @@ async function timePanel(el, opts = {}) {
     markSaving();
     const r = await api("PUT", "/api/settings/time", body);
     if (!r.ok) { markUnsaved(); return attn($("#te", el), (r.data && r.data.error) || "Couldn't save that."); }
-    if (r.data.location) $("#found", el).textContent = "Current location: " + r.data.location;
     if (r.data.timezone && [...$("#tz", el).options].some(o => o.value === r.data.timezone)) $("#tz", el).value = r.data.timezone;
-    pick = null;
     savedTime.tz = $("#tz", el).value;
     savedTime.units = $("#un", el).value;
+    if (r.data.location) showPlace(r.data.location);
+    else if ($("#loctext", el).textContent) showPlace($("#loctext", el).textContent);
     syncTime();
     attn($("#te", el), "");
     markSaved();
@@ -646,21 +673,29 @@ async function audioPanel(el) {
   let voiceStored = typeof v.VOICE_GAIN === "string" && v.VOICE_GAIN !== "";
   const wakeShown = wakeStored ? v.WAKE_GAIN : (gains.WAKE_GAIN || gainFor(cur || "EMEET"));
   const voiceShown = voiceStored ? v.VOICE_GAIN : (gains.VOICE_GAIN || (wakeStored ? v.WAKE_GAIN : gainFor(cur || "EMEET")));
-  el.innerHTML = `<div class="card"><h2>Audio</h2>
-    <div class="field"><label for="dev">Microphone and speaker</label><select class="sel" id="dev">${devs.map(x => `<option value="${esc(x)}"${x === cur ? " selected" : ""}>${esc(x)}${(d.in_use || []).includes(x) ? " (in use by the station)" : ""}</option>`).join("")}</select>
+  el.innerHTML = `<div class="card audiocard"><h2>Audio</h2>
+    <div class="agrid">
+    <div>
+    <h3 class="dgrp">Device</h3>
+    <div class="field"><label for="dev">Microphone and speaker</label><div class="devline"><select class="sel" id="dev">${devs.map(x => `<option value="${esc(x)}"${x === cur ? " selected" : ""}>${esc(x)}${(d.in_use || []).includes(x) ? " (in use by the station)" : ""}</option>`).join("")}</select><button class="btn" id="atest" type="button">Play test sound</button></div>
       <p class="note">The station uses one sound device for both (the speakerphone).</p></div>
     <div class="field"><label>Microphone level (live)</label><div id="lvl">${meter(d.level_dbfs)}</div></div>
     <div class="field"><label for="rate">Recording rate</label><select class="sel" id="rate"><option value="16000">16 kHz</option><option value="48000"${v.WAKE_CAPTURE_RATE === "48000" ? " selected" : ""}>48 kHz (device only does 48k)</option></select></div>
-    <div class="field"><label for="wg">Wake-word mic boost <span class="help" id="wgv"></span></label><input type="range" id="wg" min="1" max="9" step="0.5" value="${esc(wakeShown)}"></div>
-    <div class="field"><label for="vg">Voice mic boost <span class="help" id="vgv"></span></label><input type="range" id="vg" min="1" max="9" step="0.5" value="${esc(voiceShown)}"></div>
-    <div class="field"><label for="alm">Alarm sound</label><div class="inline">${soundSelect("alm", alarmOpts, alarmCur)}<button class="btn" id="aprev">Preview</button></div>
+    <h3 class="dgrp">Mic boost</h3>
+    <div class="field slide"><label for="wg">Wake-word mic boost <span class="help" id="wgv"></span></label><input type="range" id="wg" min="1" max="9" step="0.5" value="${esc(wakeShown)}"></div>
+    <div class="field slide"><label for="vg">Voice mic boost <span class="help" id="vgv"></span></label><input type="range" id="vg" min="1" max="9" step="0.5" value="${esc(voiceShown)}"></div>
+    </div>
+    <div>
+    <h3 class="dgrp">Sounds</h3>
+    <div class="field"><label for="alm">Alarm sound</label><div class="inline">${soundSelect("alm", alarmOpts, alarmCur)}<button class="btn" id="aprev" type="button">Preview</button></div>
       <p class="note">Plays on the station when a timer finishes.</p></div>
-    <div class="field"><label for="ltn">Listen tone</label><div class="inline">${soundSelect("ltn", listenOpts, listenCur)}<button class="btn" id="lprev">Preview</button></div>
+    <div class="field"><label for="ltn">Listen tone</label><div class="inline">${soundSelect("ltn", listenOpts, listenCur)}<button class="btn" id="lprev" type="button">Preview</button></div>
       <p class="note">Plays when the station wakes.</p></div>
-    <div class="field"><label for="etn">End tone</label><div class="inline">${soundSelect("etn", endOpts, endCur)}<button class="btn" id="eprev">Preview</button></div>
+    <div class="field"><label for="etn">End tone</label><div class="inline">${soundSelect("etn", endOpts, endCur)}<button class="btn" id="eprev" type="button">Preview</button></div>
       <p class="note">Plays when a conversation ends.</p></div>
+    </div></div>
     <div id="ae"></div>
-    <div class="field inline"><button class="btn p" id="asave" type="button" disabled>Save</button><button class="btn" id="atest">Play test sound</button></div>
+    <div class="field inline"><button class="btn p" id="asave" type="button" disabled>Save</button></div>
     <p class="note">Saving restarts the voice listener (after any conversation or enrollment that's running).</p></div>`;
   const lab = () => { $("#wgv", el).textContent = "×" + $("#wg", el).value; $("#vgv", el).textContent = "×" + $("#vg", el).value; };
   $("#wg", el).oninput = $("#vg", el).oninput = lab; lab();
@@ -1104,28 +1139,45 @@ async function displayPanel(el) {
   const modes = ["off", "schedule", "sun", "auto-sensor"];
   const mode = modes.includes(v.GROK_STATION_DIM_MODE) ? v.GROK_STATION_DIM_MODE : "off";
   const day = pct(v.GROK_STATION_DIM_DAY, 90), night = pct(v.GROK_STATION_DIM_NIGHT, 20);
-  el.innerHTML = `<div class="cols"><div class="card"><h2>Display</h2>
-    <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-checked="${v.GROK_STATION_NIGHT === "" ? "false" : "true"}" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock overnight. With dimming on, it follows that window.</div></div></div>
-    <div class="row inline"><label class="help">From <select class="sel" id="nf" style="width:130px">${hours(nf)}</select></label><label class="help">to <select class="sel" id="nt" style="width:130px">${hours(nt)}</select></label></div>
+  el.innerHTML = `<div class="cols"><div class="card dispcard"><h2>Display</h2>
+    <h3 class="dgrp">Clock and night clock</h3>
+    <div class="row"><button class="tog${v.GROK_STATION_NIGHT === "" ? "" : " on"}" role="switch" id="non" aria-checked="${v.GROK_STATION_NIGHT === "" ? "false" : "true"}" aria-label="Night clock"></button><div><div class="lbl">Night clock</div><div class="help">A dim clock on a black screen. These hours apply only when Brightness is Off.</div></div></div>
+    <div class="row inline"><label class="help">Night clock from <select class="sel" id="nf" style="width:130px">${hours(nf)}</select></label><label class="help">until <select class="sel" id="nt" style="width:130px">${hours(nt)}</select></label></div>
+    <p class="help">Schedule, sunrise, and a light sensor ignore these hours. The night clock then follows the brightness window: the dim times, sunset to sunrise, or a dark sensor.</p>
+    <h3 class="dgrp">Screens</h3>
     <div class="field"><label for="hold">Message hold time <span class="help" id="holdv"></span></label><input type="range" id="hold" min="5" max="120" value="${esc(v.GROK_STATION_HOLD || "30")}"></div>
     <div class="field"><label for="crot">Card rotation <span class="help" id="crotv"></span></label><input type="range" id="crot" min="5" max="120" value="${esc(rot)}"></div>
-    <details class="field"><summary class="help">Advanced: team logo sources</summary><label for="chosts">Logo hosts</label><textarea class="inp" id="chosts" rows="3" placeholder="a.espncdn.com">${esc(hosts)}</textarea>
-      <div class="help">Sports cards load team logos only from these HTTPS hosts. The default, a.espncdn.com, covers ESPN's team logos. Anything else stays a monogram.</div></details>
     <div class="row"><button class="tog${v.GROK_STATION_FADE === "0" ? "" : " on"}" role="switch" id="fade" aria-checked="${v.GROK_STATION_FADE === "0" ? "false" : "true"}" aria-label="Fade"></button><div class="lbl">Fade between screens</div></div>
-    <div class="field"><label for="dun">Temperature</label><select class="sel" id="dun"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
+    <h3 class="dgrp">Brightness</h3>
     <div class="field"><label for="dmode">Brightness</label><select class="sel" id="dmode">
       <option value="off">Off</option><option value="schedule">Schedule</option><option value="sun">Sunrise and sunset</option><option value="auto-sensor">Light sensor</option></select>
       <div class="help">Off leaves the backlight alone. Schedule and sunrise need no sensor. A light sensor is used only when the kernel already exposes one.</div></div>
     <div class="field"><label for="dday">Day brightness <span class="help" id="ddayv"></span></label><input type="range" id="dday" min="0" max="100" value="${day}"></div>
     <div class="field"><label for="dnight">Night brightness <span class="help" id="dnightv"></span></label><input type="range" id="dnight" min="0" max="100" value="${night}"></div>
-    <div class="row inline"><label class="help">Dim from <input class="inp" type="time" id="dfrom" value="${hhmm(v.GROK_STATION_DIM_FROM, "22:00")}"></label><label class="help">until <input class="inp" type="time" id="dto" value="${hhmm(v.GROK_STATION_DIM_TO, "06:00")}"></label></div>
+    <div class="row inline"><label class="help">Dim the screen from <input class="inp" type="time" id="dfrom" value="${hhmm(v.GROK_STATION_DIM_FROM, "22:00")}"></label><label class="help">until <input class="inp" type="time" id="dto" value="${hhmm(v.GROK_STATION_DIM_TO, "06:00")}"></label></div>
+    <p class="help">Schedule uses these times to lower the backlight. They are not the Night clock hours. A light sensor with no reading falls back to them.</p>
     <div class="row inline"><label class="help">Sunrise offset <input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"></label><label class="help">Sunset offset <input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"></label></div>
     <div class="row inline"><label class="help">Latitude <input class="inp" id="dlat" maxlength="8" inputmode="decimal" placeholder="12.34" value="${esc(v.GROK_STATION_DIM_LAT || "")}"></label><label class="help">Longitude <input class="inp" id="dlon" maxlength="8" inputmode="decimal" placeholder="-56.78" value="${esc(v.GROK_STATION_DIM_LON || "")}"></label></div>
     <p class="note">Blank latitude and longitude use the station location, rounded to 2 decimals. Sensor: ${sensor ? esc(sensor.name) : "none"}. ${dim.backlight ? "Backlight: " + esc(dim.backlight.name) : "No backlight file; a dark layer is drawn instead."}</p>
+    <h3 class="dgrp">Units</h3>
+    <div class="field"><label for="dun">Temperature</label><select class="sel" id="dun"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
+    <details class="field disp-adv"><summary class="help">Advanced: team logo sources</summary><label for="chosts">Logo hosts</label><textarea class="inp" id="chosts" rows="3" placeholder="a.espncdn.com">${esc(hosts)}</textarea>
+      <div class="help">Sports cards load team logos only from these HTTPS hosts. The default, a.espncdn.com, covers ESPN's team logos. Anything else stays a monogram.</div></details>
     <div id="de"></div><div id="ce"></div><div class="field inline"><button class="btn p" id="dsave" type="button" disabled>Save</button></div></div>
-    <div class="card"><h2>Live preview</h2><img class="thumb" id="pv" alt="What the station screen shows now">
-      <div class="nightprev" id="nprev"><div class="tm">11:24</div><div class="dt">Thu, Oct 22</div><div class="dim-overlay" id="nov"></div></div>
-      <p class="note">Example night clock. The black layer is the night brightness.</p></div></div>`;
+    <div class="card"><h2>Live preview</h2><div class="prevstack">
+      <div class="prev"><div class="prevframe"><img class="thumb" id="pv" alt="What the station screen shows now"></div><p class="note">Day clock</p></div>
+      <div class="prev"><div class="prevframe"><div class="nightprev" id="nprev"><div class="tm">11:24</div><div class="dt">Thu, Oct 22</div><div class="dim-overlay" id="nov"></div></div></div>
+      <p class="note">Example night clock. The black layer is the night brightness.</p></div>
+    </div></div></div>`;
+  // Blur a focus ring the disclosure can pick up while this page is drawn.
+  const clearAdvFocus = () => {
+    const adv = $("details.disp-adv", el);
+    const sum = adv && $("summary", adv);
+    const active = document.activeElement;
+    if (active && (active === adv || active === sum)) active.blur();
+  };
+  clearAdvFocus();
+  if (typeof requestAnimationFrame === "function") requestAnimationFrame(clearAdvFocus);
   $("#dmode", el).value = mode;
   const FIELDS = {hold: "GROK_STATION_HOLD", crot: "GROK_STATION_CARD_ROTATE", dun: "GROK_STATION_UNITS", dmode: "GROK_STATION_DIM_MODE",
     dday: "GROK_STATION_DIM_DAY", dnight: "GROK_STATION_DIM_NIGHT", dfrom: "GROK_STATION_DIM_FROM", dto: "GROK_STATION_DIM_TO",
@@ -3114,23 +3166,17 @@ async function pageBots(el) {
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
-      <button class="btn p sm right" id="add" type="button">Add bot</button></div>
+      <span class="right inline botacts"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
     <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
+    <p class="help" id="emptybot" hidden>No other bots yet. Hey Grok always works.</p>
     <div class="card" id="teamcard" hidden>
       <p class="note" id="teamnote"></p>
       <div class="inline"><button class="btn sm" id="copyteam" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></div>
-    <p class="help">You can connect other bots from your Grok Bot account.</p>
-    <div class="card emptybot" id="emptybot" hidden>
-      <div class="ring">+</div>
-      <div class="lbl">No other bots yet</div>
-      <p class="help">Hey Grok always works. You can connect other bots from your Grok Bot account, each with its own wake word.</p>
-      <button class="btn p sm" id="addempty" type="button">Add bot</button></div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>
       <p class="help">The station doesn’t listen for these. Delete them to free space, or set one again from a bot’s Configure.</p></div>
-    <p class="note" id="rttall"></p>
-    <div class="inline"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button></div>`;
+    <p class="note" id="rttall"></p>`;
   applyBotMeta(el, data);
   paintBots(el, bots);
   const copyTeam = $("#copyteam", el);
@@ -3150,8 +3196,6 @@ async function pageBots(el) {
   every(3000, () => { if (document.body.contains(el) && $("#blist", el)) refreshBots(el); });
   const openAdd = () => addBot(el._voices || data.voices || [], el);
   $("#add", el).onclick = openAdd;
-  const addEmpty = $("#addempty", el);
-  if (addEmpty) addEmpty.onclick = openAdd;
   const kill = $("#revokeall", el);
   if (kill) kill.onclick = () => askPassword("Revoke all bots?", "This drops every pinned key. Replies are rejected until a key is paired again.", "Revoke all bots", async pw => {
     const r = await api("POST", "/api/bots/revoke-all", {password: pw});
@@ -3204,7 +3248,7 @@ async function pagePrivacy(el) {
 }
 async function pageSystem(el) {
   el.innerHTML = `<div class="card" id="hl"><h2>Health</h2></div>
-    <div class="card" id="tls"><h2>Security certificate</h2></div>
+    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
       <div class="log" id="log" style="margin-top:12px">Pick a part and press Show.</div></div>
@@ -3262,8 +3306,8 @@ async function pageSystem(el) {
   };
   const hh = s.health || {};
   const t = s.tls || {};
-  $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station made its own certificate for ${esc(t.url || "this page")}. If your browser warns about it, check that the browser's SHA-256 fingerprint matches this one exactly (it's also shown on the station screen for 10 minutes after a new certificate is made), then trust it.</p>
-    <div class="row"><span>SHA-256</span><span class="right" style="max-width:70%">${staticValue("tlsfp", t.fingerprint || "", "certificate fingerprint", "n/a")}</span></div>`;
+  $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station's own certificate. If the browser warns, match its SHA-256 to this fingerprint (also on the station screen for 10 minutes after a new one), then trust it.</p>
+    <div class="certline"><span class="fp-lab">SHA-256</span>${staticValue("tlsfp", t.fingerprint || "", "certificate fingerprint", "n/a")}</div>`;
   $("#hl", el).innerHTML = `<h2>Health</h2>
     <div class="row"><span>CPU temperature</span><span class="right mono">${hh.cpu_c != null ? hh.cpu_c + " °C" : "n/a"}</span></div>
     <div class="row"><span>Uptime</span><span class="right mono">${hh.uptime_s != null ? Math.floor(hh.uptime_s / 86400) + "d " + Math.floor(hh.uptime_s % 86400 / 3600) + "h" : "n/a"}</span></div>

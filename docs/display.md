@@ -41,3 +41,23 @@ They check that the layout fits. Not every size has been tried on a real panel.
 - **Portrait or rotated screens.** The code has no rotation handling. A rotation set in the OS changes the framebuffer size the station reads, but that hasn't been tested.
 - **Touch.** There's no touch or mouse input. A touchscreen works as a plain screen.
 - **More than one screen.** Only one framebuffer is used.
+
+## Admin Display page
+
+The admin page groups the controls under four headings:
+
+- **Clock and night clock.** The night-clock switch, and Night clock from / until.
+- **Screens.** Message hold time, card rotation, and fade between screens.
+- **Brightness.** Mode, day and night levels, and Dim the screen from / until, plus sunrise offsets and coordinates.
+- **Units.** Temperature.
+
+**Advanced: team logo sources** is the last block. The two live previews, day and night, are the same size and shape, stacked, with a label under each.
+
+Night clock hours and the dim window are different settings. They were not merged in 0.11.2.
+
+| Control | Setting | What it does |
+|---|---|---|
+| Night clock from / until | `GROK_STATION_NIGHT`, whole hours such as `22-6` | When the black night clock is drawn, and only while Brightness is Off. Empty turns that clock off. `night_face` in `app/grok_station.py`. |
+| Dim the screen from / until | `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO`, times such as `22:00` | When Schedule lowers the backlight. `select_level` in `app/dimming.py`. |
+
+While Brightness is Schedule, Sunrise and sunset, or Light sensor, and the night clock is on, the night clock follows that brightness window instead of its own hours. `in_dim_period` in `app/dimming.py` decides that window: the dim times for Schedule, sunset to sunrise for Sunrise, and a dark reading for a light sensor. Brightness Off leaves the backlight alone, and the night clock uses its own hours. See [dimming.md](dimming.md).

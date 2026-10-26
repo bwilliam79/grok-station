@@ -25,7 +25,9 @@ Probing is read-only and optional. A missing sensor is normal.
 
 If the write fails, or there is no backlight, the framebuffer is copied and a black layer is composited on the copy. Opacity is `(100 − level) / 100`, the same as a CSS black overlay. Partial updates (the clock colon, the timer strip, the thinking ring) use that copy too, so an undimmed rectangle cannot punch through.
 
-The night clock (black, `#9A7752`, `#5E4934`) follows the dim window while the night-clock toggle is on. Toggle off and the day screen stays up. Mode **Off** keeps the old hour window for that clock.
+The night clock (black, `#9A7752`, `#5E4934`) follows the dim window while the night-clock toggle is on. Toggle off and the day screen stays up. Mode **Off** keeps the night clock's own hours.
+
+Those hours and the dim times are different settings, and 0.11.2 keeps both. **Night clock from / until** is `GROK_STATION_NIGHT` (whole hours). `night_face` in `app/grok_station.py` uses it only when Brightness is Off. **Dim the screen from / until** is `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO`. `select_level` in `app/dimming.py` uses those times to lower the backlight in Schedule mode. `in_dim_period` uses the same window for the night clock face only while a dim mode is on. Sunrise follows sunset, and a light sensor with a reading follows lux. Neither uses the night-clock hours.
 
 Settings live in `/etc/grok-station/env` (`GROK_STATION_DIM_MODE`, `DIM_DAY`, `DIM_NIGHT`, `DIM_FROM`, `DIM_TO`, `DIM_LAT`, `DIM_LON`, `DIM_SUNRISE`, `DIM_SUNSET`). Saving restarts the display. The admin journal records `action=dim-schedule` (or `dim-sun`, `dim-auto-sensor`, `dim-off`) and does not record the coordinates. A stamp in `/var/cache/grok-station/dim-level` remembers that this app lowered the backlight, so **Off** can put it back. The stamp is not in `/run`, which is wiped on restart.
 

@@ -759,3 +759,144 @@ vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {};
         self.assertEqual(out["home"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
         self.assertEqual(out["homeNamed"], {"field": False, "replace": True})
         self.assertEqual(out["calls"], [["/api/bots/jules", "PATCH", '{"reply_host":"Den iMac"}']] * 2)
+
+
+class Release0112UI(unittest.TestCase):
+    """0.11.2 admin layout: certificate row, bots header, audio columns, display groups, location text."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+        cls.css = _read(os.path.join("admin", "web", "admin.css"))
+
+    def test_certificate_row_holds_the_fingerprint(self):
+        """SHA-256, the 95-character fingerprint, and copy are one row, and the line does not wrap at desktop width."""
+        sys = _fn(self.js, "pageSystem")
+        row = sys.split('$("#tls", el).innerHTML', 1)[1].split(";", 1)[0]
+        self.assertIn("Security certificate", row)
+        self.assertIn(">SHA-256<", row)
+        self.assertIn('staticValue("tlsfp"', row)
+        self.assertIn('class="certline"', row)
+        self.assertNotIn("max-width:70%", row)
+        self.assertLess(row.index(">SHA-256<"), row.index('staticValue("tlsfp"'))
+        fp = self.css.split(".certline .static-val{", 1)[1].split("}", 1)[0]
+        self.assertIn("white-space:nowrap", fp)
+        self.assertIn("word-break:keep-all", fp)
+        self.assertIn("font-size:10px", fp)
+        self.assertIn("letter-spacing:-0.05em", fp)
+        self.assertIn("overflow-x:auto", fp)
+        self.assertIn("flex-wrap:nowrap", self.css.split(".certline .static{", 1)[1].split("}", 1)[0])
+        # Phones may wrap the label. The first 1023px query only shrinks the sidebar.
+        phone = self.css.split("@media (max-width:1023px)")[-1]
+        self.assertIn(".certline{flex-wrap:wrap}", phone.replace(" ", "").replace("\n", ""))
+
+    def test_bots_header_and_empty_line(self):
+        page = _fn(self.js, "pageBots")
+        head = page.split('id="blist"', 1)[0]
+        self.assertIn('class="btn dg sm" id="revokeall"', head)
+        self.assertIn('id="add"', head)
+        self.assertLess(head.index('id="revokeall"'), head.index('id="add"'))
+        self.assertEqual(page.count('id="revokeall"'), 1)
+        self.assertEqual(page.count(">Add bot</button>"), 1)
+        self.assertNotIn('id="addempty"', page)
+        self.assertNotIn("emptybot\"", page.split('id="emptybot"', 1)[0])  # the id is the line, not a second card
+        self.assertNotIn('class="card emptybot"', page)
+        self.assertNotIn('class="ring"', page)
+        self.assertIn("No other bots yet. Hey Grok always works.", page)
+        self.assertNotIn("You can connect other bots from your Grok Bot account.", self.js)
+        self.assertIn('askPassword("Revoke all bots?"', page)
+        self.assertIn("This drops every pinned key. Replies are rejected until a key is paired again.", page)
+        self.assertIn('"Revoke all bots"', page)
+        bots = _fn(self.js, "paintBots")
+        self.assertIn("empty.hidden = bots.length > 0 || pending.length > 0", bots)
+
+    def test_audio_is_two_columns_and_test_sound_sits_with_the_device(self):
+        audio = self.js.split("async function audioPanel", 1)[1].split("\nconst ICO_WAVE", 1)[0]
+        dev = audio.split(">Device<", 1)[1].split('id="lvl"', 1)[0]
+        self.assertIn('id="dev"', dev)
+        self.assertIn('id="atest"', dev)
+        self.assertIn("Play test sound", dev)
+        self.assertIn('class="devline"', dev)
+        self.assertLess(dev.index('class="devline"'), dev.index('id="atest"'))
+        after_save = audio.split('id="asave"', 1)[1]
+        self.assertNotIn('id="atest"', after_save)
+        self.assertIn(">Save<", audio)
+        self.assertIn(">Device<", audio)
+        self.assertIn(">Mic boost<", audio)
+        self.assertIn(">Sounds<", audio)
+        self.assertIn('class="agrid"', audio)
+        wide = self.css.split("@media (min-width:1024px)", 1)[1].split("}", 1)[0]
+        self.assertIn("grid-template-columns:1fr 1fr", wide)
+        for key in ("WAKE_DEVICE_NAME", "WAKE_CAPTURE_RATE", "WAKE_GAIN", "VOICE_GAIN", "ALARM_SOUND", "LISTEN_TONE", "END_TONE"):
+            self.assertIn(key, audio, key)
+
+    def test_display_groups_previews_and_keeps_both_clocks(self):
+        panel = self.js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
+        # Heading text, not the earlier "Brightness is Off" help line.
+        order = [">Clock and night clock<", ">Screens<", ">Brightness<", ">Units<", "Advanced: team logo sources"]
+        idx = [panel.index(title) for title in order]
+        self.assertEqual(idx, sorted(idx))
+        self.assertGreater(panel.index("Advanced: team logo sources"), panel.index('id="dun"'))
+        self.assertGreater(panel.index('id="dsave"'), panel.index("Advanced: team logo sources"))
+        self.assertIn("Night clock from", panel)
+        self.assertIn("Dim the screen from", panel)
+        self.assertIn("These hours apply only when Brightness is Off.", panel)
+        self.assertIn("They are not the Night clock hours.", panel)
+        self.assertIn("Schedule, sunrise, and a light sensor ignore these hours.", panel)
+        self.assertNotIn("A dim clock overnight.", panel)
+        self.assertIn("clearAdvFocus", panel)
+        self.assertIn(".blur()", panel)
+        self.assertIn('class="prevstack"', panel)
+        self.assertIn('class="prevframe"', panel)
+        self.assertLess(panel.index('id="pv"'), panel.index('id="nprev"'))
+        self.assertIn(">Day clock<", panel)
+        self.assertIn("Example night clock. The black layer is the night brightness.", panel)
+        frame = self.css.split(".prevstack .prevframe{", 1)[1].split("}", 1)[0]
+        self.assertIn("aspect-ratio:3/2", frame)
+        self.assertIn("width:100%", frame)
+        both = self.css.split(".prevstack .thumb,.prevstack .nightprev{", 1)[1].split("}", 1)[0]
+        self.assertIn("position:absolute", both)
+        self.assertIn("width:100%", both)
+        self.assertIn("height:100%", both)
+        focus = self.css.split(".disp-adv:focus,.disp-adv summary:focus{", 1)[1].split("}", 1)[0]
+        self.assertIn("outline:none", focus)
+        self.assertIn("outline:2px solid var(--gs-teal)", self.css.split(".disp-adv summary:focus-visible{", 1)[1].split("}", 1)[0])
+
+    def test_saved_location_is_text_until_change(self):
+        time = self.js.split("async function timePanel", 1)[1].split("\nfunction soundLabel", 1)[0]
+        self.assertIn(">Town or ZIP<", time)
+        self.assertIn('id="town"', time)
+        self.assertIn('placeholder="Town or ZIP code"', time)
+        self.assertIn(">Find<", time)
+        self.assertIn("No location yet.", time)
+        self.assertIn('id="loctext"', time)
+        self.assertIn(">Change location<", time)
+        self.assertIn('id="loccancel"', time)
+        self.assertIn(">Cancel<", time)
+        self.assertIn("const hasLoc = !!v.location", time)
+        self.assertIn("showPlace", time)
+        self.assertNotIn("Current location:", time)
+        self.assertIn('api("PUT", "/api/settings/time"', time)
+
+    def test_version_notes_say_the_clocks_were_not_merged(self):
+        self.assertEqual(_read("VERSION").strip(), "0.11.2")
+        notes = _read(os.path.join("docs", "versioning.md"))
+        self.assertIn("## 0.11.2", notes)
+        section = notes.split("## 0.11.2", 1)[1]
+        self.assertNotIn("\n## ", section)
+        for text in ("night_face", "app/grok_station.py", "select_level", "in_dim_period", "app/dimming.py",
+                     "were not merged", "GROK_STATION_NIGHT", "GROK_STATION_DIM_FROM", "GROK_STATION_DIM_TO",
+                     "No other bots yet. Hey Grok always works."):
+            self.assertIn(text, section, text)
+        readme = _read("README.md")
+        self.assertLess(readme.index("**0.11.2**"), readme.index("**0.11.1**"))
+        display = _read(os.path.join("docs", "display.md"))
+        self.assertIn("night_face", display)
+        self.assertIn("in_dim_period", display)
+        self.assertIn("were not merged", display)
+        dim = _read(os.path.join("docs", "dimming.md"))
+        self.assertIn("night_face", dim)
+        self.assertIn("select_level", dim)
+        bots = _read(os.path.join("docs", "bots.md"))
+        self.assertIn("No other bots yet. Hey Grok always works.", bots)
+        self.assertIn("Revoke all bots?", bots)

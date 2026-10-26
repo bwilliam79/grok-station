@@ -82,7 +82,9 @@ A key exists on only one machine. Switching the mode in **Configure** revokes th
 
 The station public key (standard base64, 32 bytes) is on the Bots page, with a copy button. The bot public key must be standard base64 of 32 bytes.
 
-**Remove** asks for the admin password the same way, and skips it while the grace window is open. **Revoke** on one bot drops that pinned key (admin password, same window). **Revoke all bots** drops every pinned key and rejects every reply until a key is paired again. The grace period is **Password grace period** on the System page: 0 always asks, otherwise 1–120 minutes (default 10). Changing that setting always asks for the password. Signing out clears the window.
+**Remove** asks for the admin password the same way, and skips it while the grace window is open. **Revoke** on one bot drops that pinned key (admin password, same window). **Revoke all bots** drops every pinned key and rejects every reply until a key is paired again. On the Bots page that button is in the header, next to **Add bot**. It still asks first: "Revoke all bots?" and "This drops every pinned key. Replies are rejected until a key is paired again." The grace period is **Password grace period** on the System page: 0 always asks, otherwise 1–120 minutes (default 10). Changing that setting always asks for the password. Signing out clears the window.
+
+With no other bots and no names waiting as Not set up, the page shows one line: "No other bots yet. Hey Grok always works." Hey Grok stays on the list. **Add bot** in the header is the only Add bot.
 
 ## Keygen
 
