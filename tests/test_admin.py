@@ -2012,7 +2012,7 @@ class DeleteWakeWord(unittest.TestCase):
         self.assertEqual(c.req("DELETE", "/api/wakewords/hey_finn", {})[0], 200)
         self.assertTrue(self.ov()["hey_finn"]["hidden"])
         self.assertNotIn("hey_finn", {w["name"] for w in c.req("GET", "/api/wakewords")[1]["words"]})
-        self.assertEqual(c.req("DELETE", "/api/wakewords/no_such_word", {})[0], 404)
+        self.assertEqual(c.req("DELETE", "/api/wakewords/no_such_word", {})[0], 200)  # idempotent: nothing to delete is success
 
     def test_unlink_parks_the_word_and_keeps_recordings(self):
         c = signed_in()
@@ -2116,9 +2116,48 @@ class DeleteWakeWord(unittest.TestCase):
             self.assertNotIn("hey_pax", ov)
             self.assertNotIn("hey_joss", ov)
             self.assertNotIn("hey_wynn", ga.read_enroll_status())
-            self.assertEqual(c.req("DELETE", "/api/wakewords/hey_pax", {})[0], 404)
+            self.assertEqual(c.req("DELETE", "/api/wakewords/hey_pax", {})[0], 200)  # repeat delete is fine
         finally:
             ga.relay_call = old
+
+    def test_delete_removes_sessions_model_and_row_and_is_idempotent(self):
+        c = signed_in()
+        inbox = ga.ENROLL_INBOX
+        ses = os.path.join(inbox, "hey_rhea", "20261026-090000")
+        os.makedirs(ses, exist_ok=True)
+        open(os.path.join(ses, "00.wav"), "wb").close()
+        os.makedirs(os.path.join(inbox, "hey_rhea", "20261026-091500"), exist_ok=True)
+        edir = os.path.dirname(ga.ENROLLED)
+        os.makedirs(edir, exist_ok=True)
+        open(os.path.join(edir, "hey_rhea.fewshot.npz"), "wb").close()
+        ga.write_json(ga.ENROLLED, {"words": [{"name": "hey_rhea", "persona": "rhea", "kind": "fewshot"}]}, 0o640)
+        ga.write_json(ga.path("wake-overrides.json"), {"hey_rhea": {"persona": "rhea", "enabled": False}}, 0o640)
+        self.assertEqual(c.req("DELETE", "/api/wakewords/hey_rhea", {})[0], 200)
+        self.assertFalse(os.path.exists(os.path.join(inbox, "hey_rhea")))
+        self.assertFalse(os.path.exists(os.path.join(edir, "hey_rhea.fewshot.npz")))
+        self.assertNotIn("hey_rhea", ga.enrolled_entries())
+        body = c.req("GET", "/api/wakewords")[1]
+        self.assertNotIn("hey_rhea", {w["name"] for w in body["unused"]} | {w["name"] for w in body["words"]})
+        self.assertEqual(c.req("DELETE", "/api/wakewords/hey_rhea", {})[0], 200)
+        self.assertEqual(c.req("DELETE", "/api/wakewords/hey_never", {})[0], 200)
+
+    def test_delete_orphan_row_with_no_clips(self):
+        c = signed_in()
+        ga.write_json(ga.ENROLLED, {"words": [{"name": "hey_orla", "persona": "orla", "kind": "fewshot"}]}, 0o640)
+        self.assertEqual(c.req("DELETE", "/api/wakewords/hey_orla", {})[0], 200)
+        self.assertNotIn("hey_orla", ga.enrolled_entries())
+        body = c.req("GET", "/api/wakewords")[1]
+        self.assertNotIn("hey_orla", {w["name"] for w in body["unused"]})
+
+    def test_delete_refuses_path_tricks(self):
+        c = signed_in()
+        outside = os.path.join(os.path.dirname(ga.ENROLL_INBOX.rstrip("/")), "keep")
+        os.makedirs(outside, exist_ok=True)
+        for bad in ("..%2Fkeep", "hey_..%2F..%2Fkeep", "hey_A%2Fb", "%2E%2E"):
+            self.assertEqual(c.req("DELETE", "/api/wakewords/" + bad, {})[0], 400, bad)
+        self.assertTrue(os.path.isdir(outside))
+        ga.drop_phrase_leftovers("../keep")
+        self.assertTrue(os.path.isdir(outside))
 
     def test_remember_turns_a_parked_word_on_only_when_it_has_a_model(self):
         signed_in()

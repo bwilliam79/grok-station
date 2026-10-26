@@ -1255,6 +1255,38 @@ def enrolled_phrase_ids():
     return {w.get("name") for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
 
 
+def drop_phrase_leftovers(name):
+    """Remove what the wake listener may have left: every enroll session, the recorded model, the list entry.
+
+    Runs after /forget, and covers a listener that was down or refused. Missing files are fine.
+    name must already pass wake_name_ok; the session folder is checked to sit inside the inbox.
+    """
+    import shutil
+    if not wake_name_ok(name) or name == BUILTIN_WORD:
+        return
+    root = os.path.realpath(ENROLL_INBOX)
+    d = os.path.realpath(os.path.join(ENROLL_INBOX, name))
+    if os.path.dirname(d) == root and os.path.isdir(d):
+        shutil.rmtree(d, ignore_errors=True)
+    enrolled_dir = os.path.dirname(ENROLLED)
+    for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
+        try:
+            os.remove(os.path.join(enrolled_dir, fn))
+        except OSError:
+            pass
+    try:
+        doc = read_json(ENROLLED, {})
+        words = doc.get("words", []) if isinstance(doc, dict) else []
+        keep = [w for w in words if not (isinstance(w, dict) and w.get("name") == name)]
+        if len(keep) != len(words):
+            tmp = ENROLLED + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump({"words": keep}, f, indent=1)
+            os.replace(tmp, ENROLLED)
+    except (OSError, ValueError, AttributeError):
+        pass
+
+
 def enrolled_entries():
     return {w["name"]: w for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
 
@@ -3104,18 +3136,22 @@ class Handler(BaseHTTPRequestHandler):
         ov = read_json(path("wake-overrides.json"), {})
         if not isinstance(ov, dict):
             ov = {}
-        if name not in known and name not in ov and name not in read_enroll_status() and name not in enrolled_entries():
-            return self.send(404, {"error": "No such wake word."})
-        if not wake_name_ok(name) and name not in ov:
+        safe = wake_name_ok(name)
+        stored = name in known or name in ov or name in read_enroll_status() or name in enrolled_entries()
+        if not safe and not stored:
             return self.send(400, {"error": "bad name"})
-        code, out = wake("POST", "/forget", {"name": name}) if wake_name_ok(name) else (200, {})
+        if not stored and not os.path.isdir(os.path.join(ENROLL_INBOX, name)):
+            return self.send(200, {"ok": True})  # already gone: delete is idempotent
+        code, out = wake("POST", "/forget", {"name": name}) if safe else (200, {})
         if code == 409:
             return self.send(409, {"error": "That word is recording right now. Try again when it finishes."})
-        for fn in (name + ".onnx", name + ".json"):
-            try:
-                os.remove(os.path.join(WAKE_DROP_DIR, fn))
-            except OSError:
-                pass
+        if safe:  # file paths only for a checked name, never ../ or a slash
+            for fn in (name + ".onnx", name + ".json"):
+                try:
+                    os.remove(os.path.join(WAKE_DROP_DIR, fn))
+                except OSError:
+                    pass
+            drop_phrase_leftovers(name)
         cfg = read_json(WAKE_CONFIG, {})
         keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
         if keep_hidden:
