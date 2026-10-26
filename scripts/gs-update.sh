@@ -116,7 +116,11 @@ URLS = (
 _URL = re.compile(r"https?://[^\s'\")]+")
 FORBIDDEN = ("sudo", "ssh ", "scp ", "eval ", "chmod", "chown", "crontab", "launchctl", "systemctl", "osascript",
              "base64 -d", "| sh", "| bash", "bash -c", "sh -c", "python3 -c", "~/.ssh", ".bashrc", ".zshrc",
-             "keychain", "export ", "permission", "always allowed", "ignore previous", "ignore the above")
+             "keychain", "export ", "permission", "always allowed", "ignore previous", "ignore the above",
+             "from now on", "you may now", "you can now", "allowed to", "any file", "any command", "any link",
+             "override", "disregard", "new rule", "instead of the above", "without asking", "api key",
+             "token=", "credential", "private key", "~/.config", "/etc/", ".env")
+MAX_PARAS, MAX_PARA = 20, 2200
 
 
 class Bad(Exception):
@@ -165,6 +169,11 @@ def check(text, mode):
         if word in low:
             raise Bad("forbidden: " + word.strip())
     paras = [p for p in text.split("\n\n") if p.strip()]
+    if len(paras) > MAX_PARAS or any(len(p) > MAX_PARA for p in paras):
+        raise Bad("size")
+    starts = [next(s for s in SECTIONS if p.startswith(s)) for p in paras if p.startswith(SECTIONS)]
+    if len(starts) != len(set(starts)):
+        raise Bad("section repeated")
     m = HEADER.match(paras[0].split("\n", 1)[0]) if paras else None
     if not m:
         raise Bad("header")

