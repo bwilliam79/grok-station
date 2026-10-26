@@ -157,7 +157,7 @@ During a session you can say "Hey Grok, import the rest of my team", "import my 
 
 If no main bot is set up, it says "Set up your main bot first." Otherwise it says "Asking <main bot name> for your team." and asks the main bot for the list. The reply is merged the same way as any other list. The station speaks the counts, not the names.
 
-Each imported name that is not a bot yet is a row on Bots with the state "Not set up", a **Set up** button (Add bot with that name filled in), and **Remove**. Those rows are not bots. A name that already matches a bot is not shown again.
+Each imported name that is not a bot yet is a row on Bots with the state "Not set up", a **Set up** button (Add bot with that name filled in), and **Remove**. Those rows are not bots. A name that already matches a bot is not shown again, and a name that dropped off the main bot's last list is not shown.
 
 ## Team setup
 
@@ -165,7 +165,7 @@ When a main bot is set and at least one teammate is not set up, the Bots page an
 
 Each teammate's section has the persona id, the station address, the cloud routine (including the deploy step), and the home-computer routine. The home text says the teammate runs the pinned install step on its home computer, "The user must approve that local run in Grok Bot.", and "Do not skip the approval."
 
-The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.
+You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.
 
 ## Which computer sends replies
 

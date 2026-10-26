@@ -266,7 +266,7 @@ class AdminUI(unittest.TestCase):
                      "The user must approve that local run in Grok Bot.",
                      "Do not skip the approval.",
                      "This station sends nothing.",
-                     "The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.",
+                     "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
                      "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.",
                      "No new key or pairing needed."):
             self.assertIn(text, js, text)
@@ -274,6 +274,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn("data-pending", bots)
         self.assertIn("data-setup", bots)
         self.assertIn("data-remove", bots)
+        self.assertIn('r.state === "new"', _fn(js, "pendingTeammates"))  # stale names stay hidden
+        self.assertEqual(js.count('id="copyteam"'), 1)  # Configure uses copyteamd
         self.assertIn("banner warn", _fn(js, "attn"))
         add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn("preset", add)

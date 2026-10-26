@@ -2104,7 +2104,7 @@ function openBot(bot, el) {
         <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div></section>
     ${(bot.main && pendingTeammates(el).length) ? `<section class="dsec"><h3>Team setup</h3>
       <p class="note">Paste this to ${esc(bot.name)}. It messages each teammate their setup. This station sends nothing.</p>
-      <div class="inline"><button class="btn sm" id="copyteam" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></section>` : ""}
+      <div class="inline"><button class="btn sm" id="copyteamd" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></section>` : ""}
     <section class="dsec"><h3>Main bot and removal</h3>
       ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<button class="btn sm" id="setmain" type="button">Set as Main Bot</button>`}
       <div class="inline"><button class="btn g sm" id="ren" type="button">Rename</button><button class="btn dg sm right" id="delbot" type="button">Delete bot</button></div>
@@ -2114,7 +2114,7 @@ function openBot(bot, el) {
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
   $("#cpupd", d).onclick = ev => copyText(routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode), ev.currentTarget);
-  const copyTeam = $("#copyteam", d);
+  const copyTeam = $("#copyteamd", d);
   if (copyTeam) copyTeam.onclick = ev => copyText(teamSetupMessage(pendingTeammates(el), el), ev.currentTarget);
   $("#chcomp", d).onclick = () => openChangeComputer($("#chbox", d), bot, el);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
@@ -2628,7 +2628,7 @@ function connectWebhookWizard(bot, el) {
   d._cancel = () => ctl.cancel();
 }
 function pendingTeammates(el) {
-  const rows = ((el && el._imported && el._imported.rows) || []).filter(r => r && r.name && r.state !== "configured");
+  const rows = ((el && el._imported && el._imported.rows) || []).filter(r => r && r.name && r.state === "new");
   const bots = (el && el._bots) || [];
   const slugs = {};
   const names = {};
@@ -2650,7 +2650,7 @@ function teamSetupMessage(rows, el) {
   const fp = (el && el._fingerprint) || "";
   const lines = [];
   lines.push("Paste this to " + who + ". Message each teammate the section with their name. This station sends nothing.");
-  lines.push("The webhook URL, the webhook key, the webhook header, and public keys stay a paste into the station. Nothing fills them in.");
+  lines.push("You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.");
   (rows || []).forEach(row => {
     const name = row.name;
     const slug = botIdFromName(name) || "their-id";
