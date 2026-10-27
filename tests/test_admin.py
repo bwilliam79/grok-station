@@ -2434,3 +2434,41 @@ class FewshotEnrollFlow(unittest.TestCase):
         self.status("hey_ash")
         self.built("hey_ash")  # no built_at: written by 0.10.0
         self.assertIn(self.status("hey_ash")["state"], ("published", "ready"))
+
+
+class BotDeleteWakeFailures(unittest.TestCase):
+    """Nix: a wake word that can't be deleted with its bot is reported by name with a reason, and shown."""
+
+    def test_failures_are_returned(self):
+        calls = {}
+        def fake_delete(name, reload=True):
+            if name == "hey_zed":
+                return (409, {"error": "That word is recording right now. Try again when it finishes."})
+            if name == "zed_two":
+                raise OSError("busy")
+            return (200, {"ok": True})
+        saved = (ga.bot_phrase_names, ga.delete_wake_word, ga.wake)
+        ga.bot_phrase_names = lambda slug: ["hey_zed", "zed_ok", "zed_two"]
+        ga.delete_wake_word = fake_delete
+        ga.wake = lambda *a, **k: calls.setdefault("reload", 0) or (200, {})
+        try:
+            gone, failed = ga.delete_bot_phrases("zed")
+        finally:
+            ga.bot_phrase_names, ga.delete_wake_word, ga.wake = saved
+        self.assertEqual(gone, ["zed_ok"])
+        self.assertEqual([f["name"] for f in failed], ["hey_zed", "zed_two"])
+        self.assertIn("recording right now", failed[0]["reason"])
+        self.assertIn("OSError", failed[1]["reason"])
+        self.assertIn("reload", calls)
+
+    def test_response_and_ui_carry_failures(self):
+        src = open(os.path.join(os.path.dirname(ga.__file__), "grok_admin.py")).read()
+        self.assertIn('body["wake_word_failures"] = failed', src)
+        js = open(os.path.join(os.path.dirname(ga.__file__), "web", "app.js")).read()
+        self.assertIn("r.data.wake_word_failures", js)
+        self.assertIn("These wake words couldn't be deleted", js)
+        box = js.split("function confirmRemove", 1)[1].split("</form>", 1)[0]
+        self.assertIn("Any wake words assigned to", box)
+        self.assertIn("are deleted too", box)
+        for bad in ("mailbox", "seal"):
+            self.assertNotIn(bad, box.lower())

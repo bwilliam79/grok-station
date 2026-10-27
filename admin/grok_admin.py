@@ -930,15 +930,22 @@ def bot_phrase_names(slug):
 
 
 def delete_bot_phrases(slug):
-    """A deleted bot's wake words are deleted too: recordings, models, rows. Returns the ids."""
-    gone = []
+    """A deleted bot's wake words are deleted too: recordings, models, rows.
+    Returns (gone, failed): the ids deleted, and [{"name", "reason"}] for any that could not be."""
+    gone, failed = [], []
     for name in bot_phrase_names(slug):
-        code, _out = delete_wake_word(name, reload=False)
+        try:
+            code, out = delete_wake_word(name, reload=False)
+        except Exception as e:  # one stuck word must not hide the rest
+            code, out = 500, {"error": "Couldn't delete it (%s)." % type(e).__name__}
         if code == 200:
             gone.append(name)
+        else:
+            reason = (out or {}).get("error") if isinstance(out, dict) else None
+            failed.append({"name": name, "reason": str(reason or "Couldn't delete it.")[:120]})
     if gone:
         wake("POST", "/reload", {})
-    return gone
+    return gone, failed
 
 
 _SPEAKER_META = frozenset({"speaker", "speakers", "guest"})
@@ -3961,8 +3968,11 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         audit(slug, "remove")
-        delete_bot_phrases(slug)
-        return self.send(200, {"ok": True})
+        _gone, failed = delete_bot_phrases(slug)
+        body = {"ok": True}
+        if failed:
+            body["wake_word_failures"] = failed  # the bot is gone; these words are still on the station
+        return self.send(200, body)
 
     def bots_webhook_put(self, slug, j):
         url, key = j.get("url"), j.get("key")
