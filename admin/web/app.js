@@ -215,15 +215,15 @@ function meter(db) {  // design.md: Too quiet / Good / Too loud
 }
 // Password failures show exactly this text, with no "Needs attention." prefix.
 const PASSWORD_BAD = "Password incorrect.";
-function attnText(msg) { return msg === PASSWORD_BAD ? esc(msg) : "Needs attention. " + esc(msg); }
-function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">${attnText(msg)}</div>` : ""; }
+function withAttn(msg) { return msg === PASSWORD_BAD ? esc(msg) : "Needs attention. " + esc(msg); }
+function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">${withAttn(msg)}</div>` : ""; }
 function attn(el, msg) {
   if (!el) return;
   el.innerHTML = msg ? `<div class="banner warn" role="alert">${msg === PASSWORD_BAD ? esc(msg) : `<span class="pill warn"><i></i>Needs attention</span> ${esc(msg)}`}</div>` : "";
 }
 function attnBox(el, msg) {
   if (!el) return;
-  el.innerHTML = msg ? `<div class="attn" role="alert">${attnText(msg)}</div>` : "";
+  el.innerHTML = msg ? `<div class="attn" role="alert">${withAttn(msg)}</div>` : "";
 }
 function busyBtn(btn, on, label) { btn.disabled = on; if (label) btn.textContent = label; }
 const CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -291,7 +291,7 @@ function codeScreen() {  // 01a: first run / reset
   const reset = S.state.mode === "reset";
   root().innerHTML = `<div class="center"><form class="card auth amber" id="f" autocomplete="off">
     <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div>
-    <h2 style="font-size:24px">${reset ? "Set a new password" : "Set up this station"}</h2>
+    <h2 class="h-auth">${reset ? "Set a new password" : "Set up this station"}</h2>
     <p class="sub">Enter the 6-character setup code shown on the station screen. It isn't case-sensitive and works once.</p>
     <div class="field"><label for="code">Setup code</label><input class="inp code" id="code" maxlength="7" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" required></div>
     <div id="e"></div>
@@ -330,7 +330,7 @@ function wirePw(id1, id2, btn) {
 function passwordScreen() {  // wizard step 1 (forced)
   root().innerHTML = `<div class="center"><form class="card auth" id="f" autocomplete="off">
     <div class="phonestep" style="display:block">Step 1 of 5 · Code and password</div>
-    <h2 style="font-size:24px">Choose the admin password</h2>
+    <h2 class="h-auth">Choose the admin password</h2>
     <p class="sub">You'll sign in as <b>admin</b> with this password. It's stored on the station as a salted hash only.</p>
     ${pwFields("p1", "p2")}<div id="e"></div>
     <div class="field"><button class="btn p" id="go" disabled>Save and continue</button></div></form></div>`;
@@ -347,7 +347,7 @@ function passwordScreen() {  // wizard step 1 (forced)
 }
 function loginScreen() {  // 01b + 01c
   root().innerHTML = `<div class="center"><form class="card auth" id="f">
-    <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 style="font-size:24px">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
+    <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 class="h-auth">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
     <div class="field"><label for="p">Password</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" type="password" id="p" autocomplete="current-password" required>
       <button type="button" class="btn g sm" id="show">Show</button></div></div>
     <div id="e"></div><div class="field"><button class="btn p" id="go">Sign in</button></div>
@@ -1340,7 +1340,7 @@ function openSetWake(bot, el, d, opts) {
     const offline = !!stationOffline;
     const busy = !!(el && el._session);
     const preset = "Hey " + (bot.name || "");
-    body.innerHTML = `<h2 style="font:600 22px var(--disp)">Set wake word for ${esc(bot.name || "")}</h2>
+    body.innerHTML = `<h2 class="h-dialog">Set wake word for ${esc(bot.name || "")}</h2>
       <p>You’ll say it 10 times at the station. It takes about a minute.</p>
       <div class="field"><label for="wwphrase">Wake word</label>
         <input class="inp" id="wwphrase" maxlength="48" autocomplete="off" spellcheck="false" value="${esc(preset)}">
@@ -1369,7 +1369,7 @@ function openSetWake(bot, el, d, opts) {
       note = "";
     }
     body.innerHTML = `<div class="acon" aria-hidden="true">!</div>
-      <h2 style="font:600 22px var(--disp)">Needs attention</h2>
+      <h2 class="h-dialog">Needs attention</h2>
       <p>${esc(text)}</p>
       ${note ? `<p class="note">${esc(note)}</p>` : ""}
       <div class="acts"><button class="btn p" id="wwagain" type="button">Try again</button>
@@ -1412,7 +1412,7 @@ function openSetWake(bot, el, d, opts) {
       if (!toasted) { toasted = true; toast(label + " is ready."); }
       const m = String(row.message || "").match(/(\d+) of (\d+)/);
       const note = m ? "It woke on " + m[1] + " of " + m[2] + " test clips. That’s good." : "";
-      body.innerHTML = `<h2 style="font:600 22px var(--disp)">${esc(label)} is ready</h2>
+      body.innerHTML = `<h2 class="h-dialog">${esc(label)} is ready</h2>
         <p>Say “${esc(label)}” at the station to try it. It’s on now.</p>
         ${note ? `<p class="note">${esc(note)}</p>` : ""}
         <div class="acts"><button class="btn p" id="wwdone" type="button">Done</button>
@@ -1430,7 +1430,7 @@ function openSetWake(bot, el, d, opts) {
       const heard = m
         ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs " + clipsNeeded(m[2]) + ". Ten more recordings should help."
         : esc(label) + " isn't good enough yet. Ten more recordings should help.";
-      body.innerHTML = `<h2 style="font:600 22px var(--disp)">Not good enough yet</h2>
+      body.innerHTML = `<h2 class="h-dialog">Not good enough yet</h2>
         <p>${heard}</p>
         <p class="note">${esc(label)} stays off until it’s ready. Other wake words keep working.</p>
         <div class="acts"><button class="btn p" id="wwmore" type="button">Train more</button>
@@ -1448,7 +1448,7 @@ function openSetWake(bot, el, d, opts) {
       return showError("train");
     }
     if (state === "training" || state === "processing" || state === "uploading") {
-      body.innerHTML = `<h2 id="wwtrain" style="font:600 22px var(--disp)">Training ${esc(label)}…</h2>
+      body.innerHTML = `<h2 id="wwtrain" class="h-dialog">Training ${esc(label)}…</h2>
         <p>All 10 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
         ${barHTML(100, true)}
         <p class="help">Training · about 3 min left</p>`;
@@ -1465,7 +1465,7 @@ function openSetWake(bot, el, d, opts) {
     const grid = progress ? clipSquares(kept, true, rejected) : clipSquares(0, false, false);
     const first = topup ? `<div class="help">First 10</div>${clipSquares(10, false, false)}<div class="help">10 more</div>` : "";
     const title = topup ? "Train more: say “" + label + "”" : "Say “" + label + "”";
-    body.innerHTML = `<h2 style="font:600 22px var(--disp)">${esc(title)}</h2>
+    body.innerHTML = `<h2 class="h-dialog">${esc(title)}</h2>
       <p>${esc(lead)}</p>
       ${first}${grid}
       ${levelMeter(level)}
@@ -1726,7 +1726,7 @@ async function wizard(step) {
   if (step === 6) step = 7;  // an older wizard saved the removed Wake words step
   const hotspot = S.state.mode === "hotspot";
   if (step === 8) {
-    root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 style="font-size:24px">All set</h2>
+    root().innerHTML = `<div class="center"><div class="card auth"><div class="mk"></div><h2 class="h-auth">All set</h2>
       <p class="sub">Say <b>Hey Grok</b> to try it. Optional next: <a href="#" data-p="xai">xAI API</a> · <a href="#" data-p="bots">Bots</a> · <a href="#" data-p="display">Display</a>.</p>
       <div class="field"><button class="btn p" id="fin">Go to Home</button></div></div></div>`;
     const fin = async p => { await api("POST", "/api/wizard", {step: 8, done: true}); S.page = p; boot(); };
@@ -1740,7 +1740,7 @@ async function wizard(step) {
     : "";
   root().innerHTML = `<div class="wiz"><nav class="rail" aria-label="Setup steps">${STEPS.map((t, i) => `<div class="st${i + 1 < view ? " done" : ""}${i + 1 === view ? " on" : ""}"><b>${i + 1 < view ? "✓" : i + 1}</b>${t}</div>`).join("")}</nav>
     <div class="pane"><div class="phonestep">Step ${view} of ${STEPS.length} · ${STEPS[view - 1]}</div><div class="meterbar phonestep" style="height:6px"><b style="width:${view / STEPS.length * 100}%"></b></div>
-      <h1 style="font:600 28px var(--disp);margin-bottom:16px">${STEPS[view - 1]}</h1><div id="wp"></div>
+      <h1 class="h-wiz">${STEPS[view - 1]}</h1><div id="wp"></div>
       <div class="inline" style="margin-top:20px">${view > 2 ? `<button class="btn g" id="back">Back</button>` : ""}
         <span class="right inline">${skip}<button class="btn p" id="next">Next</button></span></div></div></div>`;
   const wp = $("#wp"), next = $("#next");
@@ -1820,7 +1820,7 @@ async function pageHome(el) {
     const svc = h.services || {}, up = Object.values(svc).every(x => x === "active");
     const ready = w && w.setup == null && svc["grok-station-wake"] === "active";
     const state = w.session ? ["In a conversation", "busy"] : w.enrolling ? ["Recording a wake word", "busy"] : ready ? ["Ready to talk", "ok"] : ["Voice is off", "warn"];
-    $("#hero", el).innerHTML = `<div class="hero"><div class="ring ${state[1] === "warn" ? "amber" : ""}"></div><div><div style="font:600 22px var(--disp)">${state[0]}</div>
+    $("#hero", el).innerHTML = `<div class="hero"><div class="ring ${state[1] === "warn" ? "amber" : ""}"></div><div><div class="h-dialog">${state[0]}</div>
       <div class="help">${h.network && h.network.connected ? "Online" : "Offline"} · last heard ${h.last_heard ? ago(h.last_heard.at) + " (" + esc(PERSONA(h.last_heard.who)) + ")" : "not yet"}</div></div></div>
       <div style="margin-top:12px">${(h.words || []).map(x => `<span class="chip">${esc(WORD(x))}</span>`).join("")}</div>
       <div class="field"><label>Microphone</label>${meter(w.level_dbfs)}</div>
@@ -1833,7 +1833,7 @@ async function pageHome(el) {
       ["Voice", h.xai_key ? "Ready (local)" : "xAI key not set", "xai"],
       ["Network", n.wifi ? `Wi-Fi ${esc(n.wifi.ssid)} · ${n.wifi.signal}%` : n.wired ? "Wired" : "Offline", "network"],
       ["Services", up ? "All running" : Object.entries(svc).filter(([, v]) => v !== "active").map(([k]) => esc(k.replace("grok-station-", ""))).join(", ") + " stopped", "system"],
-      ["Bots", `${(h.words || []).length} on`, "bots"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div style="font:600 17px var(--disp);margin-top:4px">${v}</div></a>`).join("");
+      ["Bots", `${(h.words || []).length} on`, "bots"]].map(([t, v, p]) => `<a class="tile" href="#${p}" style="text-decoration:none;color:inherit"><div class="help">${t}</div><div class="tilev">${v}</div></a>`).join("");
   };
   every(10000, load);
   every(5000, () => { const p = $("#pv", el); if (p) { p.src = "/api/preview?t=" + Date.now(); $("#pva", el).textContent = "Updated " + new Date().toLocaleTimeString(); } });
@@ -2617,9 +2617,9 @@ function openBot(bot, el) {
   if (!wexists) {
     wakeActs = `<div class="wacts"><button class="btn p sm" id="wset" type="button">Set wake word</button></div>`;
   } else if (!wakeReady) {
-    wakeActs = `<div class="wacts"><button class="btn p sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><span class="wlinks"><button class="btn g sm linkish" id="wset" type="button">Change phrase</button><button class="btn g sm linkish" id="wrem" type="button">Remove</button></span></div>`;
+    wakeActs = `<div class="wacts"><button class="btn p sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><span class="wlinks"><button class="btn sm" id="wset" type="button">Change phrase</button><button class="btn sm" id="wrem" type="button">Remove phrase</button></span></div>`;
   } else {
-    wakeActs = `<div class="wacts"><span class="wlinks"><button class="btn g sm linkish" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><button class="btn g sm linkish" id="wset" type="button">Change phrase</button><button class="btn g sm linkish" id="wrem" type="button">Remove</button></span></div>`;
+    wakeActs = `<div class="wacts"><span class="wlinks"><button class="btn sm" id="wmore" type="button" data-voice="${esc(word.name)}">Train more</button><button class="btn sm" id="wset" type="button">Change phrase</button><button class="btn sm" id="wrem" type="button">Remove phrase</button></span></div>`;
   }
   d.innerHTML = `<div class="inline">${avatar(bot.slug, bot.name, true)}
       <div style="min-width:0"><div class="lbl">${star}${esc(bot.name)}${mpill}</div><div class="help">${esc(repliesFrom(bot))}</div></div>
@@ -2727,9 +2727,9 @@ function openBot(bot, el) {
   };
   const wrem = $("#wrem", d);
   if (wrem && word) wrem.onclick = () => confirmSheet({
-    title: "Remove " + wordLabel(word) + "?",
+    title: "Remove the wake phrase " + wordLabel(word) + "?",
     text: "The station stops listening for " + wordLabel(word) + ". " + bot.name + " still answers through Hey Grok.",
-    action: "Remove wake word",
+    action: "Remove phrase",
     go: async () => {
       const r = await api("PUT", "/api/wakewords/" + encodeURIComponent(word.name), {unlink: true});
       if (r && r.ok) { toast(wordLabel(word) + " removed."); d.remove(); refreshBots(el); }

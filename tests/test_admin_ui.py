@@ -275,7 +275,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("data-setup", bots)
         self.assertIn("data-remove", bots)
         self.assertIn('r.state === "new"', _fn(js, "pendingTeammates"))  # stale names stay hidden
-        self.assertEqual(js.count('id="copyteam"'), 1)  # Configure uses copyteamd
+        self.assertEqual(js.count('instructionsHtml("copyteam"'), 1)  # Configure uses copyteamd
         self.assertIn("banner warn", _fn(js, "attn"))
         add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn("preset", add)
@@ -285,7 +285,7 @@ class AdminUI(unittest.TestCase):
         """Toggles apply on click. Text, number, and select groups keep a Save button that starts disabled."""
         js, css = self.js, self.css
         rule = css.split(".saved{", 1)[1].split("}", 1)[0]
-        self.assertIn("font-size:13px", rule)
+        self.assertIn("font-size:var(--fs-help)", rule)
         self.assertIn("var(--gs-teal)", rule)
         self.assertNotIn("13.5px", rule)
         self.assertIn("function markSaved", js)
@@ -420,9 +420,9 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("old-hostname", js)
         self.assertIn("printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
         self.assertIn("STATION_ADDR.v", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
-        self.assertIn('id="aroutine"', js)
+        self.assertIn('instructionsHtml("aroutine", "Copy instructions")', js)
         self.assertIn("<pre ", js)
-        self.assertIn('data-copy="aroutine"', js)
+        self.assertIn('bindInstructions(d, "aroutine"', js)
         self.assertNotIn("<textarea", js.split("const step3", 1)[1].split("const step2", 1)[0])
         self.assertNotIn("function showRoutine", js)
         self.assertNotIn("function routineText", js)
@@ -460,10 +460,8 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Optional", step3)
         self.assertNotIn("Skip", step3)
         self.assertNotIn("askip", step3)
-        self.assertIn(">View instructions<", step3)
-        self.assertIn('>Copy instructions<', step3)
-        self.assertIn('data-copy="aroutine"', step3)
-        self.assertIn('<pre class="static-val" id="aroutine" hidden>', step3)
+        self.assertIn('instructionsHtml("aroutine", "Copy instructions")', step3)  # View + Copy + <pre>
+        self.assertIn('bindInstructions(d, "aroutine"', step3)
         for fid in ('id="aurl"', 'id="akey"', 'id="apub"'):
             self.assertIn(fid, step3)
         self.assertIn("pubKeyOk(pub)", step3)
@@ -698,7 +696,7 @@ class Release092UI(unittest.TestCase):
         self.assertIn("Train more", self.js)
         self.assertIn("topup: true", self.js)
         self.assertIn('"DELETE", "/api/wakewords/"', self.js)
-        self.assertIn("Remove wake word", self.js)
+        self.assertIn("Remove the wake phrase ", self.js)
         self.assertNotIn("async function wakePanel", self.js)
         self.assertNotIn("coming later", _read(os.path.join("wake", "grok_wake.py")))
 
@@ -782,7 +780,7 @@ class Release0112UI(unittest.TestCase):
         fp = self.css.split(".certline .static-val{", 1)[1].split("}", 1)[0]
         self.assertIn("white-space:nowrap", fp)
         self.assertIn("word-break:keep-all", fp)
-        self.assertIn("font-size:10px", fp)
+        self.assertIn("font-size:var(--fs-mono-sm)", fp)  # 10px token, so 95 chars fit
         self.assertIn("letter-spacing:-0.05em", fp)
         self.assertIn("overflow-x:auto", fp)
         self.assertIn("flex-wrap:nowrap", self.css.split(".certline .static{", 1)[1].split("}", 1)[0])
@@ -970,9 +968,11 @@ class Release0113UI(unittest.TestCase):
         bright = panel.split(">Brightness<", 1)[1].split(">Units<", 1)[0]
         self.assertIn('id="dday"', bright)
         self.assertIn('id="dnight"', bright)
-        wide = self.css.split("@media (min-width:1024px)", 1)[1].split("@media", 1)[0]
-        self.assertIn("grid-template-columns:minmax(0,1fr) minmax(168px,210px)", wide)
-        self.assertIn(".dispprev{position:sticky;top:8px}", wide)
+        # Item 17: previews get about a third of the page when wide, and go above the form when narrow.
+        wide = self.css.split("@media (min-width:1200px)", 1)[1].split("@media", 1)[0]
+        self.assertIn("grid-template-columns:minmax(0,2fr) minmax(280px,1fr)", wide)
+        self.assertIn(".dispprev{position:sticky;top:var(--sp-2)}", wide)
+        self.assertIn("@media (max-width:1199px){.dispprev{order:-1}}", self.css)
         self.assertIn(".dispprev{position:static}", self.css)
         self.assertIn("grid-template-columns:minmax(0,1fr)", self.css.split(".dispcols{", 1)[1].split("}", 1)[0])
         frame = self.css.split(".prevstack .prevframe{", 1)[1].split("}", 1)[0]
@@ -1070,17 +1070,17 @@ class ConfigureTabs(unittest.TestCase):
         self.assertNotIn("Change phrase", no_word)
         self.assertLess(not_ready.find('class="btn p sm" id="wmore"'), not_ready.find('id="wset"'))
         self.assertIn(">Train more<", not_ready)
-        self.assertIn('class="btn g sm linkish" id="wset"', not_ready)
+        self.assertIn('class="btn sm" id="wset"', not_ready)
         self.assertIn(">Change phrase<", not_ready)
-        self.assertIn('class="btn g sm linkish" id="wrem"', not_ready)
-        self.assertIn(">Remove<", not_ready)
+        self.assertIn('class="btn sm" id="wrem"', not_ready)
+        self.assertIn(">Remove phrase<", not_ready)
         self.assertNotIn("btn p", ready)
         self.assertLess(ready.find('id="wmore"'), ready.find('id="wset"'))
         self.assertLess(ready.find('id="wset"'), ready.find('id="wrem"'))
         self.assertIn(">Train more<", ready)
         self.assertIn(">Change phrase<", ready)
-        self.assertIn(">Remove<", ready)
-        self.assertIn("linkish", ready)
+        self.assertIn(">Remove phrase<", ready)
+        self.assertNotIn("linkish", ready)  # item 14: real buttons, not links
         self.assertIn("if (!wexists)", fn)
         self.assertIn("else if (!wakeReady)", fn)
 

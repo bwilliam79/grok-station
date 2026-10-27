@@ -27,7 +27,9 @@ class NoRedInAdmin(unittest.TestCase):
     def test_error_box_says_needs_attention(self):
         js = read("admin", "web", "app.js")
         m = re.search(r"function errBox\(el, msg\) \{(.*)\}", js)
-        self.assertIn("Needs attention.", m.group(1))
+        self.assertIn("withAttn(msg)", m.group(1))
+        helper = re.search(r"function withAttn\(msg\) \{(.*)\}", js).group(1)
+        self.assertIn('"Needs attention. "', helper)  # every error but a password failure
 
 
 class BotsCopy(unittest.TestCase):

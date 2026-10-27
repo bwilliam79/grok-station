@@ -21,7 +21,7 @@ class PasswordMessage(unittest.TestCase):
         for fn in ("errBox", "attn", "attnBox"):
             body = re.search(r"function %s\(el, msg\) \{(.*?)\n\}" % fn, js, re.S)
             self.assertIsNotNone(body, fn)
-            self.assertTrue("attnText(msg)" in body.group(1) or "PASSWORD_BAD" in body.group(1), fn)
+            self.assertTrue("withAttn(msg)" in body.group(1) or "PASSWORD_BAD" in body.group(1), fn)
 
     def test_docs_have_no_old_wording(self):
         for root, _, files in os.walk(ROOT):
