@@ -142,6 +142,45 @@ if __name__ == "__main__":
 
 
 class TestEnroll(unittest.TestCase):
+    def test_speech_50ms_after_the_chime_is_kept(self):
+        sr = 16000
+        chime_n = 3200
+        gap = int(0.05 * sr)
+        speech = (np.sin(np.arange(sr) * 2 * np.pi * 220 / sr) * 8000).astype(np.int16)
+        stream = np.concatenate([
+            (np.sin(np.arange(chime_n) / 2) * 20000).astype(np.int16),
+            np.zeros(gap, np.int16),
+            speech,
+            np.zeros(int(gw.CLIP_S * sr) + 1280, np.int16),
+        ])
+        pos = {"i": 0}
+
+        def read16(raw=False):
+            i = pos["i"]
+            fr = stream[i:i + 1280]
+            if len(fr) < 1280:
+                fr = np.pad(fr, (0, 1280 - len(fr)))
+            pos["i"] = i + 1280
+            return fr.astype(np.int16)
+
+        class Proc:
+            def poll(self):
+                return 0 if pos["i"] >= chime_n else None
+
+        old = gw.subprocess.Popen
+        gw.subprocess.Popen = lambda *a, **k: Proc()
+        try:
+            out = gw.capture_enroll_clip(read16, "default", chime_samples=chime_n)
+        finally:
+            gw.subprocess.Popen = old
+        self.assertEqual(len(out), int(gw.CLIP_S * sr))
+        # The player is polled between 80 ms frames, so the measured end is the frame that crosses the chime.
+        measured = 1280 * ((chime_n + 1279) // 1280)
+        at = (chime_n + gap) - measured
+        self.assertGreater(at, 0)
+        self.assertTrue(np.array_equal(out[at:at + len(speech)], speech))
+        self.assertGreater(int(np.max(np.abs(out[at:at + 400]))), 4000)
+
     def test_trim_clip(self):
         sr = 16000
         x = np.zeros(int(2.4 * sr), np.int16)

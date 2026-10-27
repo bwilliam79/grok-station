@@ -1219,6 +1219,60 @@ def _enroll_hold():
         time.sleep(0.2)
 
 
+def chime_length_samples(path=None, rate=16000):
+    """Samples of the enrollment chime at 16 kHz. The generated chime is two 0.1 s tones."""
+    path = path or CHIME
+    try:
+        with wave.open(path) as w:
+            n, sr = w.getnframes(), w.getframerate() or rate
+            if sr != rate and sr:
+                n = int(round(n * rate / sr))
+            if n > 0:
+                return n
+    except (OSError, EOFError, wave.Error):
+        pass
+    return int(0.2 * rate)
+
+
+def capture_enroll_clip(read16, play, chime_samples=None):
+    """Mic audio from the moment the chime starts. Drop only the chime. Keep CLIP_S of what follows.
+
+    aplay is waited on, so the cut is the audio captured while it ran (startup included). A player
+    that returns immediately, or a test stub, falls back to the known chime length instead of throwing
+    away a fixed number of frames. Speech that starts just after the chime stays in the clip.
+    """
+    speech_n = int(round(CLIP_S * 16000))
+    known = chime_length_samples() if chime_samples is None else int(chime_samples)
+
+    def take(n):
+        frames, got = [], 0
+        while got < n:
+            fr = np.asarray(read16(raw=True), dtype=np.int16).reshape(-1)
+            frames.append(fr)
+            got += int(fr.shape[0])
+        return frames, got
+
+    proc = subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
+    if proc is None or not hasattr(proc, "poll"):
+        frames, _got = take(speech_n)
+        return np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)[:speech_n]
+    frames, got = [], 0
+    while proc.poll() is None and got < 16000 * 3:
+        fr = np.asarray(read16(raw=True), dtype=np.int16).reshape(-1)
+        frames.append(fr)
+        got += int(fr.shape[0])
+    chime_end = got
+    if chime_end < known:
+        more, extra = take(known - chime_end)
+        frames.extend(more)
+        got += extra
+        chime_end = known
+    more, extra = take(speech_n)
+    frames.extend(more)
+    raw = np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)
+    return raw[chime_end:chime_end + speech_n]
+
+
 def enroll(req, read16, play):
     """Record req["count"] clips onto this Pi. Training does not run here."""
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
@@ -1254,11 +1308,8 @@ def enroll(req, read16, play):
             show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
                 read16()
-            subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
-            for _ in range(4):  # skip the chime itself
-                read16()
             show(i, "recording")
-            raw = np.concatenate([read16(raw=True) for _ in range(int(CLIP_S / 0.08))])
+            raw = capture_enroll_clip(read16, play)
             clipped = is_clipped(raw)  # judged on the mic signal before software gain
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
