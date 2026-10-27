@@ -25,3 +25,9 @@ class InstructionView(unittest.TestCase):
         self.assertIn("const text = makeText()", body)
         self.assertIn('data-viewfor="${id}"', JS)
         self.assertIn('aria-controls="${id}"', JS)
+
+    def test_copy_comes_before_view(self):
+        body = re.search(r"function instructionsHtml\(id, copyLabel, opts = \{\}\) \{(.*?)\n\}", JS, re.S).group(1)
+        c, st, v = body.index("data-copyfor="), body.index('class="copied"'), body.index("data-viewfor=")
+        self.assertLess(c, st)
+        self.assertLess(st, v)

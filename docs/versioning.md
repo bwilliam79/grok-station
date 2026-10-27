@@ -313,3 +313,8 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 
 - **Update dot.** The dot keeps a 2px ring in the sidebar color so it stays crisp over the icon. In the collapsed sidebar (1023px and narrower) it sits at the icon's top-right instead of pushing the icon off-center. While shown, the menu dot and the More-page dot are announced as "Update available" (`role="img"`); while hidden they stay `hidden` and `aria-hidden`. The station display icon is unchanged.
 - **Instructions.** The bot templates name release 0.12.3. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
+
+## 0.12.4
+
+- **Copy before View.** Every bot-instructions pair now shows the Copy button first (left) and View instructions second, with the "Copied" status right after Copy. One helper, `instructionsHtml()`, renders every pair. No other View/Show-before-Copy pairs exist in the admin UI.
+- **Instructions.** The bot templates name release 0.12.4. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
