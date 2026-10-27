@@ -292,13 +292,19 @@ def _lookup_ips(host, port, resolve=None):
 
 
 def pin_ip(host, port=443, resolve=None):
-    """The first address from one lookup, or None unless every answer passes ip_ok."""
+    """One address from one lookup, or None unless every answer passes ip_ok.
+
+    IPv4 first when the answer has one: many home networks (the station's included) have no IPv6
+    route, and a CDN answer that lists IPv6 first made every logo download fail (0.12.6)."""
     addrs = _lookup_ips(host, port, resolve)
     if not addrs:
         return None
     for ip in addrs:
         if not ip_ok(ip):
             return None
+    for ip in addrs:
+        if ":" not in str(ip):
+            return ip
     return addrs[0]
 
 
@@ -464,8 +470,9 @@ class LogoCache:
     """On-disk logo cache. Callers pass an opener in tests so this never touches the network."""
 
     def __init__(self, root, hosts, opener=None, resolve=None, max_files=LOGO_FILES,
-                 max_total=LOGO_TOTAL, max_bytes=LOGO_MAX, max_age=LOGO_MAX_AGE):
+                 max_total=LOGO_TOTAL, max_bytes=LOGO_MAX, max_age=LOGO_MAX_AGE, log=None):
         self.root = os.path.abspath(root)
+        self.log = log or (lambda msg: print(msg, flush=True))
         self.hosts = list(hosts or [])
         self.opener = opener
         self.resolve = resolve
@@ -476,15 +483,25 @@ class LogoCache:
         self._lock = threading.Lock()
         self._pending = set()
 
+    def skipped(self, reason):
+        """One log line per skipped logo. The reason only, never the URL."""
+        try:
+            self.log("logo skipped: " + reason)
+        except Exception:
+            pass
+
     def id_for(self, url):
         """Logo id for an allowlisted public URL, or None. Does not fetch."""
         if not logo_url_ok(url, self.hosts):
+            self.skipped("host not allowed" if self.hosts else "no logo hosts")
             return None
         try:
             canon = canonical_logo_url(url)
         except CardError:
+            self.skipped("bad url")
             return None
         if not public_host(urlsplit(canon).hostname, self.resolve):
+            self.skipped("host not public or lookup failed")
             return None
         return hashlib.sha256(canon.encode()).hexdigest()
 
@@ -539,16 +556,23 @@ class LogoCache:
         try:
             if self.opener is not None:
                 if not public_host(host, self.resolve):
+                    self.skipped("host not public or lookup failed")
                     return None
                 opened = self.opener(canon)
             else:
                 opened = default_opener(canon)
             data, ctype = opened[0], opened[1]
-        except Exception:
+        except CardError as e:
+            self.skipped("too big" if str(e) == "size" else "download refused")
+            return None
+        except Exception as e:
+            self.skipped("download failed (" + type(e).__name__ + ")")
             return None
         if ctype not in ("image/png", "image/jpeg"):
+            self.skipped("not a png or jpeg")
             return None
         if not isinstance(data, (bytes, bytearray)) or len(data) > self.max_bytes or not sniff_image(data, self.max_bytes):
+            self.skipped("bad image")
             return None
         with self._lock:
             self._store(lid, bytes(data))
