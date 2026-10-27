@@ -2313,12 +2313,33 @@ function bindSheet(d, close) {
   const target = field || btn || card;
   if (target && target.focus) target.focus();
 }
+function avatarSrc(slug) {  // the server's per-bot picture version wins, so a new avatar is a new URL
+  const per = S.avatarVs && S.avatarVs[slug];
+  const v = per ? "?v=" + encodeURIComponent(per) : (S.avatarV ? "?v=" + S.avatarV : "");
+  return "/api/portrait/" + encodeURIComponent(slug) + v;
+}
+function noteAvatarVersions(bots) {
+  // Remember each bot's picture version; swap any img already on the page (list rows and Configure) that changed.
+  S.avatarVs = S.avatarVs || {};
+  (bots || []).forEach(b => {
+    if (!b || !b.slug || typeof b.avatar_v !== "string") return;
+    const was = S.avatarVs[b.slug];
+    S.avatarVs[b.slug] = b.avatar_v;
+    if (was === undefined || was === b.avatar_v || typeof document === "undefined") return;
+    document.querySelectorAll(`.avwrap[data-slug="${b.slug}"]`).forEach(w => {
+      let img = w.querySelector("img.av");
+      if (!img) { img = document.createElement("img"); img.className = "av"; img.alt = ""; w.prepend(img); }
+      delete img.dataset.fb;
+      img.onerror = () => avatarOnError(img);
+      img.src = avatarSrc(b.slug);
+    });
+  });
+}
 function avatar(slug, name, lg) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
-  const v = S.avatarV ? "?v=" + S.avatarV : "";
   const logo = slug === "grok";
   const fb = logo ? "/assets/mark.svg" : defaultAvatarSrc(slug);
-  const src = logo ? "/assets/mark.svg" : ("/api/portrait/" + esc(slug) + v);
+  const src = logo ? "/assets/mark.svg" : esc(avatarSrc(slug));
   return `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}" data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
 }
 function askPassword(title, text, label, send, onCancel) {
@@ -2619,6 +2640,7 @@ async function refreshBots(el) {
   el._words = (w.ok && w.data && w.data.words) || el._words || [];
   el._unused = (w.ok && w.data && w.data.unused) || [];
   el._bots = (r.data && r.data.bots) || [];
+  noteAvatarVersions(el._bots);
   el._imported = (r.data && r.data.imported) || {rows: []};
   applyBotMeta(el, r.data);
   const voiceSel = document.getElementById("bvoice");
@@ -3838,9 +3860,16 @@ async function pageBots(el) {
       <p class="help">The station doesn’t listen for these. Delete them to free space, or set one again from a bot’s Configure.</p></div>
     <p class="note" id="rttall"></p>`;
   applyBotMeta(el, data);
+  noteAvatarVersions(bots);
   paintBots(el, bots);
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
+  // A bot's picture can arrive any time (after pairing, a test, or Ask bot for avatar): check every 10 s.
+  every(10000, async () => {
+    if (!$("#blist", el) || document.hidden) return;
+    const a = await api("GET", "/api/bots");
+    if (a.ok && a.data) noteAvatarVersions(a.data.bots);
+  });
   const av = $("#avatars");
   if (av) av.onclick = async () => {
     busyBtn(av, true, "Refreshing…");

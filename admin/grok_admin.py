@@ -1698,6 +1698,22 @@ def render_bot_routine(bot, station, fingerprint, pub, pins=None):
     return text
 
 
+def portrait_version(slug):
+    """mtime_ns of the portrait /api/portrait serves for slug, as a short string; "" when there is none."""
+    if not slug_ok(slug):
+        return ""
+    base = os.path.realpath(os.path.dirname(PERSONAS))
+    for ext in ("png", "jpg", "jpeg", "webp"):
+        f = os.path.realpath(os.path.join(base, slug + "." + ext))
+        if f.startswith(base + os.sep) and os.path.isfile(f):
+            try:
+                st = os.stat(f)
+            except OSError:
+                return ""
+            return "%x-%x" % (st.st_mtime_ns, st.st_size)
+    return ""
+
+
 def read_finish():
     doc = read_json(path(FINISH), {})
     if not isinstance(doc, dict):
@@ -3753,6 +3769,7 @@ class Handler(BaseHTTPRequestHandler):
         src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
         for b in bots:
             b["main"] = b["slug"] == src  # the main bot gets a star in the list
+            b["avatar_v"] = portrait_version(b["slug"])  # cache-busting, so a new picture shows without a reload
         return self.send(200, {"bots": bots, "voices": safe_voices(data.get("voices")),
                                "default_voice": data.get("default_voice") if voice_ok(data.get("default_voice")) else "",
                                "stepup_until": self._stepup(),
