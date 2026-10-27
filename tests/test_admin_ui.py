@@ -289,7 +289,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("data-setup", bots)
         self.assertIn("data-remove", bots)
         self.assertIn('r.state === "new"', _fn(js, "pendingTeammates"))  # stale names stay hidden
-        self.assertEqual(js.count('instructionsHtml("copyteam"'), 1)  # Configure uses copyteamd
+        self.assertEqual(js.count('instructionsHtml("copyteam"'), 0)  # 0.12.6: Bots card is the spoken phrase; Configure keeps copyteamd
         self.assertIn("banner warn", _fn(js, "attn"))
         add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn("preset", add)

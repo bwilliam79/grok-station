@@ -173,6 +173,7 @@ document.addEventListener("click", ev => {
   const src = document.getElementById(btn.getAttribute("data-copy"));
   if (src) copyText(src.textContent, btn);
 });
+const TEAM_PHRASE = "Hey Grok, import the rest of my team";  // the station handles it itself (wake/grok_wake.py import intent)
 const STATION_KEY_MISSING = "Station key unavailable, see logs";
 // Every copy-paste set of bot instructions uses this pair, Copy first then View: View toggles a <pre> that shows the exact
 // text Copy puts on the clipboard. Both read the same makeText() so they can never differ.
@@ -3314,14 +3315,15 @@ function teamSetupMessage(rows, el) {
   });
   return lines.join("\n");
 }
+function teamPhraseHtml() {
+  return `Say <strong class="teamsay">“${esc(TEAM_PHRASE)}.”</strong> Grok Station sets up the rest of your team for you.`;
+}
 function paintTeam(el) {
-  const card = $("#teamcard", el);
+  const card = $("#teamcard", el), ph = $("#teamphrase", el);
   if (!card) return;
   const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
-  const rows = pendingTeammates(el);
-  card.hidden = !(main && rows.length);
-  const note = $("#teamnote", el);
-  if (note) note.textContent = main ? ("Paste this to " + main.name + ". It messages each teammate their setup. This station sends nothing.") : "";
+  card.hidden = !main;  // the station handles the phrase itself, so it only needs a paired main bot
+  if (ph) { ph.hidden = !main; ph.innerHTML = main ? teamPhraseHtml() : ""; }
 }
 const BOT_ROUTINE = `Grok Station instructions, release 0.12.5.
 
@@ -3813,8 +3815,8 @@ async function pageBots(el) {
     <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
     <p class="help" id="emptybot" hidden>No other bots yet. Hey Grok always works.</p>
     <div class="card" id="teamcard" hidden>
-      <p class="note" id="teamnote"></p>
-      ${instructionsHtml("copyteam", "Copy team setup message")}</div>
+      <p class="note" id="teamphrase" hidden></p>
+</div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>
@@ -3822,7 +3824,6 @@ async function pageBots(el) {
     <p class="note" id="rttall"></p>`;
   applyBotMeta(el, data);
   paintBots(el, bots);
-  bindInstructions(el, "copyteam", () => teamSetupMessage(pendingTeammates(el), el));
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
   const av = $("#avatars");

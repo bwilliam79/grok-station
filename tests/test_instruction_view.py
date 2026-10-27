@@ -14,7 +14,7 @@ class InstructionView(unittest.TestCase):
     def test_every_helper_block_is_bound_with_the_same_text(self):
         made = set(re.findall(r'instructionsHtml\("([a-z0-9]+)"', JS))
         bound = set(re.findall(r'bindInstructions\([a-z]+, "([a-z0-9]+)"', JS))
-        self.assertEqual(made, {"aroutine", "cpupd", "copyteamd", "chcopy", "copyteam"})
+        self.assertEqual(made, {"aroutine", "cpupd", "copyteamd", "chcopy"})
         self.assertEqual(made, bound)
         self.assertIn("instructionsHtml(finMsgId(b.slug)", JS)
         self.assertIn("bindInstructions(d, finMsgId(row.slug)", JS)

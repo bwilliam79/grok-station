@@ -432,3 +432,4 @@ p#emptybot{margin:10px 2px 0}
 .unitin{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .unitin .inp{width:88px}
 .unit{font-size:var(--fs-help);color:var(--gs-muted)}
+.teamsay{color:var(--gs-text);font-weight:600}

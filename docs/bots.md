@@ -163,11 +163,13 @@ During a session you can say "Hey Grok, import the rest of my team", "import my 
 
 If no main bot is set up, it says "Set up your main bot first." Otherwise it says "Asking <main bot name> for your team." and asks the main bot for the list. The reply is merged the same way as any other list. The station speaks the counts, not the names.
 
+Once a main bot is paired, the team card on Bots starts with: Say **“Hey Grok, import the rest of my team.”** Grok Station sets up the rest of your team for you. The card is hidden while no main bot is paired. The phrase on the page is the same one the station listens for (one constant, checked by a test).
+
 Each imported name that is not a bot yet is a row on Bots with the state "Not set up", a **Set up** button (Add bot with that name filled in), and **Remove**. Those rows are not bots. A name that already matches a bot is not shown again, and a name that dropped off the main bot's last list is not shown.
 
 ## Team setup
 
-When a main bot is set and at least one teammate is not set up, the Bots page and that bot's Configure show **Copy team setup message**. It copies one message for you to paste to the main bot. The note says the main bot messages each teammate their setup, and that this station sends nothing.
+When a main bot is set and at least one teammate is not set up, the main bot's Configure (More) shows **Copy team setup message**. Since 0.12.6 the Bots page shows only the spoken phrase above. It copies one message for you to paste to the main bot. The note says the main bot messages each teammate their setup, and that this station sends nothing.
 
 Each teammate's section has the persona id, the station address, the cloud routine (including the deploy step), and the home-computer routine. The home text says the teammate runs the pinned install step on its home computer, "The user must approve that local run in Grok Bot.", and "Do not skip the approval."
 
