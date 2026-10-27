@@ -477,14 +477,21 @@ PY
   pj="$HOME/.config/grok-station/$persona.json"
   if [ -L "$pj" ]; then die "refusing symlink: $pj"; fi
   computer=$(py - "$HOME/.config/grok-station/host-id" "$pj" <<'PY'
-import base64, hashlib, hmac, json, os, re, sys
-if os.path.islink(sys.argv[2]):
-    sys.stderr.write("refusing symlink: %s\n" % sys.argv[2])
-    sys.exit(2)
+import base64, errno, hashlib, hmac, json, os, re, sys
+# O_NOFOLLOW closes the race between the shell's -L check and this open.
+try:
+    fd = os.open(sys.argv[2], os.O_RDONLY | os.O_NOFOLLOW)
+except OSError as e:
+    if e.errno == errno.ELOOP:
+        sys.stderr.write("refusing symlink: %s\n" % sys.argv[2])
+        sys.exit(2)
+    sys.exit(1)
+with os.fdopen(fd, encoding="ascii") as fh:
+    doc = json.load(fh)
 raw = open(sys.argv[1], encoding="ascii").read().strip().upper()
 if not re.fullmatch(r"[0-9A-F-]{8,64}", raw):
     sys.exit(1)
-pub = json.load(open(sys.argv[2], encoding="ascii")).get("station_pub", "")
+pub = doc.get("station_pub", "") if isinstance(doc, dict) else ""
 if not re.fullmatch(r"[A-Za-z0-9+/]{43}=", pub):
     sys.exit(1)
 # Keyed with this station's public key, which this station and its bots know, so the id differs per station.

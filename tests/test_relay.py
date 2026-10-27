@@ -215,6 +215,35 @@ class PortraitDelete(unittest.TestCase):
             relay.PORTRAIT_WRITE = old
 
 
+class PortraitDeleteNix(unittest.TestCase):
+    def test_a_directory_named_like_the_png_is_left_and_does_not_raise(self):
+        portraits = os.path.join(tempfile.mkdtemp(), "portraits")
+        os.makedirs(os.path.join(portraits, "kai.png"))
+        old = relay.PORTRAIT_WRITE
+        relay.PORTRAIT_WRITE = portraits
+        try:
+            relay._delete_written_portrait("kai")  # must not raise
+            self.assertTrue(os.path.isdir(os.path.join(portraits, "kai.png")))
+        finally:
+            relay.PORTRAIT_WRITE = old
+
+    def test_a_symlinked_portraits_folder_cannot_redirect_the_delete(self):
+        base = tempfile.mkdtemp()
+        elsewhere = os.path.join(base, "elsewhere")
+        os.makedirs(elsewhere)
+        victim = os.path.join(elsewhere, "kai.png")
+        open(victim, "wb").write(b"keep")
+        link = os.path.join(base, "portraits")
+        os.symlink(elsewhere, link)
+        old = relay.PORTRAIT_WRITE
+        relay.PORTRAIT_WRITE = link
+        try:
+            relay._delete_written_portrait("kai")
+            self.assertEqual(open(victim, "rb").read(), b"keep")
+        finally:
+            relay.PORTRAIT_WRITE = old
+
+
 class AckClip(unittest.IsolatedAsyncioTestCase):
     """Asking-line cache: hit, miss, TTS failure, and invalidation when the name or voice changes."""
 
@@ -310,3 +339,33 @@ class AckClip(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HoldCap(unittest.TestCase):
+    """Nix (d): held model output is released after about 3 s with no transcript."""
+    def test_hold_expires_after_the_cap(self):
+        self.assertEqual(relay.HOLD_CAP_S, 3.0)
+        st = {"buf": [{"type": "response.created"}], "buf_t0": 100.0, "turn_heard": False}
+        self.assertFalse(relay.hold_expired(st, 102.9))
+        self.assertTrue(relay.hold_expired(st, 103.0))
+        self.assertFalse(relay.hold_expired(dict(st, turn_heard=True), 110))   # transcript came: normal path
+        self.assertFalse(relay.hold_expired(dict(st, drop_model=True), 110))   # routed or dropped turn
+        self.assertFalse(relay.hold_expired(dict(st, buf=[]), 110))            # nothing held
+
+    def test_caps_loop_releases_through_emit(self):
+        src = open(relay.__file__, encoding="utf-8").read()
+        self.assertIn('st["_emit"] = emit_model', src)
+        caps = src.split("async def caps():", 1)[1].split("tasks = [", 1)[0]
+        self.assertIn("hold_expired(st, now)", caps)
+        self.assertIn('await st["_emit"](bev)', caps)
+
+
+class UpdateScriptNoFollow(unittest.TestCase):
+    """Nix (c): the computer-id read opens <persona>.json with O_NOFOLLOW."""
+    def test_o_nofollow(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sh = open(os.path.join(root, "scripts", "gs-update.sh"), encoding="utf-8").read()
+        block = sh.split('pj="$HOME/.config/grok-station/$persona.json"', 1)[1].split("crc=", 1)[0]
+        self.assertIn("os.O_RDONLY | os.O_NOFOLLOW", block)
+        self.assertIn("errno.ELOOP", block)
+        self.assertNotRegex(block, r"(?<!os\.)open\(sys\.argv\[2\]")  # no plain open() of the persona file

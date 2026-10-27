@@ -67,6 +67,16 @@ MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
 BIND = E("RELAY_BIND", "127.0.0.1")
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))  # MAX_SESSION is per turn
+# Model output held for the transcript is released after this many seconds, so a transcript that never
+# arrives can't leave the station silent until the session timeout.
+HOLD_CAP_S = float(E("HOLD_CAP_S", "3"))
+
+
+def hold_expired(st, now):
+    """True when buffered model output has waited HOLD_CAP_S with no transcript for this turn."""
+    t0 = st.get("buf_t0")
+    return bool(st.get("buf")) and t0 is not None and not st.get("turn_heard") and not st.get("drop_model") \
+        and now - t0 >= HOLD_CAP_S
 MULTI_TURN = E("MULTI_TURN", "1") != "0"           # keep the session open for a follow-up after each reply
 MAX_TOTAL = float(E("MAX_TOTAL", "180"))            # all turns of one connection together
 INSTRUCTIONS = E("INSTRUCTIONS", (
@@ -1922,6 +1932,8 @@ async def session(req):
                     elif tt in MODEL_OUTPUT:
                         await pi.send_json({"type": "reply", "text": ev.get("transcript") or ev.get("text") or "".join(reply)})
 
+                st["_emit"] = emit_model  # caps() releases held output through this after HOLD_CAP_S
+
                 def count_buf():
                     for bev in st["buf"]:
                         if bev.get("type") in MODEL_OUTPUT or bev.get("type") == "response.created":
@@ -1969,6 +1981,8 @@ async def session(req):
                         if t == "response.created":
                             st["responding"] = True
                             st["saw_response"] = True
+                        if not st["buf"]:
+                            st["buf_t0"] = time.monotonic()
                         st["buf"].append(ev)
                         continue
                     if t == "session.updated":
@@ -2252,6 +2266,13 @@ async def session(req):
             async def caps():
                 while True:
                     now = time.monotonic()
+                    if hold_expired(st, now) and st.get("_emit"):
+                        # No transcript in HOLD_CAP_S: play what the model said rather than stay silent.
+                        log("hold cap: releasing model output without a transcript")
+                        held, st["buf"], st["buf_t0"] = st["buf"], [], None
+                        st["turn_heard"] = True
+                        for bev in held:
+                            await st["_emit"](bev)
                     if now - t0 - st.get("held", 0) >= MAX_TOTAL and not st["hold"]:  # a handoff wait doesn't count
                         return "max total"
                     if now - st["turn_t0"] >= MAX_SESSION and not st["hold"]:
@@ -3468,19 +3489,24 @@ def _forget_imported_bot(slug, name):
 
 
 def _delete_written_portrait(slug):
-    """Remove PORTRAIT_WRITE/<slug>.png. Unlink a symlink in that directory; never follow it."""
+    """Remove PORTRAIT_WRITE/<slug>.png: a plain file, or a symlink itself (never its target).
+
+    The folder is resolved with realpath and must not itself be a symlink, so it can't redirect the delete.
+    A directory or any other OSError is skipped quietly: the bot is already deleted by now.
+    """
     if not isinstance(slug, str) or not slug or slug in (".", "..") or os.path.basename(slug) != slug:
         return
-    root = os.path.abspath(PORTRAIT_WRITE)
+    if os.path.islink(PORTRAIT_WRITE):
+        return
+    root = os.path.realpath(PORTRAIT_WRITE)
     path = os.path.join(root, f"{slug}.png")
-    if os.path.dirname(os.path.abspath(path)) != root:
+    if os.path.dirname(path) != root:
         return
     try:
-        if os.path.islink(path):
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or stat.S_ISREG(st.st_mode):
             os.unlink(path)
-        else:
-            os.remove(path)
-    except FileNotFoundError:
+    except OSError:
         return
 
 
