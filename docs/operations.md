@@ -80,6 +80,40 @@ Or use **Updates** on the admin page: **Check now** compares this station's vers
 
 **0.6.0** adds bot list import, saves switches immediately (other fields keep a Save button), shows an add-bot routine to paste into the bot along with this station's certificate fingerprint, and leaves mic gain alone until that slider is moved. It also pins the wake packages (openwakeword 0.6.0, onnxruntime 1.31.0, numpy 2.5.4) and adds the peak sample and clipped ratio (`clipped=0.0012`) to the mic level line. Grok Bot on a home computer on the station's network posts replies. The key lives on the cloud computer (default) or, on a Mac, on that home machine (`gs-seal-reply`, one command, about 3 seconds faster; enabled in Add bot after its first validation run). A key exists on only one machine; switching mode revokes the pinned key. Add your main bot first. Notes are in [versioning.md](versioning.md).
 
+## Microphone reset
+
+The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB reset (the connection turned off, then on) does, the same as unplugging it.
+
+The listener is not root. It asks `sudo -n` to run one helper:
+
+| Piece | Value |
+|---|---|
+| Program | `/usr/local/lib/grok-station/gs-usb-reset` |
+| Owner and mode | `root:root`, mode `0755` |
+| Source | `scripts/gs-usb-reset` |
+| sudoers | `/etc/sudoers.d/grok-station-usb` from `admin/sudoers-usb.example`, `root:root`, mode `0440` |
+| Who may run it | user `grok` only, and only that program |
+
+There is no systemd unit for the reset. The installer writes the sudoers file with `visudo -cf` before it installs it. The rule names that one program and no other command. The helper takes a single ALSA card (a number `0`–`99`, or the card id). It resolves that card's `device` link, walks up to the USB device that owns it (the directory with `authorized` and `idVendor`), checks the device is the speakerphone (the USB product or manufacturer text, or the card id, contains `emeet`), and writes `0` then `1` to that one `authorized` file. A bad card, an extra argument, a symlink, or a device that is not the speakerphone is refused. Nothing else is written. Stdout is `ok` or `refused:` plus a short reason with no path.
+
+`GS_USB_RESET_SYSFS` replaces `/sys` only when the helper is not real root (`euid` is not 0). The installed root copy ignores it. Tests use that variable, or call `sysfs_root(euid=...)`. The command line has no override.
+
+The listener also reopens the capture on its own, without a USB reset:
+
+- No full chunk for 3 seconds (`WAKE_CAPTURE_STALL_S`): kill the capture and open it again. `find_card` runs again, so a card that came back under a new number is picked up.
+- While nothing is playing, about 10 seconds of digital silence or a frozen sample (`WAKE_CAPTURE_SILENCE_S`): the same reopen. A quiet room still has noise, so this does not trip on an empty room.
+- The capture program exiting: reopen after 2 seconds.
+
+Stall and silence wait 30 seconds between reopens (`WAKE_CAPTURE_REOPEN_S`). Each one is logged as `capture reopen:` plus the reason (`stall`, `silence`, `eof`, or `reset`).
+
+A USB reset is logged `mic reset:` plus the reason. It never runs during a conversation or a wake-word recording; the log says `mic reset deferred (session):` and it runs when that ends. If a deferred night reset is still waiting when the night window closes, the log says `mic reset skipped: night window ended` and it does not run later that morning. Reasons:
+
+- **button** — Audio page, **Reset microphone**. Hidden when the Reset button switch is off.
+- **night** — once a night, 03:30–04:30 local (`WAKE_MIC_RESET_NIGHT_HM`, `WAKE_MIC_RESET_NIGHT_END`), and only when nothing is playing.
+- **drought** — speech-level audio (at least −45 dBFS, `WAKE_MIC_RESET_SPEECH_DB`) heard 20 times (`WAKE_MIC_RESET_SPEECH`) across at least 2 hours (`WAKE_MIC_RESET_WINDOW_S`) with no wake score above 0.1 (`WAKE_MIC_RESET_SCORE`). Events during a conversation do not count. A real wake score clears the count. Samples closer than 2 seconds (`WAKE_MIC_RESET_COALESCE_S`) count as one.
+
+The three switches default to on. Set `WAKE_MIC_RESET_BUTTON`, `WAKE_MIC_RESET_NIGHT`, or `WAKE_MIC_RESET_DROUGHT` to `0` to turn one off. The Audio page switches apply on click and are stored in `/var/lib/grok-station/admin/mic-reset.json` (mode `0640`, so the listener can read it). A bool in that file wins over the environment variable. Saving a switch does not restart the listener. The night window and the counts are read from the environment (restart the listener after changing those). A failed automatic reset waits a minute before it tries again. The button does not wait.
+
 ## Troubleshooting
 
 If a stage fails, the installer shows the failed stage, the last 20 log lines and the log path. The full log is `/var/log/grok-station-install.log`; re-run with `--verbose` to watch every command.

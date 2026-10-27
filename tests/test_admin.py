@@ -2472,3 +2472,42 @@ class BotDeleteWakeFailures(unittest.TestCase):
         self.assertIn("are deleted too", box)
         for bad in ("mailbox", "seal"):
             self.assertNotIn(bad, box.lower())
+
+
+class MicResetApi(unittest.TestCase):
+    def test_switches_save_without_restart_and_button_asks_the_listener(self):
+        c = signed_in()
+        st, body = c.req("GET", "/api/audio")
+        self.assertEqual(st, 200)
+        self.assertEqual(body["mic_reset"], {"button": True, "night": True, "drought": True})
+        log = os.environ["FAKE_LOG"]
+        before = os.path.getsize(log) if os.path.exists(log) else 0
+        st, body = c.req("PUT", "/api/audio/mic-reset", {"button": False})
+        self.assertEqual(st, 200, body)
+        self.assertEqual(body["mic_reset"], {"button": False, "night": True, "drought": True})
+        path = os.path.join(os.environ["ADMIN_STATE_DIR"], "mic-reset.json")
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
+        self.assertFalse(json.load(open(path))["button"])
+        self.assertEqual(c.req("PUT", "/api/audio/mic-reset", {"button": "no"})[0], 400)
+        self.assertFalse(json.load(open(path))["button"])
+        after = os.path.getsize(log) if os.path.exists(log) else 0
+        self.assertEqual(before, after)
+        st, body = c.req("POST", "/api/audio/mic-reset", {})
+        self.assertEqual(st, 409)
+        self.assertIn("microphone", body["error"].lower())
+        seen = []
+
+        def wake(method, p, body=None, timeout=3):
+            seen.append((method, p, timeout))
+            if p == "/mic-reset":
+                return 202, {"ok": True, "deferred": True}
+            return 503, {}
+
+        old = ga.wake
+        ga.wake = wake
+        try:
+            st, body = c.req("POST", "/api/audio/mic-reset", {})
+        finally:
+            ga.wake = old
+        self.assertEqual((st, body.get("deferred")), (202, True))
+        self.assertEqual(seen, [("POST", "/mic-reset", 8)])

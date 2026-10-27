@@ -1094,6 +1094,8 @@ async function audioPanel(el) {
   const listenCur = listenOpts.includes(v.LISTEN_TONE) ? v.LISTEN_TONE : (defs.listen || "none");
   const endCur = endOpts.includes(v.END_TONE) ? v.END_TONE : (defs.end || "none");
   const devs = [...new Set([...(d.inputs || []), ...(d.outputs || []), v.WAKE_DEVICE_NAME].filter(Boolean))];
+  const mr = d.mic_reset || {};
+  const mrOn = (k) => mr[k] !== false;
   // no saved choice yet: the listener's default matches "EMEET" in the card name
   const cur = v.WAKE_DEVICE_NAME || devs.find(x => /emeet/i.test(x)) || "";
   const gains = (s.data || {}).defaults || {};
@@ -1124,6 +1126,12 @@ async function audioPanel(el) {
     <div class="field"><label for="etn">End tone</label><div class="inline">${soundSelect("etn", endOpts, endCur)}<button class="btn" id="eprev" type="button">Preview</button></div>
       <p class="note">Plays when a conversation ends.</p></div>
     </div></div>
+    <h3 class="dgrp">Microphone reset</h3>
+    <div class="row"><button type="button" class="tog${mrOn("button") ? " on" : ""}" role="switch" id="mrbtn" aria-checked="${mrOn("button") ? "true" : "false"}" aria-label="Reset button"></button><div><div class="lbl">Reset button</div><div class="help">Shows a button that turns the speakerphone's USB connection off and on.</div></div></div>
+    <div class="row"><button type="button" class="tog${mrOn("night") ? " on" : ""}" role="switch" id="mrnight" aria-checked="${mrOn("night") ? "true" : "false"}" aria-label="Nightly reset"></button><div><div class="lbl">Nightly reset</div><div class="help">Around 3:30 AM, when nothing is playing.</div></div></div>
+    <div class="row"><button type="button" class="tog${mrOn("drought") ? " on" : ""}" role="switch" id="mrdrought" aria-checked="${mrOn("drought") ? "true" : "false"}" aria-label="Reset if speech isn't recognized"></button><div><div class="lbl">Reset if speech isn't recognized</div><div class="help">If the microphone hears speech many times over a couple of hours and no wake word registers, reset the speakerphone.</div></div></div>
+    <div class="field" id="micresetrow"${mrOn("button") ? "" : " hidden"}><button class="btn" id="micreset" type="button">Reset microphone</button>
+      <p class="note">Turns the speakerphone's USB connection off and on, then starts listening again. It waits if a conversation is playing.</p></div>
     <div id="ae"></div>
     <div class="field inline"><button class="btn p" id="asave" type="button" disabled>Save</button></div>
     <p class="note">Saving restarts the voice listener (after any conversation or enrollment that's running).</p></div>`;
@@ -1151,6 +1159,33 @@ async function audioPanel(el) {
   $("#lprev", el).onclick = () => preview("#ltn");
   $("#eprev", el).onclick = () => preview("#etn");
   $("#atest", el).onclick = async () => { const r = await api("POST", "/api/audio/test", {}); r.ok ? toast("Playing on the station.") : toast(r.data.error, "warn"); };
+  const micFlags = {button: mrOn("button"), night: mrOn("night"), drought: mrOn("drought")};
+  const syncMicRow = () => { const row = $("#micresetrow", el); if (row) row.hidden = !micFlags.button; };
+  const bindMic = (id, key) => {
+    const btn = $(id, el);
+    btn.onclick = async () => {
+      const was = micFlags[key];
+      const on = !was;
+      setTog(btn, on);
+      micFlags[key] = on;
+      if (key === "button") syncMicRow();
+      const r = await api("PUT", "/api/audio/mic-reset", {[key]: on});
+      if (!r.ok) {
+        setTog(btn, was);
+        micFlags[key] = was;
+        if (key === "button") syncMicRow();
+        return toast((r.data && r.data.error) || "Couldn't save that.", "warn");
+      }
+    };
+  };
+  bindMic("#mrbtn", "button");
+  bindMic("#mrnight", "night");
+  bindMic("#mrdrought", "drought");
+  $("#micreset", el).onclick = async () => {
+    const r = await api("POST", "/api/audio/mic-reset", {});
+    if (!r.ok) return toast((r.data && r.data.error) || "Couldn't reset the microphone.", "warn");
+    toast(r.data && r.data.deferred ? "It will reset when the conversation ends." : "Microphone reset.");
+  };
   $("#asave", el).onclick = async () => {
     const body = {WAKE_DEVICE_NAME: $("#dev", el).value, WAKE_CAPTURE_RATE: $("#rate", el).value,
       ALARM_SOUND: $("#alm", el).value, LISTEN_TONE: $("#ltn", el).value, END_TONE: $("#etn", el).value};

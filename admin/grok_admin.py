@@ -461,6 +461,44 @@ def station_sounds():
     return None
 
 
+def _env_bool(name, default):
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "off", "no")
+
+
+def mic_reset_path():
+    return os.environ.get("WAKE_MIC_RESET_FILE") or path("mic-reset.json")
+
+
+def mic_reset_public():
+    """The three microphone-reset switches. A bool in the file wins over the env. Default on."""
+    data = read_json(mic_reset_path(), {})
+    if not isinstance(data, dict):
+        data = {}
+    out = {}
+    for key in ("button", "night", "drought"):
+        if isinstance(data.get(key), bool):
+            out[key] = data[key]
+        else:
+            out[key] = _env_bool("WAKE_MIC_RESET_" + key.upper(), True)
+    return out
+
+
+def save_mic_reset(updates):
+    """Merge bool switches and write them group-readable for the listener. None if the body is bad."""
+    if not isinstance(updates, dict) or not updates:
+        return None
+    cur = mic_reset_public()
+    for key, val in updates.items():
+        if key not in ("button", "night", "drought") or not isinstance(val, bool):
+            return None
+        cur[key] = val
+    write_json(mic_reset_path(), cur, 0o640)
+    return cur
+
+
 def wake(method, p, body=None, timeout=3):
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
@@ -3247,12 +3285,35 @@ class Handler(BaseHTTPRequestHandler):
                     names.add(cur)
             return sorted(names)
         code, st = wake("GET", "/status")
+        flags = mic_reset_public()
+        if code == 200 and isinstance(st.get("mic_reset"), dict):
+            for key in ("button", "night", "drought"):
+                if isinstance(st["mic_reset"].get(key), bool):
+                    flags[key] = st["mic_reset"][key]
         return self.send(200, {"inputs": cards("arecord"), "outputs": cards("aplay"),
                                "in_use": busy("arecord"), "capture": st.get("capture") if code == 200 else None,
                                "level_dbfs": st.get("level_dbfs") if code == 200 else None,
-                               "level_at": st.get("level_at") if code == 200 else None})
+                               "level_at": st.get("level_at") if code == 200 else None,
+                               "mic_reset": flags})
+
+    def api_put_audio(self, p, q, j):
+        """Switches only. The listener re-reads the file; this does not stop it."""
+        if p != "/api/audio/mic-reset":
+            return self.send(404, {"error": "not found"})
+        saved = save_mic_reset(j)
+        if saved is None:
+            return self.send(400, {"error": "Couldn't save that."})
+        return self.send(200, {"ok": True, "mic_reset": saved})
 
     def api_post_audio(self, p, q, j):
+        if p == "/api/audio/mic-reset":
+            # 409, not 503: a reset failure is not "the station is down" (that banner is 502/503/504).
+            code, out = wake("POST", "/mic-reset", {}, timeout=8)
+            if code == 202:
+                return self.send(202, {"ok": True, "deferred": bool(out.get("deferred"))})
+            if code == 409 and isinstance(out.get("error"), str):
+                return self.send(409, {"error": out["error"]})
+            return self.send(409, {"error": "Couldn't reset the microphone."})
         if p == "/api/audio/test":
             # Empty body plays today's chime. An id is allowlisted here; the wake listener resolves it again.
             body = {}

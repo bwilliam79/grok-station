@@ -1,0 +1,5 @@
+# /etc/sudoers.d/grok-station-usb
+# The wake listener (user grok, not root) may run only this helper, with
+# arguments. The helper accepts one ALSA card and resets that card's own USB
+# device. It does not accept a path. No other command.
+grok ALL=(root) NOPASSWD: /usr/local/lib/grok-station/gs-usb-reset

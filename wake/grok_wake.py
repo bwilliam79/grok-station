@@ -11,6 +11,9 @@ and the display counts down locally. While this process is up the deadline is mo
 step does not fire a timer early; the file stores a wall deadline so a restart still knows when it ends.
 Logs name the event type only, never a temperature, label or duration.
 The wake detector is paused during a session so the reply can't re-trigger it.
+If no full chunk arrives for 3 seconds the capture is killed and opened again. A stream of
+digital silence while nothing is playing is reopened too. A stuck speakerphone is reset
+over USB only through the root helper (never by this process), and never during a session.
 `grok_wake.py --test file.wav` scores a 16 kHz mono WAV offline and prints the peak score.
 `grok_wake.py --ask file.wav [out.wav]` sends a 24 kHz mono WAV question through the relay path.
 The relay is ws://127.0.0.1:<RELAY_PORT>/ws (default port 8790). The bearer token is read from
@@ -28,7 +31,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 10 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, datetime, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 
 E = os.environ.get
@@ -167,6 +170,8 @@ SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
 LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None, "capture": None}  # capture: open input device
+CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
+RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
 TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
@@ -780,6 +785,7 @@ def parse_enroll(j):
 def control_server():
     """127.0.0.1:CONTROL_PORT POST /enroll {"phrase","count"}: queue one enrollment (the display's LAN /enroll and
     `grok_wake.py --enroll` both land here). POST /personas/sync re-runs persona and portrait sync in a thread.
+    POST /mic-reset asks for a speakerphone USB reset (deferred while a session is open).
     Never reachable from the LAN."""
     global CONTROL_HTTPD
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -797,6 +803,7 @@ def control_server():
                                  "capture": LIVE["capture"],
                                  "enrolling": ENROLL_STATE["busy"], "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
+                                 "mic_reset": mic_reset_flags(),
                                  "setup": setup_mode()})
 
         def do_POST(self):
@@ -868,6 +875,27 @@ def control_server():
                     ENROLL_STATE["discard"] = True
                     ENROLL_STATE["pause"] = False
                 return self._r(200, {"ok": True, "op": op})
+            if self.path == "/mic-reset":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                except ValueError:
+                    n = 0
+                if n:
+                    self.rfile.read(n)
+                rec = RECOVERY
+                if rec is None:
+                    return self._r(503, {"error": "Couldn't reset the microphone."})
+                try:
+                    result = rec.request("button")
+                except Exception:
+                    return self._r(503, {"error": "Couldn't reset the microphone."})
+                if result == "off":
+                    return self._r(409, {"error": "Reset is turned off."})
+                if result == "deferred":
+                    return self._r(202, {"ok": True, "deferred": True})
+                if result == "ok":
+                    return self._r(202, {"ok": True, "deferred": False})
+                return self._r(503, {"error": "Couldn't reset the microphone."})
             if self.path != "/enroll":
                 return self._r(404, {"error": "not found"})
             try:
@@ -2109,124 +2137,567 @@ def ask(path, save=None):
               f"VAD end->first audio {s.t_first_audio - (s.t_end_speech or t_spoken):.2f}s", flush=True)
 
 
+def _env_float(name, default):
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name, default):
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_bool(name, default):
+    raw = os.environ.get(name, "")
+    if raw == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "off", "no")
+
+
+def _minutes(name, default):
+    raw = (os.environ.get(name, "") or default).strip()
+    m = re.fullmatch(r"([01][0-9]|2[0-3]):([0-5][0-9])", raw)
+    if not m:
+        m = re.fullmatch(r"([01][0-9]|2[0-3]):([0-5][0-9])", default)
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def night_window(local_dt):
+    """True during the local night-reset window. Default 03:30 inclusive to 04:30 exclusive."""
+    start = _minutes("WAKE_MIC_RESET_NIGHT_HM", "03:30")
+    end = _minutes("WAKE_MIC_RESET_NIGHT_END", "04:30")
+    cur = local_dt.hour * 60 + local_dt.minute
+    if start <= end:
+        return start <= cur < end
+    return cur >= start or cur < end
+
+
+def mic_reset_flags(path=None):
+    """button / night / drought. A bool in the file wins; otherwise the env; otherwise on."""
+    path = path or os.environ.get("WAKE_MIC_RESET_FILE", "/var/lib/grok-station/admin/mic-reset.json")
+    data = {}
+    try:
+        with open(path) as f:
+            got = json.load(f)
+        if isinstance(got, dict):
+            data = got
+    except (OSError, ValueError):
+        data = {}
+    out = {}
+    for key in ("button", "night", "drought"):
+        if isinstance(data.get(key), bool):
+            out[key] = data[key]
+        else:
+            out[key] = _env_bool("WAKE_MIC_RESET_" + key.upper(), True)
+    return out
+
+
+def mic_busy():
+    """A conversation or enrollment is open. USB reset waits; capture silence does too."""
+    if LIVE.get("session") or SESSION_OPEN.is_set() or ENROLL_STATE.get("busy"):
+        return True
+    return False
+
+
+def card_spec(capture):
+    """ALSA card id from plughw:CARD=<id>,DEV=<n>. Card-number aliases are refused."""
+    if not isinstance(capture, str):
+        return None
+    m = re.fullmatch(r"plughw:CARD=([A-Za-z0-9][A-Za-z0-9_-]{0,31}),DEV=[0-9]{1,2}", capture)
+    if not m or re.fullmatch(r"card[0-9]{1,2}", m.group(1)):
+        return None
+    return m.group(1)
+
+
+def run_usb_reset(card, run=None):
+    """sudo -n the root helper. None on success, otherwise a short reason with no path."""
+    if not isinstance(card, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", card):
+        return "refused: bad card"
+    if re.fullmatch(r"card[0-9]{1,2}", card):
+        return "refused: bad card"
+    helper = os.environ.get("WAKE_USB_RESET", "/usr/local/lib/grok-station/gs-usb-reset")
+    if (not isinstance(helper, str) or ".." in helper.split("/")
+            or not re.fullmatch(r"/[A-Za-z0-9_./-]{1,160}", helper)):
+        return "refused: bad helper"
+    if run is None:
+        def run(argv):
+            return subprocess.run(argv, capture_output=True, text=True, timeout=8)
+    try:
+        got = run(["sudo", "-n", helper, card])
+    except Exception:
+        return "refused: reset failed"
+    text = (getattr(got, "stdout", "") or "").strip()
+    line = text.splitlines()[-1] if text else ""
+    if getattr(got, "returncode", 1) == 0 and line == "ok":
+        return None
+    if line.startswith("refused: ") and "/" not in line and len(line) <= 80:
+        return line
+    return "refused: reset failed"
+
+
+def kick_capture():
+    """Drop the open capture so the loop opens it again (after a USB reset)."""
+    guard = CAPTURE.get("guard")
+    proc = CAPTURE.get("proc")
+    if guard is not None and not guard.reason:
+        guard.reason = "reset"
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def chunk_stuck(buf):
+    """Digital silence or a constant frame. A quiet room still has noise above this."""
+    if not buf or len(buf) < 4 or len(buf) % 2:
+        return False
+    x = np.frombuffer(buf, "<i2")
+    if int(np.max(np.abs(x.astype(np.int32)))) <= 1:
+        return True
+    return float(np.var(x.astype(np.float64))) == 0.0
+
+
+class CaptureGuard:
+    """Kill arecord when no full chunk arrives, and notice a stuck silent stream."""
+
+    def __init__(self, proc, stall_s=3.0, silence_s=10.0, chunk_s=0.08, now=None):
+        self.proc = proc
+        self.stall_s = stall_s
+        self.silence_s = silence_s
+        self.chunk_s = chunk_s
+        self.now = now or time.monotonic
+        self.reason = None
+        self._last = self.now()
+        self._silent = 0.0
+        self._stop = threading.Event()
+        self._th = None
+
+    def attach(self):
+        self._last = self.now()
+        self._th = threading.Thread(target=self._watch, daemon=True)
+        self._th.start()
+
+    def _watch(self):
+        while not self._stop.wait(0.05):
+            if self.reason:
+                return
+            if self.now() - self._last >= self.stall_s:
+                self.reason = "stall"
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+                return
+
+    def read(self, n):
+        if self.reason:
+            return b""
+        try:
+            buf = self.proc.stdout.read(n)
+        except Exception:
+            buf = b""
+        self._last = self.now()
+        return buf or b""
+
+    def observe(self, buf, in_session):
+        if self.reason:
+            return True
+        if in_session:
+            self._silent = 0.0
+            return False
+        if chunk_stuck(buf):
+            self._silent += self.chunk_s
+            if self._silent + 1e-9 >= self.silence_s:
+                self.reason = "silence"
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+                return True
+        else:
+            self._silent = 0.0
+        return False
+
+    def stop(self):
+        self._stop.set()
+        th = self._th
+        if th is not None and th is not threading.current_thread():
+            th.join(timeout=1)
+
+
+def serve_capture(proc, guard, handle, in_session, n=None):
+    """Read until the capture should be opened again. Returns stall, silence, eof, or reset."""
+    n = CHUNK * DECIM * 2 if n is None else n
+    while True:
+        buf = guard.read(n)
+        if guard.reason:
+            return guard.reason
+        if not buf or len(buf) < n:
+            return "eof"
+        busy = in_session() if callable(in_session) else bool(in_session)
+        if guard.observe(buf, busy):
+            return guard.reason or "silence"
+        try:
+            stop = handle(buf, guard)
+        except EOFError:
+            return guard.reason or "eof"
+        if guard.reason:
+            return guard.reason
+        if stop:
+            return stop if isinstance(stop, str) else (guard.reason or "eof")
+
+
+def reopen_delay(reason, now, last, gap=30.0, base=2.0):
+    """Stall and silence wait out the gap. Anything else (eof, USB reset) waits the short base."""
+    if reason not in ("stall", "silence"):
+        return base
+    if last > 0:
+        return max(base, gap - max(0.0, now - last))
+    return max(base, gap)
+
+
+def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, stall_s=3.0, silence_s=10.0,
+                       chunk_s=0.08, sleep=None, log=None, gap=30.0, now=None, n_bytes=None, on_open=None):
+    """Open capture, read until it should reopen, repeat. find_card runs on every round."""
+    sleep = sleep or time.sleep
+    log = log or (lambda msg: print(msg, flush=True))
+    now = now or time.time
+    reasons, last_watch, n = [], 0.0, 0
+    while rounds is None or n < rounds:
+        cap = find_card()
+        if not cap:
+            LIVE["capture"] = None
+            log(f"no capture device matching {DEVICE!r}; retrying")
+            if rounds is not None:
+                reasons.append("no-card")
+                n += 1
+                if n >= rounds:
+                    break
+            sleep(5)
+            continue
+        if on_open:
+            on_open(cap, None)
+        proc = spawn(cap)
+        guard = CaptureGuard(proc, stall_s=stall_s, silence_s=silence_s, chunk_s=chunk_s)
+        CAPTURE["proc"], CAPTURE["guard"] = proc, guard
+        guard.attach()
+        try:
+            reason = serve_capture(proc, guard, handle, in_session, n=n_bytes)
+        finally:
+            guard.stop()
+            CAPTURE["proc"] = None
+            CAPTURE["guard"] = None
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        LIVE["capture"] = None
+        log(f"capture reopen: {reason}")
+        log("capture ended; restarting")
+        reasons.append(reason)
+        n += 1
+        if rounds is not None and n >= rounds:
+            break
+        delay = reopen_delay(reason, now(), last_watch, gap=gap)
+        if reason in ("stall", "silence"):
+            last_watch = now()
+        sleep(delay)
+    return reasons
+
+
+class MicRecovery:
+    """USB reset of the open speakerphone. Never during a session. Every reset is logged."""
+
+    def __init__(self, reset, now=None, local=None, flags=None, card=None, busy=None, kick=None, log=None,
+                 need=None, window_s=None, score_max=None, speech_db=None, coalesce_s=None):
+        self.reset = reset
+        self.now = now or time.time
+        self.local = local or (lambda ts: datetime.datetime.fromtimestamp(ts).astimezone())
+        self.flags = flags or mic_reset_flags
+        self.card = card or (lambda: card_spec(LIVE.get("capture")))
+        self.busy = busy or mic_busy
+        self.kick = kick or kick_capture
+        self.log = log or (lambda msg: print(msg, flush=True))
+        self.need = _env_int("WAKE_MIC_RESET_SPEECH", 20) if need is None else need
+        self.window_s = _env_float("WAKE_MIC_RESET_WINDOW_S", 7200.0) if window_s is None else window_s
+        self.score_max = _env_float("WAKE_MIC_RESET_SCORE", 0.1) if score_max is None else score_max
+        self.speech_db = _env_float("WAKE_MIC_RESET_SPEECH_DB", -45.0) if speech_db is None else speech_db
+        self.coalesce_s = _env_float("WAKE_MIC_RESET_COALESCE_S", 2.0) if coalesce_s is None else coalesce_s
+        self.pending = None
+        self.last_night = None
+        self.events = []
+        self._last_poll = 0.0
+        self._next_auto = 0.0
+
+    def request(self, reason):
+        if reason not in ("button", "night", "drought"):
+            return "off"
+        flags = self.flags()
+        if not flags.get(reason):
+            return "off"
+        if reason == "night":
+            loc = self.local(self.now())
+            if self.last_night == loc.date() or not night_window(loc):
+                return "off"
+        if self.busy():
+            if self.pending != reason:
+                self.log(f"mic reset deferred (session): {reason}")
+            self.pending = reason
+            return "deferred"
+        return self._run(reason)
+
+    def poll(self):
+        now = self.now()
+        if now - self._last_poll < 1:
+            return
+        self._last_poll = now
+        flags = self.flags()
+        if self.pending and not flags.get(self.pending):
+            self.pending = None
+        if self.pending == "night" and not night_window(self.local(now)):
+            self.pending = None
+            self.log("mic reset skipped: night window ended")
+        elif self.pending and not self.busy() and now >= self._next_auto:
+            self._run(self.pending)
+            return
+        if self.pending or not flags.get("night") or now < self._next_auto:
+            return
+        loc = self.local(now)
+        if night_window(loc) and self.last_night != loc.date():
+            self.request("night")
+
+    def note_level(self, dbfs, score, session=False):
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score > self.score_max:
+            self.events.clear()
+            return
+        if session or self.busy():
+            return
+        if not self.flags().get("drought"):
+            return
+        try:
+            db = float(dbfs)
+        except (TypeError, ValueError):
+            return
+        if db < self.speech_db:
+            return
+        now = self.now()
+        if self.events and now - self.events[-1] < self.coalesce_s:
+            return
+        self.events.append(now)
+        if (len(self.events) >= self.need and self.events[-1] - self.events[0] >= self.window_s
+                and now >= self._next_auto):
+            self.events.clear()
+            self.request("drought")
+
+    def _backoff(self, reason):
+        if reason != "button":
+            self._next_auto = self.now() + 60
+
+    def _run(self, reason):
+        flags = self.flags()
+        if not flags.get(reason):
+            self.pending = None
+            return "off"
+        if reason == "night":
+            loc = self.local(self.now())
+            if not night_window(loc):
+                self.pending = None
+                self.log("mic reset skipped: night window ended")
+                return "skipped"
+            if self.last_night == loc.date():
+                self.pending = None
+                return "off"
+        if self.busy():
+            if self.pending != reason:
+                self.log(f"mic reset deferred (session): {reason}")
+            self.pending = reason
+            return "deferred"
+        self.pending = None
+        card = self.card()
+        if not card:
+            self.log(f"mic reset failed: no card ({reason})")
+            self._backoff(reason)
+            return "failed"
+        try:
+            err = self.reset(card)
+        except Exception:
+            err = "refused: reset failed"
+        if err:
+            self.log(f"mic reset failed: {err} ({reason})")
+            self._backoff(reason)
+            return "failed"
+        self.log(f"mic reset: {reason}")
+        self.events.clear()
+        if reason == "night":
+            self.last_night = self.local(self.now()).date()
+        try:
+            self.kick()
+        except Exception:
+            pass
+        return "ok"
+
+
+def _mic_poll():
+    while True:
+        rec = RECOVERY
+        if rec is not None:
+            try:
+                rec.poll()
+            except Exception as exc:
+                print(f"mic reset poll failed: {type(exc).__name__}", flush=True)
+        time.sleep(1)
+
+
 def main():
+    global RECOVERY
+    RECOVERY = MicRecovery(run_usb_reset)
     make_chime(CHIME)
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
     stale_build()
     threading.Thread(target=control_server, daemon=True).start()
+    threading.Thread(target=_mic_poll, daemon=True).start()
     timers_load()
     threading.Thread(target=timers_loop, daemon=True).start()
     threading.Thread(target=tap_loop, daemon=True).start()
     model = load_model()
     det = Detector()
     print(f"cooldown={COOLDOWN}s gain={GAIN}", flush=True)
-    while True:
-        cap = find_card("arecord")
-        if not cap:
-            LIVE["capture"] = None
-            print(f"no capture device matching {DEVICE!r}; retrying", flush=True)
-            time.sleep(5)
-            continue
+    st = {"sess": None, "tail": None, "tail24": None, "last_hit": 0.0, "last_log": 0.0, "peak": 0.0,
+          "rms_sum": 0.0, "n": 0, "peaks": {}, "sample_peak": 0, "clip_n": 0, "sample_n": 0}
+
+    def on_open(cap, proc):
         play = find_card("aplay") or cap
         LIVE["play"], LIVE["capture"] = play, cap
         print(f"capture {cap} playback {play}", flush=True)
+        st["last_hit"] = 0.0
+        st["last_log"] = time.time()
+        st["peak"] = 0.0
+        st["rms_sum"] = 0.0
+        st["n"] = 0
+        st["peaks"] = {}
+        st["sample_peak"] = 0
+        st["clip_n"] = 0
+        st["sample_n"] = 0
+        st["tail"] = np.zeros(len(_K) - 1, np.float32)
+        st["tail24"] = np.zeros(len(_K24) - 1, np.float32)
+        st["sess"] = None
+
+    def spawn(cap):
         # 500 ms ALSA buffer / 100 ms periods: a slow Pi (3B) can stall for a few hundred ms without an overrun
-        p = subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw",
-                              "--buffer-time=" + E("WAKE_ALSA_BUFFER_US", "500000"),
-                              "--period-time=" + E("WAKE_ALSA_PERIOD_US", "100000")],
-                             stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
-        last_hit, last_log, peak, rms_sum, n, peaks = 0.0, time.time(), 0.0, 0.0, 0, {}
-        sample_peak, clip_n, sample_n = 0, 0, 0
-        tail = np.zeros(len(_K) - 1, np.float32)
-        tail24 = np.zeros(len(_K24) - 1, np.float32)
-        sess = None
-        while True:
-            buf = p.stdout.read(CHUNK * DECIM * 2)
-            if not buf or len(buf) < CHUNK * DECIM * 2:
-                break
-            x = np.frombuffer(buf, "<i2").astype(np.float32)
-            if not sess and not ENROLL_Q.empty():
-                def read16(raw=False):
-                    nonlocal tail
-                    b = p.stdout.read(CHUNK * DECIM * 2)
-                    if not b or len(b) < CHUNK * DECIM * 2:
-                        raise EOFError
-                    y = np.frombuffer(b, "<i2").astype(np.float32)
-                    if DECIM > 1:
-                        yy = np.concatenate([tail, y]); tail = yy[-(len(_K) - 1):]
-                        y = np.convolve(yy, _K, "valid")[::DECIM]
-                    return np.clip(y * (1.0 if raw else GAIN), -32768, 32767).astype("<i2")
-                try:
-                    enroll(ENROLL_Q.get_nowait(), read16, play)
-                except EOFError:
-                    break
-                except Exception as e:
-                    print(f"enroll failed: {type(e).__name__}", flush=True)
-                    post_state("error", text="Enrollment stopped.")
-                reset_detect(model); det.reset()
-                continue
-            if RELOAD.is_set() and not sess:
-                RELOAD.clear()
-                try:
-                    model = load_model(); det = Detector()
-                except Exception as e:
-                    print(f"wake model reload failed: {type(e).__name__}", flush=True)
-                continue
-            LIVE["session"] = bool(sess and sess.active)
-            if sess and not sess.active:
-                sess = None
-                reset_detect(model)  # drop audio features from the session before listening again
-                det.reset()
-            if sess:
-                if sess.feeding:
-                    xx = np.concatenate([tail24, x]); tail24 = xx[-(len(_K24) - 1):]
-                    y = np.convolve(xx, _K24, "valid")[::D24] if D24 > 1 else up24(x, xx[-len(x) - 1]) if CAP_RATE == 16000 else x
-                    sess.feed(np.clip(y * VOICE_GAIN, -32768, 32767).astype("<i2").tobytes())
-                continue  # wake detector paused while a session is open
-            if DECIM > 1:
-                xx = np.concatenate([tail, x]); tail = xx[-(len(_K) - 1):]
-                x = np.convolve(xx, _K, "valid")[::DECIM]
-            pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
-            sc = scores(model, pcm)
-            s = max(sc.values(), default=0.0)
-            hit = det.feed(sc)
-            r = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
-            rms_sum += r; n += 1
-            LIVE["dbfs"], LIVE["at"] = round(float(20 * np.log10(max(r, 1) / 32768)), 1), time.time()  # admin mic meter
-            sp, cn, sn = pcm_extremes(pcm)
-            sample_peak = max(sample_peak, sp)
-            clip_n += cn
-            sample_n += sn
-            peak = max(peak, s)
-            for k, v in sc.items():
-                peaks[k] = max(peaks.get(k, 0.0), v)
-            now = time.time()
-            if hit and now - last_hit >= COOLDOWN:
-                last_hit = now
-                slug = WORDS[hit]["persona"]
-                print(f"WAKE {hit} score={sc.get(hit, 0.0):.3f} persona={slug}", flush=True)
-                det.reset()
-                mode = setup_mode()
-                if mode:  # not set up (or password reset / no network): listen tone + spoken line, no relay session
-                    print(f"wake ignored: {mode} pending", flush=True)
-                    line = os.path.join(SETUP_LINES, mode + ".wav")
-                    play_seq(play, [configured_wav("LISTEN_TONE"), line if os.path.isfile(line) else None])
-                    continue
-                play_file(play, configured_wav("LISTEN_TONE"))
-                threading.Thread(target=post_state, args=("listening",), kwargs={"who": persona_name(slug)}, daemon=True).start()
-                if RELAY_URL:
-                    sess = Session(play, persona=slug)
-            if now - last_log >= LEVEL_EVERY:
-                avg = rms_sum / max(1, n)
-                ratio = (clip_n / sample_n) if sample_n else 0.0
-                print(format_level_line(avg, peak, n, peaks, sample_peak, ratio), flush=True)
-                last_log, peak, rms_sum, n, peaks = now, 0.0, 0.0, 0, {}
-                sample_peak, clip_n, sample_n = 0, 0, 0
-        p.kill()
-        LIVE["capture"] = None
-        print("capture ended; restarting", flush=True)
-        time.sleep(2)
+        return subprocess.Popen(["arecord", "-q", "-D", cap, "-f", "S16_LE", "-r", str(CAP_RATE), "-c", "1", "-t", "raw",
+                                 "--buffer-time=" + E("WAKE_ALSA_BUFFER_US", "500000"),
+                                 "--period-time=" + E("WAKE_ALSA_PERIOD_US", "100000")],
+                                stdout=subprocess.PIPE)  # buffered: read(n) returns full chunks
+
+    def handle(buf, guard):
+        nonlocal model, det
+        x = np.frombuffer(buf, "<i2").astype(np.float32)
+        sess = st["sess"]
+        if not sess and not ENROLL_Q.empty():
+            def read16(raw=False):
+                b = guard.read(CHUNK * DECIM * 2)
+                if guard.reason or not b or len(b) < CHUNK * DECIM * 2:
+                    raise EOFError
+                y = np.frombuffer(b, "<i2").astype(np.float32)
+                if DECIM > 1:
+                    yy = np.concatenate([st["tail"], y]); st["tail"] = yy[-(len(_K) - 1):]
+                    y = np.convolve(yy, _K, "valid")[::DECIM]
+                return np.clip(y * (1.0 if raw else GAIN), -32768, 32767).astype("<i2")
+            try:
+                enroll(ENROLL_Q.get_nowait(), read16, LIVE["play"])
+            except EOFError:
+                return "eof"
+            except Exception as e:
+                print(f"enroll failed: {type(e).__name__}", flush=True)
+                post_state("error", text="Enrollment stopped.")
+            reset_detect(model); det.reset()
+            return None
+        if RELOAD.is_set() and not sess:
+            RELOAD.clear()
+            try:
+                model = load_model(); det = Detector()
+            except Exception as e:
+                print(f"wake model reload failed: {type(e).__name__}", flush=True)
+            return None
+        LIVE["session"] = bool(sess and sess.active)
+        if sess and not sess.active:
+            sess = None
+            st["sess"] = None
+            reset_detect(model)  # drop audio features from the session before listening again
+            det.reset()
+        if sess:
+            if sess.feeding:
+                xx = np.concatenate([st["tail24"], x]); st["tail24"] = xx[-(len(_K24) - 1):]
+                y = np.convolve(xx, _K24, "valid")[::D24] if D24 > 1 else up24(x, xx[-len(x) - 1]) if CAP_RATE == 16000 else x
+                sess.feed(np.clip(y * VOICE_GAIN, -32768, 32767).astype("<i2").tobytes())
+            return None  # wake detector paused while a session is open
+        if DECIM > 1:
+            xx = np.concatenate([st["tail"], x]); st["tail"] = xx[-(len(_K) - 1):]
+            x = np.convolve(xx, _K, "valid")[::DECIM]
+        pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
+        sc = scores(model, pcm)
+        s = max(sc.values(), default=0.0)
+        hit = det.feed(sc)
+        r = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
+        st["rms_sum"] += r; st["n"] += 1
+        LIVE["dbfs"], LIVE["at"] = round(float(20 * np.log10(max(r, 1) / 32768)), 1), time.time()  # admin mic meter
+        if RECOVERY is not None:
+            try:
+                RECOVERY.note_level(LIVE["dbfs"], s, session=False)
+            except Exception as e:
+                print(f"mic reset note failed: {type(e).__name__}", flush=True)
+        sp, cn, sn = pcm_extremes(pcm)
+        st["sample_peak"] = max(st["sample_peak"], sp)
+        st["clip_n"] += cn
+        st["sample_n"] += sn
+        st["peak"] = max(st["peak"], s)
+        for k, v in sc.items():
+            st["peaks"][k] = max(st["peaks"].get(k, 0.0), v)
+        now = time.time()
+        if hit and now - st["last_hit"] >= COOLDOWN:
+            st["last_hit"] = now
+            slug = WORDS[hit]["persona"]
+            print(f"WAKE {hit} score={sc.get(hit, 0.0):.3f} persona={slug}", flush=True)
+            det.reset()
+            mode = setup_mode()
+            if mode:  # not set up (or password reset / no network): listen tone + spoken line, no relay session
+                print(f"wake ignored: {mode} pending", flush=True)
+                line = os.path.join(SETUP_LINES, mode + ".wav")
+                play_seq(LIVE["play"], [configured_wav("LISTEN_TONE"), line if os.path.isfile(line) else None])
+                return None
+            play_file(LIVE["play"], configured_wav("LISTEN_TONE"))
+            threading.Thread(target=post_state, args=("listening",), kwargs={"who": persona_name(slug)}, daemon=True).start()
+            if RELAY_URL:
+                st["sess"] = Session(LIVE["play"], persona=slug)
+            return None
+        if now - st["last_log"] >= LEVEL_EVERY:
+            avg = st["rms_sum"] / max(1, st["n"])
+            ratio = (st["clip_n"] / st["sample_n"]) if st["sample_n"] else 0.0
+            print(format_level_line(avg, st["peak"], st["n"], st["peaks"], st["sample_peak"], ratio), flush=True)
+            st["last_log"], st["peak"], st["rms_sum"], st["n"], st["peaks"] = now, 0.0, 0.0, 0, {}
+            st["sample_peak"], st["clip_n"], st["sample_n"] = 0, 0, 0
+        return None
+
+    run_capture_rounds(lambda: find_card("arecord"), spawn, handle, mic_busy, on_open=on_open,
+                       stall_s=_env_float("WAKE_CAPTURE_STALL_S", 3.0),
+                       silence_s=_env_float("WAKE_CAPTURE_SILENCE_S", 10.0),
+                       chunk_s=CHUNK / 16000.0, gap=_env_float("WAKE_CAPTURE_REOPEN_S", 30.0))
 
 
 if __name__ == "__main__":
