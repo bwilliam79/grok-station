@@ -16,7 +16,7 @@ When Display dimming is on, brightness follows a light sensor, a clock schedule,
 Off leaves the backlight alone. A missing backlight file is a black overlay on a copy of the frame.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
-Small status icons (network, relay, mic) sit in the top-right corner. A daemon thread polls them; --demo does not.
+Small status icons (network, relay, mic, and an update arrow only while a newer version is cached) sit in the top-right corner. A daemon thread polls them; --demo does not.
 """
 import hashlib, hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -426,6 +426,7 @@ STATUS = {
     "net": {"kind": "none", "up": False},
     "relay": {"ok": None, "detail": ""},
     "mic": {"ok": None, "detail": ""},
+    "update": False,
     "at": 0,
 }
 _STATUS_ICON_CACHE = {}
@@ -434,12 +435,13 @@ _STATUS_ICON_CACHE = {}
 def status_snapshot():
     with _STATUS_LOCK:
         st = STATUS
-        return {"net": dict(st["net"]), "relay": dict(st["relay"]), "mic": dict(st["mic"]), "at": st["at"]}
+        return {"net": dict(st["net"]), "relay": dict(st["relay"]), "mic": dict(st["mic"]),
+                "update": bool(st.get("update")), "at": st["at"]}
 
 
 def _status_visible(st):
     return (st["net"].get("kind"), bool(st["net"].get("up")), st["relay"].get("ok"), st["relay"].get("detail"),
-            st["mic"].get("ok"), st["mic"].get("detail"))
+            st["mic"].get("ok"), st["mic"].get("detail"), bool(st.get("update")))
 
 
 def store_status(nxt):
@@ -690,9 +692,54 @@ def read_mic(now):
     return check_mic(now, fetch_wake_status, read_cards(), stale_s=mic_stale_s(), match=mic_match())
 
 
+_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def semver_tuple(value):
+    if not isinstance(value, str):
+        return None
+    match = _SEMVER.fullmatch(value.strip())
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def update_available(cache, installed):
+    """True only when the cached check names a newer MAJOR.MINOR.PATCH and a 40-hex commit. No idle state."""
+    if not isinstance(cache, dict) or cache.get("error"):
+        return False
+    sha = cache.get("sha")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return False
+    avail = semver_tuple(cache.get("available")) if isinstance(cache.get("available"), str) else None
+    if avail is None:
+        return False
+    have = semver_tuple(installed) if isinstance(installed, str) else None
+    if have is None:
+        return True
+    return avail > have
+
+
+def read_update_available(cache_path=None, version_path=None):
+    """The admin page's cached check. Unreadable or not-newer is absent, not a gray icon."""
+    cache_path = cache_path or E("GROK_STATION_UPDATE_CHECK", "/var/lib/grok-station/admin/update-check.json")
+    version_path = version_path or E("GROK_STATION_VERSION_FILE", "/opt/grok-station/VERSION")
+    try:
+        with open(cache_path) as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        return False
+    try:
+        with open(version_path) as f:
+            installed = f.read().strip()
+    except OSError:
+        installed = ""
+    return update_available(cache, installed)
+
+
 def collect_status(now=None):
     now = time.time() if now is None else now
-    return {"net": read_net(), "relay": read_relay(), "mic": read_mic(now), "at": now}
+    return {"net": read_net(), "relay": read_relay(), "mic": read_mic(now), "update": read_update_available(), "at": now}
 
 
 def status_loop():
@@ -717,7 +764,7 @@ def net_icon_name(net):
 
 
 def status_icon_names(st):
-    """Right to left: network, relay (always shown; dim broken link until a bot is paired), mic (hidden until the first reading)."""
+    """Right to left: network, relay (always shown; dim broken link until a bot is paired), mic (hidden until the first reading), update (only while a newer version is cached)."""
     names = [net_icon_name(st.get("net") or {})]
     relay = st.get("relay") or {}
     if relay.get("ok") is None:
@@ -727,6 +774,8 @@ def status_icon_names(st):
     mic = st.get("mic") or {}
     if mic.get("ok") is not None:
         names.append("mic-ok" if mic.get("ok") else "mic-problem")
+    if st.get("update"):
+        names.append("update-available")
     return names
 
 
@@ -774,6 +823,12 @@ def _fallback_status_icon(name, px):
         pygame.draw.circle(surf, color, (pad + r, px // 2), r, stroke(sw, r))
         pygame.draw.circle(surf, color, (max(pad + r, px - pad - r), px // 2), r, stroke(sw, r))
         pygame.draw.line(surf, color, (pad + 2 * r, px // 2), (max(pad + 2 * r, px - pad - 2 * r), px // 2), sw)
+    elif name == "update-available":
+        cx = px // 2
+        top, bot = pad, max(pad + 2, px - pad)
+        pygame.draw.line(surf, color, (cx, top), (cx, bot - sw), sw)
+        pygame.draw.line(surf, color, (pad, px // 2), (cx, bot), sw)
+        pygame.draw.line(surf, color, (px - pad, px // 2), (cx, bot), sw)
     else:
         w, h = max(2, px // 3), max(2, px // 2)
         body = pygame.Rect((px - w) // 2, pad, w, h)

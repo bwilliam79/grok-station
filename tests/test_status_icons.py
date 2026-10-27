@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Status-icon checks: pure parsers, fallback glyphs, and top-right placement. No network or hardware."""
-import os, sys, tempfile, time, unittest
+import json, os, sys, tempfile, time, unittest
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -223,6 +223,12 @@ class IconDraw(unittest.TestCase):
         rect2 = gs.draw_status_icons(surf2, L, status=unpaired)
         self.assertEqual(rect2.width, rect.width)
         self.assertEqual(rect2.right, rect.right)
+        plain = gs.status_icon_names(st)
+        self.assertNotIn("update-available", plain)
+        wider = gs.draw_status_icons(pygame.Surface((w, h)), L, status=dict(st, update=True))
+        self.assertGreater(wider.width, rect.width)
+        self.assertEqual(wider.right, rect.right)
+        self.assertIn("update-available", gs.status_icon_names(dict(st, update=True)))
 
     def test_clock_sits_left_of_the_icons(self):
         surf = pygame.Surface((1920, 1080))
@@ -243,6 +249,62 @@ class IconDraw(unittest.TestCase):
         self.assertIsNotNone(gs.LAST_STATUS_RECT)
         self.assertFalse(gs.LAST_STATUS_RECT.colliderect(gs.LAST_TOPBAR_RECT))
         self.assertLessEqual(gs.LAST_TOPBAR_RECT.right, gs.LAST_STATUS_RECT.left)
+
+
+class UpdateIcon(unittest.TestCase):
+    def test_only_while_a_newer_version_is_cached(self):
+        sha = "a" * 40
+        self.assertFalse(gs.update_available({}, "0.12.1"))
+        self.assertFalse(gs.update_available({"error": True, "available": "9.0.0", "sha": sha}, "0.12.1"))
+        self.assertFalse(gs.update_available({"available": "9.0.0", "sha": "abc", "error": False}, "0.12.1"))
+        self.assertFalse(gs.update_available({"available": sha, "sha": sha, "error": False}, "0.12.1"))
+        self.assertFalse(gs.update_available({"available": "0.12.1", "sha": sha, "error": False}, "0.12.1"))
+        self.assertFalse(gs.update_available({"available": "0.12.0", "sha": sha, "error": False}, "0.12.1"))
+        self.assertTrue(gs.update_available({"available": "0.12.2", "sha": sha, "error": False}, "0.12.1"))
+        self.assertTrue(gs.update_available({"available": "0.12.2", "sha": sha, "error": False}, "dev"))
+        with tempfile.TemporaryDirectory() as d:
+            cache = os.path.join(d, "update-check.json")
+            ver = os.path.join(d, "VERSION")
+            open(ver, "w").write("0.12.1\n")
+            self.assertFalse(gs.read_update_available(os.path.join(d, "missing.json"), ver))
+            open(cache, "w").write(json.dumps({"available": "0.12.1", "sha": sha, "error": False}))
+            self.assertFalse(gs.read_update_available(cache, ver))
+            open(cache, "w").write(json.dumps({"available": "0.12.2", "sha": sha, "error": False}))
+            self.assertTrue(gs.read_update_available(cache, ver))
+        names = gs.status_icon_names({"net": {}, "relay": {}, "mic": {}})
+        self.assertNotIn("update-available", names)
+        self.assertEqual(gs.status_icon_names({"net": {}, "relay": {}, "mic": {}, "update": False})[-1][:6], "relay-")
+        shown = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "relay": {"ok": True}, "mic": {"ok": True}, "update": True})
+        self.assertEqual(shown[-1], "update-available")
+        self.assertEqual(shown[:3], ["wifi-connected", "relay-connected", "mic-ok"])
+
+    def test_icon_matches_the_set_and_makes_no_sound(self):
+        svg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "assets", "status", "update-available.svg")
+        svg = open(svg_path).read()
+        self.assertIn('viewBox="0 0 24 24"', svg)
+        self.assertIn('stroke="#3FD3B6"', svg)
+        self.assertIn('stroke-width="2"', svg)
+        self.assertIn('stroke-linecap="round"', svg)
+        icon = gs.load_status_icon("update-available", 24)
+        self.assertEqual(icon.get_size(), (24, 24))
+        teal = False
+        for y in range(24):
+            for x in range(24):
+                c = icon.get_at((x, y))
+                if c.a >= 200 and c.g > 160 and c.b > 140 and c.r < 120:
+                    teal = True
+        self.assertTrue(teal)
+        with tempfile.TemporaryDirectory() as empty:
+            fallback = gs.load_status_icon("update-available", 24, directory=empty)
+        self.assertEqual(fallback.get_size(), (24, 24))
+        src = open(gs.__file__).read()
+        self.assertNotIn("aplay", src.split("def read_update_available", 1)[1].split("def collect_status", 1)[0])
+        prev = gs.status_snapshot()
+        try:
+            self.assertTrue(gs.store_status(dict(prev, update=not prev.get("update"))))
+        finally:
+            gs.store_status(prev)
 
 
 if __name__ == "__main__":

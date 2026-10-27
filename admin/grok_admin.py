@@ -2671,7 +2671,7 @@ def run_update_check():
     try:
         info = remote_main()
     except (OSError, subprocess.TimeoutExpired):
-        write_json(path("update-check.json"), {"available": None, "sha": None, "error": True, "checked_at": int(now())})
+        write_json(path("update-check.json"), {"available": None, "sha": None, "error": True, "checked_at": int(now())}, 0o640)
         _audit_update("update-check-failed", "network")
         return
     prev = _update_cache().get("known")
@@ -2682,7 +2682,7 @@ def run_update_check():
     write_json(path("update-check.json"), {
         "available": info["version"] or None, "sha": info["sha"], "error": False, "checked_at": int(now()),
         "known": known,
-    })
+    }, 0o640)
     _audit_update("update-check", info["version"] or info["sha"][:7])
 
 
