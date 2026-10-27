@@ -445,8 +445,8 @@ class AdminUI(unittest.TestCase):
         installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]
         self.assertIn('"$stage/grok-station-reply" keygen', installer)
         self.assertIn("GROK_STATION_BOT_KEY", installer)
-        self.assertIn('"$stage/gs-seal-setup" keygen', installer)
-        self.assertIn('"$stage/gs-seal-setup" init', installer)
+        self.assertIn('"$S/gs-seal-setup" keygen', installer)  # $S: the stage, or the verified installed helper (0.12.6)
+        self.assertIn('"$S/gs-seal-setup" init', installer)
         self.assertNotIn("mailbox", cloud.lower())
         self.assertNotIn("mailbox", home.lower())
         self.assertNotIn("mailbox", js.lower())

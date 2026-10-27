@@ -295,10 +295,6 @@ place_one() {
 }
 
 RAW="https://raw.githubusercontent.com/bwilliam79/grok-station/${COMMIT}"
-refuse_exists "$BIN/gs-seal-setup"
-refuse_exists "$BIN/gs-seal-reply"
-refuse_exists "$BIN/gs_seal_common.py"
-refuse_exists "$BIN/vendor-lock.txt"
 make_private "$BIN"
 chmod 700 "$BIN"
 python3 - "$BIN" <<'PY'
@@ -333,13 +329,33 @@ CURL_HOME="$stage/nocurlrc"
 mkdir -m 700 "$CURL_HOME"
 export CURL_HOME
 
-fetch_one gs-seal-setup "$RAW/scripts/gs-seal-setup" "$HASH_SETUP" 700
-fetch_one gs-seal-reply "$RAW/scripts/gs-seal-reply" "$HASH_REPLY" 700
-fetch_one gs_seal_common.py "$RAW/scripts/gs_seal_common.py" "$HASH_COMMON" 600
-fetch_one vendor-lock.txt "$RAW/scripts/vendor-lock.txt" "$HASH_LOCK" 600
+# Another bot on this computer may have installed the helper already. When every file is there and matches
+# its pin (and UPGRADE is not set), set up only this persona's key and config with the installed helper.
+have_pinned() {
+  [ -f "$BIN/$1" ] && [ ! -L "$BIN/$1" ] && [ "$(sha256_of "$BIN/$1")" = "$2" ]
+}
+have=0
+if [ "${UPGRADE:-}" != "1" ] && have_pinned gs-seal-setup "$HASH_SETUP" && have_pinned gs-seal-reply "$HASH_REPLY" \
+    && have_pinned gs_seal_common.py "$HASH_COMMON" && have_pinned vendor-lock.txt "$HASH_LOCK"; then
+  have=1
+fi
+S="$stage"
+if [ "$have" = "1" ]; then
+  S="$BIN"
+  printf '%s\n' "The helper is already installed on this computer and verifies. Setting up this bot only." >&2
+else
+  refuse_exists "$BIN/gs-seal-setup"
+  refuse_exists "$BIN/gs-seal-reply"
+  refuse_exists "$BIN/gs_seal_common.py"
+  refuse_exists "$BIN/vendor-lock.txt"
+  fetch_one gs-seal-setup "$RAW/scripts/gs-seal-setup" "$HASH_SETUP" 700
+  fetch_one gs-seal-reply "$RAW/scripts/gs-seal-reply" "$HASH_REPLY" 700
+  fetch_one gs_seal_common.py "$RAW/scripts/gs_seal_common.py" "$HASH_COMMON" 600
+  fetch_one vendor-lock.txt "$RAW/scripts/vendor-lock.txt" "$HASH_LOCK" 600
+  "$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"
+fi
 
 phase=setup
-"$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"
 keyf="$HOME/.config/grok-station/keys/$persona.key"
 cfgf="$HOME/.config/grok-station/$persona.json"
 if [ -L "$keyf" ] || [ -L "$cfgf" ]; then
@@ -353,19 +369,24 @@ elif [ -e "$keyf" ] && [ -e "$cfgf" ]; then
   printf '%s\n' "Key and config are already in place. Not minting a new key." >&2
 else
   if [ ! -e "$keyf" ]; then
-    "$stage/gs-seal-setup" keygen --persona "$persona"
+    "$S/gs-seal-setup" keygen --persona "$persona"
   fi
   if [ ! -e "$cfgf" ]; then
-    "$stage/gs-seal-setup" init --persona "$persona" --station "$station" --pin-sha256 "$pin" --station-pub "$pub"
+    "$S/gs-seal-setup" init --persona "$persona" --station "$station" --pin-sha256 "$pin" --station-pub "$pub"
   fi
 fi
 
-place_one gs-seal-setup
-place_one gs-seal-reply
-place_one gs_seal_common.py
-place_one vendor-lock.txt
+if [ "$have" != "1" ]; then
+  place_one gs-seal-setup
+  place_one gs-seal-reply
+  place_one gs_seal_common.py
+  place_one vendor-lock.txt
+fi
 
 wrapdir="$HOME/.local/bin"
+if [ "$have" = "1" ] && [ -f "$wrapdir/gs-seal-reply" ] && [ ! -L "$wrapdir/gs-seal-reply" ]; then
+  UPGRADE=1  # the wrapper the first bot wrote is rewritten in place with the same content
+fi
 refuse_exists "$wrapdir/gs-seal-reply"
 make_private "$wrapdir"
 real="$BIN/gs-seal-reply"

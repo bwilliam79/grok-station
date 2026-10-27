@@ -4277,9 +4277,7 @@ function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
   add('  mv -f "$stage/$base" "$dest"');
   add("}");
   add("");
-  if (mode === "home") {
-    HOME_FILES.forEach(row => add('refuse_exists "$BIN/' + row[1] + '"'));
-  } else {
+  if (mode !== "home") {
     add('if [ "$role" = "bot" ]; then');
     CLOUD_BOT.forEach(row => add('  refuse_exists "$BIN/' + row[1] + '"'));
     add("else");
@@ -4320,12 +4318,22 @@ function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
   add('mkdir -m 700 "$CURL_HOME"');
   add("export CURL_HOME");
   add("");
-  add("# Download and verify every file before anything is moved into place.");
   if (mode === "home") {
-    fileCmds(HOME_FILES).forEach(add);
-    add("");
+    // Another bot on this computer may have installed the helper already: if every file is there and matches
+    // its pin, set up only this bot's key and config with the installed helper (0.12.6).
+    add("have=1");
+    HOME_FILES.forEach(row => add('f="$BIN/' + row[1] + '"; if [ -f "$f" ] && [ ! -L "$f" ] && [ "$(sha256_of "$f")" = ' + shq(pinOf(row[0])) + ' ]; then :; else have=0; fi'));
+    add('S="$stage"');
+    add('if [ "$have" = "1" ]; then');
+    add('  S="$BIN"');
+    add("  printf '%s\\n' \"The helper is already installed on this computer and verifies. Setting up this bot only.\" >&2");
+    add("else");
+    HOME_FILES.forEach(row => add('  refuse_exists "$BIN/' + row[1] + '"'));
+    add("# Download and verify every file before anything is moved into place.");
+    fileCmds(HOME_FILES).forEach(cmd => add("  " + cmd));
+    add('  "$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"');
+    add("fi");
     add("phase=setup");
-    add('"$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"');
     add('keyf="$HOME/.config/grok-station/keys/' + who + '.key"');
     add('cfgf="$HOME/.config/grok-station/' + who + '.json"');
     add('if [ -L "$keyf" ] || [ -L "$cfgf" ]; then');
@@ -4336,16 +4344,19 @@ function deployScript(mode, pins, persona, station, pinSha256, stationPub) {
     add("  printf '%s\\n' \"Key and config are already in place. Not minting a new key.\" >&2");
     add("else");
     add('  if [ ! -e "$keyf" ]; then');
-    add('    "$stage/gs-seal-setup" keygen --persona ' + shq(who));
+    add('    "$S/gs-seal-setup" keygen --persona ' + shq(who));
     add("  fi");
     add('  if [ ! -e "$cfgf" ]; then');
-    add('    "$stage/gs-seal-setup" init --persona ' + shq(who) + " --station " + shq(site) + " --pin-sha256 " + shq(pin) + " --station-pub " + shq(pub));
+    add('    "$S/gs-seal-setup" init --persona ' + shq(who) + " --station " + shq(site) + " --pin-sha256 " + shq(pin) + " --station-pub " + shq(pub));
     add("  fi");
     add("fi");
-    HOME_FILES.forEach(row => add("place_one " + shq(row[1])));
+    add('if [ "$have" != "1" ]; then');
+    HOME_FILES.forEach(row => add("  place_one " + shq(row[1])));
+    add("fi");
     add("phase=done");
     add("printf '%s\\n' \"Installed into $BIN\" >&2");
   } else {
+    add("# Download and verify every file before anything is moved into place.");
     add('if [ "$role" = "bot" ]; then');
     fileCmds(CLOUD_BOT).forEach(cmd => add("  " + cmd));
     add("  python3 -m pip install --user --require-hashes --no-deps --only-binary :all: -r \"$stage/vendor-lock.txt\" > \"$stage/pip.out\" 2> \"$stage/pip.err\" || {");

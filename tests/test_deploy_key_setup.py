@@ -700,6 +700,38 @@ class DeployKeySetup(unittest.TestCase):
         self.assertEqual(self._stages(self._bin(mismatch["home"])), [])
         self.assertFalse(os.path.exists(os.path.join(self._bin(mismatch["home"]), "vendor-lock.txt")))
 
+    def test_home_second_bot_reuses_a_verified_helper(self):
+        first = self._run("home", home_mode=True)
+        self.assertEqual(first["proc"].returncode, 0, first["proc"].stderr)
+        self.assertTrue(_calls(first["curl_log"]))  # a fresh install downloads
+        home = first["home"]
+        cfg = os.path.join(home, ".config", "grok-station")
+        other = os.path.join(cfg, "keys", "other-bot.key")
+        with open(other, "w") as fh:
+            fh.write("OTHER\n")
+        os.chmod(other, 0o600)
+        for f in (os.path.join(cfg, "keys", PERSONA + ".key"), os.path.join(cfg, PERSONA + ".json")):
+            if os.path.exists(f):
+                os.unlink(f)
+        inos = {row[1]: os.lstat(os.path.join(self._bin(home), row[1])).st_ino for row in HOME_FILES}
+        again = self._run("home", home_mode=True, home=home)
+        self.assertEqual(again["proc"].returncode, 0, again["proc"].stderr)
+        self.assertIn("already installed on this computer and verifies", again["proc"].stderr)
+        self.assertNotIn("already exists", again["proc"].stderr)
+        self.assertEqual(_calls(again["curl_log"]), [])  # no download
+        self.assertTrue(os.path.exists(os.path.join(cfg, "keys", PERSONA + ".key")))
+        with open(other) as fh:
+            self.assertEqual(fh.read(), "OTHER\n")  # another persona's key is untouched
+        for row in HOME_FILES:
+            self.assertEqual(os.lstat(os.path.join(self._bin(home), row[1])).st_ino, inos[row[1]])
+        self.assertEqual(self._stages(self._bin(home)), [])
+
+    def test_home_existing_helper_that_does_not_verify_is_refused(self):
+        refused = self._run("home", home_mode=True, preexist={"gs-seal-setup": b"OLD\n"})
+        self.assertNotEqual(refused["proc"].returncode, 0)
+        self.assertIn("already exists", refused["proc"].stderr)
+        self.assertEqual(_calls(refused["curl_log"]), [])
+
     def test_pip_sudo_and_pinned_urls(self):
         cloud = self._script("cloud")
         home = self._script("home")
@@ -798,6 +830,20 @@ class DeployKeySetup(unittest.TestCase):
         self.assertNotEqual(bad["proc"].returncode, 0)
         self.assertIn("refusing unsafe characters", bad["proc"].stderr)
         self.assertEqual(bad["curl_log"], "")
+
+    def test_install_home_sh_second_persona_reuses_the_helper(self):
+        text = self._install_home_text()
+        env = {"FAKE_UNAME_S": "Linux"}
+        first = self._run("home", args=self._home_args(), home_mode=True, script_text=text, extra_env=env)
+        self.assertEqual(first["proc"].returncode, 0, first["proc"].stderr)
+        home = first["home"]
+        args = ["--persona", "kai", "--station", STATION, "--pin-sha256", PIN, "--station-pub", STATION_PUB]
+        again = self._run("home", args=args, home_mode=True, script_text=text, extra_env=env, home=home)
+        self.assertEqual(again["proc"].returncode, 0, again["proc"].stderr)
+        self.assertIn("already installed on this computer and verifies", again["proc"].stderr)
+        self.assertEqual(_calls(again["curl_log"]), [])
+        self.assertTrue(os.path.exists(os.path.join(home, ".config", "grok-station", "keys", PERSONA + ".key")))
+        self.assertTrue(os.path.exists(os.path.join(home, ".config", "grok-station", "keys", "kai.key")))
 
     def test_install_home_update_keeps_key_and_config(self):
         """0.11.7: --update needs no station details, keeps the key and config, and swaps in the pinned files."""
