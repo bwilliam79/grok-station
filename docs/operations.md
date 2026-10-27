@@ -86,6 +86,8 @@ Or use **Updates** on the admin page: **Check now** compares this station's vers
 
 The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB reset (the connection turned off, then on) does, the same as unplugging it.
 
+Seen on the eMeet OfficeCore M0 Plus (USB 328f:0109), already on its latest firmware, so no firmware fix is expected. In one case it streamed normal levels for about 21 hours while the wake score stayed at 0.001; a listener restart did not help and a USB power-cycle fixed it at once.
+
 The listener is not root. It asks `sudo -n` to run one helper:
 
 | Piece | Value |
