@@ -190,12 +190,14 @@ class AdminUI(unittest.TestCase):
     def test_configure_drawer_can_change_voice(self):
         fn = _fn(self.js, "openBot")
         self.assertIn('<label for="bvoice">Voice</label>', fn)
-        self.assertIn('id="vsave"', fn)
-        self.assertIn(">Save<", fn)
+        self.assertNotIn('id="vsave"', fn)  # item 15d: the voice saves on change
         self.assertIn('voiceOptions(el._voices, bot.voice, "bvoice")', fn)
-        self.assertIn("Voice saved.", fn)
+        self.assertIn('autoSaveSelect($("#bvoice", d)', fn)
         self.assertIn("refreshBots(el)", fn)
-        self.assertIn('api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body)', fn)
+        self.assertIn('api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, pw ? {voice, password: pw} : {voice})', fn)
+        auto = _fn(self.js, "autoSaveSelect")
+        self.assertIn('flash("Saved")', auto)
+        self.assertIn('sel.value = sel.dataset.saved', auto)  # revert on failure or cancel
         add = self.js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn('voiceOptions(voices, "", "avoice", stationVoiceLabel(el))', add)
         self.assertIn("function voiceOptions", self.js)
@@ -307,15 +309,14 @@ class AdminUI(unittest.TestCase):
         self.assertIn("/api/wakewords/", toggles)
         self.assertNotIn(">Save<", toggles)
         voice = _fn(js, "openBot")
-        self.assertIn('id="vsave"', voice)
-        self.assertIn("dataset.saved", voice)
+        self.assertIn("autoSaveSelect(", voice)
+        self.assertIn("dataset.saved", _fn(js, "autoSaveSelect"))
         def chunk(start, end):
             return js.split(start, 1)[1].split(end, 1)[0]
         groups = {
             "wifi": chunk("async function wifiPanel", "\nfunction joinForm"),
             "time": chunk("async function timePanel", "\nfunction soundLabel"),
             "audio": chunk("async function audioPanel", "\nfunction wordLabel"),
-            "bots-voice": voice.split('<label for="bvoice">', 1)[1].split('id="panel-conn"', 1)[0],
             "display": disp,
             "system": chunk("async function pageSystem", "\nfunction pageMore"),
             "xai": chunk("async function xaiKeyPanel", "\nasync function wizard"),
@@ -323,6 +324,9 @@ class AdminUI(unittest.TestCase):
         for name, body in groups.items():
             self.assertTrue(">Save<" in body or "Save key" in body, name)
             self.assertNotIn(".onblur", body, name)
+        # Single-choice selects in bot detail save on change instead (item 15d).
+        bots_voice = voice.split('<label for="bvoice">', 1)[1].split('id="panel-conn"', 1)[0]
+        self.assertNotIn(">Save<", bots_voice)
         self.assertIn("dataset.saved", js.split("function watchSave", 1)[1].split("function boot", 1)[0])
         self.assertIn("btn.disabled", _fn(js, "watchSave"))
         priv = chunk("async function pagePrivacy", "\nasync function pageSystem")
@@ -1013,7 +1017,7 @@ class BotPictureUI(unittest.TestCase):
         self.js = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "admin", "web", "app.js")).read()
 
     def test_ask_bot_for_picture_and_routines(self):
-        self.assertIn(">Ask bot for picture<", self.js)
+        self.assertIn(">Ask bot for avatar<", self.js)
         self.assertNotIn("Refresh avatar<", self.js)
         self.assertIn("grok-station-reply seal-avatar --bot <slug>", self.js)
         self.assertIn("post --avatar --station <station address>", self.js)
@@ -1033,7 +1037,7 @@ class ConfigureTabs(unittest.TestCase):
         fn = _fn(self.js, "openBot")
         self.assertIn('role="tablist"', fn)
         bar = fn.split('role="tablist"', 1)[1].split('role="tabpanel"', 1)[0]
-        for label in (">Wake word<", ">Voice and photo<", ">Connection<", ">More<"):
+        for label in (">Wake word<", ">Voice and avatar<", ">Connection<", ">More<"):
             self.assertIn(label, bar, label)
         self.assertEqual(bar.count('role="tab"'), 4)
         self.assertIn('aria-selected="true"', bar)
@@ -1049,7 +1053,7 @@ class ConfigureTabs(unittest.TestCase):
         self.assertIn("const PICTURE_ASK = true;", self.js)
         fn = _fn(self.js, "openBot")
         self.assertIn(
-            "${PICTURE_ASK ? '<button class=\"btn sm\" id=\"refav\" type=\"button\">Ask bot for picture</button>' : \"\"}",
+            "${PICTURE_ASK ? '<button class=\"btn sm\" id=\"refav\" type=\"button\">Ask bot for avatar</button>' : \"\"}",
             fn)
         self.assertIn('const refav = $("#refav", d);', fn)
         self.assertIn("if (refav) refav.onclick", fn)
@@ -1232,9 +1236,9 @@ async function portraitSig() { ticks++; if (ticks >= OPEN_AFTER) open = false; r
 
     def test_messages(self):
         fn = _fn(self.js, "openBot")
-        self.assertIn('"Asked " + who + " for its picture…"', fn)
-        self.assertIn('say("Picture updated.")', fn)
-        self.assertIn("didn't send a picture. Its station helper may be out of date: use More, Copy updated instructions, and send them to", fn)
+        self.assertIn('"Asked " + who + " for its avatar…"', fn)
+        self.assertIn('say("Avatar updated.")', fn)
+        self.assertIn("didn't send an avatar. Its station helper may be out of date: use More, Copy updated instructions, and send them to", fn)
         self.assertIn('if (r.status === 502) return say("Couldn\'t reach " + who + ".")', fn)
         self.assertNotIn("setTimeout(() => { if (document.body.contains(el)) bustPortraits(el); }, 30000)", fn)
 

@@ -2282,6 +2282,31 @@ function askPassword(title, text, label, send, onCancel) {
   };
   $("#pwv", d).focus();
 }
+// Single-choice selects save as soon as they change: a small "Saved" note on success, the old value back on
+// failure or a cancelled password. save(value, pw) returns the api() result.
+function autoSaveSelect(sel, opts) {
+  if (!sel) return;
+  sel.dataset.saved = sel.value;
+  const note = opts.note;
+  const flash = t => { if (!note) return; note.textContent = t; note.hidden = !t; clearTimeout(note._t); if (t) note._t = setTimeout(() => (note.hidden = true), 1500); };
+  const revert = msg => { sel.value = sel.dataset.saved || ""; sel.disabled = false; if (msg && opts.err) attn(opts.err, msg); };
+  const ok = value => { sel.dataset.saved = value; sel.disabled = false; if (opts.err) attn(opts.err, ""); flash("Saved"); markSaved(); if (opts.onSaved) opts.onSaved(value); };
+  const fail = r => (r && r.data && r.data.error) || opts.failText || "Couldn't save.";
+  sel.addEventListener("change", () => {
+    const value = sel.value;
+    if (value === (sel.dataset.saved || "")) return;
+    sel.disabled = true;
+    const withPw = async pw => { const r = await opts.save(value, pw); if (r && r.ok) ok(value); return r; };
+    const ask = () => askPassword(opts.title, opts.text, "Save", withPw, () => revert(""));
+    if (!opts.needsPassword || stepupOpen()) {
+      opts.save(value, "").then(r => {
+        if (r && r.ok) return ok(value);
+        if (opts.needsPassword && r && r.status === 403) return ask();
+        revert(fail(r));
+      });
+    } else ask();
+  });
+}
 function confirmRemove(bot, onDone) {
   const d = document.createElement("div");
   d.className = "sheet";
@@ -2627,7 +2652,7 @@ function openBot(bot, el) {
     <div id="bdbody">
     <div class="ctabs" role="tablist">
       <button class="ctab" id="tab-wake" type="button" role="tab" aria-selected="true" aria-controls="panel-wake">Wake word</button>
-      <button class="ctab" id="tab-voice" type="button" role="tab" aria-selected="false" aria-controls="panel-voice">Voice and photo</button>
+      <button class="ctab" id="tab-voice" type="button" role="tab" aria-selected="false" aria-controls="panel-voice">Voice and avatar</button>
       <button class="ctab" id="tab-conn" type="button" role="tab" aria-selected="false" aria-controls="panel-conn">Connection</button>
       <button class="ctab" id="tab-more" type="button" role="tab" aria-selected="false" aria-controls="panel-more">More</button>
     </div>
@@ -2638,15 +2663,16 @@ function openBot(bot, el) {
     </div>
     <div role="tabpanel" id="panel-voice" class="cpanel" hidden>
       <div class="field"><label for="bvoice">Voice</label>
-        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<button class="btn sm" id="vsave" type="button" disabled>Save</button></div>
+        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<span class="copied" id="vsaved" role="status" hidden></span></div>
         <div id="ve"></div></div>
-      <div class="field inline">
-        <label class="btn sm" for="photo">Upload photo</label>
-        <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
-        ${PICTURE_ASK ? '<button class="btn sm" id="refav" type="button">Ask bot for picture</button>' : ""}
-      </div>
-      <p class="note" id="refmsg" hidden></p>
-      <p class="note">png, jpeg, or webp, up to 2 MB.</p>
+      <div class="field avsec"><div class="lbl">Avatar</div>
+        <div class="inline">
+          <label class="btn sm" for="photo">Upload avatar</label>
+          <input type="file" id="photo" accept="image/png,image/jpeg,image/webp" hidden>
+          ${PICTURE_ASK ? '<button class="btn sm" id="refav" type="button">Ask bot for avatar</button>' : ""}
+        </div>
+        <p class="help">png, jpeg, or webp, up to 2 MB.</p>
+        <p class="note" id="refmsg" hidden></p></div>
     </div>
     <div role="tabpanel" id="panel-conn" class="cpanel" hidden>
       <div class="lbl">${esc(repliesFrom(bot))} · ${keyKind}</div>
@@ -2736,37 +2762,12 @@ function openBot(bot, el) {
       return r;
     }
   });
-  const voiceSel = $("#bvoice", d), vsave = $("#vsave", d);
-  if (voiceSel && vsave) {
-    voiceSel.dataset.saved = voiceSel.value;
-    const syncV = () => { vsave.disabled = voiceSel.value === voiceSel.dataset.saved; };
-    voiceSel.addEventListener("change", syncV);
-    syncV();
-  }
-  $("#vsave", d).onclick = () => {
-    const voice = ($("#bvoice", d) && $("#bvoice", d).value) || "";
-    if (voiceSel && voice === (voiceSel.dataset.saved || "")) return;
-    const send = async pw => {
-      const body = {voice};
-      if (pw) body.password = pw;
-      const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
-      if (r.ok) {
-        bot.voice = voice || (el && el._defaultVoice) || "";
-        if (voiceSel) voiceSel.dataset.saved = voice;
-        if (vsave) vsave.disabled = true;
-        attn($("#ve", d), "");
-        markSaved();
-        toast("Voice saved.");
-        refreshBots(el);
-      }
-      return r;
-    };
-    if (stepupOpen()) send("").then(r => {
-      if (r && r.status === 403) askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send);
-      else if (r && !r.ok) attn($("#ve", d), (r.data && r.data.error) || "Couldn't save the voice.");
-    });
-    else askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send);
-  };
+  autoSaveSelect($("#bvoice", d), {
+    note: $("#vsaved", d), err: $("#ve", d), needsPassword: true, failText: "Couldn't save the voice.",
+    title: "Change voice?", text: "Enter the admin password to save this voice.",
+    save: (voice, pw) => api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, pw ? {voice, password: pw} : {voice}),
+    onSaved: voice => { bot.voice = voice || (el && el._defaultVoice) || ""; refreshBots(el); },
+  });
   $("#photo", d).onchange = () => {
     const file = $("#photo", d).files && $("#photo", d).files[0];
     $("#photo", d).value = "";
@@ -2775,11 +2776,11 @@ function openBot(bot, el) {
     if (!okType || file.size > 2000000) return toast("Use a png, jpeg, or webp up to 2 MB.", "bad");
     const send = async pw => apiRaw("POST", `/api/bots/${encodeURIComponent(bot.slug)}/avatar`, await file.arrayBuffer(), file.type, pw);
     const done = r => {
-      if (r && (r.ok || r.status === 200)) { toast("Photo saved."); bustPortraits(el); }
+      if (r && (r.ok || r.status === 200)) { toast("Avatar saved."); bustPortraits(el); }
       return r;
     };
-    if (stepupOpen()) send("").then(r => { if (r && r.status === 403) askPassword("Upload photo?", "Enter the admin password to save this photo.", "Upload", async pw => done(await send(pw))); else done(r); });
-    else askPassword("Upload photo?", "Enter the admin password to save this photo.", "Upload", async pw => done(await send(pw)));
+    if (stepupOpen()) send("").then(r => { if (r && r.status === 403) askPassword("Upload avatar?", "Enter the admin password to save this avatar.", "Upload", async pw => done(await send(pw))); else done(r); });
+    else askPassword("Upload avatar?", "Enter the admin password to save this avatar.", "Upload", async pw => done(await send(pw)));
   };
   const refav = $("#refav", d);
   if (refav) refav.onclick = async () => {
@@ -2789,13 +2790,13 @@ function openBot(bot, el) {
     busyBtn(btn, true, "Asking…");
     const before = await portraitSig(bot.slug);
     const r = await api("POST", `/api/bots/${encodeURIComponent(bot.slug)}/avatar-request`, {});
-    busyBtn(btn, false, "Ask bot for picture");
+    busyBtn(btn, false, "Ask bot for avatar");
     if (r.status === 502) return say("Couldn't reach " + who + ".");
-    if (!(r.ok || r.status === 202)) return say((r.data && r.data.error) || "Couldn't ask for the picture.");
-    say("Asked " + who + " for its picture…");
+    if (!(r.ok || r.status === 202)) return say((r.data && r.data.error) || "Couldn't ask for the avatar.");
+    say("Asked " + who + " for its avatar…");
     watchPicture(bot.slug, before, d, res => {
-      if (res === "updated") { say("Picture updated."); bustPortraits(el); }
-      else say(who + " didn't send a picture. Its station helper may be out of date: use More, Copy updated instructions, and send them to " + who + ".");
+      if (res === "updated") { say("Avatar updated."); bustPortraits(el); }
+      else say(who + " didn't send an avatar. Its station helper may be out of date: use More, Copy updated instructions, and send them to " + who + ".");
     });
   };
   const showResult = (res) => {
