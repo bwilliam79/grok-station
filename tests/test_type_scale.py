@@ -7,15 +7,21 @@ JS = open(os.path.join(WEB, "app.js"), encoding="utf-8").read()
 SIZE = r"\d+(?:\.\d+)?(?:px|rem|em|pt|%)"
 
 def without_root(css):
+    """The token block: :root plus its one phone override (@media ... {:root{...}})."""
+    css = re.sub(r"@media \(max-width:767px\)\{:root\{[^}]*\}\}", "", css, count=1)
     return re.sub(r":root\{[^}]*\}", "", css, count=1)
 
 class TypeScale(unittest.TestCase):
     def test_tokens_live_in_one_root_block(self):
         root = re.search(r":root\{([^}]*)\}", CSS).group(1)
         for tok in ("--fs-help", "--fs-body", "--fs-label", "--fs-h3", "--fs-h2", "--fs-h1", "--fs-mono",
-                    "--sp-1", "--sp-2", "--sp-3", "--sp-4", "--sp-5", "--sp-6", "--panel-pad"):
+                    "--fs-caps", "--fs-mono-sm", "--sp-1", "--sp-2", "--sp-3", "--sp-4", "--sp-5", "--sp-6", "--panel-pad"):
             self.assertIn(tok + ":", root, tok)
-        self.assertEqual(len(re.findall(r":root\{", CSS)), 1)
+        self.assertEqual(len(re.findall(r"(?<!\{):root\{", CSS)), 1)
+        self.assertIn("@media (max-width:767px){:root{--fs-body:16px}}", CSS)  # iOS: no zoom on focus
+        self.assertIn("--fs-caps:12px", root)
+        self.assertRegex(CSS, r"\.grp\{font:500 var\(--fs-caps\)")
+        self.assertRegex(CSS, r"\.tbl th\{[^}]*font:500 var\(--fs-caps\)")
 
     def test_no_raw_font_size_in_css(self):
         body = without_root(CSS)

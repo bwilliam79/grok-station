@@ -83,23 +83,24 @@ The floor is 56 px for anything, and 85 px for anything that matters. Auto-fit m
 | Mono value | 14 | 14 | ui-monospace |
 | Button label | 14 | 16 | Inter 500 |
 
-### 3.3 Admin type and spacing scale (draft, waiting on Noor's review)
+### 3.3 Admin type and spacing scale (approved, Noor, Oct 27)
 All admin text sizes and spacing come from one `:root` block at the top of `admin/web/admin.css`. To change the scale, edit that block only. `tests/test_type_scale.py` fails on any raw `font-size`, any `font:` shorthand with a literal size outside that block, or any inline font style in `app.js`.
 
 | Token | Value | Use |
 |---|---|---|
-| `--fs-help` | 13px | Help text, meta, pills, small buttons, group labels |
+| `--fs-help` | 13px | Help text, meta, pills, small buttons |
+| `--fs-caps` | 12px | Uppercase labels: sidebar group labels (`.grp`) and table headers (`.tbl th`) |
 | `--fs-label` | 14px | Field labels, buttons, tabs, inputs |
-| `--fs-body` | 15px | Body text (phones use 16px so iOS doesn't zoom) |
+| `--fs-body` | 15px (16px under 768px) | Body text. The phone override sits right under `:root` so iOS doesn't zoom on input focus |
 | `--fs-mono` | 13px | Monospace values (keys, fingerprints, instructions) |
-| `--fs-mono-sm` | 10px | The certificate fingerprint, so all 95 characters fit on one line |
+| `--fs-mono-sm` | 10px | Only the 95-character certificate fingerprint, so it fits on one line. Not for general use |
 | `--fs-h3` | 18px | Card titles, tile values |
 | `--fs-h2` | 22px | Dialog and sign-in headings |
 | `--fs-h1` | 28px | Page and wizard titles |
 | `--sp-1` … `--sp-6` | 4, 8, 12, 16, 24, 32px | Spacing steps |
 | `--panel-pad` | `--sp-4` top, `--sp-2` bottom | Every bot-detail tab panel (`.cpanel`), so each tab's content starts at the same height |
 
-The 3.2 table above is the source this scale was cut from. Where they differ, this block wins. Group labels and the sign-in headings moved onto the nearest step (13px and 22px).
+The 3.2 table above is the source this scale was cut from. Where they differ, this block wins. Group labels and table headers use `--fs-caps` (12px); the sign-in headings moved to 22px.
 
 ## 4. Spacing, grid and safe margins
 **Base unit:** 8 px (4 px for half steps). Tokens are `--gs-space-1` to `--gs-space-8`: 4, 8, 12, 16, 24, 32, 48, 64.
@@ -225,7 +226,7 @@ Rules:
   - **Loading:** skeleton blocks in surface-2 at the shape of the content, never a bare "Loading…".
   - Never stack more than 2.
 - **Tables:**
-  - Row height 48, with a rule divider between rows, a muted 13 px uppercase header and mono for values.
+  - Row height 48, with a rule divider between rows, a muted 12 px uppercase header (`--fs-caps`) and mono for values.
   - Row actions sit at the right in a ⋯ menu.
   - On the phone, rows become stacked cards.
 - **Wizard stepper:**
