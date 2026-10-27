@@ -1923,7 +1923,7 @@ function pairFields(stationPub, bot) {
     ? `<button class="btn" id="pair" type="button">Save</button>`
     : `<button class="btn" id="pair" type="button">Pair key</button>`;
   const editor = `<div id="bpubedit"${st.stored ? " hidden" : ""}>
-      <input class="inp mono" id="bpub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes">
+      <input class="inp mono" id="bpub" autocomplete="off" spellcheck="false" autocapitalize="off">
       ${pairBtn}</div>`;
   return `<div class="field"><label>Station public key</label>
       ${staticValue("spub", stationPub, "station public key", STATION_KEY_MISSING)}</div>
@@ -3627,7 +3627,7 @@ function addBot(voices, el, preset) {
         <pre class="static-val" id="aroutine" hidden></pre></div>
       <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512" required></div>
       <div class="field"><label for="akey">Webhook key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400" required></div>
-      <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="Base64, 32 bytes" maxlength="120" required></div>
+      <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="120" required></div>
       <div class="field"><label for="ahost">Home computer name</label><input class="inp" id="ahost" autocomplete="off" spellcheck="false" maxlength="40" required>
         <p class="help">${esc(COMPUTER_HINT)}</p></div>
       <div id="awe"></div>

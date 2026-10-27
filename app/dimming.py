@@ -32,10 +32,12 @@ _I2C_RDWR = 0x0707
 _I2C_M_RD = 0x0001
 
 PASS_KEYS = ("GROK_STATION_HOLD", "GROK_STATION_NIGHT", "GROK_STATION_UNITS", "GROK_STATION_FADE",
-             "GROK_STATION_CARD_ROTATE")
+             "GROK_STATION_CARD_ROTATE", "GROK_STATION_SCORE_HOLD")
 DIM_KEYS = ("GROK_STATION_DIM_MODE", "GROK_STATION_DIM_DAY", "GROK_STATION_DIM_NIGHT",
-            "GROK_STATION_DIM_FROM", "GROK_STATION_DIM_TO", "GROK_STATION_DIM_LAT",
-            "GROK_STATION_DIM_LON", "GROK_STATION_DIM_SUNRISE", "GROK_STATION_DIM_SUNSET")
+            "GROK_STATION_DIM_FROM", "GROK_STATION_DIM_TO",
+            "GROK_STATION_DIM_SUNRISE", "GROK_STATION_DIM_SUNSET")
+# Retired. Sunrise uses the station location (GROK_STATION_LAT / LON). Old files are ignored.
+RETIRED_DIM = ("GROK_STATION_DIM_LAT", "GROK_STATION_DIM_LON")
 
 OVERLAY = {"level": None}  # None, or 0-99: black-overlay strength the framebuffer should apply
 
@@ -652,8 +654,9 @@ def _parse_stored_coord(text, limit):
 
 
 def config_from_env(env=None):
-    """Dimming settings from the environment. Blank dim coordinates fall back to the station
-    location, still rounded to 2 decimals, and only when both are present."""
+    """Dimming settings from the environment. Sunrise uses the station location only,
+    rounded to 2 decimals, and only when both latitude and longitude are present.
+    GROK_STATION_DIM_LAT and GROK_STATION_DIM_LON are ignored."""
     src = os.environ if env is None else env
 
     def raw(key, default=""):
@@ -670,15 +673,10 @@ def config_from_env(env=None):
     for key, field in (("GROK_STATION_DIM_FROM", "start"), ("GROK_STATION_DIM_TO", "end")):
         text = raw(key, "").strip()
         cfg[field] = parse_hhmm(text) if text else None
-    dim_lat = _parse_stored_coord(raw("GROK_STATION_DIM_LAT"), 90) if raw("GROK_STATION_DIM_LAT").strip() else None
-    dim_lon = _parse_stored_coord(raw("GROK_STATION_DIM_LON"), 180) if raw("GROK_STATION_DIM_LON").strip() else None
-    if raw("GROK_STATION_DIM_LAT").strip() or raw("GROK_STATION_DIM_LON").strip():
-        cfg["lat"], cfg["lon"] = (dim_lat, dim_lon) if dim_lat is not None and dim_lon is not None else (None, None)
-    else:
-        lat = _parse_stored_coord(raw("GROK_STATION_LAT"), 90)
-        lon = _parse_stored_coord(raw("GROK_STATION_LON"), 180)
-        if lat is not None and lon is not None:
-            cfg["lat"], cfg["lon"] = lat, lon
+    lat = _parse_stored_coord(raw("GROK_STATION_LAT"), 90)
+    lon = _parse_stored_coord(raw("GROK_STATION_LON"), 180)
+    if lat is not None and lon is not None:
+        cfg["lat"], cfg["lon"] = lat, lon
     for key, field in (("GROK_STATION_DIM_SUNRISE", "sunrise_offset"), ("GROK_STATION_DIM_SUNSET", "sunset_offset")):
         n = parse_offset(raw(key, "0") or "0")
         cfg[field] = 0 if n is None else n
@@ -774,27 +772,20 @@ def public_coord(value, limit):
 
 
 def display_view(values):
-    """Copy display settings for the browser, with coordinates forced to 2 decimals."""
+    """Copy display settings for the browser. Retired dim coordinates are dropped."""
     if not isinstance(values, dict):
         values = {}
-    out = {}
-    for key, value in values.items():
-        if key == "GROK_STATION_DIM_LAT":
-            out[key] = public_coord(value, 90)
-        elif key == "GROK_STATION_DIM_LON":
-            out[key] = public_coord(value, 180)
-        else:
-            out[key] = value
-    return out
+    return {key: value for key, value in values.items() if key not in RETIRED_DIM}
 
 
 def normalize_form(data):
     """Browser JSON -> helper stdin. (body, error). error is a sentence, or None.
 
-    Coordinates in `body` are already rounded to 2 decimals. Callers must not log `body`.
+    Retired dim coordinates are ignored and never written. Callers must not log `body`.
     """
     if not isinstance(data, dict):
         return None, "bad request"
+    data = {k: v for k, v in data.items() if k not in RETIRED_DIM}
     allowed = set(PASS_KEYS) | set(DIM_KEYS)
     if any(k not in allowed for k in data):
         return None, "That setting isn't on this page."
@@ -805,7 +796,10 @@ def normalize_form(data):
         value = data[key]
         if isinstance(value, bool) or not isinstance(value, (str, int, float)):
             return None, "That setting isn't on this page."
-        out[key] = str(value).strip()
+        text = str(value).strip()
+        if key == "GROK_STATION_SCORE_HOLD" and not re.fullmatch(r"(?:[1-9]|[1-9]\d|1[01]\d|120)", text):
+            return None, "Score card hold must be a whole number of seconds from 1 to 120."
+        out[key] = text
     if not any(k in data for k in DIM_KEYS):
         return out, None
     mode = data.get("GROK_STATION_DIM_MODE", "off")
@@ -849,18 +843,4 @@ def normalize_form(data):
         out["GROK_STATION_DIM_FROM"] = _hhmm(sm)
     if em is not None:
         out["GROK_STATION_DIM_TO"] = _hhmm(em)
-    lat_in, lon_in = data.get("GROK_STATION_DIM_LAT", ""), data.get("GROK_STATION_DIM_LON", "")
-    if lat_in in (None, "") and lon_in in (None, ""):
-        out["GROK_STATION_DIM_LAT"] = ""
-        out["GROK_STATION_DIM_LON"] = ""
-    else:
-        lat, lon = normalize_coord(lat_in, 90), normalize_coord(lon_in, 180)
-        if lat is None:
-            return None, "Latitude must be between -90 and 90."
-        if lon is None:
-            return None, "Longitude must be between -180 and 180."
-        if lat == "" or lon == "":
-            return None, "Enter both latitude and longitude, or leave both blank."
-        out["GROK_STATION_DIM_LAT"] = lat
-        out["GROK_STATION_DIM_LON"] = lon
     return out, None

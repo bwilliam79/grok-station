@@ -160,7 +160,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Never port-forward", js)
         self.assertNotIn("The bot seals replies", js)
         self.assertIn("All bots are revoked. Pair a key again to accept replies.", js)
-        self.assertIn("Base64, 32 bytes", js)
+        self.assertNotIn("Base64, 32 bytes", js)  # item 4: hint removed
         self.assertNotIn("function keyNote", js)
         self.assertNotIn("From grok-station-reply keygen.", js)
         self.assertNotIn("From gs-seal-setup keygen", js)
