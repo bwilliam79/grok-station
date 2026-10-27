@@ -412,6 +412,17 @@ head -n 1 "$T/instructions" | grep -qx "Grok Station instructions, release $rele
 # G and the tools. One update at a time per computer.
 mkdir -p "$STATE"
 lock="$STATE/.update-lock"
+# A run killed between mktemp and rename leaves .update-lock.new.* behind. Drop folders older than
+# 15 minutes once, before taking the lock. A symlink is left alone: it might point outside this directory.
+now=$(date +%s)
+for d in "$STATE"/.update-lock.new.*; do
+  [ -L "$d" ] && continue
+  [ -d "$d" ] || continue
+  mt=$(stat -c %Y "$d" 2>/dev/null) || continue
+  if [ $((now - mt)) -gt 900 ]; then
+    rm -rf "$d"
+  fi
+done
 n=0
 take_lock() {
   # Build the lock with its owner inside a fresh folder next to it, then rename it into place in one step, so
@@ -463,18 +474,25 @@ PY
   else
     helper=$cur  # another bot on this computer already updated the shared helper
   fi
-  computer=$(py - "$HOME/.config/grok-station/host-id" "$HOME/.config/grok-station/$persona.json" <<'PY' || printf '%s' "-"
-import base64, hashlib, hmac, json, re, sys
+  pj="$HOME/.config/grok-station/$persona.json"
+  if [ -L "$pj" ]; then die "refusing symlink: $pj"; fi
+  computer=$(py - "$HOME/.config/grok-station/host-id" "$pj" <<'PY'
+import base64, hashlib, hmac, json, os, re, sys
+if os.path.islink(sys.argv[2]):
+    sys.stderr.write("refusing symlink: %s\n" % sys.argv[2])
+    sys.exit(2)
 raw = open(sys.argv[1], encoding="ascii").read().strip().upper()
 if not re.fullmatch(r"[0-9A-F-]{8,64}", raw):
     sys.exit(1)
 pub = json.load(open(sys.argv[2], encoding="ascii")).get("station_pub", "")
 if not re.fullmatch(r"[A-Za-z0-9+/]{43}=", pub):
     sys.exit(1)
-# Keyed with this station's public key, so the id means nothing to anyone else and differs per station.
+# Keyed with this station's public key, which this station and its bots know, so the id differs per station.
 print(hmac.new(base64.b64decode(pub), ("grok-station computer v2\n" + raw).encode(), hashlib.sha256).hexdigest()[:16], end="")
 PY
-)
+) && crc=0 || crc=$?
+  if [ "$crc" -eq 2 ]; then die "refusing symlink: $pj"; fi
+  if [ "$crc" -ne 0 ]; then computer="-"; fi
 else
   updated=0
   for dest in "$STATE/bin/grok-station-reply" "$HOME/bin/grok-station-reply"; do

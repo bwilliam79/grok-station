@@ -1992,6 +1992,9 @@ class Session:
                         on_comms_fail(self.play_dev)
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
+                        if ev.get("local"):
+                            post_state("idle")  # local exit has no audio; do not leave thinking up
+                            break
                         if t != "error" and self.turns and not self.t_first_audio:
                             post_state("idle")  # follow-up window closed quietly (silence or "thanks")
                         elif t == "timeout" and not self.t_first_audio:

@@ -53,6 +53,11 @@ class TestWake(unittest.TestCase):
         self.assertEqual(_relay_base(p[0][1]), "ws://relay.test/ws")
         self.assertIn(("thinking", "Rhea"), p)
 
+    def test_local_done_posts_idle_not_thinking(self):
+        p = run_session([{"type": "ready"}, {"type": "done", "local": True}])
+        self.assertIn("idle", [x[0] for x in p])
+        self.assertNotIn("thinking", [x[0] for x in p])
+
     def test_up24(self):
         x = np.sin(2 * np.pi * 440 * np.arange(1280) / 16000)
         y = gw.up24(x, 0.0)

@@ -153,7 +153,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         botreply.pin_key(botreply.keys_path(self.tmp), slug, base64.b64encode(b"\x33" * 32).decode())
 
     async def drive(self, transcript, persona=None, t1=None, function_call=False, tool_first=False, timeout=8,
-                    call=None, expect_ack=False, follow=None, slug="jules"):
+                    call=None, expect_ack=False, follow=None, slug="jules", timers=None):
         """One station turn against the fake upstream. Returns station events, binary frames and upstream JSON."""
         upstream, events, binaries, order = [], [], [], []
         self.ack_before_post = False
@@ -271,6 +271,8 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                 params["persona"] = persona
             if t1 is not None:
                 params["t1"] = t1 if isinstance(t1, str) else json.dumps(t1)
+            if timers is not None:
+                params["timers"] = timers if isinstance(timers, str) else json.dumps(timers)
             ws = await client.ws_connect("/ws", headers={"Authorization": "Bearer test-token"}, params=params)
 
             async def pump():
@@ -641,6 +643,26 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(out["events"][-1].get("type"), "done")
 
+    async def test_local_exit_on_wake_does_not_call_the_bot(self):
+        """A bare goodbye or stop after a persona wake ends locally. No heard flash, no webhook."""
+        with open(relay.PERSONAS_FILE, "w") as f:
+            json.dump({"personas": [
+                {"slug": "rhea", "name": "Rhea", "voice": "ara", "prompt": "Rhea helps."},
+            ]}, f)
+        relay._personas["mtime"] = None
+        for said in ("goodbye", "Hey Rhea, goodbye", "stop"):
+            self.calls.clear()
+            self.tts.clear()
+            out = await self.drive(said, persona="rhea", slug="rhea", timers=[])
+            self.assertEqual(self.calls, [], said)
+            kinds = [e.get("type") for e in out["events"]]
+            self.assertNotIn("heard", kinds, said)
+            self.assertNotIn("response_started", kinds, said)
+            self.assertEqual(out["events"][-1].get("type"), "done", said)
+            self.assertIs(out["events"][-1].get("local"), True, said)
+            self.assertEqual(self._acks(out["events"]), [])
+            self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts), said)
+
     async def test_grok_noise_does_not_ack(self):
         """No transcript worth routing: Grok does not say Asking. Nor does a woken bot."""
         out = await self.drive("")
@@ -713,6 +735,8 @@ class ImportTeamPhrase(unittest.TestCase):
             "please import my team",
             "could you please import the rest of my bots!",
             "import my team please",
+            "Hey Rhea, import the rest of my team",
+            "hey kai import my team",
         ):
             self.assertTrue(relay.import_team_request(phrase), phrase)
         for phrase in (

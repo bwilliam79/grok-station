@@ -22,7 +22,7 @@ no daily talk-time cap (per-turn and per-session caps only); 5 bad tokens from a
 for 15 min; upstream audio per session is capped. The listener binds 127.0.0.1. Alerts (lockout, handoff) go as
 JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 """
-import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, tempfile, time, unicodedata, urllib.error, urllib.request
+import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, stat, tempfile, time, unicodedata, urllib.error, urllib.request
 from zoneinfo import ZoneInfo
 try:
     from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
@@ -269,6 +269,55 @@ def is_end_phrase(text):
     if len(t.split()) <= 6 and END_RE.match(t):
         return True
     return bool(BYE_TAIL_RE.search(t))
+
+
+# Bare local exits. Extra words ("stop the timer", "goodbye what is the weather") do not match.
+# An optional leading "hey <wake>" is the wake word already heard, for every bot, not only Grok.
+_LOCAL_EXIT_RE = re.compile(
+    r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?[, ]+)?"
+    r"(stop|never mind|nevermind|cancel|(?:good )?bye|goodbye|that'?s all)"
+    r"[.!?]*$",
+    re.I)
+
+
+def local_exit_phrase(text):
+    """The bare words that end a session on the station, including the first turn after a wake word.
+
+    Returns the matched phrase ("stop", "never mind", "cancel", "goodbye", "that's all"), or "".
+    """
+    t = " ".join(str(text or "").replace("’", "'").replace("‘", "'").split())
+    if not t:
+        return ""
+    m = _LOCAL_EXIT_RE.fullmatch(t.strip())
+    if not m:
+        return ""
+    word = m.group(1).lower().replace("  ", " ")
+    if word in ("bye", "good bye", "goodbye"):
+        return "goodbye"
+    if word == "nevermind":
+        return "never mind"
+    if word in ("that's all", "thats all"):
+        return "that's all"
+    return word
+
+
+def session_local_exit(text, timers):
+    """End here, with no bot call. "stop" while a timer is ringing dismisses the timer instead."""
+    kind = local_exit_phrase(text)
+    if not kind:
+        return False
+    if kind == "stop" and timer_is_ringing(timers):
+        return False
+    return True
+
+
+def timer_is_ringing(timers):
+    if not isinstance(timers, dict):
+        return False
+    for rec in timers.values():
+        if isinstance(rec, dict) and rec.get("ringing"):
+            return True
+    return False
 
 
 def latest_utterance(prior, heard):
@@ -1361,14 +1410,15 @@ def connect_request(text, bots, current="grok"):
 
 
 _IMPORT_TEAM = re.compile(
-    r"^(?:hey grok )?(?:(?:can you|could you|please) ){0,2}"
+    r"^(?:hey [a-z0-9][a-z0-9'-]* )?(?:(?:can you|could you|please) ){0,2}"
     r"import (?:the rest of my team|my team|the rest of my bots)(?: please)?$")
 
 
 def import_team_request(text):
     """True when the sentence asks the station to import the rest of the team.
 
-    Same cleanup as connect_request: a leading "hey grok", up to two of
+    Same cleanup as connect_request: a leading "hey <name>" for any single-token
+    wake word (letters, digits, apostrophe, hyphen), up to two of
     "can you" / "could you" / "please", and trailing punctuation.
     """
     raw = " ".join(str(text or "").split())
@@ -1912,8 +1962,9 @@ async def session(req):
                             st["saw_response"] = True
                             await cancel_response()
                         continue
-                    # Hold model speech until the transcript, so a spoken name can still drop it.
-                    if (st.get("guard") and not st.get("drop_model") and not st.get("turn_heard")
+                    # Hold model speech until the transcript for every session, so a spoken name
+                    # or a first-turn local exit can still drop it before response_started.
+                    if (not st.get("drop_model") and not st.get("turn_heard")
                             and (t in MODEL_OUTPUT or t == "response.created")):
                         if t == "response.created":
                             st["responding"] = True
@@ -1962,6 +2013,14 @@ async def session(req):
                         heard = latest_utterance(st["heard_hist"], raw)
                         st["heard_hist"] = (st["heard_hist"] + [raw])[-8:]
                         st["heard"] = heard
+                        # Bare goodbye/stop/cancel, including turn 1. No "heard": that flips the display to thinking.
+                        # "stop" while a timer is ringing falls through so the tool can dismiss it.
+                        if session_local_exit(heard, st.get("timers")):
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            await pi.send_json({"type": "done", "local": True})
+                            return "user ended"
                         st["turn_heard"] = True
                         if not st.get("utt"):
                             st["utt"] = 1
@@ -3372,6 +3431,59 @@ async def admin_bots_patch(req):
     return web.json_response(resp)
 
 
+def _bot_display_name(slug, roster, ov, reg):
+    """Name shown for this bot before it is hidden or removed. persona_list wins."""
+    shown = roster.get(slug) if isinstance(roster, dict) else None
+    if isinstance(shown, dict) and isinstance(shown.get("name"), str) and shown["name"].strip():
+        return shown["name"]
+    renamed = ov.get("renamed") if isinstance(ov.get("renamed"), dict) else {}
+    if isinstance(renamed.get(slug), str) and renamed[slug].strip():
+        return renamed[slug]
+    added = ov.get("added") if isinstance(ov.get("added"), dict) else {}
+    ent = added.get(slug) if isinstance(added.get(slug), dict) else None
+    if ent and isinstance(ent.get("name"), str) and ent["name"].strip():
+        return ent["name"]
+    raw = reg.get(slug) if isinstance(reg, dict) else None
+    if isinstance(raw, dict) and isinstance(raw.get("name"), str):
+        return raw["name"]
+    return ""
+
+
+def _forget_imported_bot(slug, name):
+    """Drop the team-import row for the display name, and the slug when that key differs.
+
+    A later explicit import may add the name again.
+    """
+    keys = []
+    if isinstance(name, str):
+        folded = " ".join(name.split()).casefold()
+        if folded:
+            keys.append(folded)
+    if isinstance(slug, str):
+        folded_slug = slug.strip().casefold()
+        if folded_slug and folded_slug not in keys:
+            keys.append(folded_slug)
+    for key in keys:
+        dismiss_imported(key)
+
+
+def _delete_written_portrait(slug):
+    """Remove PORTRAIT_WRITE/<slug>.png. Unlink a symlink in that directory; never follow it."""
+    if not isinstance(slug, str) or not slug or slug in (".", "..") or os.path.basename(slug) != slug:
+        return
+    root = os.path.abspath(PORTRAIT_WRITE)
+    path = os.path.join(root, f"{slug}.png")
+    if os.path.dirname(os.path.abspath(path)) != root:
+        return
+    try:
+        if os.path.islink(path):
+            os.unlink(path)
+        else:
+            os.remove(path)
+    except FileNotFoundError:
+        return
+
+
 async def admin_bots_delete(req):
     """Added persona: removed. Registry persona: hidden. Webhook and minted voice token go either way."""
     bad = await admin_gate(req)
@@ -3383,8 +3495,10 @@ async def admin_bots_delete(req):
         return web.json_response({"error": "bad request"}, status=400)
     ov = load_overlay_doc()
     reg = registry_index()
-    if slug not in persona_list() and slug not in ov["added"] and slug not in reg:
+    roster = persona_list()
+    if slug not in roster and slug not in ov["added"] and slug not in reg:
         return web.json_response({"error": "not found"}, status=404)
+    display_name = _bot_display_name(slug, roster, ov, reg)
     hooks = current_webhooks()
     tail = _last4((hooks.get(slug) or {}).get("token"))
     if slug in ov["added"]:
@@ -3411,6 +3525,8 @@ async def admin_bots_delete(req):
     audit(body["actor"], slug, "remove", tail)
     forget_ack_clips(slug)
     persona_list()
+    _forget_imported_bot(slug, display_name)
+    _delete_written_portrait(slug)
     return web.json_response({"ok": True})
 
 

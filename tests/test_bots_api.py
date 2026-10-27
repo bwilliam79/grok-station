@@ -108,6 +108,33 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         r.locked.clear()
         r.locked.update(s["locked"])
 
+    async def test_delete_removes_the_imported_row_and_avatar(self):
+        """Deleting a bot must not leave it in the team-import list as an unconfigured row."""
+        r, c = self.relay, self.client
+        added = await c.post("/admin/bots", headers=self.headers(),
+                             json={"actor": "admin", "slug": "kai", "name": "Kai", "voice": "ara"})
+        self.assertEqual(added.status, 201, await added.text())
+        merged = r.merge_imported(["Kai"], "kai")
+        self.assertEqual(merged.get("new"), 0)
+        before = {row["key"]: row["state"] for row in r.imported_public()["rows"]}
+        self.assertEqual(before.get("kai"), "configured")
+        portrait_dir = os.path.join(self.tmp, "portraits")
+        os.makedirs(portrait_dir)
+        png = os.path.join(portrait_dir, "kai.png")
+        with open(png, "wb") as fh:
+            fh.write(b"\x89PNG\r\n")
+        old_write = r.PORTRAIT_WRITE
+        r.PORTRAIT_WRITE = portrait_dir
+        try:
+            gone = await c.delete("/admin/bots/kai", headers=self.headers(), json={"actor": "admin"})
+            self.assertEqual(gone.status, 200, await gone.text())
+            left = {row["key"]: row["state"] for row in r.imported_public()["rows"]}
+            self.assertNotIn("kai", left)
+            self.assertFalse(os.path.lexists(png))
+            self.assertNotIn("kai", r.persona_list())
+        finally:
+            r.PORTRAIT_WRITE = old_write
+
     async def test_auth(self):
         c = self.client
         self.assertEqual((await c.get("/admin/bots", headers=self.headers(token=None))).status, 401)

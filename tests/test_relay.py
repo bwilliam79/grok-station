@@ -154,6 +154,30 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
                   "is the bypass road open", "thanks for checking the garage door"):
             self.assertFalse(relay.is_end_phrase(t), t)
 
+    def test_local_exit_phrases(self):
+        ringing = {"a": {"ringing": True}}
+        for phrase, kind in (
+            ("goodbye", "goodbye"),
+            ("stop", "stop"),
+            ("never mind", "never mind"),
+            ("nevermind", "never mind"),
+            ("cancel", "cancel"),
+            ("that's all", "that's all"),
+            ("Hey Rhea, goodbye", "goodbye"),
+            ("hey kai stop", "stop"),
+        ):
+            self.assertEqual(relay.local_exit_phrase(phrase), kind, phrase)
+            if kind != "stop":
+                self.assertTrue(relay.session_local_exit(phrase, ringing), phrase)
+            else:
+                self.assertTrue(relay.session_local_exit(phrase, {}), phrase)
+        self.assertFalse(relay.session_local_exit("stop", ringing))
+        self.assertTrue(relay.session_local_exit("goodbye", ringing))
+        for phrase in ("stop the timer", "goodbye what is the weather", "thanks", "cancel the pasta"):
+            self.assertEqual(relay.local_exit_phrase(phrase), "", phrase)
+            self.assertFalse(relay.session_local_exit(phrase, {}), phrase)
+            self.assertFalse(relay.session_local_exit(phrase, ringing), phrase)
+
     def test_latest_utterance_strips_earlier_turns(self):
         q1 = "What is on my calendar today?"
         self.assertEqual(relay.latest_utterance([q1], q1 + " Goodbye Hank."), "Goodbye Hank.")
@@ -163,6 +187,32 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay.latest_utterance([q1], q1), q1)  # a true repeat is kept
         q2 = "And tomorrow?"
         self.assertEqual(relay.latest_utterance([q1, q1 + " " + q2], q1 + " " + q2 + " thanks"), "thanks")
+
+
+class PortraitDelete(unittest.TestCase):
+    def test_symlink_is_unlinked_and_outside_files_stay(self):
+        portraits = os.path.join(tempfile.mkdtemp(), "portraits")
+        os.makedirs(portraits)
+        outside = os.path.join(os.path.dirname(portraits), "outside.png")
+        with open(outside, "wb") as fh:
+            fh.write(b"keep")
+        link = os.path.join(portraits, "kai.png")
+        os.symlink(outside, link)
+        real = os.path.join(portraits, "mira.png")
+        with open(real, "wb") as fh:
+            fh.write(b"png")
+        old = relay.PORTRAIT_WRITE
+        relay.PORTRAIT_WRITE = portraits
+        try:
+            relay._delete_written_portrait("kai")
+            relay._delete_written_portrait("mira")
+            relay._delete_written_portrait("../outside")
+            self.assertFalse(os.path.lexists(link))
+            self.assertFalse(os.path.exists(real))
+            self.assertTrue(os.path.isfile(outside))
+            self.assertEqual(open(outside, "rb").read(), b"keep")
+        finally:
+            relay.PORTRAIT_WRITE = old
 
 
 class AckClip(unittest.IsolatedAsyncioTestCase):
