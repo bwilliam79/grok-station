@@ -664,8 +664,8 @@ function finishBtnHTML(view) {
 function paintFinishButtons() {
   const html = finishBtnHTML(FINISH.view);
   const head = document.getElementById("finhead");
-  if (head) head.innerHTML = html;
-  const page = document.getElementById("finpage");
+  const page = document.getElementById("finpage");  // only on the Updates page, which keeps its own button
+  if (head) { head.innerHTML = page ? "" : html; head.hidden = !!page || !html; }
   if (page) { page.innerHTML = html; page.hidden = !html; }
   [head, page].forEach(root => {
     if (!root) return;
@@ -749,16 +749,27 @@ function finishCopyExtra(d, b) {
   return `<p class="finmsg">Paste these instructions into the bot once. After that updates are one click.</p>
     <details class="finpaste" data-slug="${esc(b.slug)}"${open}><summary>Instructions</summary><pre class="finpre">${esc(b.message || "")}</pre></details>`;
 }
+function finishHelperChanges(g) {
+  return !!(g && g.home && g.want_helper && String(g.helper || "") !== String(g.want_helper));
+}
+function finishShared(g) {  // the shared-helper note only matters with a helper change and 2+ bots on that computer
+  return finishHelperChanges(g) && Array.isArray(g.bots) && g.bots.length >= 2;
+}
 function finishRowHTML(d, g, b) {
-  const tag = b.slug === g.updater ? `<span class="fintag">updates the helper</span>` : "";
+  const tag = finishShared(g) && b.slug === g.updater ? `<span class="fintag">updates the helper</span>` : "";
   const err = d._rowErr && d._rowErr[b.slug];
   return `<div class="finrow"><div class="finmain"><div class="lbl">${esc(b.name || b.slug || "")}${tag}</div>
-    ${finishPill(b)}${finishCopyExtra(d, b)}${err ? `<div class="err" role="alert">${esc(err)}</div>` : ""}</div>
-    <div class="finbtns">${finishRowButtons(d, b)}</div></div>`;
+    ${finishCopyExtra(d, b)}${err ? `<div class="err" role="alert">${esc(err)}</div>` : ""}</div>
+    <div class="finbtns">${finishPill(b)}${finishRowButtons(d, b)}</div></div>`;
 }
 function finishHelperLine(g) {
-  if (!g.home) return "";
-  return `<p class="finhelp">Helper ${esc(g.helper || "unknown")} → ${esc(g.want_helper || "")}</p>`;
+  if (!finishHelperChanges(g)) return "";
+  return `<p class="finhelp">Helper ${esc(g.helper || "unknown")} → ${esc(g.want_helper)}</p>`;
+}
+function finishLead(computers) {
+  return (computers || []).some(finishShared)
+    ? "Each bot updates its own instructions. Bots on the same computer share one helper; the first bot updates it for the rest."
+    : "Send each bot its updated instructions.";
 }
 function finishPick(d, g, bots) {
   const opts = bots.map(b => `<option value="${esc(b.slug)}"${b.slug === g.updater ? " selected" : ""}>${esc(b.name || b.slug)}</option>`).join("");
@@ -786,7 +797,7 @@ function finishDialogHTML(d, title) {
   const n = finishQueue(view).length;
   const dis = !n || d._all ? " disabled" : "";
   return `${dialogX()}<h2>${esc(title)}</h2>
-    <p class="note finlead">Each bot updates its own instructions. Bots on the same computer share one helper; the first bot updates it for the rest.</p>
+    <p class="note finlead">${esc(finishLead(computers))}</p>
     ${body}
     <div class="acts"><button class="btn g" type="button" id="finclose">Close</button>
       <button class="btn fin" type="button" id="finsendall"${dis}>${d._all ? "Sending…" : "Send all"}</button></div>`;

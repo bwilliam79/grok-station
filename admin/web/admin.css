@@ -413,7 +413,7 @@ p#emptybot{margin:10px 2px 0}
 .finsec{margin-top:16px}
 .finsec h3{font:600 var(--fs-body) var(--disp);margin:0}
 .finhelp{color:var(--gs-muted);font-size:var(--fs-help);margin-top:2px}
-.fintag{display:inline-block;margin-left:8px;font-size:var(--fs-help);font-weight:700;padding:1px 8px;border-radius:99px;background:var(--gs-amber);color:#1A1408;vertical-align:1px}
+.fintag{display:inline-block;margin-left:8px;font-size:var(--fs-help);font-weight:400;color:var(--gs-muted)}
 .finrow{display:flex;align-items:flex-start;gap:10px 12px;padding:12px 0;border-top:1px solid var(--gs-rule)}
 .finmain{min-width:0;flex:1}
 .finmain .pill{margin-top:6px}
@@ -433,3 +433,4 @@ p#emptybot{margin:10px 2px 0}
 .unitin .inp{width:88px}
 .unit{font-size:var(--fs-help);color:var(--gs-muted)}
 .teamsay{color:var(--gs-text);font-weight:600}
+.finbtns{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
