@@ -3310,6 +3310,10 @@ class Handler(BaseHTTPRequestHandler):
             # 409, not 503: a reset failure is not "the station is down" (that banner is 502/503/504).
             code, out = wake("POST", "/mic-reset", {}, timeout=8)
             if code == 202:
+                audit("-", "mic-reset " + ("deferred" if out.get("deferred") else "ok"))
+            else:
+                audit("-", "mic-reset failed")
+            if code == 202:
                 return self.send(202, {"ok": True, "deferred": bool(out.get("deferred"))})
             if code == 409 and isinstance(out.get("error"), str):
                 return self.send(409, {"error": out["error"]})

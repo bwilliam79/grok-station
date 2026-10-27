@@ -891,6 +891,8 @@ def control_server():
                     return self._r(503, {"error": "Couldn't reset the microphone."})
                 if result == "off":
                     return self._r(409, {"error": "Reset is turned off."})
+                if result == "too_soon":
+                    return self._r(409, {"error": "The microphone was just reset. Give it a minute, then try again."})
                 if result == "deferred":
                     return self._r(202, {"ok": True, "deferred": True})
                 if result == "ok":
@@ -2439,6 +2441,8 @@ class MicRecovery:
         self.events = []
         self._last_poll = 0.0
         self._next_auto = 0.0
+        self.min_gap_s = _env_float("WAKE_MIC_RESET_MIN_GAP_S", 45.0)
+        self._last_reset = None
 
     def request(self, reason):
         if reason not in ("button", "night", "drought"):
@@ -2450,6 +2454,8 @@ class MicRecovery:
             loc = self.local(self.now())
             if self.last_night == loc.date() or not night_window(loc):
                 return "off"
+        if reason == "button" and self.too_soon():
+            return "too_soon"
         if self.busy():
             if self.pending != reason:
                 self.log(f"mic reset deferred (session): {reason}")
@@ -2504,6 +2510,10 @@ class MicRecovery:
             self.events.clear()
             self.request("drought")
 
+    def too_soon(self):
+        """True within min_gap_s of the last reset attempt (any reason)."""
+        return self._last_reset is not None and 0 <= self.now() - self._last_reset < max(45.0, self.min_gap_s)
+
     def _backoff(self, reason):
         if reason != "button":
             self._next_auto = self.now() + 60
@@ -2527,12 +2537,20 @@ class MicRecovery:
                 self.log(f"mic reset deferred (session): {reason}")
             self.pending = reason
             return "deferred"
+        if self.too_soon():
+            if reason == "button":
+                self.pending = None
+                return "too_soon"
+            self.pending = reason
+            self._next_auto = max(self._next_auto, self._last_reset + max(45.0, self.min_gap_s))
+            return "deferred"
         self.pending = None
         card = self.card()
         if not card:
             self.log(f"mic reset failed: no card ({reason})")
             self._backoff(reason)
             return "failed"
+        self._last_reset = self.now()
         try:
             err = self.reset(card)
         except Exception:

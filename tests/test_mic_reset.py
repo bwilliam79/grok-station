@@ -155,6 +155,21 @@ def _recovery(**kw):
 
 
 class MicReset(unittest.TestCase):
+    def test_button_inside_the_gap_is_refused_kindly(self):
+        rec, calls, _logs, _kicked, clock, _when, _flags = _recovery()
+        self.assertEqual(rec.request("button"), "ok")
+        clock["t"] += 44
+        self.assertEqual(rec.request("button"), "too_soon")
+        self.assertEqual(calls, ["M0"])
+        clock["t"] += 1
+        self.assertEqual(rec.request("button"), "ok")
+        self.assertEqual(calls, ["M0", "M0"])
+        src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
+        self.assertIn('"too_soon"', src)
+        self.assertIn("The microphone was just reset.", src)
+        admin = open(os.path.join(ROOT, "admin", "grok_admin.py")).read()
+        self.assertIn('audit("-", "mic-reset ', admin)
+
     def test_no_usb_reset_during_a_session(self):
         busy = {"on": True}
         rec, calls, logs, kicked, clock, _when, _flags = _recovery(busy=lambda: busy["on"])
