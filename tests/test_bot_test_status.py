@@ -3,10 +3,25 @@ import asyncio, os, sys, tempfile, time, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "relay"))
-import relay  # noqa: E402
+relay = None  # imported in setUp, after the other relay tests set their temp dirs at collection
+
+
 
 
 class PassingTestClearsError(unittest.TestCase):
+    def setUp(self):
+        global relay
+        self.tmp = tempfile.mkdtemp()
+        old = os.environ.get("GROK_STATE_DIR")
+        if "relay" not in sys.modules and old is None:
+            os.environ["GROK_STATE_DIR"] = self.tmp  # run alone: keep relay out of /var/lib
+        try:
+            import relay as mod
+        finally:
+            if old is None:
+                os.environ.pop("GROK_STATE_DIR", None)
+        relay = mod
+
     def test_handler_clears_last_error_even_if_the_handoff_does_not(self):
         d = tempfile.mkdtemp()
         old_hooks = relay.WEBHOOKS_FILE
