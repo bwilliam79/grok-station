@@ -1866,7 +1866,7 @@ function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
 const BOT_ID_RE = /^[a-z][a-z0-9-]{1,23}$/;
 const BOT_ID_ERROR = "Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. The voice service doesn't allow a longer id.";
 const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.";
-const COMPUTER_HINT = "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.";
+const COMPUTER_HINT = "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.";
 // Home key mode (scripts/gs-seal-setup, scripts/gs-seal-reply) is available since 0.8.2, after its validation run. Cloud stays the default.
 const HOME_MODE = true;
 const PICTURE_ASK = true;
@@ -3421,7 +3421,7 @@ function routineChangeComputer(slug, pub, fp) {
     + "~/.local/share/grok-station/bin/grok-station-reply\n\n"
     + (script ? "The script:\n" + script : "The setup script could not be filled in yet.\n")
     + "\nFrom now on, post replies from that computer.\n"
-    + "Reply with that computer's name.";
+    + "Reply with that computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.";
 }
 function openChangeComputer(box, bot, el) {
   if (!box) return;
@@ -3529,7 +3529,7 @@ function routineForBot(slug, pub, fp, mode) {
     + shown
     + (home ? "" : "\nThe script saves the bot's private key in ~/.local/share/grok-station/bot-seed. Store it as the secret GROK_STATION_BOT_KEY, then tell the user to delete that file.\n")
     + "\nAfter it runs, reply with the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.\n"
-    + "Reply with the webhook URL, the webhook key, your public key, and the name of the home computer you picked.";
+    + "Reply with the webhook URL, the webhook key, your public key, and the home computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.";
 }
 function addBot(voices, el, preset) {
   closeFloats();

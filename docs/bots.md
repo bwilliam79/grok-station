@@ -183,7 +183,7 @@ A bot's replies are posted from one home computer on your network. If that compu
 - **Change computer** (Configure):
   - Key on the bot computer (cloud key): an inline panel, "Move replies to another computer". Copy the instructions, then type the new computer's name and save. The key and the pairing stay the same. An empty name is "Needs attention: type the computer's name."
   - Key on a home computer: the key is tied to that computer, so the panel says "This needs a new key" and offers **Replace key**. No name field, except the not-set case above.
-- **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies. Add bot and Change computer say: "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label."
+- **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies. Add bot and Change computer ask for the computer's name exactly as it shows in the Grok Bot app, and say not to include the hostname. The setup scripts do not print a hostname. The Home computer name field is empty until you paste that name.
 
 ## Routine prompt
 

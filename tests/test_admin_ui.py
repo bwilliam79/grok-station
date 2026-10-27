@@ -278,7 +278,7 @@ class AdminUI(unittest.TestCase):
                      "Do not skip the approval.",
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
-                     "The name of this computer as it shows in the Grok Bot app. It doesn't need to be a hostname; the station only shows it as a label.",
+                     "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.",
                      "No new key or pairing needed."):
             self.assertIn(text, js, text)
         bots = _fn(js, "paintBots")
@@ -357,10 +357,22 @@ class AdminUI(unittest.TestCase):
         self.assertIn("Change computer", js)
         self.assertIn("use Replace key", js)
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
-        self.assertIn("Reply with that computer's name.", fn)
+        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", fn)
+        add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
+        self.assertIn("the home computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
+        host = js.split('<input class="inp" id="ahost"', 1)[1].split(">", 1)[0]
+        self.assertNotIn("hostname", host)
+        self.assertNotIn("value=", host)
+
+    def test_setup_scripts_do_not_echo_a_hostname(self):
+        """Home setup prints a public key, not this computer's hostname."""
+        for rel in ("scripts/install-home.sh", "scripts/gs-seal-setup"):
+            src = _read(rel)
+            self.assertNotIn("gethostname", src, rel)
+            self.assertNotRegex(src, r"(?<![\w.])hostname\b", rel)
 
     def test_add_bot_routine_matches_docs(self):
         docs = _read(os.path.join("docs", "bots.md"))
@@ -410,7 +422,7 @@ class AdminUI(unittest.TestCase):
         self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("gs-seal-setup"))
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the name of the home computer you picked.", fn)
+        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the home computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
         installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]
