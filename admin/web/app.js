@@ -546,7 +546,7 @@ async function paintUpdates(el) {
       <div id="updlog"${el._logOpen ? "" : " hidden"}></div>
       <div id="ue"></div>
       <div class="row"><button type="button" class="tog${auto ? " on" : ""}" role="switch" id="auto" aria-checked="${auto ? "true" : "false"}" aria-label="Daily check"></button>
-        <div><div class="lbl">Daily check</div><div class="help">Off until you turn it on. A check looks for a newer version. It does not install anything.</div></div></div>
+        <div><div class="lbl">Daily check</div><div class="help">Checks for a new version once a day. Never installs anything on its own.</div></div></div>
       <div id="autoe"></div></div>
     ${historyCard(d.history, !!el._histOpen)}`;
   const tog = $("#histtog", el);

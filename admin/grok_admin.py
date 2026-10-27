@@ -2817,7 +2817,7 @@ def start_update():
 
 
 def update_check_loop():
-    """Daily check (only when turned on). Checks; never installs."""
+    """Daily check (only when turned on). Checks for a new version once a day. Never installs anything on its own."""
     while True:
         time.sleep(3600)
         if not load_update_settings()["autocheck"]:
