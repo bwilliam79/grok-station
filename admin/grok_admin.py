@@ -861,10 +861,53 @@ def unused_wakewords():
     return out
 
 
-def release_bot_phrases(slug):
-    """A removed bot's wake word stops working and moves to Unused. Recordings stay until that row is deleted."""
+def delete_wake_word(name, reload=True):
+    """Delete one wake word: recordings, trained model, config entry. Returns (status, body). Hey Grok stays."""
+    if name == BUILTIN_WORD:
+        return (409, {"error": "Hey Grok is built in and can't be deleted."})
+    known = {w["name"] for w in wakewords()}
+    ov = read_json(path("wake-overrides.json"), {})
+    if not isinstance(ov, dict):
+        ov = {}
+    safe = wake_name_ok(name)
+    stored = name in known or name in ov or name in read_enroll_status() or name in enrolled_entries()
+    if not safe and not stored:
+        return (400, {"error": "bad name"})
+    if not stored and not os.path.isdir(os.path.join(ENROLL_INBOX, name)):
+        return (200, {"ok": True})  # already gone: delete is idempotent
+    code, out = wake("POST", "/forget", {"name": name}) if safe else (200, {})
+    if code == 409:
+        return (409, {"error": "That word is recording right now. Try again when it finishes."})
+    if safe:  # file paths only for a checked name, never ../ or a slash
+        for fn in (name + ".onnx", name + ".json"):
+            unlink_in(WAKE_DROP_DIR, fn)
+        drop_phrase_leftovers(name)
+    cfg = read_json(WAKE_CONFIG, {})
+    keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
+    if keep_hidden:
+        who = (ov.get(name) or {}).get("persona", "grok") if isinstance(ov.get(name), dict) else "grok"
+        # forgotten: a shipped id stays hidden, and Unused does not list it again
+        ov[name] = {"enabled": False, "hidden": True, "forgotten": True, "persona": who}
+    else:
+        ov.pop(name, None)
+    write_json(path("wake-overrides.json"), ov, 0o640)
+    if safe:
+        mark_phrase_deleted(name)
+    doc = read_enroll_status()
+    if doc.pop(name, None) is not None:
+        write_enroll_status(doc)
+    models = read_json(path("models.json"), {})
+    if isinstance(models, dict) and models.pop(name, None) is not None:
+        write_json(path("models.json"), models, 0o640)
+    if reload:
+        wake("POST", "/reload", {})
+    return (200, {"ok": True})
+
+
+def bot_phrase_names(slug):
+    """Wake word ids that belong to this bot: overrides or enrolled entries for it, or hey_<slug>. Never Hey Grok."""
     if not slug_ok(slug):
-        return
+        return []
     ov = read_json(path("wake-overrides.json"), {})
     if not isinstance(ov, dict):
         ov = {}
@@ -872,42 +915,33 @@ def release_bot_phrases(slug):
         enrolled = enrolled_entries()
     except Exception:
         enrolled = {}
-    changed = False
-    for name in set(ov) | set(enrolled):
+    try:
+        status = read_enroll_status()
+    except Exception:
+        status = {}
+    out = []
+    for name in sorted(set(ov) | set(enrolled) | set(status if isinstance(status, dict) else {})):
         if name == BUILTIN_WORD or not isinstance(name, str):
             continue
-        o = ov.get(name) if isinstance(ov.get(name), dict) else {}
-        ent = enrolled.get(name) if isinstance(enrolled.get(name), dict) else {}
-        persona = str(o.get("persona") or ent.get("persona") or "")
-        if persona != slug and name != "hey_" + slug:
-            continue
-        row = dict(o)
-        row["enabled"] = False
-        if not persona_ok(str(row.get("persona") or "")) and persona_ok(persona or slug):
-            row["persona"] = persona if persona_ok(persona) else slug
-        try:
-            has = bool(clip_count(name) or name in enrolled)
-        except Exception:
-            has = name in enrolled
-        if has:
-            row["unused"] = "deleted"
-            row.pop("hidden", None)
-        else:
-            row["hidden"] = True
-            row.pop("unused", None)
-        ov[name] = row
-        changed = True
-    if not changed:
-        return
-    try:
-        write_json(path("wake-overrides.json"), ov, 0o640)
+        rows = [x for x in (ov.get(name), enrolled.get(name), (status or {}).get(name)) if isinstance(x, dict)]
+        if name == "hey_" + slug or any(str(r.get("persona") or "") == slug for r in rows):
+            out.append(name)
+    return out
+
+
+def delete_bot_phrases(slug):
+    """A deleted bot's wake words are deleted too: recordings, models, rows. Returns the ids."""
+    gone = []
+    for name in bot_phrase_names(slug):
+        code, _out = delete_wake_word(name, reload=False)
+        if code == 200:
+            gone.append(name)
+    if gone:
         wake("POST", "/reload", {})
-    except Exception:
-        print("admin: couldn't park the deleted bot's wake word", flush=True)
+    return gone
 
 
 _SPEAKER_META = frozenset({"speaker", "speakers", "guest"})
-
 
 def model_note(raw):
     """Training note shown for one phrase. Old speaker fields are dropped; None when nothing else is stored."""
@@ -1276,6 +1310,25 @@ def enrolled_phrase_ids():
     return {w.get("name") for w in read_json(ENROLLED, {}).get("words", []) if isinstance(w, dict) and w.get("name")}
 
 
+def unlink_in(folder, fn):
+    """Remove folder/fn: a file, or a symlink itself (never its target). fn must be a plain name. Missing is fine."""
+    if not isinstance(fn, str) or not fn or fn in (".", "..") or os.path.basename(fn) != fn:
+        return False
+    p = os.path.join(folder, fn)
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return False
+    import stat as _stat
+    if not (_stat.S_ISLNK(st.st_mode) or _stat.S_ISREG(st.st_mode)):
+        return False
+    try:
+        os.unlink(p)
+        return True
+    except OSError:
+        return False
+
+
 def drop_phrase_leftovers(name):
     """Remove what the wake listener may have left: every enroll session, the recorded model, the list entry.
 
@@ -1285,16 +1338,14 @@ def drop_phrase_leftovers(name):
     import shutil
     if not wake_name_ok(name) or name == BUILTIN_WORD:
         return
-    root = os.path.realpath(ENROLL_INBOX)
-    d = os.path.realpath(os.path.join(ENROLL_INBOX, name))
-    if os.path.dirname(d) == root and os.path.isdir(d):
-        shutil.rmtree(d, ignore_errors=True)
+    d = os.path.join(ENROLL_INBOX, name)
+    if os.path.islink(d):
+        unlink_in(ENROLL_INBOX, name)  # the link only, never what it points at
+    elif os.path.isdir(d) and os.path.dirname(os.path.realpath(d)) == os.path.realpath(ENROLL_INBOX):
+        shutil.rmtree(d, ignore_errors=True)  # rmtree does not follow symlinks inside the tree
     enrolled_dir = os.path.dirname(ENROLLED)
     for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
-        try:
-            os.remove(os.path.join(enrolled_dir, fn))
-        except OSError:
-            pass
+        unlink_in(enrolled_dir, fn)
     try:
         doc = read_json(ENROLLED, {})
         words = doc.get("words", []) if isinstance(doc, dict) else []
@@ -3311,45 +3362,7 @@ class Handler(BaseHTTPRequestHandler):
         name = urllib.parse.unquote(p.split("/")[3]) if p.count("/") >= 3 else ""
         if name == BUILTIN_WORD:
             return self.send(409, {"error": "Hey Grok is built in and can't be deleted."})
-        known = {w["name"] for w in wakewords()}
-        ov = read_json(path("wake-overrides.json"), {})
-        if not isinstance(ov, dict):
-            ov = {}
-        safe = wake_name_ok(name)
-        stored = name in known or name in ov or name in read_enroll_status() or name in enrolled_entries()
-        if not safe and not stored:
-            return self.send(400, {"error": "bad name"})
-        if not stored and not os.path.isdir(os.path.join(ENROLL_INBOX, name)):
-            return self.send(200, {"ok": True})  # already gone: delete is idempotent
-        code, out = wake("POST", "/forget", {"name": name}) if safe else (200, {})
-        if code == 409:
-            return self.send(409, {"error": "That word is recording right now. Try again when it finishes."})
-        if safe:  # file paths only for a checked name, never ../ or a slash
-            for fn in (name + ".onnx", name + ".json"):
-                try:
-                    os.remove(os.path.join(WAKE_DROP_DIR, fn))
-                except OSError:
-                    pass
-            drop_phrase_leftovers(name)
-        cfg = read_json(WAKE_CONFIG, {})
-        keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
-        if keep_hidden:
-            who = (ov.get(name) or {}).get("persona", "grok") if isinstance(ov.get(name), dict) else "grok"
-            # forgotten: a shipped id stays hidden, and Unused does not list it again
-            ov[name] = {"enabled": False, "hidden": True, "forgotten": True, "persona": who}
-        else:
-            ov.pop(name, None)
-        write_json(path("wake-overrides.json"), ov, 0o640)
-        if safe:
-            mark_phrase_deleted(name)
-        doc = read_enroll_status()
-        if doc.pop(name, None) is not None:
-            write_enroll_status(doc)
-        models = read_json(path("models.json"), {})
-        if isinstance(models, dict) and models.pop(name, None) is not None:
-            write_json(path("models.json"), models, 0o640)
-        wake("POST", "/reload", {})
-        return self.send(200, {"ok": True})
+        return self.send(*delete_wake_word(name))
 
     def api_post_enroll(self, p, q, j):
         if p == "/api/enroll/control":
@@ -3948,7 +3961,7 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         audit(slug, "remove")
-        release_bot_phrases(slug)
+        delete_bot_phrases(slug)
         return self.send(200, {"ok": True})
 
     def bots_webhook_put(self, slug, j):

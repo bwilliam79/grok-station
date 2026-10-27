@@ -2066,16 +2066,27 @@ class DeleteWakeWord(unittest.TestCase):
         finally:
             shutil.rmtree(os.path.join(self.inbox, "hey_mira"), ignore_errors=True)
 
-    def test_deleting_a_bot_moves_its_wake_word_to_unused(self):
+    def test_deleting_a_bot_deletes_its_wake_word(self):
+        """delete bot removes its wake word, recordings and model. Symlinks are never followed."""
         c = signed_in()
         ov = self.ov()
         ov["hey_kai"] = {"persona": "kai", "enabled": True}
+        ov["hey_other"] = {"persona": "mira", "enabled": True}
         ga.write_json(os.path.join(self.state, "wake-overrides.json"), ov, 0o640)
         clip = os.path.join(self.inbox, "hey_kai", "20261026-120100")
         os.makedirs(clip)
         for i in range(10):
             open(os.path.join(clip, f"{i:02d}.wav"), "wb").write(b"RIFF-kai")
         json.dump({"phrase": "hey_kai", "count": 10}, open(os.path.join(clip, "session.json"), "w"))
+        outside = tempfile.mkdtemp()
+        keep = os.path.join(outside, "keep.onnx")
+        open(keep, "wb").write(b"keep")
+        enrolled_dir = os.path.dirname(ga.ENROLLED)
+        os.makedirs(enrolled_dir, exist_ok=True)
+        model = os.path.join(enrolled_dir, "hey_kai.fewshot.npz")
+        open(model, "wb").write(b"npz")
+        link = os.path.join(enrolled_dir, "hey_kai.onnx")
+        os.symlink(keep, link)
         old = ga.relay_call
         ga.relay_call = lambda *a, **k: (200, {"ok": True, "bots": []})
         try:
@@ -2083,13 +2094,27 @@ class DeleteWakeWord(unittest.TestCase):
             self.assertEqual(st, 200, j)
             body = c.req("GET", "/api/wakewords")[1]
             self.assertNotIn("hey_kai", {w["name"] for w in body["words"]})
-            parked = {w["name"]: w for w in body["unused"]}
-            self.assertEqual(parked["hey_kai"]["reason"], "deleted")
-            self.assertEqual(parked["hey_kai"]["recordings"], 10)
-            self.assertTrue(os.path.isfile(os.path.join(clip, "00.wav")))
+            self.assertNotIn("hey_kai", {w["name"] for w in body["unused"]})
+            self.assertFalse(os.path.exists(os.path.join(self.inbox, "hey_kai")))
+            self.assertFalse(os.path.exists(model))
+            self.assertFalse(os.path.lexists(link))
+            self.assertEqual(open(keep, "rb").read(), b"keep")  # the link's target is untouched
+            self.assertIn("hey_other", ga.read_json(os.path.join(self.state, "wake-overrides.json"), {}))
         finally:
             ga.relay_call = old
             shutil.rmtree(os.path.join(self.inbox, "hey_kai"), ignore_errors=True)
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_unlink_in_stays_in_the_folder(self):
+        d = tempfile.mkdtemp()
+        try:
+            for bad in ("../x", "a/b", "..", ".", ""):
+                self.assertFalse(ga.unlink_in(d, bad), bad)
+            os.makedirs(os.path.join(d, "sub"))
+            self.assertFalse(ga.unlink_in(d, "sub"))  # never a folder
+            self.assertTrue(os.path.isdir(os.path.join(d, "sub")))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
     def _empty_roster(self, method, path, payload=None, timeout=10, raw=None, content_type=None):
         if method == "GET" and path == "/admin/bots":
