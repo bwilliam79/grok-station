@@ -15,7 +15,7 @@ all" ends it, and so do silence and the caps. The same persona answers every tur
    existing NO_SPEECH close (10 s with no speech and no response) then ends an unanswered follow-up with
    `{"type":"timeout"}`. After turn 1 the Pi treats that as a quiet end, not as "Didn't catch that".
 5. A follow-up whose transcript is a short closing phrase (thanks, thank you, that's all, that's it, no thanks,
-   nothing else, bye, goodbye; at most 6 words) cancels any response. The relay sends `done` and closes.
+   nothing else, bye, goodbye; at most 6 words) cancels any response. The relay sends `done` and closes. From 0.12.0 a bare "goodbye", "stop", "never mind", "cancel" or "that's all" also ends the session on the first turn, for every bot's wake word, with `done` plus `"local": true` and no bot call; "stop" while a timer rings is left to the timer tools.
 6. The persona doesn't change: the xAI session and `st["persona"]` carry over. A `talk_to` switch made in an
    earlier turn also carries over.
 

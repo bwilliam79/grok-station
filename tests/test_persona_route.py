@@ -813,6 +813,24 @@ class ImportTeamSession(PersonaRoute):
         self.assertNotIn("Kai", "\n".join(self.lines))
         self.assertNotIn("Noor", "\n".join(self.lines))
 
+    async def test_import_through_a_non_main_bot_wake_word(self):
+        """Item 7: "Hey Rhea, import the rest of my team" asks the main bot, not Rhea."""
+        with open(relay.PERSONAS_FILE, "w") as f:
+            json.dump({"personas": [
+                {"slug": "mira", "name": "Mira", "voice": "rex", "prompt": "Mira helps."},
+                {"slug": "rhea", "name": "Rhea", "voice": "ara", "prompt": "Rhea helps."},
+            ]}, f)
+        relay._personas["mtime"] = None
+        with open(os.path.join(os.path.dirname(relay.WEBHOOKS_FILE), "personas-overlay.json"), "w") as f:
+            json.dump({"list_source": "mira"}, f)
+        self.list_names = ["Kai"]
+        for said in ("import the rest of my team",):  # one import per test: the relay rate-limits repeats
+            self.calls.clear()
+            out = await self.drive(said, persona="rhea", slug="mira")
+            self.assertIn("Asking Mira for your team.", self._replies(out["events"]), said)
+            self.assertEqual([c["kind"] for c in self.calls], ["bot_list"], said)
+            self.assertEqual(self.calls[0]["persona"], "mira", said)
+
     async def test_import_without_a_main_bot_does_not_post(self):
         out = await self.drive("import my team")
         self.assertIn("Set up your main bot first.", self._replies(out["events"]))

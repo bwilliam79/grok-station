@@ -2323,7 +2323,7 @@ function confirmRemove(bot, onDone) {
     ${dialogX()}
     <div class="acon" aria-hidden="true">!</div>
     <h2>Delete ${esc(bot.name)}?</h2>
-    <p class="sub">${esc(bot.name)} is removed from this station and its wake word stops working. ${esc(bot.name)} itself keeps running in your Grok Bot account.</p>
+    <p class="sub">This removes ${esc(bot.name)} from this station: its connection, webhook, key, avatar, and its row in the imported team list. Its wake word stops working. ${esc(bot.name)} itself keeps running in your Grok Bot account, and importing your team again can add it back.</p>
     <p class="note">Hey ${esc(bot.name)} moves to Unused wake words, so you can reuse or delete it.</p>
     ${open ? `<p class="note stepup">${esc(stepupText())}</p>` : `<div class="field"><label for="rmpw">Admin password</label><input class="inp" type="password" id="rmpw" autocomplete="current-password" required></div>`}
     <div id="rme"></div>
