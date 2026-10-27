@@ -358,7 +358,8 @@ class MicReset(unittest.TestCase):
         self.assertNotIn(".onblur", audio)
         self.assertNotIn("mailbox", audio.lower())
         self.assertNotIn("seal", audio.lower())
-        self.assertNotIn("homehost", audio.lower())
+        for _h in filter(None, os.environ.get("GS_PRIVATE_HOSTNAMES", "").lower().split(",")):  # real hostnames come from env, never the repo
+            self.assertNotIn(_h, audio.lower())
         wake = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         main = wake.split("\ndef main():", 1)[1].split("\nif __name__", 1)[0]
         self.assertIn('find_card("arecord")', main)

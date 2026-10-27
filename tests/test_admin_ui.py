@@ -498,7 +498,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn(">Deploy bot key setup on system running Grok Bot</div>", step3)
         self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. It asks you first, and it only happens once.", step3)
         self.assertNotIn("seal", step3.lower())
-        self.assertNotIn("homehost", step3.lower())
+        for _h in filter(None, os.environ.get("GS_PRIVATE_HOSTNAMES", "").lower().split(",")):  # real hostnames come from env, never the repo
+            self.assertNotIn(_h, step3.lower())
         self.assertNotIn("mailbox", step3.lower())
         self.assertNotIn("Optional", step3)
         self.assertNotIn("Skip", step3)

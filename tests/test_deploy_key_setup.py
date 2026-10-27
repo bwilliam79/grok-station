@@ -904,7 +904,8 @@ class DeployKeySetup(unittest.TestCase):
         self.assertIn("Deploy bot key setup on system running Grok Bot", blob)
         low = blob.lower()
         self.assertNotIn("seal", low)
-        self.assertNotIn("homehost", low)
+        for _h in filter(None, os.environ.get("GS_PRIVATE_HOSTNAMES", "").lower().split(",")):  # real hostnames come from env, never the repo
+            self.assertNotIn(_h, low)
         self.assertNotIn("mailbox", low)
 
 
