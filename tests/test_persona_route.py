@@ -232,6 +232,28 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                     await s.send_json({"type": "input_audio_buffer.speech_started"})
                     await s.send_json({"type": "input_audio_buffer.speech_stopped"})
                     await s.send_json({"type": "response.created"})
+                    late = getattr(self, "late_transcript", None)
+                    if late is not None:
+                        # Model audio first, then the transcript late (seconds) or never ("never").
+                        # The tail runs as a task so this loop keeps reading what the relay sends (the cancel).
+                        await s.send_json({"type": "response.output_audio.delta", "delta": AUDIO})
+                        await s.send_json({"type": "response.text", "text": PRE})
+
+                        async def tail(late=late, said=said):
+                            try:
+                                if late == "never":
+                                    await asyncio.sleep(1.0)  # the model is still talking when the cap hits
+                                else:
+                                    await asyncio.sleep(late)
+                                    await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
+                                                       "transcript": said})
+                                    await s.send_json({"type": "response.output_audio.delta", "delta": AUDIO})
+                                await s.send_json({"type": "response.done"})
+                            except Exception:
+                                pass  # the relay already closed the session
+
+                        asyncio.ensure_future(tail())
+                        continue
                     if i == 0 and spec and tool_first:
                         await s.send_json({"type": "response.function_call_arguments.done", "name": spec["name"],
                                            "call_id": "c1", "arguments": json.dumps(spec.get("arguments") or {})})
@@ -662,6 +684,34 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
             self.assertIs(out["events"][-1].get("local"), True, said)
             self.assertEqual(self._acks(out["events"]), [])
             self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts), said)
+
+    async def _held(self, late):
+        old = (relay.HOLD_CAP_S, relay.NO_SPEECH)
+        relay.HOLD_CAP_S, relay.NO_SPEECH = 0.3, 1.5
+        self.late_transcript = late
+        try:
+            return await self.drive("what is the weather", timeout=8)
+        finally:
+            relay.HOLD_CAP_S, relay.NO_SPEECH = old
+            self.late_transcript = None
+
+    async def test_held_reply_is_dropped_when_no_transcript_comes(self):
+        """Nix (d): a held reply never plays without its transcript. Cap expiry drops it."""
+        out = await self._held("never")
+        self.assertEqual(out["binaries"], [])
+        kinds = [e.get("type") for e in out["events"]]
+        self.assertNotIn("response_started", kinds)
+        self.assertEqual(kinds[-1], "timeout")
+        self.assertTrue(any("hold cap: dropping" in l for l in self.lines), self.lines[-8:])
+        self.assertIn("response.cancel", [e.get("type") for e in out["upstream"]])
+
+    async def test_late_transcript_does_not_replay_dropped_audio(self):
+        out = await self._held(1.0)  # transcript arrives 0.7 s after the cap
+        self.assertEqual(out["binaries"], [])
+        kinds = [e.get("type") for e in out["events"]]
+        self.assertNotIn("response_started", kinds)
+        self.assertNotIn("heard", kinds)  # the session ended at the cap; the late words go nowhere
+        self.assertEqual(kinds[-1], "timeout")
 
     async def test_grok_noise_does_not_ack(self):
         """No transcript worth routing: Grok does not say Asking. Nor does a woken bot."""

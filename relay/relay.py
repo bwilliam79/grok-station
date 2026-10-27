@@ -67,8 +67,9 @@ MODEL, VOICE = E("XAI_MODEL", "grok-voice-3.0"), E("XAI_VOICE", "luna")
 PORT = int(E("RELAY_PORT", "8790"))
 BIND = E("RELAY_BIND", "127.0.0.1")
 NO_SPEECH, MAX_SESSION = float(E("NO_SPEECH", "10")), float(E("MAX_SESSION", "60"))  # MAX_SESSION is per turn
-# Model output held for the transcript is released after this many seconds, so a transcript that never
-# arrives can't leave the station silent until the session timeout.
+# Model output held for the transcript is DROPPED after this many seconds with no transcript: the bot-name
+# drop and the local exits need the words, so held audio never plays without them. The session then ends
+# with "timeout" (the station shows its usual didn't-catch-that notice).
 HOLD_CAP_S = float(E("HOLD_CAP_S", "3"))
 
 
@@ -1932,8 +1933,6 @@ async def session(req):
                     elif tt in MODEL_OUTPUT:
                         await pi.send_json({"type": "reply", "text": ev.get("transcript") or ev.get("text") or "".join(reply)})
 
-                st["_emit"] = emit_model  # caps() releases held output through this after HOLD_CAP_S
-
                 def count_buf():
                     for bev in st["buf"]:
                         if bev.get("type") in MODEL_OUTPUT or bev.get("type") == "response.created":
@@ -2263,16 +2262,26 @@ async def session(req):
                     return f"no follow-up after turn {st['turn'] - 1}" if not st["speech"] else "no reply to noise (follow-up)"
                 return "no reply to noise" if st["speech"] else "no speech"
 
+            async def drop_held_output():
+                """HOLD_CAP_S passed with no transcript: cancel the response and drop what was held.
+
+                turn_heard stays False and nothing is emitted. drop_model is set so any model output still in
+                flight is dropped, then the station gets "timeout" and the session ends, so a transcript that
+                arrives late has nothing to replay and nowhere to go.
+                """
+                log("hold cap: dropping model output without a transcript")
+                st["buf"], st["buf_t0"] = [], None
+                st["drop_model"] = True
+                if st.get("responding") or st.get("xai_active"):
+                    await cancel_response()
+                await pi.send_json({"type": "timeout", "speech": st["speech"]})
+
             async def caps():
                 while True:
                     now = time.monotonic()
-                    if hold_expired(st, now) and st.get("_emit"):
-                        # No transcript in HOLD_CAP_S: play what the model said rather than stay silent.
-                        log("hold cap: releasing model output without a transcript")
-                        held, st["buf"], st["buf_t0"] = st["buf"], [], None
-                        st["turn_heard"] = True
-                        for bev in held:
-                            await st["_emit"](bev)
+                    if hold_expired(st, now):
+                        await drop_held_output()
+                        return "no transcript"
                     if now - t0 - st.get("held", 0) >= MAX_TOTAL and not st["hold"]:  # a handoff wait doesn't count
                         return "max total"
                     if now - st["turn_t0"] >= MAX_SESSION and not st["hold"]:

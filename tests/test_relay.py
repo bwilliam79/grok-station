@@ -342,7 +342,7 @@ if __name__ == "__main__":
 
 
 class HoldCap(unittest.TestCase):
-    """Nix (d): held model output is released after about 3 s with no transcript."""
+    """Nix (d): held model output is dropped after about 3 s with no transcript."""
     def test_hold_expires_after_the_cap(self):
         self.assertEqual(relay.HOLD_CAP_S, 3.0)
         st = {"buf": [{"type": "response.created"}], "buf_t0": 100.0, "turn_heard": False}
@@ -352,12 +352,17 @@ class HoldCap(unittest.TestCase):
         self.assertFalse(relay.hold_expired(dict(st, drop_model=True), 110))   # routed or dropped turn
         self.assertFalse(relay.hold_expired(dict(st, buf=[]), 110))            # nothing held
 
-    def test_caps_loop_releases_through_emit(self):
+    def test_cap_drops_and_never_emits(self):
         src = open(relay.__file__, encoding="utf-8").read()
-        self.assertIn('st["_emit"] = emit_model', src)
+        drop = src.split("async def drop_held_output():", 1)[1].split("async def caps():", 1)[0]
+        self.assertIn('st["drop_model"] = True', drop)
+        self.assertIn("await cancel_response()", drop)
+        self.assertNotIn("turn_heard", drop.split('"""', 2)[2])  # code, not the docstring
+        self.assertNotIn("emit", drop.split('"""', 2)[2])
+        self.assertNotIn("_emit", src)
+        self.assertIn('await pi.send_json({"type": "timeout"', drop)
         caps = src.split("async def caps():", 1)[1].split("tasks = [", 1)[0]
-        self.assertIn("hold_expired(st, now)", caps)
-        self.assertIn('await st["_emit"](bev)', caps)
+        self.assertIn('await drop_held_output()\n                        return "no transcript"', caps)
 
 
 class UpdateScriptNoFollow(unittest.TestCase):
