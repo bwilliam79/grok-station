@@ -296,3 +296,15 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 ## 0.12.1
 - **Hotfix: Finish update on 0.12.0.** 0.12.0 shipped with the bot instructions still headed "release 0.11.9", so the station refused to build them and every Finish update row read "Can't build instructions: release". The templates (`admin/routine-*.txt`, `gs_routine.py`, the copies in `gs-update.sh` and `app.js`, `docs/bots.md`) now say 0.12.1, and the manifest and deploy pins are regenerated.
 - **Guard.** `tests/test_finish_update.py::TemplateReleaseIsVersion` (every run, including the release check) fails if any template copy names a release other than `VERSION`, and builds Finish update rows for a home and a cloud bot with the real `VERSION`.
+
+## 0.12.2
+
+- **Daily check.** The Updates help line is "Checks for a new version once a day. Never installs anything on its own."
+- **Update dot.** The Updates item and the phone menu show a small accent dot when an update is ready. There is no number, and the dot is hidden from assistive tech.
+- **Display.** An update icon sits with the microphone, relay, and Wi-Fi icons only while the cached check names a newer version. It is absent otherwise, and it makes no sound.
+- **Computer name.** Add bot and Change computer ask for the computer's name exactly as it shows in the Grok Bot app, and say not to include the hostname. Setup does not print a hostname.
+- **Connection test.** A passing test on Configure, or on the webhook panel, refreshes the Bots row immediately. The station clears that bot's last error so the row is no longer a warning.
+- **Wake-word recording.** Enrollment keeps speech that starts just after the chime. It no longer drops a fixed slice of the recording after the chime.
+- **Speakerphone reset.** If capture delivers no full chunk for 3 seconds, the listener kills it and opens it again. The same happens after about 10 seconds of digital silence while nothing is playing (a quiet room still has noise, so an empty room does not trip this). Those reopens wait 30 seconds between tries. A USB reset is separate and never runs during a conversation or a recording: the Audio page has **Reset microphone**, a nightly reset around 3:30 AM when idle, and a reset when speech-level audio is heard 20 times across 2 hours with no wake score above 0.1. Each reset is logged with its reason. The three switches default to on. See [operations.md](operations.md#microphone-reset).
+- **USB reset helper.** `scripts/gs-usb-reset` installs to `/usr/local/lib/grok-station/gs-usb-reset` as `root:root` mode `0755`. User `grok` may run only that program, through `/etc/sudoers.d/grok-station-usb` (`root:root`, mode `0440`, from `admin/sudoers-usb.example`). There is no systemd unit for it. `GS_USB_RESET_SYSFS` replaces `/sys` only when the helper is not real root.
+- **Instructions.** The bot templates name release 0.12.2. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
