@@ -189,14 +189,17 @@ function meter(db) {  // design.md: Too quiet / Good / Too loud
   return `<div class="inline"><div class="meterbar" style="flex:1;min-width:120px"><b style="width:${pct.toFixed(0)}%"></b></div>
     <span class="pill ${lab[1]}"><i></i>${lab[0]}</span><span class="help mono">${db.toFixed(0)} dBFS</span></div>`;
 }
-function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">Needs attention. ${esc(msg)}</div>` : ""; }
+// Password failures show exactly this text, with no "Needs attention." prefix.
+const PASSWORD_BAD = "Password incorrect.";
+function attnText(msg) { return msg === PASSWORD_BAD ? esc(msg) : "Needs attention. " + esc(msg); }
+function errBox(el, msg) { el.innerHTML = msg ? `<div class="err" role="alert">${attnText(msg)}</div>` : ""; }
 function attn(el, msg) {
   if (!el) return;
-  el.innerHTML = msg ? `<div class="banner warn" role="alert"><span class="pill warn"><i></i>Needs attention</span> ${esc(msg)}</div>` : "";
+  el.innerHTML = msg ? `<div class="banner warn" role="alert">${msg === PASSWORD_BAD ? esc(msg) : `<span class="pill warn"><i></i>Needs attention</span> ${esc(msg)}`}</div>` : "";
 }
 function attnBox(el, msg) {
   if (!el) return;
-  el.innerHTML = msg ? `<div class="attn" role="alert">Needs attention. ${esc(msg)}</div>` : "";
+  el.innerHTML = msg ? `<div class="attn" role="alert">${attnText(msg)}</div>` : "";
 }
 function busyBtn(btn, on, label) { btn.disabled = on; if (label) btn.textContent = label; }
 const CHECK_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1199,7 +1202,7 @@ function fieldCheckSentence(err, words, bots) {
     return "Needs attention: that sounds too close to " + label + ". Try another.";
   }
   if (!text) return "";
-  if (text.indexOf("Needs attention") === 0) return text;
+  if (text === PASSWORD_BAD || text.indexOf("Needs attention") === 0) return text;
   return "Needs attention: " + text;
 }
 function clipsNeeded(total) {

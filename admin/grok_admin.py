@@ -59,6 +59,9 @@ LOG_SINCE = {"15m": "-15min", "1h": "-1h", "6h": "-6h", "24h": "-24h", "7d": "-7
 LOCK = threading.RLock()
 
 
+# The one message for any password failure (login, re-check). No prefix in the UI.
+PASSWORD_BAD = "Password incorrect."
+
 def now():
     return time.time()
 
@@ -3010,7 +3013,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
         s = AUTH.login(j.get("password"))
         if not s:
-            return self.send(429 if AUTH.locked() else 401, {"error": "Wrong password.", "locked_s": AUTH.locked()})
+            return self.send(429 if AUTH.locked() else 401, {"error": PASSWORD_BAD, "locked_s": AUTH.locked()})
         return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL)])
 
     def api_post_logout(self, p, q, j):
@@ -3493,7 +3496,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
             return False
         if why:
-            self.send(403, {"error": "Password is wrong."})
+            self.send(403, {"error": PASSWORD_BAD})
             return False
         AUTH.open_stepup(token)
         return True

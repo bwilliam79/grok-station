@@ -1991,7 +1991,7 @@ class PasswordOnly(unittest.TestCase):
         ga.AUTH.__init__()
         self.assertEqual(C().req("POST", "/api/login", {"password": GOOD})[0], 200)
         st, j = C().req("POST", "/api/login", {"password": "wrong-password-1"})
-        self.assertEqual(st, 401); self.assertEqual(j["error"], "Wrong password.")
+        self.assertEqual(st, 401); self.assertEqual(j["error"], "Password incorrect.")
 
 
 class XaiKeyStatus(unittest.TestCase):
