@@ -84,7 +84,7 @@ The station public key (standard base64, 32 bytes) is on the Bots page, with a c
 
 **Remove** asks for the admin password the same way, and skips it while the grace window is open. **Revoke** on one bot drops that pinned key (admin password, same window). **Revoke all bots** drops every pinned key and rejects every reply until a key is paired again. On the Bots page that button is in the header, next to **Add bot**. It still asks first: "Revoke all bots?" and "This drops every pinned key. Replies are rejected until a key is paired again." The grace period is **Password grace period** on the System page: 0 always asks, otherwise 1–120 minutes (default 10). Changing that setting always asks for the password. Signing out clears the window.
 
-With no other bots and no names waiting as Not set up, the page shows one line: "No other bots yet. Hey Grok always works." Hey Grok stays on the list. **Add bot** in the header is the only Add bot.
+Hey Grok stays on the list, even with no other bots. **Refresh avatars** sits directly left of **Add bot**, and **Revoke all bots** is where it always was. **Add bot** there is the only Add bot.
 
 ## Keygen
 
@@ -185,6 +185,7 @@ A bot's replies are posted from one home computer on your network. If that compu
 - **Change computer** (Configure):
   - Key on the bot computer (cloud key): an inline panel, "Move replies to another computer". Copy the instructions, then type the new computer's name and save. The key and the pairing stay the same. An empty name is "Needs attention: type the computer's name."
   - Key on a home computer: the key is tied to that computer, so the panel says "This needs a new key" and offers **Replace key**. No name field, except the not-set case above.
+- **What the bot reports (0.12.6).** A bot can't see the name the Grok Bot app shows for a computer, so the instructions ask for the computer's name as the bot sees it (a hostname is fine). When you paste it into Add bot or Change computer, the station keeps the part before the first dot (for example `den-mac.lan` becomes `den-mac`), and you can type any friendlier name. A home-key bot that already has a name can rename it under Change computer (Save name).
 - **The name is only a label.** The station never checks it. Replies are still accepted from any computer that holds the right key, as before, so a wrong name can't break replies. Add bot and Change computer ask for the computer's name exactly as it shows in the Grok Bot app, and say not to include the hostname. The setup scripts do not print a hostname. The Home computer name field is empty until you paste that name.
 
 ## Routine prompt

@@ -281,7 +281,7 @@ class AdminUI(unittest.TestCase):
                      "Do not skip the approval.",
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
-                     "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.",
+                     "A friendly name for the computer the replies come from. Paste the name your bot reported; the station keeps the part before the first dot, and you can change it. It's only a label.",
                      "No new key or pairing needed."):
             self.assertIn(text, js, text)
         bots = _fn(js, "paintBots")
@@ -360,11 +360,12 @@ class AdminUI(unittest.TestCase):
         self.assertIn("Change computer", js)
         self.assertIn("use Replace key", js)
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
-        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:", fn)
+        self.assertIn("Reply with that computer's name as you see it (its hostname is fine), in its own fenced code block with a short plain label on the line before it:", fn)
         self.assertIn("Computer name:\\n```\\n<computer name>\\n```", fn)
-        self.assertIn("Do not include the hostname.", fn)
+        self.assertIn("The user can give it a friendlier name on the station.", fn)
+        self.assertNotIn("Grok Bot app", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Do not include the hostname.", add)
+        self.assertIn("Give the home computer's name as you see it (its hostname is fine), in its own code block like the key. The user can give it a friendlier name on the station.", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
@@ -797,7 +798,7 @@ vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {};
         self.assertEqual(out["cloud"], {"shown": True, "copy": True, "field": True, "save": True, "saved": "Den iMac"})
         # Home key with no computer yet (a bot from before 0.10.2) can still set the name.
         self.assertEqual(out["home"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
-        self.assertEqual(out["homeNamed"], {"field": False, "replace": True})
+        self.assertEqual(out["homeNamed"], {"field": True, "replace": True})  # 0.12.6: the name can be edited
         self.assertEqual(out["calls"], [["/api/bots/jules", "PATCH", '{"reply_host":"Den iMac"}']] * 2)
 
 
@@ -836,19 +837,21 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('class="btn dg sm" id="revokeall"', head)
         self.assertIn('id="add"', head)
         self.assertLess(head.index('id="revokeall"'), head.index('id="add"'))
+        self.assertIn('<button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add"', head)  # 0.12.6
+        self.assertEqual(page.count('id="avatars"'), 1)
         self.assertEqual(page.count('id="revokeall"'), 1)
         self.assertEqual(page.count(">Add bot</button>"), 1)
         self.assertNotIn('id="addempty"', page)
-        self.assertNotIn("emptybot\"", page.split('id="emptybot"', 1)[0])  # the id is the line, not a second card
         self.assertNotIn('class="card emptybot"', page)
         self.assertNotIn('class="ring"', page)
-        self.assertIn("No other bots yet. Hey Grok always works.", page)
+        self.assertNotIn("No other bots yet", self.js)  # 0.12.6: the empty-list line is gone
+        self.assertNotIn("emptybot", self.js)
         self.assertNotIn("You can connect other bots from your Grok Bot account.", self.js)
         self.assertIn('askPassword("Revoke all bots?"', page)
         self.assertIn("This drops every pinned key. Replies are rejected until a key is paired again.", page)
         self.assertIn('"Revoke all bots"', page)
         bots = _fn(self.js, "paintBots")
-        self.assertIn("empty.hidden = bots.length > 0 || pending.length > 0", bots)
+        self.assertNotIn("emptybot", bots)  # 0.12.6: the empty-list line is gone
 
     def test_audio_is_two_columns_and_test_sound_sits_with_the_device(self):
         audio = self.js.split("async function audioPanel", 1)[1].split("\nconst ICO_WAVE", 1)[0]
@@ -937,7 +940,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn("night_face", dim)
         self.assertIn("select_level", dim)
         bots = _read(os.path.join("docs", "bots.md"))
-        self.assertIn("No other bots yet. Hey Grok always works.", bots)
+        self.assertNotIn("No other bots yet. Hey Grok always works.", bots)
         self.assertIn("Revoke all bots?", bots)
 
 

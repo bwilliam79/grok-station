@@ -1921,7 +1921,17 @@ function oneDecimal(n) { return (Math.round(Number(n) * 10) / 10).toFixed(1); }
 const BOT_ID_RE = /^[a-z][a-z0-9-]{1,23}$/;
 const BOT_ID_ERROR = "Use 2–24 characters: a letter first, then lowercase letters, digits, or hyphens. The voice service doesn't allow a longer id.";
 const BOT_ID_HELP = "Short lowercase ID for this bot, like grok. Used for wake-word routing, portraits and replies. Can't be changed later.";
-const COMPUTER_HINT = "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.";
+const COMPUTER_HINT = "A friendly name for the computer the replies come from. Paste the name your bot reported; the station keeps the part before the first dot, and you can change it. It's only a label.";
+// Bots report the name they can see (a hostname like name.lan); the label is the part before the first dot.
+function shortComputerName(raw) {
+  const t = String(raw || "").trim();
+  const i = t.indexOf(".");
+  return (i > 0 ? t.slice(0, i) : t).trim();
+}
+function bindComputerName(field) {  // paste the reported name, get the short form; the user can still edit it
+  if (!field || typeof field.addEventListener !== "function") return;
+  field.addEventListener("change", () => { field.value = shortComputerName(field.value); });
+}
 // Home key mode (scripts/gs-seal-setup, scripts/gs-seal-reply) is available since 0.8.2, after its validation run. Cloud stays the default.
 const HOME_MODE = true;
 const PICTURE_ASK = true;
@@ -2541,8 +2551,6 @@ function paintBots(el, bots) {
   el._bots = bots;
   paintSummary(el, bots);
   const pending = pendingTeammates(el);
-  const empty = $("#emptybot", el);
-  if (empty) empty.hidden = bots.length > 0 || pending.length > 0;
   const list = $("#blist", el);
   if (!list) return;
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
@@ -3501,9 +3509,9 @@ function routineChangeComputer(slug, pub, fp) {
     + "~/.local/share/grok-station/bin/grok-station-reply\n\n"
     + (script ? "The script:\n" + script : "The setup script could not be filled in yet.\n")
     + "\nFrom now on, post replies from that computer.\n"
-    + "Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:\n\n"
+    + "Reply with that computer's name as you see it (its hostname is fine), in its own fenced code block with a short plain label on the line before it:\n\n"
     + "Computer name:\n```\n<computer name>\n```\n\n"
-    + "Do not include the hostname.";
+    + "The user can give it a friendlier name on the station.";
 }
 function openChangeComputer(box, bot, el) {
   if (!box) return;
@@ -3515,18 +3523,18 @@ function openChangeComputer(box, bot, el) {
   if (home && host) {
     box.innerHTML = `<div class="note amber"><div class="lbl">This needs a new key</div>
       <p>${esc(who)}’s key is kept on ${esc(host)}, and a key works on only one computer. To move ${esc(who)}, use Replace key, then set it up on the new computer.</p>
-      <div class="inline"><button class="btn sm" type="button" id="chrepl">Replace key</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
+      <div class="inline"><button class="btn sm" type="button" id="chrepl">Replace key</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>
+      <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(host)}">
+        <p class="help">Rename it here. ${esc(COMPUTER_HINT)}</p></div>
+      <div id="chere"></div>
+      <div class="inline"><button class="btn p sm" type="button" id="chsave">Save name</button></div>`;
     const repl = $("#chrepl", box);
     if (repl) repl.onclick = () => {
       const b = document.getElementById("bpubrepl");
       if (b && b.click) b.click();
       hide();
     };
-    const cancel = $("#chcancel", box);
-    if (cancel) cancel.onclick = hide;
-    return;
-  }
-  if (home) {
+  } else if (home) {
     box.innerHTML = `<div class="note amber"><div class="lbl">This needs a new key</div>
       <p>${esc(who)}’s key is kept on this computer, and a key works on only one computer. To move ${esc(who)}, use Replace key, then set it up on the new computer. The computer name isn’t set yet. Type it below.</p></div>
       <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="">
@@ -3544,12 +3552,13 @@ function openChangeComputer(box, bot, el) {
       <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
   }
   bindInstructions(box, "chcopy", () => routineChangeComputer(bot.slug, el && el._stationPub, el && el._fingerprint));
+  bindComputerName($("#chname", box));
   const cancel = $("#chcancel", box);
   if (cancel) cancel.onclick = hide;
   const save = $("#chsave", box);
   if (save) save.onclick = async () => {
     const field = $("#chname", box);
-    const typed = field ? field.value.trim() : "";
+    const typed = field ? shortComputerName(field.value) : "";
     const ere = $("#chere", box);
     if (!typed) {
       if (ere) ere.innerHTML = `<div class="need">Needs attention: type the computer’s name.</div>`;
@@ -3613,7 +3622,7 @@ function routineForBot(slug, pub, fp, mode) {
     + "\nAfter it runs, send back the public key it printed. Never send the private key or the seed. Changing the key later means pairing again with Replace key.\n"
     + "Reply with the webhook URL, the webhook key, your public key, and the home computer's name. Put each value in its own fenced code block, with a short plain label on the line before it:\n\n"
     + "Webhook URL:\n```\n<webhook URL>\n```\nWebhook key:\n```\n<webhook key>\n```\nPublic key:\n```\n<public key>\n```\nComputer name:\n```\n<computer name>\n```\n\n"
-    + "Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Do not include the hostname.";
+    + "Give the home computer's name as you see it (its hostname is fine), in its own code block like the key. The user can give it a friendlier name on the station.";
 }
 function addBot(voices, el, preset) {
   closeFloats();
@@ -3746,6 +3755,7 @@ function addBot(voices, el, preset) {
       <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
     const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d), hostEl = $("#ahost", d);
     if (hostEl) hostEl.value = draft.host || "";
+    bindComputerName(hostEl);
     bindInstructions(d, "aroutine", () => routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode));
     if (urlEl) urlEl.value = draft.url;
     if (pubEl) pubEl.value = draft.pub;
@@ -3759,7 +3769,7 @@ function addBot(voices, el, preset) {
       const problem = webhookProblem(url, key);
       if (problem) { errBox($("#awe", d), problem); return; }
       if (!pubKeyOk(pub)) { errBox($("#awe", d), "Paste the bot's public key: base64 of 32 bytes."); if (pubEl) pubEl.focus(); return; }
-      const host = hostEl ? hostEl.value.trim().split(/\s+/).join(" ") : "";
+      const host = hostEl ? shortComputerName(hostEl.value).split(/\s+/).join(" ") : "";
       if (!/^[A-Za-z0-9][A-Za-z0-9 ._'’-]{0,39}$/.test(host)) { errBox($("#awe", d), "Type the home computer's name your bot sent back."); if (hostEl) hostEl.focus(); return; }
       draft.host = host;
       draft.url = url;
@@ -3835,7 +3845,7 @@ async function pageBots(el) {
   const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
   const bots = data.bots || [];
   const slot = $("#topr");
-  if (slot) slot.innerHTML = `<button class="btn g sm" id="avatars" type="button">Refresh avatars</button>`;
+  if (slot) slot.innerHTML = "";
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
   el._defaultVoice = data.default_voice || "";
@@ -3848,9 +3858,8 @@ async function pageBots(el) {
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
-      <span class="right inline botacts"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
+      <span class="right inline botacts"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
     <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
-    <p class="help" id="emptybot" hidden>No other bots yet. Hey Grok always works.</p>
     <div class="card" id="teamcard" hidden>
       <p class="note" id="teamphrase" hidden></p>
 </div>

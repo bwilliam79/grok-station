@@ -35,7 +35,7 @@ class NoRedInAdmin(unittest.TestCase):
 class BotsCopy(unittest.TestCase):
     def test_bots_page_intro(self):
         js = read("admin", "web", "app.js")
-        self.assertIn("No other bots yet. Hey Grok always works.", js)
+        self.assertNotIn("No other bots yet", js)
         self.assertNotIn("You can connect other bots from your Grok Bot account.", js)
         self.assertIn("Hey Grok", js)
         self.assertNotIn("Teammates the station can talk to.", js)
