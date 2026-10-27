@@ -699,7 +699,7 @@ function finishFind(view, slug) {
 }
 function finishSendable(row) {
   if (!row || !row.slug || !row.instr) return false;
-  return row.state !== "done" && row.state !== "copy" && row.state !== "error";
+  return row.state !== "done" && row.state !== "copy" && row.state !== "error" && row.state !== "waiting";
 }
 function finishQueue(view) {
   const out = [], seen = {};
@@ -723,7 +723,11 @@ function finishTitle(view) {
 }
 function finishPill(b) {
   if (b.state === "done") return `<span class="pill ok"><i></i>Updated</span>`;
-  if (b.state === "waiting") return `<span class="pill busy"><i></i>Waiting for reply</span>`;
+  if (b.state === "waiting") {
+    const m = Math.max(1, Math.ceil((Number(b.wait_left) || 0) / 60));
+    return `<span class="pill busy"><i></i>Waiting for reply, up to ${m} min</span>`;
+  }
+  if (b.state === "noreply") return `<span class="pill warn"><i></i>No reply</span>`;
   if (b.state === "needs") return `<span class="pill warn"><i></i>Needs update</span>`;
   if (b.state === "copy") return `<span class="pill warn"><i></i>Set up before 0.11.8</span>`;
   if (b.state === "different") return `<span class="pill warn"><i></i>Instructions differ</span>`;
@@ -737,7 +741,7 @@ function finishRowButtons(d, b) {
   if (b.state === "copy") {
     return instructionsHtml(finMsgId(b.slug), "Copy", {disabled: locked});
   }
-  const label = b.state === "waiting" || b.state === "refused" ? "Send again"
+  const label = b.state === "noreply" || b.state === "refused" ? "Send again"
     : b.state === "needs" || b.state === "different" ? "Send" : "";
   if (!label) return "";
   const busy = d._active === b.slug;
@@ -764,7 +768,7 @@ function finishRowHTML(d, g, b) {
 }
 function finishHelperLine(g) {
   if (!finishHelperChanges(g)) return "";
-  return `<p class="finhelp">Helper ${esc(g.helper || "unknown")} → ${esc(g.want_helper)}</p>`;
+  return `<p class="finhelp">Includes a helper update</p>`;  // no helper build numbers beside the release
 }
 function finishLead(computers) {
   return (computers || []).some(finishShared)

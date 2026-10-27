@@ -1664,6 +1664,7 @@ import gs_routine  # noqa: E402  (shared with scripts/gs-update.sh; a test keeps
 
 ROUTINES = {m: os.path.join(HERE, "routine-%s.txt" % m) for m in ("home", "cloud")}
 FINISH = "finish-update.json"
+FINISH_WAIT_S = 600  # a sent update waits this long for the bot's reply; matches the relay's one ask per bot per 10 min
 
 
 def deploy_pins():
@@ -1705,7 +1706,7 @@ def read_finish():
     return doc
 
 
-def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
+def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None):
     """The Finish update dialog: computers, each with its bots, the exact text, and each row's state.
 
     E: a row is done only when the bot's signed status names this release and the hash of exactly this text.
@@ -1713,6 +1714,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
     pins = deploy_pins() if pins is None else pins
     finish = read_finish() if finish is None else finish
     rel = version()
+    now = time.time() if now is None else now
     groups, behind = {}, 0
     for b in bots:
         if not (b.get("paired") and (b.get("webhook") or {}).get("configured")):
@@ -1724,6 +1726,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
         except (gs_routine.Bad, OSError) as e:
             text, want, err = "", "", "Can't build instructions: %s" % e
         u = b.get("update") or {}
+        wait_left = 0
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
         elif b.get("update_refused_at"):
@@ -1733,7 +1736,12 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
         elif u.get("release") == rel and u.get("instr") != want:
             state = "different"
         elif finish["sent"].get(b["slug"], {}).get("instr") == want:
-            state = "waiting"
+            try:
+                sent_at = float(finish["sent"][b["slug"]].get("at") or 0)
+            except (TypeError, ValueError):
+                sent_at = 0.0
+            wait_left = int(max(0, sent_at + FINISH_WAIT_S - now))
+            state = "waiting" if wait_left > 0 else "noreply"  # stored with its time, so a restart keeps it
         else:
             state = "needs"
         if err:
@@ -1750,7 +1758,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None):
             g["helper"] = b["helper"]["version"]
         g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home" if home else "cloud",
                           "state": state, "message": text, "instr": want, "have": u.get("instr"),
-                          "have_release": u.get("release"), "error": err})
+                          "have_release": u.get("release"), "error": err,
+                          "wait_left": wait_left if state == "waiting" else 0})
     for g in groups.values():
         g["bots"].sort(key=lambda r: r["name"].lower())
         chosen = finish["updaters"].get(g["key"])
@@ -3904,6 +3913,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         if row["error"] or row["instr"] != sha:
             return self.send(409, {"error": "The instructions changed. Reopen Finish update."})
+        if p.endswith("/send") and row["state"] == "waiting":
+            mins = max(1, -(-int(row.get("wait_left") or 0) // 60))
+            return self.send(409, {"error": "Still waiting for %s to reply. Try again in %d min." % (row["name"], mins),
+                                   "wait_left": row.get("wait_left") or 0})
         doc = read_finish()
         if p.endswith("/copied"):
             doc["copied"][slug] = {"instr": sha, "at": int(time.time())}

@@ -2,7 +2,7 @@
 
 The script runs for real under sh with a stub curl that serves a fake GitHub from a folder; nothing leaves the box.
 """
-import hashlib, json, os, re, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
+import hashlib, json, time, os, re, shutil, stat, subprocess, sys, tempfile, unittest, urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "admin"))
@@ -455,9 +455,49 @@ class Station(unittest.TestCase):
         self.assertEqual(rows["jules"]["state"], "needs")
         _, rows = self.rows([_bot("jules", update=dict(ok, release="0.0.1"), refused=5)])
         self.assertEqual(rows["jules"]["state"], "refused")
-        self.fin["sent"]["jules"] = {"instr": want}
+        self.fin["sent"]["jules"] = {"instr": want, "at": int(time.time())}
         _, rows = self.rows([_bot("jules", update=dict(ok, release="0.0.1"))])
         self.assertEqual(rows["jules"]["state"], "waiting")
+        self.assertGreater(rows["jules"]["wait_left"], 500)
+        self.fin["sent"]["jules"] = {"instr": want, "at": int(time.time()) - self.ga.FINISH_WAIT_S - 1}
+        _, rows = self.rows([_bot("jules", update=dict(ok, release="0.0.1"))])
+        self.assertEqual((rows["jules"]["state"], rows["jules"]["wait_left"]), ("noreply", 0))
+        _, rows = self.rows([_bot("jules", update=ok)])
+        self.assertEqual(rows["jules"]["state"], "done")  # a reply clears it to Updated
+
+    def test_server_refuses_resend_while_waiting_then_accepts_after_timeout(self):
+        ga = self.ga
+        _, rows = self.rows([_bot("jules", update={"release": "0.0.1", "instr": "1" * 16, "computer": "f" * 16})])
+        want = rows["jules"]["instr"]
+        doc = {"sent": {"jules": {"instr": want, "at": int(time.time())}}, "copied": {}, "updaters": {}}
+        sent, calls = [], []
+
+        class H:
+            def send(self, code, body):
+                sent.append((code, body)); return code
+            def _finish_inputs(self):
+                return [_bot("jules", update={"release": "0.0.1", "instr": "1" * 16, "computer": "f" * 16})], \
+                    "https://st.example", FP, PUB
+        saved = (ga.read_finish, ga.write_json, ga.relay_call, ga.deploy_pins, ga.audit)
+        ga.read_finish = lambda: json.loads(json.dumps(doc))
+        ga.write_json = lambda path, d: doc.update(d)
+        ga.relay_call = lambda *a, **k: (calls.append(a), (202, {"ok": True}))[1]
+        ga.deploy_pins = lambda: self.pins
+        ga.audit = lambda *a, **k: None
+        try:
+            body = {"slug": "jules", "message_sha": want}
+            self.assertEqual(ga.Handler.api_post_finish_update(H(), "/api/finish-update/send", {}, body), 409)
+            self.assertIn("Still waiting for Jules to reply", sent[-1][1]["error"])
+            self.assertEqual(calls, [])
+            doc["sent"]["jules"]["at"] = int(time.time()) - ga.FINISH_WAIT_S - 5  # timed out: No reply
+            self.assertEqual(ga.Handler.api_post_finish_update(H(), "/api/finish-update/send", {}, body), 202)
+            self.assertEqual(len(calls), 1)
+        finally:
+            ga.read_finish, ga.write_json, ga.relay_call, ga.deploy_pins, ga.audit = saved
+
+    def test_wait_matches_the_relay_ask_gap(self):
+        src = open(os.path.join(ROOT, "relay", "relay.py")).read()
+        self.assertIn("HELPER_ASK_GAP_S = %d " % self.ga.FINISH_WAIT_S, src)
 
     def test_cloud_bots_get_station_values_and_home_groups_pick_updater(self):
         ok = {"release": "0.0.1", "instr": "1" * 16, "helper": "0.11.7", "computer": "a" * 16}

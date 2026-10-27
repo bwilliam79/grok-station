@@ -44,14 +44,15 @@ class FinishDialog(unittest.TestCase):
     def test_helper_change_with_two_bots(self):
         r = render({"home": True, "helper": "0.11.8", "want_helper": "0.12.0", "updater": "rhea",
                     "bots": [{"slug": "rhea", "name": "Rhea"}, {"slug": "kai", "name": "Kai"}]})
-        self.assertEqual(r["line"], '<p class="finhelp">Helper 0.11.8 → 0.12.0</p>')
+        self.assertEqual(r["line"], '<p class="finhelp">Includes a helper update</p>')
         self.assertIn("updates the helper", r["rows"][0])
         self.assertNotIn("updates the helper", r["rows"][1])
         self.assertIn("share one helper", r["lead"])
 
     def test_helper_change_single_bot(self):
         r = render({"home": True, "helper": "0.11.8", "want_helper": "0.12.0", "updater": "rhea", "bots": [{"slug": "rhea"}]})
-        self.assertIn("0.11.8 → 0.12.0", r["line"])
+        self.assertIn("Includes a helper update", r["line"])
+        self.assertNotIn("0.11.8", r["line"])
         self.assertNotIn("updates the helper", r["rows"][0])
         self.assertEqual(r["lead"], "Send each bot its updated instructions.")
 
@@ -93,3 +94,23 @@ console.log(JSON.stringify({{head: nodes.finhead.innerHTML, headHidden: nodes.fi
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WaitingRow(unittest.TestCase):
+    def test_no_resend_while_waiting_and_send_again_after_no_reply(self):
+        pre = "const esc = s => String(s);\n" + _fn("finMsgId") + _fn("finishRowButtons") + _fn("finishSendable") + _fn("finishPill")
+        r = _node(pre + """
+const d = {};
+console.log(JSON.stringify({
+  wait: finishRowButtons(d, {slug: "rhea", state: "waiting"}),
+  waitSend: finishSendable({slug: "rhea", instr: "a", state: "waiting"}),
+  waitPill: finishPill({state: "waiting", wait_left: 290}),
+  noreply: finishRowButtons(d, {slug: "rhea", state: "noreply"}),
+  noreplySend: finishSendable({slug: "rhea", instr: "a", state: "noreply"}),
+  noreplyPill: finishPill({state: "noreply"})}));""")
+        self.assertEqual(r["wait"], "")
+        self.assertFalse(r["waitSend"])
+        self.assertIn("Waiting for reply, up to 5 min", r["waitPill"])
+        self.assertIn("Send again", r["noreply"])
+        self.assertTrue(r["noreplySend"])
+        self.assertIn('pill warn', r["noreplyPill"]); self.assertIn("No reply", r["noreplyPill"])
