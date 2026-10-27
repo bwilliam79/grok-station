@@ -2819,6 +2819,7 @@ function openBot(bot, el) {
     const box = $("#tbox", d);
     if (!box) return;
     box.innerHTML = testResultHTML(res);
+    if (res && res.state === "ok" && el) refreshBots(el);
   };
   const startPoll = (id) => {
     testId = id;
@@ -3103,6 +3104,7 @@ function mountWebhookStep(root, bot, el, onFinish) {
     if (btn) { btn.disabled = !connected; btn.textContent = "Send test ping"; }
     const box = $("#hbox", root);
     if (box) box.innerHTML = testResultHTML(res);
+    if (res && res.state === "ok" && el) refreshBots(el);
   };
   const startPoll = (id) => {
     testId = id;

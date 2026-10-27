@@ -1099,7 +1099,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
             if text:
                 _record_rtt(bot, rtt_ms=max(0, int((time.monotonic() - t_post) * 1000)))
                 log(f"handoff {rid} agent={bot} length={len(text)} verdict=spoken wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
-                _note_status(bot, answered=True)
+                _note_status(bot, answered=True, clear_error=True)
                 _note_icon(bot, "ok")
                 return text, "ok"
             await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
@@ -2432,8 +2432,12 @@ def _write_status(doc):
     atomic_write(status_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
 
 
-def _note_status(slug, answered=False, error=None):
-    """bot-status.json: timestamps and a short error. Never the question or the reply."""
+def _note_status(slug, answered=False, error=None, clear_error=False):
+    """bot-status.json: timestamps and a short error. Never the question or the reply.
+
+    clear_error removes last_error and last_error_at. A newer last_answered_at is not enough:
+    the Bots row stays on the error while last_error_at is the same second as the answer.
+    """
     try:
         doc = read_json_file(status_path())
         if not isinstance(doc, dict):
@@ -2442,6 +2446,9 @@ def _note_status(slug, answered=False, error=None):
         now = int(time.time())
         if answered:
             ent["last_answered_at"] = now
+        if clear_error:
+            ent.pop("last_error", None)
+            ent.pop("last_error_at", None)
         if error:
             ent["last_error"] = str(error)[:200]
             ent["last_error_at"] = now
@@ -3652,6 +3659,9 @@ async def _run_bot_test(tid):
             rec["state"] = "ok"
             rec["answered_in_s"] = float(time.monotonic() - rec["t0"])
             rec["error"] = None
+            # The handoff may be stubbed, or it may only have stamped last_answered_at. Either way a pass is reachable.
+            _note_status(rec["slug"], answered=True, clear_error=True)
+            _note_icon(rec["slug"], "ok")
             if rec.get("then_avatar"):  # post-add check: ask for the picture once, silently; a miss changes nothing
                 try:
                     rec["avatar_asked"] = await ask_avatar(rec["slug"], rec.get("actor") or "admin")

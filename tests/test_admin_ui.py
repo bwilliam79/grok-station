@@ -374,6 +374,15 @@ class AdminUI(unittest.TestCase):
             self.assertNotIn("gethostname", src, rel)
             self.assertNotRegex(src, r"(?<![\w.])hostname\b", rel)
 
+    def test_passing_connection_test_refreshes_the_row(self):
+        """Both Configure and the webhook step reload Bots as soon as a test passes."""
+        blocks = self.js.split("const showResult = (res) => {")
+        self.assertEqual(len(blocks), 3)  # the two connection-test handlers, plus the text before the first
+        for block in blocks[1:]:
+            body = block.split("\n  };", 1)[0]
+            self.assertIn('res.state === "ok"', body)
+            self.assertIn("refreshBots(el)", body)
+
     def test_add_bot_routine_matches_docs(self):
         docs = _read(os.path.join("docs", "bots.md"))
         fences = [part.split("\n```", 1)[0] for part in docs.split("```text\n")[1:]]
