@@ -89,7 +89,10 @@ class AdminUI(unittest.TestCase):
         self.assertIn('"/api/updates/autocheck"', up)
         self.assertIn("Daily check", up)
         self.assertIn("Checks for a new version once a day. Never installs anything on its own.", up)
-        self.assertIn('b.textContent = ""; b.setAttribute("aria-hidden", "true");', js)
+        self.assertIn('if (n) { b.removeAttribute("aria-hidden"); b.setAttribute("role", "img"); b.setAttribute("aria-label", "Update available"); }', js)
+        self.assertIn('else { b.setAttribute("aria-hidden", "true"); b.removeAttribute("role"); b.removeAttribute("aria-label"); }', js)
+        self.assertIn("box-shadow:0 0 0 2px var(--gs-sidebar)", self.css)
+        self.assertIn(".nav .b.updot{position:absolute;top:6px;left:calc(50% + 4px);margin:0}", self.css)
         self.assertNotIn('b.textContent = n ? "1"', js)
         self.assertIn('class="b updot" id="upbadge" data-upbadge hidden aria-hidden="true"', js)
         self.assertIn('class="updot" data-upbadge hidden aria-hidden="true"', js)
@@ -911,7 +914,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1035,7 +1038,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)

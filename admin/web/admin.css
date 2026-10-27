@@ -182,7 +182,7 @@ button.x:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
 .tipwrap:hover>.tip,.tipwrap:focus>.tip,.tipwrap:focus-within>.tip{display:block}
 .info{width:18px;height:18px;margin-left:6px;border-radius:50%;border:1px solid var(--gs-rule-2);color:var(--gs-muted);font:600 var(--fs-help)/1.33 var(--body);justify-content:center;cursor:help}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
-@media (max-width:1023px){.side{width:72px;padding:22px 8px}.side .brand div,.side .grp,.side .nav span,.side .foot{display:none}.nav{justify-content:center}}
+@media (max-width:1023px){.side{width:72px;padding:22px 8px}.side .brand div,.side .grp,.side .nav span,.side .foot{display:none}.nav{justify-content:center;position:relative}.nav .b.updot{position:absolute;top:6px;left:calc(50% + 4px);margin:0}}
 @media (max-width:767px){
   .side{display:none}.top{padding:0 16px;height:56px;position:sticky;top:0;background:var(--gs-bg);z-index:5}.top h1{font-size:var(--fs-h2)}
   .body{padding:16px 16px 96px}.cols{grid-template-columns:1fr}
@@ -204,7 +204,7 @@ a.skipnow{display:inline-block;margin-top:8px;font:600 var(--fs-body) var(--body
 .sheet .card.wizcard{width:min(560px,100%)}
 .tokenbox{user-select:all;cursor:text}
 b.count,.nav .b.count{font-size:var(--fs-help);padding:1px 8px;border-radius:99px;background:var(--gs-amber-bg);color:var(--gs-amber);font-weight:600}
-b.updot,.nav .b.updot{display:inline-block;width:8px;height:8px;padding:0;border-radius:var(--gs-radius-pill);background:var(--gs-teal);flex:none}
+b.updot,.nav .b.updot{display:inline-block;width:8px;height:8px;padding:0;border-radius:var(--gs-radius-pill);background:var(--gs-teal);box-shadow:0 0 0 2px var(--gs-sidebar);flex:none}
 .botrow{flex-wrap:wrap}
 /* A button placed directly in a form (not inside a .field) gets the same 14px gap as a .field; notes under a form sit 12px below it. */
 form>.btn{margin-top:14px}
