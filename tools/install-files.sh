@@ -4,7 +4,8 @@
 set -eu
 S=$1; V=${2:-dev}
 id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G adm -M -d /nonexistent -s /usr/sbin/nologin grok-admin
-install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets /usr/local/lib/grok-station
+install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets
+install -d -o root -g root -m755 /usr/local/lib/grok-station
 install -m755 "$S/app/grok_station.py" /opt/grok-station/grok_station.py.new && mv /opt/grok-station/grok_station.py.new /opt/grok-station/grok_station.py
 install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
 install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py

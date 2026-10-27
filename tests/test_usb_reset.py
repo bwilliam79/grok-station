@@ -38,6 +38,7 @@ def make_tree(root, *, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet",
     usb = os.path.join(root, "devices", "usb1", "1-2")
     iface = os.path.join(usb, "1-2:1.0")
     os.makedirs(iface)
+    _write(os.path.join(iface, "bInterfaceClass"), "01\n")
     _write(os.path.join(usb, "idVendor"), vendor + "\n")
     _write(os.path.join(usb, "idProduct"), product_id + "\n")
     _write(os.path.join(usb, "product"), product + "\n")
@@ -165,12 +166,103 @@ class UsbReset(unittest.TestCase):
         finally:
             os.environ.pop("GS_USB_RESET_SYSFS", None)
 
+    def _flaky_store(self, mod, fail_ones):
+        """Wrap _store: the first fail_ones writes of 1 raise; every write is recorded."""
+        seen = []
+        real = mod._store
+        left = {"n": fail_ones}
+
+        def wrap(path, data):
+            seen.append(data)
+            if data == b"1" and left["n"] > 0:
+                left["n"] -= 1
+                raise OSError("busy")
+            real(path, data)
+
+        mod._store = wrap
+        mod.time.sleep = lambda _s: None
+        return seen
+
+    def test_failed_restore_is_retried_until_it_sticks(self):
+        mod = load()
+        with tempfile.TemporaryDirectory() as root:
+            usb = make_tree(root)
+            seen = self._flaky_store(mod, 1)
+            mod.reset_card("0", root)
+            self.assertEqual(seen, [b"0", b"1", b"1"])
+            self.assertEqual(open(os.path.join(usb, "authorized")).read(), "1")
+
+    def test_restore_that_never_sticks_refuses_nonzero(self):
+        mod = load()
+        with tempfile.TemporaryDirectory() as root:
+            make_tree(root)
+            seen = self._flaky_store(mod, 99)
+            with self.assertRaises(mod.Refuse) as cm:
+                mod.reset_card("0", root)
+            self.assertEqual(cm.exception.reason, "restore failed")
+            self.assertEqual(seen, [b"0"] + [b"1"] * mod.RESTORE_TRIES)
+            os.environ["GS_USB_RESET_SYSFS"] = root
+            old_out = sys.stdout
+            try:
+                out = []
+                mod.sys.stdout = type("W", (), {"write": lambda _s, t: out.append(t)})()
+                self.assertEqual(mod.main(["gs-usb-reset", "0"]), 1)
+            finally:
+                mod.sys.stdout = old_out
+                os.environ.pop("GS_USB_RESET_SYSFS", None)
+            self.assertEqual("".join(out), "refused: restore failed\n")
+
+    def test_needs_an_audio_interface(self):
+        mod = load()
+        with tempfile.TemporaryDirectory() as root:
+            usb = make_tree(root)
+            os.remove(os.path.join(usb, "1-2:1.0", "bInterfaceClass"))
+            with self.assertRaises(mod.Refuse) as cm:
+                mod.reset_card("0", root)
+            self.assertEqual(cm.exception.reason, "not speakerphone")
+
+    def test_real_ids_match_without_the_name(self):
+        mod = load()
+        self.assertIn(("328f", "0109"), mod.EMEET_IDS)
+        with tempfile.TemporaryDirectory() as root:
+            usb = make_tree(root, product="USB Audio", manufacturer="Generic", card_id="Device",
+                            vendor="328f", product_id="0109")
+            mod.reset_card("0", root)
+            self.assertEqual(open(os.path.join(usb, "authorized")).read(), "1")
+
+    def test_lock_and_minimum_interval(self):
+        mod = load()
+        with tempfile.TemporaryDirectory() as root:
+            make_tree(root)
+            lock = os.path.join(root, "lock")
+            clock = {"t": 1000.0}
+            mod.locked_reset("0", root, lock, now=lambda: clock["t"])
+            clock["t"] += 10
+            with self.assertRaises(mod.Refuse) as cm:
+                mod.locked_reset("0", root, lock, now=lambda: clock["t"])
+            self.assertEqual(cm.exception.reason, "too soon")
+            clock["t"] += mod.MIN_INTERVAL_S
+            mod.locked_reset("0", root, lock, now=lambda: clock["t"])
+            import fcntl
+            fd = os.open(lock, os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                clock["t"] += 1000
+                with self.assertRaises(mod.Refuse) as cm:
+                    mod.locked_reset("0", root, lock, now=lambda: clock["t"])
+                self.assertEqual(cm.exception.reason, "busy")
+            finally:
+                os.close(fd)
+            self.assertEqual(mod.lock_path(euid=0), "/run/gs-usb-reset.lock")
+            self.assertTrue(open(HELPER).readline().startswith("#!/usr/bin/python3 -I"))
+
     def test_install_wiring_and_docs(self):
         files = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
         self.assertIn('"$S/scripts/gs-usb-reset"', files)
         self.assertIn("/usr/local/lib/grok-station/gs-usb-reset", files)
         self.assertIn("sudoers-usb.example", files)
         self.assertIn("/etc/sudoers.d/grok-station-usb", files)
+        self.assertIn("install -d -o root -g root -m755 /usr/local/lib/grok-station", files)
         sudoers = open(os.path.join(ROOT, "admin", "sudoers-usb.example")).read()
         self.assertIn("grok ALL=(root) NOPASSWD: /usr/local/lib/grok-station/gs-usb-reset\n", sudoers)
         self.assertNotIn("*", sudoers)

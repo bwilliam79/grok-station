@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -I
 """Reset one USB speakerphone by its ALSA card. Root helper. Stdlib only.
 
 One argument: an ALSA card number (0-99) or the card id (the token in
@@ -11,15 +11,23 @@ GS_USB_RESET_SYSFS replaces /sys only when this process is not real root
 (euid != 0). A root install ignores the variable. Tests pass an explicit
 euid to sysfs_root(); the command line has no such argument.
 """
+import fcntl
 import os
 import re
 import stat
 import sys
+import tempfile
+import time
 
-# Numeric USB ids, lowercase hex without a 0x prefix. Empty unless a pair is
-# known to be this speakerphone and nothing else. The product and manufacturer
-# strings, and the ALSA card id, are the usual match (the word "emeet").
-EMEET_IDS = frozenset()
+# Numeric USB ids, lowercase hex without a 0x prefix: the EMEET OfficeCore
+# M0 Plus. The product and manufacturer strings, and the ALSA card id, also
+# match (the word "emeet"). Either way the device must have an audio interface.
+EMEET_IDS = frozenset({("328f", "0109")})
+
+# Re-authorize tries after a successful write of 0, so the mic is not left off.
+RESTORE_TRIES, RESTORE_GAP_S = 5, 0.2
+# Minimum seconds between two resets, enforced under an exclusive lock.
+MIN_INTERVAL_S = 30
 
 _NUM = re.compile(r"^[0-9]{1,2}$")
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
@@ -133,7 +141,28 @@ def usb_owner(start, devices):
     raise Refuse("not usb")
 
 
+def has_audio_interface(usb):
+    """True when one of the device's own interfaces (<dev>:<cfg>.<n>) is USB audio (class 01)."""
+    base = os.path.basename(usb)
+    try:
+        names = os.listdir(usb)
+    except OSError:
+        return False
+    for name in names:
+        if not name.startswith(base + ":"):
+            continue
+        sub = os.path.join(usb, name)
+        if os.path.islink(sub) or not os.path.isdir(sub):
+            continue
+        text = (_reg_text(os.path.join(sub, "bInterfaceClass")) or "").strip().lower()
+        if text == "01":
+            return True
+    return False
+
+
 def is_speakerphone(usb, card):
+    if not has_audio_interface(usb):
+        return False
     for folder, name in ((usb, "product"), (usb, "manufacturer"), (card, "id")):
         text = _reg_text(os.path.join(folder, name))
         if text and "emeet" in text.lower():
@@ -182,7 +211,59 @@ def reset_card(spec, sysfs):
     if not _inside(usb, devices) or os.path.realpath(usb) == os.path.realpath(devices):
         raise Refuse("outside device")
     _store(auth, b"0")
-    _store(auth, b"1")
+    # The 0 went through, so the device is off. Always try to put it back.
+    restored = False
+    for attempt in range(RESTORE_TRIES):
+        try:
+            _store(auth, b"1")
+            restored = True
+            break
+        except Exception:
+            if attempt + 1 < RESTORE_TRIES:
+                time.sleep(RESTORE_GAP_S)
+    if not restored:
+        raise Refuse("restore failed")
+
+
+def lock_path(euid=None):
+    """Lock and last-reset file. Root uses /run; tests (not root) use the fake sysfs or tmp."""
+    if euid is None:
+        euid = os.geteuid()
+    if euid == 0:
+        return "/run/gs-usb-reset.lock"
+    root = sysfs_root(euid)
+    if root != "/sys":
+        return os.path.join(root, ".gs-usb-reset.lock")
+    return os.path.join(tempfile.gettempdir(), "gs-usb-reset-%d.lock" % euid)
+
+
+def locked_reset(spec, sysfs, lock, now=None, min_interval=None):
+    """One reset at a time, and none within MIN_INTERVAL_S of the last good one."""
+    now = now or time.time
+    gap = MIN_INTERVAL_S if min_interval is None else min_interval
+    try:
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise Refuse("lock failed")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refuse("lock failed")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise Refuse("busy")
+        try:
+            last = float(os.pread(fd, 32, 0).decode("ascii", "replace").strip() or 0)
+        except ValueError:
+            last = 0.0
+        t = now()
+        if 0 <= t - last < gap:
+            raise Refuse("too soon")
+        reset_card(spec, sysfs)
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, ("%d\n" % int(now())).encode("ascii"), 0)
+    finally:
+        os.close(fd)
 
 
 def _refuse(reason):
@@ -197,7 +278,7 @@ def main(argv=None):
     if len(argv) != 2 or not valid_spec(argv[1]):
         return _refuse("bad card")
     try:
-        reset_card(argv[1], sysfs_root())
+        locked_reset(argv[1], sysfs_root(), lock_path())
     except Refuse as exc:
         return _refuse(exc.reason)
     sys.stdout.write("ok\n")
