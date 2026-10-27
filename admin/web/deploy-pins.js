@@ -2,7 +2,7 @@
 // sha256 of each file at this commit (`git show <commit>:<path>`). Embedded in the deploy prompt; not fetched.
 var DEPLOY_PINS = {
   commit: "fd15ab49518761cfb20e4176ac30de0b4dc37f6a",
-  update_commit: "f607f2552bb703877860678d6462641445b5dc5c",
+  update_commit: "33d57fbdd7020ae0d8c43970cdf2eabb599f9874",
   files: {
     "tools/grok-station-reply": "d6928975a7e462a6d6f1287d5c49682af885f29143b0df6647ca6ac03c75e8ad",
     "scripts/gs-seal-setup": "15565f30203b6772d41557190b426dc973167b1c15f6b238da4e4d6ee5aeae5f",
