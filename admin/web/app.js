@@ -496,7 +496,7 @@ async function refreshUpdateBadge() {
   if (!nodes.length) return;
   const r = await api("GET", "/api/updates");
   const n = r.ok && r.data && r.data.update_available ? 1 : 0;
-  nodes.forEach(b => { b.hidden = !n; b.textContent = n ? "1" : ""; });
+  nodes.forEach(b => { b.hidden = !n; b.textContent = ""; b.setAttribute("aria-hidden", "true"); });
 }
 const JOB_TEXT = {running: "Updating… The admin page restarts during the update and comes back by itself.",
   succeeded: "The last update finished.", failed: "The update didn't finish. Details are in the station's logs."};
@@ -1804,7 +1804,7 @@ function shell() {
   const page = (location.hash.slice(1) in PAGES) ? location.hash.slice(1) : S.page;
   S.page = page;
   root().innerHTML = `<div class="app"><aside class="side"><div class="brand"><img class="mk" src="/assets/mark.svg" alt=""><div><b>Grok Station</b><span>● ${esc(S.state.host)}</span></div></div>
-    ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span>${k === "updates" ? `<b class="b count" id="upbadge" data-upbadge hidden></b>` : ""}</a>`).join("")).join("")}
+    ${NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : "") + items.map(([k, t]) => `<a class="nav${k === page ? " on" : ""}" href="#${k}" title="${t}">${svg(k)}<span>${t}</span>${k === "updates" ? `<b class="b updot" id="upbadge" data-upbadge hidden aria-hidden="true"></b>` : ""}</a>`).join("")).join("")}
     <div class="foot">Signed in as admin · <a href="#" id="out">Sign out</a><br>Version <span class="mono">${esc(S.state.version)}</span></div></aside>
     <main class="main"><header class="top"><h1>${PAGES[page][0]}</h1><div class="r"><span class="saved" id="allsaved" hidden role="status"></span><span id="finhead"></span><div id="topr"></div></div></header><div class="body" id="pg"></div></main></div>
     <nav class="phonebar">${TABS.map(([k, t, i]) => `<button data-tab="${k}" class="${k === page ? "on" : ""}">${svg(i)}${t}</button>`).join("")}</nav>`;
@@ -3936,7 +3936,7 @@ async function pageSystem(el) {
 }
 function pageMore(el) {
   const items = [["xai", "xAI API"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"]];
-  el.innerHTML = `<div class="card">${items.map(([k, t]) => `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${esc(t)}<span class="right inline">${k === "updates" ? `<b class="count" data-upbadge hidden></b>` : ""}<span class="help">›</span></span></a>`).join("")}
+  el.innerHTML = `<div class="card">${items.map(([k, t]) => `<a class="row" href="#${k}" style="color:inherit;text-decoration:none">${esc(t)}<span class="right inline">${k === "updates" ? `<b class="updot" data-upbadge hidden aria-hidden="true"></b>` : ""}<span class="help">›</span></span></a>`).join("")}
     <div class="row"><button class="btn g" id="again">Run setup again</button></div><div class="row"><button class="btn g" id="out2">Sign out</button></div></div>`;
   $("#again", el).onclick = async () => { await api("POST", "/api/wizard", {step: 2, done: false}); boot(); };
   $("#out2", el).onclick = async () => { await api("POST", "/api/logout", {}); boot(); };

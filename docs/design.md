@@ -197,6 +197,7 @@ Rules:
 ### 8.2 Web admin
 - **Navigation:**
   - **Laptop sidebar:** station name, an online dot and the hostname, then grouped items with an icon and label.
+  - **Update cue:** when a newer version is cached, Updates (sidebar and the phone More list) shows an 8 px teal dot (`--gs-teal`, class `updot`). No number and no accessible name (`aria-hidden`). Amber stays the Updates-page "update ready" banner, not this menu cue.
   - **Selection:** the selected item has a surface-2 fill and a 3 px teal left bar.
   - **Phone:** a bottom tab bar with 5 tabs, the last being More.
 - **Cards:** surface fill, 1 px rule border, 16 radius, 20 to 24 padding. The 18 px title can have a status pill at the right. One topic per card.
