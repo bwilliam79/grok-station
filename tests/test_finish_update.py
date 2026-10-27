@@ -579,3 +579,36 @@ class PinnedCommitsOnMain(unittest.TestCase):
             self.assertIn(name, pins)
         self.assertTrue(any(k.startswith("install-home COMMIT") for k in pins))
         self.assertEqual(cdp.ancestry(os.environ.get("GS_MAIN_REF", "origin/main")), [])
+
+
+class TemplateReleaseIsVersion(unittest.TestCase):
+    """0.12.1: every copy of the instructions names VERSION as its release, or Finish update fails with "release".
+
+    0.12.0 shipped with templates still saying 0.11.9, so every row read "Can't build instructions: release"."""
+
+    def test_every_template_copy_names_version(self):
+        rel = open(os.path.join(ROOT, "VERSION")).read().strip()
+        head = "Grok Station instructions, release %s." % rel
+        for mode in ("home", "cloud"):
+            self.assertEqual(gs_routine.TEMPLATES[mode].split("\n", 1)[0], head, mode)
+            with open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode), encoding="utf-8") as fh:
+                self.assertEqual(fh.read().split("\n", 1)[0], head, mode)
+        for path in ("scripts/gs-update.sh", "admin/web/app.js", "docs/bots.md"):
+            text = open(os.path.join(ROOT, path), encoding="utf-8").read()
+            found = re.findall(r"Grok Station instructions, release ([0-9]+\.[0-9]+\.[0-9]+)\.", text)
+            self.assertEqual(len(found), 2, path)
+            self.assertEqual(set(found), {rel}, path)
+
+    def test_finish_rows_build_with_the_real_version(self):
+        ga = _ga()
+        old, ga.VERSION_FILE = ga.VERSION_FILE, os.path.join(ROOT, "VERSION")  # the shipped file, not a test stub
+        self.addCleanup(setattr, ga, "VERSION_FILE", old)
+        pins = {"commit": U, "update_commit": C, "files": {"scripts/gs-update.sh": sha(open(SCRIPT, "rb").read())}}
+        fin = {"sent": {}, "copied": {}, "updaters": {}}
+        v = ga.finish_rows([_bot("jules"), _bot("cat", mode="cloud")], "https://st.example", FP, PUB, pins, fin)
+        rows = {r["slug"]: r for g in v["computers"] for r in g["bots"]}
+        rel = open(os.path.join(ROOT, "VERSION")).read().strip()
+        for slug in ("jules", "cat"):
+            self.assertEqual(rows[slug]["error"], "", slug)
+            self.assertNotEqual(rows[slug]["state"], "error", slug)
+            self.assertTrue(rows[slug]["message"].startswith("Grok Station instructions, release %s.\n" % rel))

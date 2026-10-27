@@ -292,3 +292,7 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Held reply cap.** Model output held for the transcript is dropped after `HOLD_CAP_S` (3 s) with no transcript, never played: the relay cancels the response, clears the held output, sends `timeout` and ends the session, so a late transcript can't replay it.
 - **Delete bot wording.** The confirm dialog says any wake words assigned to the bot are deleted too. A word that can't be deleted is listed in the response (`wake_word_failures`, name and reason) and shown after the delete.
 - **Pins.** `scripts/gs-update.sh` changed, so `admin/web/deploy-pins.js` is re-pinned and `scripts/update-manifest.txt` reads release 0.12.0. The other pinned files are unchanged.
+
+## 0.12.1
+- **Hotfix: Finish update on 0.12.0.** 0.12.0 shipped with the bot instructions still headed "release 0.11.9", so the station refused to build them and every Finish update row read "Can't build instructions: release". The templates (`admin/routine-*.txt`, `gs_routine.py`, the copies in `gs-update.sh` and `app.js`, `docs/bots.md`) now say 0.12.1, and the manifest and deploy pins are regenerated.
+- **Guard.** `tests/test_finish_update.py::TemplateReleaseIsVersion` (every run, including the release check) fails if any template copy names a release other than `VERSION`, and builds Finish update rows for a home and a cloud bot with the real `VERSION`.
