@@ -169,7 +169,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "d
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "session": False, "play": None, "capture": None}  # capture: open input device
+LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None}  # capture: open input device
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
@@ -799,7 +799,7 @@ def control_server():
         def do_GET(self):
             if self.path != "/status":
                 return self._r(404, {"error": "not found"})
-            return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "session": LIVE["session"],
+            return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "audio_at": LIVE.get("audio_at"), "session": LIVE["session"],
                                  "capture": LIVE["capture"],
                                  "enrolling": ENROLL_STATE["busy"], "enroll_queued": not ENROLL_Q.empty(), "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
@@ -2288,6 +2288,7 @@ class CaptureGuard:
         self.now = now or time.monotonic
         self.reason = None
         self._last = self.now()
+        self._reading = False  # stall is only counted while we wait on arecord, not while we process
         self._silent = 0.0
         self._stop = threading.Event()
         self._th = None
@@ -2301,7 +2302,7 @@ class CaptureGuard:
         while not self._stop.wait(0.05):
             if self.reason:
                 return
-            if self.now() - self._last >= self.stall_s:
+            if self._reading and self.now() - self._last >= self.stall_s:
                 self.reason = "stall"
                 try:
                     self.proc.kill()
@@ -2312,11 +2313,17 @@ class CaptureGuard:
     def read(self, n):
         if self.reason:
             return b""
+        self._last = self.now()  # wait starts now: our own processing pauses are not a device stall
+        self._reading = True
         try:
             buf = self.proc.stdout.read(n)
         except Exception:
             buf = b""
+        finally:
+            self._reading = False
         self._last = self.now()
+        if buf:
+            LIVE["audio_at"] = time.time()  # capture alive, in every mode (idle, session, enroll)
         return buf or b""
 
     def observe(self, buf, in_session):
@@ -2368,12 +2375,13 @@ def serve_capture(proc, guard, handle, in_session, n=None):
 
 
 def reopen_delay(reason, now, last, gap=30.0, base=2.0):
-    """Stall and silence wait out the gap. Anything else (eof, USB reset) waits the short base."""
+    """First stall or silence reopens after the short base; a repeat within gap waits out the rest of gap.
+    Anything else (eof, USB reset) waits the short base. (Before 0.12.6 the first stall also waited 30 s.)"""
     if reason not in ("stall", "silence"):
         return base
-    if last > 0:
+    if last > 0 and now - last < gap:
         return max(base, gap - max(0.0, now - last))
-    return max(base, gap)
+    return base
 
 
 def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, stall_s=3.0, silence_s=10.0,

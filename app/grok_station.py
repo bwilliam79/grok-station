@@ -621,8 +621,10 @@ def speakerphone_present(cards_text, match="emeet"):
     return False
 
 
-def check_mic(now, fetch, cards_text, stale_s=30, match="emeet"):
-    """fetch() -> wake /status JSON or None. ok when the speakerphone is present and level_at is within stale_s."""
+def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
+    """fetch() -> wake /status JSON or None. ok when the speakerphone is present and capture is alive.
+    Uses audio_at (any frame read, any mode) when the listener sends it, else level_at (older listeners).
+    A brief reopen (no capture device, audio within stale_s + grace_s) stays ok."""
     if not speakerphone_present(cards_text, match):
         return {"ok": False, "detail": "speakerphone missing"}
     try:
@@ -631,17 +633,26 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet"):
         payload = None
     if not isinstance(payload, dict):
         return {"ok": False, "detail": "wake listener down"}
-    if "capture" in payload and not payload.get("capture"):  # listener up but no input device open
-        return {"ok": False, "detail": "no capture device"}
-    try:
-        level_at = float(payload.get("level_at"))
-    except (TypeError, ValueError):
-        return {"ok": False, "detail": "capture stalled"}
     try:
         window = float(stale_s)
     except (TypeError, ValueError):
         window = 30.0
-    if now - level_at > window:
+    try:
+        grace = max(0.0, float(grace_s))
+    except (TypeError, ValueError):
+        grace = 10.0
+    raw = payload.get("audio_at") if payload.get("audio_at") else payload.get("level_at")
+    try:
+        alive_at = float(raw)
+    except (TypeError, ValueError):
+        alive_at = None
+    if "capture" in payload and not payload.get("capture"):  # listener up but no input device open
+        if payload.get("audio_at") and alive_at and now - alive_at <= grace:
+            return {"ok": True, "detail": "ok"}
+        return {"ok": False, "detail": "no capture device"}
+    if alive_at is None:
+        return {"ok": False, "detail": "capture stalled"}
+    if now - alive_at > window:
         return {"ok": False, "detail": "capture stalled"}
     return {"ok": True, "detail": "ok"}
 

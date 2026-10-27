@@ -129,7 +129,7 @@ class CaptureReopen(unittest.TestCase):
         self.assertFalse(gw.chunk_stuck(b"\x00\x00"))
         self.assertEqual(gw.reopen_delay("eof", 10, 0), 2.0)
         self.assertEqual(gw.reopen_delay("reset", 10, 8), 2.0)
-        self.assertEqual(gw.reopen_delay("stall", 10, 0), 30.0)
+        self.assertEqual(gw.reopen_delay("stall", 10, 0), 2.0)  # first stall reopens fast (0.12.6)
         self.assertEqual(gw.reopen_delay("silence", 10, 8, gap=30), 28.0)
 
 
