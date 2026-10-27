@@ -99,7 +99,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn('class="b count" id="upbadge"', js)
         self.assertNotIn('class="count" data-upbadge', js)
         self.assertIn("b.updot,.nav .b.updot{display:inline-block;width:8px;height:8px;", self.css)
-        self.assertIn("background:var(--gs-teal)", self.css.split("b.updot", 1)[1].split("}", 1)[0])
+        self.assertIn("background:var(--gs-teal)", self.css.split("b.updot,.nav .b.updot{", 1)[1].split("}", 1)[0])
         self.assertIn(">Update</button>", up)
         self.assertIn('api("POST", path, {})', up)  # check and apply send no password
         self.assertNotIn("Enter the admin password. The station pulls", up)
