@@ -174,6 +174,30 @@ document.addEventListener("click", ev => {
   if (src) copyText(src.textContent, btn);
 });
 const STATION_KEY_MISSING = "Station key unavailable, see logs";
+// Every copy-paste set of bot instructions uses this pair: View toggles a <pre> that shows the exact
+// text Copy puts on the clipboard. Both read the same makeText() so they can never differ.
+function instructionsHtml(id, copyLabel, opts = {}) {
+  const dis = opts.disabled ? " disabled" : "";
+  return `<div class="inline"><button type="button" class="btn sm" data-viewfor="${id}" aria-expanded="false" aria-controls="${id}"${dis}>View instructions</button>` +
+    `<button type="button" class="btn sm" data-copyfor="${id}"${dis}>${esc(copyLabel)}</button><span class="copied" role="status" hidden></span></div>` +
+    `<pre class="static-val instr" id="${id}" hidden></pre>`;
+}
+function bindInstructions(root, id, makeText, onCopy) {
+  const pre = root.querySelector("#" + id);
+  const view = root.querySelector(`[data-viewfor="${id}"]`), copy = root.querySelector(`[data-copyfor="${id}"]`);
+  if (!pre || !view || !copy) return;
+  view.onclick = () => {
+    if (pre.hidden) pre.textContent = makeText() || "";
+    pre.hidden = !pre.hidden;
+    view.setAttribute("aria-expanded", pre.hidden ? "false" : "true");
+    view.textContent = pre.hidden ? "View instructions" : "Hide instructions";
+  };
+  copy.onclick = ev => {
+    const text = makeText() || "";
+    if (!pre.hidden) pre.textContent = text;
+    return onCopy ? onCopy(text, ev.currentTarget) : copyText(text, ev.currentTarget);
+  };
+}
 function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
 function every(ms, fn) { fn(); S.timers.push(setInterval(fn, ms)); }
 function ago(ts) {
@@ -702,10 +726,11 @@ function finishPill(b) {
   if (b.state === "error") return `<span class="pill red"><i></i>${esc(b.error || "")}</span>`;
   return "";
 }
+function finMsgId(slug) { return "finmsg-" + String(slug || "").replace(/[^a-z0-9_-]/gi, "_"); }
 function finishRowButtons(d, b) {
   const locked = !!(d._all || d._active);
   if (b.state === "copy") {
-    return `<button class="btn sm" type="button" data-fincopy="${esc(b.slug)}"${locked ? " disabled" : ""}>Copy</button><span class="copied" role="status" hidden></span>`;
+    return instructionsHtml(finMsgId(b.slug), "Copy", {disabled: locked});
   }
   const label = b.state === "waiting" || b.state === "refused" ? "Send again"
     : b.state === "needs" || b.state === "different" ? "Send" : "";
@@ -813,12 +838,9 @@ function finishWire(d) {
       if (row) finishSendRow(d, row);
     };
   });
-  d.querySelectorAll("[data-fincopy]").forEach(btn => {
-    btn.onclick = () => {
-      const row = finishFind(d._view, btn.getAttribute("data-fincopy"));
-      if (row) finishCopyRow(d, row, btn);
-    };
-  });
+  finishComputers(d._view).forEach(g => (g.bots || []).forEach(row => {
+    if (row && row.state === "copy") bindInstructions(d, finMsgId(row.slug), () => row.message || "", (text, btn) => finishCopyRow(d, row, btn));
+  }));
   d.querySelectorAll("select[data-uppick]").forEach(sel => {
     sel.onchange = () => finishSetUpdater(d, sel.getAttribute("data-uppick"), sel.value);
   });
@@ -2651,11 +2673,11 @@ function openBot(bot, el) {
       </details>
     </div>
     <div role="tabpanel" id="panel-more" class="cpanel" hidden>
-      <div class="field"><button class="btn sm" id="cpupd" type="button">Copy updated instructions</button>
+      <div class="field">${instructionsHtml("cpupd", "Copy updated instructions")}
         <p class="note">For a bot that is already set up: paste this into its routine to get new abilities, like display cards. No new key or setup.</p></div>
       ${(bot.main && pendingTeammates(el).length) ? `<h3>Team setup</h3>
       <p class="note">Paste this to ${esc(bot.name)}. It messages each teammate their setup. This station sends nothing.</p>
-      <div class="inline"><button class="btn sm" id="copyteamd" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div>` : ""}
+      ${instructionsHtml("copyteamd", "Copy team setup message")}` : ""}
       ${bot.main ? `<p class="note">${esc(bot.name)} is already the Main Bot.</p>` : `<div class="field"><button class="btn sm" id="setmain" type="button">Set as Main Bot</button></div>`}
       <div class="field"><button class="btn g sm" id="ren" type="button">Rename</button></div>
       <div class="field"><button class="btn dg" id="delbot" type="button">Delete bot</button></div>
@@ -2674,9 +2696,8 @@ function openBot(bot, el) {
   bindAvatars(d);
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
-  $("#cpupd", d).onclick = ev => copyText(routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode), ev.currentTarget);
-  const copyTeam = $("#copyteamd", d);
-  if (copyTeam) copyTeam.onclick = ev => copyText(teamSetupMessage(pendingTeammates(el), el), ev.currentTarget);
+  bindInstructions(d, "cpupd", () => routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode));
+  bindInstructions(d, "copyteamd", () => teamSetupMessage(pendingTeammates(el), el));
   $("#chcomp", d).onclick = () => openChangeComputer($("#chbox", d), bot, el);
   const fieldsOn = () => { $("#saved", d).hidden = true; $("#fields", d).hidden = false; };
   const sync = () => {
@@ -3421,15 +3442,14 @@ function openChangeComputer(box, bot, el) {
   } else {
     box.innerHTML = `<div class="chpanel"><div class="lbl">Move replies to another computer</div>
       <p class="help">Copy these instructions and paste them to ${esc(who)} in your Grok Bot.</p>
-      <div class="inline"><button class="btn sm" type="button" id="chcopy">Copy instructions</button><span class="copied" role="status" hidden></span></div>
+      ${instructionsHtml("chcopy", "Copy instructions")}
       <p class="help">${esc(who)} sets up the new computer and tells you its name. Type it here.</p>
       <div class="field"><label for="chname">Computer name</label><input class="inp" id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="">
         <p class="help">No new key or pairing needed. ${esc(COMPUTER_HINT)}</p></div>
       <div id="chere"></div>
       <div class="inline"><button class="btn p sm" type="button" id="chsave">Save</button><button class="btn g sm" type="button" id="chcancel">Cancel</button></div></div>`;
   }
-  const copy = $("#chcopy", box);
-  if (copy) copy.onclick = ev => copyText(routineChangeComputer(bot.slug, el && el._stationPub, el && el._fingerprint), ev.currentTarget);
+  bindInstructions(box, "chcopy", () => routineChangeComputer(bot.slug, el && el._stationPub, el && el._fingerprint));
   const cancel = $("#chcancel", box);
   if (cancel) cancel.onclick = hide;
   const save = $("#chsave", box);
@@ -3620,11 +3640,7 @@ function addBot(voices, el, preset) {
       <div class="field">
         <div class="lbl">Deploy bot key setup on system running Grok Bot</div>
         <p class="help">These instructions have your Grok Bot set up its key on the computer running Grok Bot. It asks you first, and it only happens once.</p>
-        <div class="inline">
-          <button type="button" class="btn sm" id="aview" aria-expanded="false" aria-controls="aroutine">View instructions</button>
-          <button type="button" class="btn sm" id="acopy" data-copy="aroutine">Copy instructions</button>
-          <span class="copied" role="status" hidden></span></div>
-        <pre class="static-val" id="aroutine" hidden></pre></div>
+        ${instructionsHtml("aroutine", "Copy instructions")}</div>
       <div class="field"><label for="aurl">Webhook URL</label><input class="inp" id="aurl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="https://" maxlength="512" required></div>
       <div class="field"><label for="akey">Webhook key</label><input class="inp" id="akey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400" required></div>
       <div class="field"><label for="apub">Bot public key</label><input class="inp mono" id="apub" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="120" required></div>
@@ -3634,14 +3650,7 @@ function addBot(voices, el, preset) {
       <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
     const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d), hostEl = $("#ahost", d);
     if (hostEl) hostEl.value = draft.host || "";
-    const routine = $("#aroutine", d);
-    if (routine) routine.textContent = routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode);
-    const view = $("#aview", d);
-    if (view && routine) view.onclick = () => {
-      routine.hidden = !routine.hidden;
-      view.setAttribute("aria-expanded", routine.hidden ? "false" : "true");
-      view.textContent = routine.hidden ? "View instructions" : "Hide instructions";
-    };
+    bindInstructions(d, "aroutine", () => routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode));
     if (urlEl) urlEl.value = draft.url;
     if (pubEl) pubEl.value = draft.pub;
     bindSheet(d, shut);
@@ -3748,7 +3757,7 @@ async function pageBots(el) {
     <p class="help" id="emptybot" hidden>No other bots yet. Hey Grok always works.</p>
     <div class="card" id="teamcard" hidden>
       <p class="note" id="teamnote"></p>
-      <div class="inline"><button class="btn sm" id="copyteam" type="button">Copy team setup message</button><span class="copied" role="status" hidden></span></div></div>
+      ${instructionsHtml("copyteam", "Copy team setup message")}</div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>
@@ -3756,8 +3765,7 @@ async function pageBots(el) {
     <p class="note" id="rttall"></p>`;
   applyBotMeta(el, data);
   paintBots(el, bots);
-  const copyTeam = $("#copyteam", el);
-  if (copyTeam) copyTeam.onclick = ev => copyText(teamSetupMessage(pendingTeammates(el), el), ev.currentTarget);
+  bindInstructions(el, "copyteam", () => teamSetupMessage(pendingTeammates(el), el));
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
   const av = $("#avatars");
