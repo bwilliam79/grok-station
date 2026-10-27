@@ -61,3 +61,9 @@ Night clock hours and the dim window are different settings. They were not merge
 | Dim the screen from / until | `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO`, times such as `22:00` | When Schedule lowers the backlight. `select_level` in `app/dimming.py`. |
 
 While Brightness is Schedule, Sunrise and sunset, or Light sensor, and the night clock is on, the night clock follows that brightness window instead of its own hours. `in_dim_period` in `app/dimming.py` decides that window: the dim times for Schedule, sunset to sunrise for Sunrise, and a dark reading for a light sensor. Brightness Off leaves the backlight alone, and the night clock uses its own hours. See [dimming.md](dimming.md).
+
+## Tiles during a conversation (0.12.6)
+
+A score, recipe or calendar tile a bot puts up during a conversation stays on screen while the bot listens, thinks or speaks. A small status badge sits top left on the top-bar line: the bot's own avatar with the same state ring as the full-screen status, scaled down (52 px avatar, 5 px ring at 1920x1080), and the bot's name in place of the tile's caption (Sports, the recipe title or the date). With no conversation the badge is hidden and the caption is back. A bot with no picture shows the same monogram the full-screen status uses.
+
+The tile clears when the bot starts its next response if you asked a new question or the tile's hold ran out; it is never pulled while the station is listening. A response that puts up its own tile replaces the old one.

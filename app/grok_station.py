@@ -74,6 +74,26 @@ FULL_TILES = ("recipe", "sports", "calendar")
 TILE = {}
 
 
+BADGE_STATES = ("listening", "thinking", "speaking", "error")
+
+
+def tile_step(tile, prev_state, state, now, hold_s):
+    """0.12.6: what a new voice state does to a tile that is up during a session. Returns "keep" or "clear".
+
+    A new user turn (listening) or the tile's hold running out marks the tile stale; a stale tile is never
+    pulled mid-listen, it clears when the bot starts its response (speaking). A tile the response
+    posts replaces the old one (the FEED handler stores it fresh), so it shows."""
+    if not tile:
+        return "keep"
+    if state == "listening" and prev_state is not None:
+        tile["stale"] = True
+    if now >= float(tile.get("shown", now)) + float(hold_s):
+        tile["stale"] = True
+    if state == "speaking" and prev_state != "speaking" and tile.get("stale"):
+        return "clear"
+    return "keep"
+
+
 def tile_end(shown_at, hold_s, speech_end):
     """A tile reply goes back to the main display when speech ends or hold_s after it showed, whichever is later."""
     return max(float(speech_end), float(shown_at) + float(hold_s))
@@ -2468,11 +2488,38 @@ def draw_calendar(surf, L, card):
     surf.blit(foot, (rect.left + L(48), rect.bottom - L(24) - foot.get_height()))
 
 
-def draw_feed(surf, L, now, card, colon_on=True):
-    """Full-screen recipe, sports, or calendar. Home cards stay on the idle clock."""
+def draw_tile_badge(surf, L, msg, state, t=1.0):
+    """Top-left corner status while a tile is up in a session: the full-screen avatar and ring scaled down
+    (52 px, 5 px ring at 1920x1080), then the bot's name. Returns the x where the name ends, or None."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+    who = msg.get("from") or VOICE_NAME
+    d, ring_w = L(52), max(3, L(5))
+    cy = L(34) + L(72) // 2
+    photo_ok = bool(msg.get("voice"))
+    img, pad = portrait(who, d, ring_w, state, t, photo_ok=photo_ok)
+    origin = (L.m - pad, cy - d // 2 - pad)
+    surf.blit(img, origin)
+    LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
+    LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
+    name = _line(surf, "body", L(40), who, TEXT, max(40, L.w // 2))
+    x = L.m + d + L(24)
+    surf.blit(name, (x, cy - name.get_height() // 2))
+    return x + name.get_width()
+
+
+def draw_feed(surf, L, now, card, colon_on=True, msg=None, state=None, t=1.0):
+    """Full-screen recipe, sports, or calendar. Home cards stay on the idle clock.
+    With a voice session (msg) the corner badge and the bot's name replace the caption (0.12.6)."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     surf.fill(BG)
+    LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
     kind = card.get("type") if isinstance(card, dict) else None
-    if isinstance(now, time.struct_time):
+    st = (state or (msg or {}).get("state")) if isinstance(msg, dict) and msg.get("voice") else None
+    if st in BADGE_STATES:
+        if isinstance(now, time.struct_time):
+            draw_topbar_clock(surf, L, now)
+        draw_tile_badge(surf, L, msg, st, t)
+    elif isinstance(now, time.struct_time):
         draw_topbar_clock(surf, L, now)
         if kind == "recipe":
             caption = card.get("title", "")
@@ -3229,7 +3276,11 @@ def main():
             disp.show(draw_timers, now, fade=fade, snapshot=snapshot)
             key = ("timers", now.tm_min, len(TIMER_CHIPS))
         elif view == "feed":
-            disp.show(draw_feed, now, view_card, on, fade=fade, snapshot=snapshot)
+            if msg and msg.get("voice"):
+                ph = phase_now() if anim_started and anim_of(msg) else 1.0
+                disp.show(draw_feed, now, view_card, on, msg, msg.get("state"), ph, fade=fade, snapshot=snapshot)
+            else:
+                disp.show(draw_feed, now, view_card, on, fade=fade, snapshot=snapshot)
             key = ("feed", now.tm_min, feed_identity())
         else:
             disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
@@ -3364,6 +3415,10 @@ def main():
                         anim_started = time.time()  # each enrollment step restarts its fill/pulse
                 else:
                     anim_started = None
+                prev_state = msg.get("state") if msg else None
+                if TILE and tile_step(TILE, prev_state, ev.state, time.time(), SCORE_HOLD) == "clear":
+                    deck().clear(TILE.get("bot"), TILE.get("id"))
+                    TILE.clear()  # back to the full-screen status as the response starts
                 msg = new
                 until = time.time() + hold
                 paint()
@@ -3424,7 +3479,7 @@ def main():
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)
                     print("back to idle", flush=True)
-            elif thinking() and not (TILE and msg):  # a tile reply has no portrait to spin
+            elif thinking():  # full-screen ring, or the tile's corner badge
                 spin_portrait()  # no full-screen repaint, no snapshot
                 maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:
