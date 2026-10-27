@@ -62,6 +62,23 @@ SHOW, WEATHER, STATE, STATUS_EV = pygame.USEREVENT + 1, pygame.USEREVENT + 2, py
 FEED = pygame.USEREVENT + 5  # a display card was put or cleared; the deck already changed
 LISTEN_HOLD = float(E("GROK_STATION_LISTEN_HOLD", "12"))  # seconds the listening screen stays up
 REPLY_HOLD = float(E("GROK_STATION_REPLY_HOLD", "15"))   # seconds a spoken reply stays up after playback
+def score_hold_s(env=None):
+    """GROK_STATION_SCORE_HOLD: seconds a tile reply stays up (1-120, default 10). Admin Settings, Display page."""
+    raw = str((os.environ if env is None else env).get("GROK_STATION_SCORE_HOLD", "10")).strip()
+    return int(raw) if raw.isdigit() and 1 <= int(raw) <= 120 else 10
+
+
+SCORE_HOLD = score_hold_s()
+FULL_TILES = ("recipe", "sports", "calendar")
+# A full-screen tile a bot posted during a conversation (items 5 and 9): shown at once, alone, while the bot speaks.
+TILE = {}
+
+
+def tile_end(shown_at, hold_s, speech_end):
+    """A tile reply goes back to the main display when speech ends or hold_s after it showed, whichever is later."""
+    return max(float(speech_end), float(shown_at) + float(hold_s))
+
+
 CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
 VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 10, "enroll": 30, "confirm": 30}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
@@ -255,7 +272,12 @@ class Handler(BaseHTTPRequestHandler):
             kind, bot, cid = apply_show(j, logo_cache(), deck())
         except cards.CardError:
             return self._reply(400, {"error": "bad card"})
-        pygame.event.post(pygame.event.Event(FEED))
+        tile = None
+        if kind == "put":
+            page = deck().get(bot, cid)
+            if page and page.get("type") in FULL_TILES:
+                tile = {"bot": bot, "id": cid, "card": page}
+        pygame.event.post(pygame.event.Event(FEED, tile=tile))
         print(f"show card {kind} bot={bot} id={cid}", flush=True)
         self._reply(200, {"ok": True})
 
@@ -2941,7 +2963,7 @@ def draw_hotspot(surf, L, now, d):
     surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
-def screen_for(setup_doc, busy, msg, night, feed=None, timers=False):
+def screen_for(setup_doc, busy, msg, night, feed=None, timers=False, tile=None):
     """Which screen paint() shows. Setup (or hotspot) until setup is done; after that a conversation, the night
     clock, a full-screen card, the timer rings when any timer is up, or the idle clock with date and weather.
     Night hides timers. Night and a voice session win over cards. A full-screen card keeps the timer strip
@@ -2949,6 +2971,8 @@ def screen_for(setup_doc, busy, msg, night, feed=None, timers=False):
     Nothing else (no certificate or pairing screen) can take over."""
     if setup_doc:
         return "hotspot" if setup_doc.get("mode") == "hotspot" else "setup"
+    if msg and isinstance(tile, dict) and tile.get("type") in FULL_TILES:
+        return "feed"  # a tile reply: only the tile on screen, speech still plays
     if busy:
         return "thinking"
     if msg:
@@ -3122,7 +3146,10 @@ def main():
             page = deck().current(time.time())
             if page and page["card"]["type"] in ("recipe", "sports", "calendar"):
                 view_card = page["card"]
-        view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS))
+        tile_card = TILE.get("card") if msg else None
+        if tile_card:
+            view_card = tile_card
+        view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
         if view == "thinking":
             disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
@@ -3276,7 +3303,10 @@ def main():
                 paint()
             elif ev.state == "idle":
                 # session end: one card hold while a card is up, then the idle clock
-                if msg and msg.get("card") and not card_hold:
+                if msg and TILE:
+                    until = tile_end(TILE["shown"], SCORE_HOLD, time.time())
+                    card_hold = True
+                elif msg and msg.get("card") and not card_hold:
                     card_hold = True
                     until = time.time() + CARD_HOLD
                     paint()
@@ -3295,7 +3325,12 @@ def main():
                         paint(snapshot=not msg)
             continue
         if ev.type == FEED:
-            if not msg and not night_face(time.localtime()):
+            tile = getattr(ev, "tile", None)
+            if tile and msg and msg.get("voice"):
+                TILE.clear()
+                TILE.update(tile, shown=time.time())
+                paint()
+            elif not msg and not night_face(time.localtime()):
                 paint(snapshot=False)
         elif ev.type == SHOW:
             msg, until, anim_started, card_hold = ev.msg, time.time() + HOLD, None, False
@@ -3310,14 +3345,20 @@ def main():
             break
         elif ev.type == pygame.NOEVENT:
             if msg and time.time() >= until:
-                if msg.get("card") and not card_hold:
+                if TILE:
+                    deck().clear(TILE.get("bot"), TILE.get("id"))  # do not leave the tile up on the idle feed
+                    TILE.clear()
+                    msg, anim_started, card_hold = None, None, False
+                    paint(fade=True)
+                    print("back to idle", flush=True)
+                elif msg.get("card") and not card_hold:
                     card_hold = True
                     until = time.time() + CARD_HOLD
                 else:
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)
                     print("back to idle", flush=True)
-            elif thinking():
+            elif thinking() and not (TILE and msg):  # a tile reply has no portrait to spin
                 spin_portrait()  # no full-screen repaint, no snapshot
                 maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:

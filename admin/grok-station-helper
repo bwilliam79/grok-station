@@ -25,11 +25,10 @@ SETTINGS = {  # section -> {key: (env file, validator)}
                 "GROK_STATION_DIM_NIGHT": ("display", r"^(?:100|[1-9]?\d)$"),
                 "GROK_STATION_DIM_FROM": ("display", r"^(([01]\d|2[0-3]):[0-5]\d)?$"),
                 "GROK_STATION_DIM_TO": ("display", r"^(([01]\d|2[0-3]):[0-5]\d)?$"),
-                "GROK_STATION_DIM_LAT": ("display", r"^(-?(?:90\.00|[0-8]?\d\.\d{2}))?$"),
-                "GROK_STATION_DIM_LON": ("display", r"^(-?(?:180\.00|(?:1[0-7]\d|[1-9]?\d)\.\d{2}))?$"),
                 "GROK_STATION_DIM_SUNRISE": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$"),
                 "GROK_STATION_DIM_SUNSET": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$"),
                 "GROK_STATION_CARD_ROTATE": ("display", r"^([5-9]|[1-9][0-9]|1[01][0-9]|120)$"),
+                "GROK_STATION_SCORE_HOLD": ("display", r"^([1-9]|[1-9][0-9]|1[01][0-9]|120)$"),
                 "GROK_STATION_LOGO_HOSTS": ("display", r"^$|^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(,([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}){0,7}$")},
     "time": {"GROK_STATION_LAT": ("display", r"^-?\d{1,2}(\.\d{1,4})?$"), "GROK_STATION_LON": ("display", r"^-?\d{1,3}(\.\d{1,4})?$"),
              "GROK_STATION_UNITS": ("display", r"^(fahrenheit|celsius)$")},
@@ -131,12 +130,18 @@ def env_read(name):
     return vals
 
 
-def env_write(name, updates):
+# Sunrise dimming uses the station location (Time and location). Old dim-only coordinates are removed on save.
+RETIRED = {"display": ("GROK_STATION_DIM_LAT", "GROK_STATION_DIM_LON")}
+
+
+def env_write(name, updates, drop=()):
     f = ENV[name]
     try:
         lines = open(f).read().splitlines()
     except OSError:
         lines = []
+    if drop:
+        lines = [ln for ln in lines if not (re.match(r"^([A-Z_][A-Z0-9_]*)=", ln) and re.match(r"^([A-Z_][A-Z0-9_]*)=", ln).group(1) in drop)]
     seen = set()
     for i, line in enumerate(lines):
         m = re.match(r"^([A-Z_][A-Z0-9_]*)=", line)
@@ -234,8 +239,10 @@ def settings_set(sec):
         if not re.fullmatch(r"[A-Za-z_]+(/[A-Za-z0-9_+-]+){0,2}", tz) or not os.path.isfile("/usr/share/zoneinfo/" + tz):
             fail("unknown time zone")
         run("timedatectl", "set-timezone", tz, check=True)
+    if sec == "display":
+        upd.setdefault("display", {})
     for fname, u in upd.items():
-        env_write(fname, u)
+        env_write(fname, u, RETIRED.get(fname, ()))
     if "display" in upd:
         run("systemctl", "restart", "grok-station")
     out({"ok": True, "restart_wake": "wake" in upd})

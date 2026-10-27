@@ -897,6 +897,14 @@ class Deck:
                 return True
             return False
 
+    def get(self, bot, card_id):
+        """This bot's card body by id, or None."""
+        with self._lock:
+            for it in self._items:
+                if it["bot"] == bot and it["id"] == card_id:
+                    return it["card"]
+        return None
+
     def current(self, now):
         with self._lock:
             return self._current(now)

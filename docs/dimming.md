@@ -8,7 +8,7 @@ The display can lower its brightness at night. Nothing is required: with the mod
 |---|---|
 | Off | Never. The backlight is left as it is. |
 | Schedule | From a clock time until another, including a window that crosses midnight. `06:00` is the first bright minute. |
-| Sunrise and sunset | From sunset until sunrise. Times are computed on the station (NOAA formula, standard library only, no network) from latitude and longitude, plus a minute offset on each. |
+| Sunrise and sunset | From sunset until sunrise. Times are computed on the station (NOAA formula, standard library only, no network) from the station location set on Time and location, plus an offset in minutes on each (negative is before, positive is after). There is no separate dimming location. If no location is set, the Display page says "Set the location on Time and location first." |
 | Light sensor | An ambient light sensor the kernel already exposes. Between 20 and 80 lux the level moves linearly from the night percent to the day percent. At or below 20 lux the idle screen uses the night clock, if that toggle is on. |
 
 Auto-sensor with no reading falls back to the schedule if both times are set, otherwise sunrise if a location is set, otherwise the day level. The Display page says **Needs attention** in amber. Red stays reserved for the microphone off icon and stock that is down.
@@ -29,7 +29,7 @@ The night clock (black, `#9A7752`, `#5E4934`) follows the dim window while the n
 
 Those hours and the dim times are different settings, and 0.11.2 keeps both. **Night clock from / until** is `GROK_STATION_NIGHT` (whole hours). `night_face` in `app/grok_station.py` uses it only when Brightness is Off. **Dim the screen from / until** is `GROK_STATION_DIM_FROM` and `GROK_STATION_DIM_TO`. `select_level` in `app/dimming.py` uses those times to lower the backlight in Schedule mode. `in_dim_period` uses the same window for the night clock face only while a dim mode is on. Sunrise follows sunset, and a light sensor with a reading follows lux. Neither uses the night-clock hours.
 
-Settings live in `/etc/grok-station/env` (`GROK_STATION_DIM_MODE`, `DIM_DAY`, `DIM_NIGHT`, `DIM_FROM`, `DIM_TO`, `DIM_LAT`, `DIM_LON`, `DIM_SUNRISE`, `DIM_SUNSET`). Saving restarts the display. The admin journal records `action=dim-schedule` (or `dim-sun`, `dim-auto-sensor`, `dim-off`) and does not record the coordinates. A stamp in `/var/cache/grok-station/dim-level` remembers that this app lowered the backlight, so **Off** can put it back. The stamp is not in `/run`, which is wiped on restart.
+Settings live in `/etc/grok-station/env` (`GROK_STATION_DIM_MODE`, `DIM_DAY`, `DIM_NIGHT`, `DIM_FROM`, `DIM_TO`, `DIM_SUNRISE`, `DIM_SUNSET`). 0.12.0 retired `DIM_LAT` and `DIM_LON`: they are ignored, and the next Display save removes them from the file (a custom dimming location is dropped; the station location is the one source). Saving restarts the display. The admin journal records `action=dim-schedule` (or `dim-sun`, `dim-auto-sensor`, `dim-off`) and does not record the coordinates. A stamp in `/var/cache/grok-station/dim-level` remembers that this app lowered the backlight, so **Off** can put it back. The stamp is not in `/run`, which is wiped on restart.
 
 ## Validation on the Pi
 
@@ -42,6 +42,6 @@ How to test:
 3. With **Night clock** on, the idle screen in that window is the brown clock on black. Toggle it off and the day screen stays, still at the night brightness.
 4. Set Brightness to **Off** and save. If this app had dimmed the backlight, it returns to full. The night clock goes back to its own hours.
 5. Optional. If `in_illuminance` exists under `/sys/bus/iio/devices/`, choose **Light sensor**, cover the sensor, and the level drops. With no sensor, or a chip that is not reporting illuminance, the page shows an amber **Needs attention** banner and uses the schedule, then sunrise, then the day level. `journalctl -u grok-station` then has one `dim no-sensor` line.
-6. **Sunrise** with both fields blank uses the station location rounded to 2 decimals. A latitude of `91` is rejected before anything is written, and the message is amber, not red.
+6. **Sunrise** uses the station location rounded to 2 decimals. With no location set, choosing Sunrise shows the amber "Set the location on Time and location first."
 
 Expected: the new keys are in `/etc/grok-station/env` (still `root:grok`, mode `0640`). `journalctl -u grok-station-admin` has `action=dim-schedule` (or the mode you saved) and does not contain the coordinates.

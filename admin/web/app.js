@@ -1571,6 +1571,8 @@ async function displayPanel(el) {
     <div class="pair">
     <div class="field"><label for="hold">Message hold time <span class="help" id="holdv"></span></label><input type="range" id="hold" min="5" max="120" value="${esc(v.GROK_STATION_HOLD || "30")}"></div>
     <div class="field"><label for="crot">Card rotation <span class="help" id="crotv"></span></label><input type="range" id="crot" min="5" max="120" value="${esc(rot)}"></div>
+    <div class="field"><label for="shold">Score card hold <span class="help" id="sholdv"></span></label><input type="range" id="shold" min="1" max="120" value="${esc(v.GROK_STATION_SCORE_HOLD || "10")}">
+      <p class="help">The score card stays up until the bot finishes speaking or this many seconds, whichever is longer.</p></div>
     </div>
     <div class="row"><button class="tog${v.GROK_STATION_FADE === "0" ? "" : " on"}" role="switch" id="fade" aria-checked="${v.GROK_STATION_FADE === "0" ? "false" : "true"}" aria-label="Fade"></button><div class="lbl">Fade between screens</div></div>
     <h3 class="dgrp">Brightness</h3>
@@ -1583,9 +1585,10 @@ async function displayPanel(el) {
     </div>
     <div class="row inline"><label class="help">Dim the screen from <input class="inp" type="time" id="dfrom" value="${hhmm(v.GROK_STATION_DIM_FROM, "22:00")}"></label><label class="help">until <input class="inp" type="time" id="dto" value="${hhmm(v.GROK_STATION_DIM_TO, "06:00")}"></label></div>
     <p class="help">Schedule uses these times to lower the backlight. They are not the Night clock hours. A light sensor with no reading falls back to them.</p>
-    <div class="row inline"><label class="help">Sunrise offset <input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"></label><label class="help">Sunset offset <input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"></label></div>
-    <div class="row inline"><label class="help">Latitude <input class="inp" id="dlat" maxlength="8" inputmode="decimal" placeholder="12.34" value="${esc(v.GROK_STATION_DIM_LAT || "")}"></label><label class="help">Longitude <input class="inp" id="dlon" maxlength="8" inputmode="decimal" placeholder="-56.78" value="${esc(v.GROK_STATION_DIM_LON || "")}"></label></div>
-    <p class="note">Blank latitude and longitude use the station location, rounded to 2 decimals. Sensor: ${sensor ? esc(sensor.name) : "none"}. ${dim.backlight ? "Backlight: " + esc(dim.backlight.name) : "No backlight file; a dark layer is drawn instead."}</p>
+    <div class="row inline"><label class="help">Sunrise offset <span class="unitin"><input class="inp" type="number" id="dsr" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNRISE, 0)}"><span class="unit">min</span></span></label><label class="help">Sunset offset <span class="unitin"><input class="inp" type="number" id="dss" min="-180" max="180" step="1" value="${off(v.GROK_STATION_DIM_SUNSET, 0)}"><span class="unit">min</span></span></label></div>
+    <p class="help">Minutes before (−) or after (+) sunrise and sunset. Sunrise and sunset come from the station location on Time and location.</p>
+    <div id="dloc"></div>
+    <p class="note">Sensor: ${sensor ? esc(sensor.name) : "none"}. ${dim.backlight ? "Backlight: " + esc(dim.backlight.name) : "No backlight file; a dark layer is drawn instead."}</p>
     <h3 class="dgrp">Units</h3>
     <div class="field"><label for="dun">Temperature</label><select class="sel" id="dun"><option value="fahrenheit">°F</option><option value="celsius"${v.GROK_STATION_UNITS === "celsius" ? " selected" : ""}>°C</option></select></div>
     <details class="field disp-adv"><summary class="help">Advanced: team logo sources</summary><label for="chosts">Logo hosts</label><textarea class="inp" id="chosts" rows="3" placeholder="a.espncdn.com">${esc(hosts)}</textarea>
@@ -1608,7 +1611,7 @@ async function displayPanel(el) {
   $("#dmode", el).value = mode;
   const FIELDS = {hold: "GROK_STATION_HOLD", crot: "GROK_STATION_CARD_ROTATE", dun: "GROK_STATION_UNITS", dmode: "GROK_STATION_DIM_MODE",
     dday: "GROK_STATION_DIM_DAY", dnight: "GROK_STATION_DIM_NIGHT", dfrom: "GROK_STATION_DIM_FROM", dto: "GROK_STATION_DIM_TO",
-    dlat: "GROK_STATION_DIM_LAT", dlon: "GROK_STATION_DIM_LON", dsr: "GROK_STATION_DIM_SUNRISE", dss: "GROK_STATION_DIM_SUNSET"};
+    dsr: "GROK_STATION_DIM_SUNRISE", dss: "GROK_STATION_DIM_SUNSET", shold: "GROK_STATION_SCORE_HOLD"};
   const fieldVals = () => { const o = {}; for (const id in FIELDS) o[FIELDS[id]] = $("#" + id, el).value.trim(); return o; };
   const nightOn = v.GROK_STATION_NIGHT !== "";
   const savedDisp = {fields: fieldVals(), hours: nightOn ? `${$("#nf", el).value}-${$("#nt", el).value}` : "", hosts: $("#chosts", el).value};
@@ -1618,6 +1621,7 @@ async function displayPanel(el) {
   const hl = () => ($("#holdv", el).textContent = $("#hold", el).value + " s");
   $("#hold", el).oninput = hl; hl();
   const rl = () => ($("#crotv", el).textContent = $("#crot", el).value + " s"); $("#crot", el).oninput = rl; rl();
+  const sl = () => ($("#sholdv", el).textContent = $("#shold", el).value + " s"); $("#shold", el).oninput = sl; sl();
   const levels = () => { $("#ddayv", el).textContent = $("#dday", el).value + "%"; $("#dnightv", el).textContent = $("#dnight", el).value + "%";
     const n = parseInt($("#dnight", el).value, 10) || 0; $("#nov", el).style.opacity = String((100 - n) / 100); };
   $("#dday", el).oninput = $("#dnight", el).oninput = levels; levels();
@@ -1629,6 +1633,10 @@ async function displayPanel(el) {
       : "No light sensor was found. Dimming uses the schedule, then sunrise, then the day level.");
   };
   $("#dmode", el).addEventListener("change", showSense); showSense();
+  // Sunrise dimming needs the station location (item 18).
+  const showLoc = () => attn($("#dloc", el), $("#dmode", el).value === "sun" && !(g.data && g.data.has_location)
+    ? "Set the location on Time and location first." : "");
+  $("#dmode", el).addEventListener("change", showLoc); showLoc();
   for (const id of [...Object.keys(FIELDS), "nf", "nt", "chosts"]) { $("#" + id, el).addEventListener("input", syncDisp); $("#" + id, el).addEventListener("change", syncDisp); }
   syncDisp();
   const putDisp = async body => {

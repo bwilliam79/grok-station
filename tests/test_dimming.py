@@ -246,8 +246,8 @@ class Form(unittest.TestCase):
         self.assertEqual(body["GROK_STATION_DIM_MODE"], "sun")
         self.assertEqual(body["GROK_STATION_DIM_DAY"], "90")
         self.assertEqual(body["GROK_STATION_DIM_NIGHT"], "20")
-        self.assertEqual(body["GROK_STATION_DIM_LAT"], "41.88")
-        self.assertEqual(body["GROK_STATION_DIM_LON"], "-87.63")
+        self.assertNotIn("GROK_STATION_DIM_LAT", body)  # item 18: retired, ignored
+        self.assertNotIn("GROK_STATION_DIM_LON", body)
         self.assertEqual(body["GROK_STATION_DIM_SUNRISE"], "0")
         _b, err = dimming.normalize_form({"GROK_STATION_DIM_MODE": "schedule"})
         self.assertEqual(err, "Dim from and dim until need a time like 22:00.")
@@ -256,14 +256,13 @@ class Form(unittest.TestCase):
         body, err = dimming.normalize_form({
             "GROK_STATION_DIM_MODE": "auto-sensor", "GROK_STATION_DIM_DAY": 90, "GROK_STATION_DIM_NIGHT": "20"})
         self.assertIsNone(err)
-        self.assertEqual(body["GROK_STATION_DIM_LAT"], "")
-        self.assertEqual(body["GROK_STATION_DIM_LON"], "")
+        self.assertNotIn("GROK_STATION_DIM_LAT", body)
         self.assertEqual(body["GROK_STATION_DIM_MODE"], "auto-sensor")
         body, err = dimming.normalize_form({"GROK_STATION_DIM_MODE": "off", "GROK_STATION_DIM_FROM": "22:00:00"})
         self.assertIsNone(err)
         self.assertEqual(body["GROK_STATION_DIM_FROM"], "22:00")
         view = dimming.display_view({"GROK_STATION_DIM_LAT": "12.3456", "GROK_STATION_HOLD": "30"})
-        self.assertEqual(view["GROK_STATION_DIM_LAT"], "12.35")
+        self.assertNotIn("GROK_STATION_DIM_LAT", view)
         self.assertNotIn("latitude", json.dumps(view).lower())
 
     def test_config_fallback_rounds_station_location(self):
@@ -271,32 +270,28 @@ class Form(unittest.TestCase):
             "GROK_STATION_DIM_MODE": "sun", "GROK_STATION_LAT": "41.8781", "GROK_STATION_LON": "-87.6298"})
         self.assertEqual(round(cfg["lat"], 2), 41.88)
         self.assertEqual(round(cfg["lon"], 2), -87.63)
-        partial = dimming.config_from_env({
-            "GROK_STATION_DIM_LAT": "10.00", "GROK_STATION_LAT": "41.88", "GROK_STATION_LON": "-87.63"})
-        self.assertIsNone(partial["lat"])
-        self.assertIsNone(partial["lon"])
+        # An old dim-only override is ignored: the station location wins (item 18).
+        old = dimming.config_from_env({
+            "GROK_STATION_DIM_LAT": "10.00", "GROK_STATION_DIM_LON": "10.00", "GROK_STATION_LAT": "41.88", "GROK_STATION_LON": "-87.63"})
+        self.assertEqual(round(old["lat"], 2), 41.88)
+        self.assertEqual(round(old["lon"], 2), -87.63)
+        none = dimming.config_from_env({"GROK_STATION_DIM_MODE": "sun", "GROK_STATION_DIM_LAT": "10.00", "GROK_STATION_DIM_LON": "10.00"})
+        self.assertIsNone(none["lat"])
         bad = dimming.config_from_env({"GROK_STATION_DIM_MODE": "sensor", "GROK_STATION_DIM_DAY": "nope"})
         self.assertEqual(bad["mode"], "off")
         self.assertEqual(bad["day"], 90)
 
 
 class HelperRules(unittest.TestCase):
-    LAT = ("", "0.00", "8.50", "10.00", "12.35", "90.00", "-90.00", "-56.79")
-    LON = ("", "0.00", "180.00", "-180.00", "139.76", "-87.63", "179.99")
-    BAD_LAT = ("180.01", "090.00", "00", "181", "12.345", "1e2", "+1.20", "91.00", "-91.00", "90.01", "99.99")
-    BAD_LON = ("180.01", "-180.01", "090.00", "181.00")
-
     def test_patterns_match_normalized_values(self):
         g = _helper()
         rules = {k: spec[1] for k, spec in g["SETTINGS"]["display"].items()}
-        for value in self.LAT:
-            self.assertIsNotNone(re.fullmatch(rules["GROK_STATION_DIM_LAT"], value), value)
-        for value in self.LON:
-            self.assertIsNotNone(re.fullmatch(rules["GROK_STATION_DIM_LON"], value), value)
-        for value in self.BAD_LAT:
-            self.assertIsNone(re.fullmatch(rules["GROK_STATION_DIM_LAT"], value), value)
-        for value in self.BAD_LON:
-            self.assertIsNone(re.fullmatch(rules["GROK_STATION_DIM_LON"], value), value)
+        self.assertNotIn("GROK_STATION_DIM_LAT", rules)  # item 18: retired
+        self.assertNotIn("GROK_STATION_DIM_LON", rules)
+        for value in ("1", "10", "120"):
+            self.assertIsNotNone(re.fullmatch(rules["GROK_STATION_SCORE_HOLD"], value), value)
+        for value in ("0", "121", "05"):
+            self.assertIsNone(re.fullmatch(rules["GROK_STATION_SCORE_HOLD"], value), value)
         for value in ("off", "schedule", "sun", "auto-sensor"):
             self.assertIsNotNone(re.fullmatch(rules["GROK_STATION_DIM_MODE"], value))
         self.assertIsNone(re.fullmatch(rules["GROK_STATION_DIM_MODE"], "sensor"))
@@ -327,22 +322,23 @@ class HelperRules(unittest.TestCase):
             sys.stdin = old
         return code, buf.getvalue()
 
-    def test_bad_latitude_does_not_change_the_env_file(self):
+    def test_save_removes_retired_dim_coordinates(self):
+        """Upgrade path: the first Display save drops old DIM_LAT/DIM_LON lines; sending them is refused."""
         g = _helper()
         with tempfile.TemporaryDirectory() as d:
             env = os.path.join(d, "env")
-            open(env, "w").write("GROK_STATION_HOLD=30\n")
+            open(env, "w").write("GROK_STATION_HOLD=30\nGROK_STATION_DIM_LAT=12.35\nGROK_STATION_DIM_LON=-7.50\n")
             g["ENV"]["display"] = env
             g["station_env_owner"] = lambda: (os.getuid(), os.getgid(), 0o640)
             g["run"] = lambda *a, **k: (0, "")
-            code, text = self._save(g, {"GROK_STATION_DIM_LAT": "12.3456", "GROK_STATION_DIM_LON": "-87.63"})
+            code, _t = self._save(g, {"GROK_STATION_DIM_LAT": "12.35"})
             self.assertEqual(code, 1)
-            self.assertNotIn("12.3456", open(env).read())
-            code, _text = self._save(g, {"GROK_STATION_DIM_LAT": "91.00", "GROK_STATION_DIM_LON": "0.00"})
-            self.assertEqual(code, 1)
-            self.assertNotIn("91.00", open(env).read())
-            self.assertNotIn("GROK_STATION_DIM_LAT", open(env).read())
-            self.assertNotIn("12.3456", text)
+            code, _t = self._save(g, {"GROK_STATION_HOLD": "40"})
+            self.assertEqual(code, 0)
+            text = open(env).read()
+            self.assertIn("GROK_STATION_HOLD=40", text)
+            self.assertNotIn("DIM_LAT", text)
+            self.assertNotIn("DIM_LON", text)
             code, _text = self._save(g, {"GROK_STATION_DIM_MODE": "schedule", "GROK_STATION_DIM_DAY": "90"})
             self.assertEqual(code, 1)
             self.assertNotIn("GROK_STATION_DIM_MODE", open(env).read())
@@ -351,14 +347,11 @@ class HelperRules(unittest.TestCase):
             code, text = self._save(g, {
                 "GROK_STATION_DIM_MODE": "sun", "GROK_STATION_DIM_DAY": "90", "GROK_STATION_DIM_NIGHT": "20",
                 "GROK_STATION_DIM_FROM": "22:00", "GROK_STATION_DIM_TO": "06:00",
-                "GROK_STATION_DIM_LAT": "41.88", "GROK_STATION_DIM_LON": "-87.63",
                 "GROK_STATION_DIM_SUNRISE": "0", "GROK_STATION_DIM_SUNSET": "-30"})
             self.assertEqual(code, 0, text)
             saved = open(env).read()
-            self.assertIn("GROK_STATION_DIM_LAT=41.88", saved)
-            self.assertIn("GROK_STATION_DIM_LON=-87.63", saved)
+            self.assertNotIn("DIM_LAT", saved)
             self.assertIn("GROK_STATION_DIM_MODE=sun", saved)
-            self.assertNotIn("41.88", text)
             self.assertEqual(stat.S_IMODE(os.stat(env).st_mode), 0o640)
             self.assertIn(("systemctl", "restart", "grok-station"), ran)
 

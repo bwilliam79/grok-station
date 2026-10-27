@@ -2418,6 +2418,11 @@ def display_public(out):
     vals = out.get("values") if isinstance(out.get("values"), dict) else {}
     body = dict(out)
     body["values"] = dimming.display_view(vals)
+    # Sunrise dimming uses the station location. Only whether one is set reaches the browser.
+    body["has_location"] = bool(location_label()) or bool(str(vals.get("GROK_STATION_LAT") or "").strip()
+                                                        and str(vals.get("GROK_STATION_LON") or "").strip())
+    body["values"].pop("GROK_STATION_LAT", None)
+    body["values"].pop("GROK_STATION_LON", None)
     root = os.environ.get("GROK_STATION_SYS_ROOT", "/")
     try:
         body["dim"] = dimming.hardware_status(root)

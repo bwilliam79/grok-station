@@ -426,3 +426,7 @@ p#emptybot{margin:10px 2px 0}
 .h-dialog{font:600 var(--fs-h2) var(--disp)}
 .h-wiz{font:600 var(--fs-h1) var(--disp);margin-bottom:var(--sp-4)}
 .tilev{font:600 var(--fs-h3) var(--disp);margin-top:var(--sp-1)}
+/* Number fields with a unit (item 19) */
+.unitin{display:inline-flex;align-items:center;gap:var(--sp-1)}
+.unitin .inp{width:88px}
+.unit{font-size:var(--fs-help);color:var(--gs-muted)}
