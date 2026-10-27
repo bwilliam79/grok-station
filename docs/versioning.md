@@ -318,3 +318,9 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 
 - **Copy before View.** Every bot-instructions pair now shows the Copy button first (left) and View instructions second, with the "Copied" status right after Copy. One helper, `instructionsHtml()`, renders every pair. No other View/Show-before-Copy pairs exist in the admin UI.
 - **Instructions.** The bot templates name release 0.12.4. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
+
+## 0.12.5
+
+- **Values in code blocks.** The Add bot instructions (home and cloud key) ask the bot to reply with the webhook URL, the webhook key, its public key, and the home computer's name, each in its own fenced code block with a short plain label before it. The computer name is exactly as it shows in the Grok Bot app, formatted the same as the key, with no hostname. Change computer asks for the computer name the same way.
+- **Stuck wake-word training.** If the microphone stops mid-recording (for example, it's unplugged), the word now fails with "The microphone stopped while recording. Press Record voice to try again." and the display leaves training. The admin page treats a recording stage as failed when the listener answers and isn't recording or holding it in its queue (after a 20-second start grace), including a saved row after a listener restart (uploading and training are untouched). Cancel always clears a stuck recording and returns 200.
+- **Instructions.** The bot templates name release 0.12.5. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.

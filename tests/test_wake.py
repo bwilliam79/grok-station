@@ -342,6 +342,33 @@ class EnrollFlow(unittest.TestCase):
         self.assertEqual(uploads, [])
 
 
+class EnrollMicStops(unittest.TestCase):
+    def test_capture_ending_mid_recording_fails_the_word(self):
+        posted, n = [], {"i": 0}
+
+        def read16(raw=False):
+            n["i"] += 1
+            if n["i"] > 60:
+                raise EOFError
+            return np.zeros(1280, np.int16)
+        old = (gw.post_state, gw.ENROLL_DIR, gw.time.sleep, gw.subprocess.Popen)
+        gw.subprocess.Popen = lambda *a, **k: None
+        gw.post_state = lambda state=None, **kw: posted.append(state)
+        gw.ENROLL_DIR = tempfile.mkdtemp()
+        gw.time.sleep = lambda s: None
+        try:
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(EOFError):
+                    gw.enroll({"phrase": "hey_zed", "persona": "grok", "count": 10}, read16, "default")
+        finally:
+            (gw.post_state, gw.ENROLL_DIR, gw.time.sleep, gw.subprocess.Popen) = old
+        last = gw.ENROLL_STATE["last"]
+        self.assertEqual(last["stage"], "failed")
+        self.assertEqual(last["message"], "The microphone stopped while recording. Press Record voice to try again.")
+        self.assertFalse(gw.ENROLL_STATE["busy"])
+        self.assertEqual(posted[-1], "idle")  # the display leaves enroll mode
+
+
 class TrainingNotice(unittest.TestCase):
     """A finished job posts a short notice. "done" without passed is a gate miss, not a success."""
 

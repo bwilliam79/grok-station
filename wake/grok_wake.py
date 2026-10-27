@@ -801,7 +801,7 @@ def control_server():
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "session": LIVE["session"],
                                  "capture": LIVE["capture"],
-                                 "enrolling": ENROLL_STATE["busy"], "last_enroll": ENROLL_STATE["last"],
+                                 "enrolling": ENROLL_STATE["busy"], "enroll_queued": not ENROLL_Q.empty(), "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
                                  "mic_reset": mic_reset_flags(),
                                  "setup": setup_mode()})
@@ -1396,6 +1396,13 @@ def enroll(req, read16, play):
             enroll_stage("failed", "Couldn't save the clips.", phrase, ses)
             post_state("enroll", text=say, who=persona, heard=f"0/{n}|error|")
         time.sleep(6)
+    except Exception as e:
+        # Capture ended or a read failed (mic unplugged): never leave the word saying "recording".
+        print(f"enroll {phrase} stopped: microphone {type(e).__name__}", flush=True)
+        if (ENROLL_STATE.get("last") or {}).get("stage") == "recording":
+            enroll_stage("failed", "The microphone stopped while recording. Press Record voice to try again.", phrase, ses)
+        post_state("idle")  # take the display out of enroll mode
+        raise
     finally:
         ENROLL_STATE["busy"] = False
 

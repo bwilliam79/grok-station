@@ -360,9 +360,11 @@ class AdminUI(unittest.TestCase):
         self.assertIn("Change computer", js)
         self.assertIn("use Replace key", js)
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
-        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", fn)
+        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:", fn)
+        self.assertIn("Computer name:\\n```\\n<computer name>\\n```", fn)
+        self.assertIn("Do not include the hostname.", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("the home computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", add)
+        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Do not include the hostname.", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
@@ -434,7 +436,10 @@ class AdminUI(unittest.TestCase):
         self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("gs-seal-setup"))
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the home computer's name exactly as it shows in the Grok Bot app. Do not include the hostname.", fn)
+        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the home computer's name. Put each value in its own fenced code block, with a short plain label on the line before it:", fn)
+        for lab, ph in (("Webhook URL", "<webhook URL>"), ("Webhook key", "<webhook key>"), ("Public key", "<public key>"), ("Computer name", "<computer name>")):
+            self.assertIn(lab + ":\\n```\\n" + ph + "\\n```", fn)
+        self.assertIn("Never send the private key or the seed.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
         installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]
@@ -914,7 +919,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1038,7 +1043,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)

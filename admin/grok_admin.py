@@ -1517,6 +1517,8 @@ def map_train_state(state, log="", scores=None):
 
 
 ENROLL_STALE_S = 180
+ENROLL_START_GRACE_S = 20  # a just-started recording row before the listener reports busy
+ENROLL_MIC_STOPPED = "The microphone stopped while recording. Press Record voice to try again."
 HELPER_V = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
 ENROLL_STALLED = "The station stopped before this wake word was finished. Press Record voice to try again, or delete it."
 
@@ -1546,9 +1548,10 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
         out[k] = row
     built = enrolled_names if isinstance(enrolled_names, dict) else {}
     enrolled = {n for n in (enrolled_names or []) if n}
-    last, busy = {}, False
+    last, busy, queued = {}, False, False
     if isinstance(wake_status, dict):
         busy = bool(wake_status.get("enrolling"))
+        queued = bool(wake_status.get("enroll_queued"))
         last = wake_status.get("last_enroll") if isinstance(wake_status.get("last_enroll"), dict) else {}
     if isinstance(deleted, dict) and last.get("phrase") in deleted and not busy:
         last = {}  # deleted since: an older listener still reports it; don't bring the row back
@@ -1565,7 +1568,13 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
             new_msg = msg or {"recording": "Say it on the station.", "uploading": "Sending the clips.",
                               "training": "Training."}[state]
         elif stage == "recording":
-            state, new_msg = "recording", msg or "Say it on the station."
+            stuck = entry.get("state") == "recording" and \
+                now_ts - int(entry.get("updated_at") or 0) >= ENROLL_START_GRACE_S
+            if isinstance(wake_status, dict) and not queued and stuck:
+                # The listener answers and isn't recording: the capture died mid-recording (mic unplugged).
+                state, new_msg = "failed", ENROLL_MIC_STOPPED
+            else:
+                state, new_msg = "recording", msg or "Say it on the station."
         elif stage == "failed":
             state, new_msg = "failed", msg or "Training didn't pass."
         elif stage == "failed_quality":
@@ -1605,6 +1614,13 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
                 m = b.get("metrics") if isinstance(b.get("metrics"), dict) else {}
                 msg = f"Ready. It heard {m['heard']} of {m['count']} recordings." if "heard" in m and "count" in m else "Ready."
                 out[name] = _status_row(name, "published", msg, now_ts, out)
+    if isinstance(wake_status, dict) and not busy and not queued:
+        # A saved row still says recording, but the listener answers and isn't recording (it restarted, or its
+        # capture died). Only recording: uploading and training legitimately run while not busy.
+        for name, row in list(out.items()):
+            if row.get("state") == "recording" and now_ts - int(row.get("updated_at") or 0) >= ENROLL_START_GRACE_S:
+                print(f"enroll {name}: listener not recording; marked failed", flush=True)
+                out[name] = _status_row(name, "failed", ENROLL_MIC_STOPPED, now_ts, out)
     if isinstance(wake_status, dict) and not busy:
         # The listener answers and isn't recording or building, yet a word still says it is: the listener restarted
         # (or an older listener never reports an end). Fail it with a plain message instead of waiting forever.
@@ -3447,6 +3463,16 @@ class Handler(BaseHTTPRequestHandler):
             if code == 200:
                 return self.send(200, {"ok": True, "op": op})
             if code == 409:
+                if op == "discard":
+                    # Nothing is recording on the listener, so a row that still says recording is stuck
+                    # (the mic stopped mid-recording). Clear it so Cancel always gets the user out.
+                    doc = read_enroll_status()
+                    stuck = [k for k, r in doc.items() if isinstance(r, dict) and r.get("state") == "recording"]
+                    for k in stuck:
+                        doc[k] = _status_row(k, "idle", "Stopped.", int(time.time()), doc)
+                    if stuck:
+                        write_enroll_status(doc)
+                    return self.send(200, {"ok": True, "op": op, "cleared": len(stuck)})
                 return self.send(409, {"error": out.get("error") or "Nothing is recording."})
             return self.send(503, {"error": "Couldn't reach the station's microphone."})
         if p == "/api/enroll/check":

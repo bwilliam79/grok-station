@@ -920,6 +920,32 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertNotIn("okay_finn", ov)  # listener refused: the new mapping is dropped
         self.assertEqual(ov["hey_kitchen"]["persona"], "kitchen-bot")
 
+    def test_not_busy_recording_means_the_mic_stopped(self):
+        last = {"phrase": "hey_kitchen", "stage": "recording", "message": "Say it on the station.", "session": "s1"}
+        prev = {"hey_kitchen": {"state": "recording", "message": "Say it on the station.", "updated_at": 100}}
+        got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": last}, set(), 200)
+        self.assertEqual(got["hey_kitchen"]["state"], "failed")
+        self.assertEqual(got["hey_kitchen"]["message"], ga.ENROLL_MIC_STOPPED)
+        self.assertEqual(ga.ENROLL_MIC_STOPPED, "The microphone stopped while recording. Press Record voice to try again.")
+        # just started: the listener hasn't picked it up yet, so it stays recording
+        got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": last}, set(), 105)
+        self.assertEqual(got["hey_kitchen"]["state"], "recording")
+        # queued behind a conversation: not stuck
+        got = ga.derive_enroll_status(prev, {"enrolling": False, "enroll_queued": True, "last_enroll": last}, set(), 200)
+        self.assertEqual(got["hey_kitchen"]["state"], "recording")
+        # listener unreachable: no verdict
+        got = ga.derive_enroll_status(prev, None, set(), 200)
+        self.assertEqual(got["hey_kitchen"]["state"], "recording")
+
+    def test_saved_recording_row_fails_after_listener_restart(self):
+        prev = {"hey_kitchen": {"state": "recording", "message": "Say it on the station.", "updated_at": 100},
+                "hey_up": {"state": "uploading", "message": "Sending the clips.", "updated_at": 100},
+                "hey_tr": {"state": "training", "message": "Training.", "updated_at": 100}}
+        got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": None}, set(), 150)
+        self.assertEqual((got["hey_kitchen"]["state"], got["hey_kitchen"]["message"]), ("failed", ga.ENROLL_MIC_STOPPED))
+        self.assertEqual(got["hey_up"]["state"], "uploading")
+        self.assertEqual(got["hey_tr"]["state"], "training")
+
     def test_status_transitions(self):
         prev = {}
         busy = {"enrolling": True, "last_enroll": {"phrase": "hey_kitchen", "stage": "recording",
@@ -2304,11 +2330,27 @@ class DeleteWakeWord(unittest.TestCase):
             self.assertEqual((st, j.get("op")), (200, "pause"))
             self.assertEqual(c.req("POST", "/api/enroll/control", {"op": "nope"})[0], 400)
             st, j = c.req("POST", "/api/enroll/control", {"op": "discard"})
+            self.assertEqual(st, 200)  # Cancel always gets the user out, even when nothing is recording
+            st, j = c.req("POST", "/api/enroll/control", {"op": "resume"})
             self.assertEqual(st, 409)
             self.assertIn("recording", j["error"].lower())
         finally:
             ga.wake = self.orig
         self.assertEqual(sent[0], ("POST", "/enroll/control", {"op": "pause"}))
+
+    def test_discard_clears_a_stuck_recording_row(self):
+        c = signed_in()
+        ga.write_enroll_status({"hey_finn": {"state": "recording", "message": "Say it on the station.", "updated_at": 1},
+                                "hey_kai": {"state": "training", "message": "Training.", "updated_at": 1}})
+        ga.wake = lambda method, path, body=None, timeout=3: (409, {"error": "Nothing is recording."})
+        try:
+            st, j = c.req("POST", "/api/enroll/control", {"op": "discard"})
+        finally:
+            ga.wake = self.orig
+        self.assertEqual((st, j.get("cleared")), (200, 1))
+        doc = ga.read_enroll_status()
+        self.assertEqual((doc["hey_finn"]["state"], doc["hey_finn"]["message"]), ("idle", "Stopped."))
+        self.assertEqual(doc["hey_kai"]["state"], "training")  # training isn't stuck; it runs while not busy
 
 
 class FewshotEnrollFlow(unittest.TestCase):
