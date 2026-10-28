@@ -87,7 +87,7 @@ class Station:
         r._personas.update(mtime=None, map={}, voices=None, hosts=[], names=[]); r._hooks.update(mtime=None, map={})
         r.VOICES.update({"ara"})
         r._update_bad.clear(); r._test_last.clear(); r._reply_seen.clear()
-        r._helper_asked.clear(); r._update_asked.clear()
+        r._helper_asked.clear(); r._update_asked.clear(); r._avatar_hits.clear()
         self.webhooks = []  # bodies the 'bot' received, in order
 
         async def hook(req):
@@ -248,12 +248,12 @@ class _Flow(unittest.TestCase):
 
 
 class AddBotNeverFlashesHelperWarning(_Flow):
-    def test_reply_and_avatar_without_version_then_signed_status(self):
-        """Posts that carry no helper version are not evidence of an old helper; the signed status then confirms."""
-        self.run_flow(reply_version=None)
+    def test_reply_and_avatar_with_version_then_signed_status(self):
+        """0.12.13: every current helper post carries its version (a headerless post is an old helper, see
+        test_gs1213); the signed status then confirms."""
+        self.run_flow(reply_version=ga.HELPER_RELEASE)
         b, _ = self.check("before status")
         self.assert_never_warned()
-        self.assertEqual(b["helper"]["state"], "unknown", b["helper"])  # Nix L1: unconfirmed, not 'up to date'
         self.ask_update()
         ask = self.wait_hook(kind="update_bot")
         line = "%s instr=%s helper=%s computer=-" % (ask["release"], "0123456789abcdef", ga.HELPER_RELEASE)
@@ -284,7 +284,7 @@ class AddBotNeverFlashesHelperWarning(_Flow):
 
 class OldHelperStillShows(_Flow):
     def test_signed_status_with_old_helper_warns(self):
-        self.run_flow(reply_version=None)
+        self.run_flow(reply_version=ga.HELPER_RELEASE)
         self.ask_update()
         ask = self.wait_hook(kind="update_bot")
         st, j = self.reply("ivy", ask["request_id"], "%s instr=%s helper=0.11.6 computer=-" % (ask["release"], "0123456789abcdef"))

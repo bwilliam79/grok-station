@@ -339,6 +339,15 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.13
+
+Change note (2026-10-28): Nix review of 0.12.12 (M1, L1).
+
+- **Old helpers show again, without a flash after Add bot (Nix M1).** 0.12.12 showed nothing for a home bot with no helper version, so a helper older than 0.11.7 (which never sends `X-GS-Helper`) stayed silently unknown. Every post a current helper makes (`gs-seal-reply` reply, show and avatar; `gs-update.sh` sends its status through the same command) carries the header. The relay now records, per pairing, when it accepts a seal-verified reply, picture or status from a bot that carried no header at all. That bot shows "Helper version not confirmed: use Update" (`helper.state: unconfirmed`, `out_of_date: true`) and counts in the Bots menu dot (its Finish update row is not done). A bot that has not posted yet is still `unknown` with no warning. Delete or a new pairing clears the record.
+- **Signed version wins (Nix L1).** `helpers.json` keeps the signed version (signed update status or update_helper confirmation) and the header version apart, per bot: `{"signed", "header", "bare"}`. A legacy plain string reads as a header version. The signed one is used for display and comparison, and a header never overwrites it. The relay's bot list adds `helper_signed` and `helper_bare`; `helper_version` is the header value.
+- **Tests.** `tests/test_gs1213_helper_evidence.py` uses the real admin and relay handlers and the page's own row JS: an old helper with no header shows the badge and the menu dot after its first sealed reply; a fresh add and a delete and re-add with the header never warn; a signed old version plus a newer header stays behind. The 0.12.12 test that sent replies without a header now sends it, as a real current helper does.
+- **Instructions.** The bot templates name release 0.12.13. Only the release lines changed, so bots are not flagged for an update.
+
 ## 0.12.12
 
 Change note (2026-10-28): no "Helper out of date" flash after Add bot, and the 0.12.11 review items from Nix.

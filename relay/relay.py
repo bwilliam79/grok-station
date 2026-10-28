@@ -3784,7 +3784,7 @@ async def admin_bots_get(req):
         _station_key_warn(f"station key unreadable ({type(e).__name__}, errno {getattr(e, 'errno', '?')}); "
                           "re-run the installer to create it")
     bots = []
-    helpers = helper_versions()
+    helpers = helper_records()
     updates = bot_updates()
     for slug in sorted(roster):
         p = roster[slug]
@@ -3798,7 +3798,9 @@ async def admin_bots_get(req):
                      "public_key": base64.b64encode(raw_key).decode() if pinned else None,
                      "key_mode": "home" if modes.get(slug) == "home" else "cloud",
                      "reply_host": ov_now["reply_host"].get(slug),
-                     "helper_version": helpers.get(slug),
+                     "helper_version": (helpers.get(slug) or {}).get("header"),
+                     "helper_signed": (helpers.get(slug) or {}).get("signed"),
+                     "helper_bare": bool((helpers.get(slug) or {}).get("bare")),
                      "update": updates.get(slug),
                      "update_refused_at": _update_bad.get(slug),
                      "stats": stats.bot_view(slug)})
@@ -4305,30 +4307,66 @@ HELPER_ASK_GAP_S = 600  # one update ask per bot per 10 minutes
 _helper_asked = {}
 
 
-def helper_versions():
+def helper_records():
+    """{slug: {"signed": v|None, "header": v|None, "bare": bool}} for the current pairing.
+
+    0.12.13 (Nix L1): the signed version (update_helper confirmation or signed update status) and the unsigned
+    X-GS-Helper header are kept apart; the signed one wins and a header never overwrites it. (Nix M1) "bare" is True
+    once a seal-verified post from this bot arrived WITHOUT the header: every current helper post carries it, so that
+    is evidence of a helper older than 0.11.7. No post at all is not evidence. A legacy plain string is a header value.
+    """
     doc = read_json_file(HELPER_FILE)
-    return {k: v for k, v in doc.items() if isinstance(k, str) and isinstance(v, str) and HELPER_V.match(v)} \
-        if isinstance(doc, dict) else {}
+    out = {}
+    if not isinstance(doc, dict):
+        return out
+    for k, v in doc.items():
+        if not isinstance(k, str):
+            continue
+        if isinstance(v, str):
+            v = {"header": v}
+        if not isinstance(v, dict):
+            continue
+        sv, hv = v.get("signed"), v.get("header")
+        rec = {"signed": sv if isinstance(sv, str) and HELPER_V.match(sv) else None,
+               "header": hv if isinstance(hv, str) and HELPER_V.match(hv) else None,
+               "bare": v.get("bare") is True}
+        if rec["signed"] or rec["header"] or rec["bare"]:
+            out[k] = rec
+    return out
+
+
+def helper_versions():
+    """{slug: version}: the signed version when there is one, else the header version."""
+    return {k: r["signed"] or r["header"] for k, r in helper_records().items() if r["signed"] or r["header"]}
 
 
 def note_helper(bot, req, signed=None):
-    """Record a bot's helper release after its sealed post verified. Advisory: it only drives a label.
+    """Record what a bot's sealed post (already verified) says about its helper. Advisory: it only drives a label.
 
-    signed is the version from the signed, sealed text of an update_helper confirmation; it wins. Otherwise the
-    unsigned X-GS-Helper header is used. A version field inside every signed body would be a protocol change:
-    older stations reject unknown signed keys, so a new helper could no longer talk to them.
+    signed is the version from signed, sealed text (update_helper confirmation or update status). It is kept
+    apart, never overwritten by the unsigned X-GS-Helper header, and always wins. A version field inside every signed body would be a
+    protocol change: older stations reject unknown signed keys, so a new helper could no longer talk to them.
     """
-    v = signed.strip() if isinstance(signed, str) and HELPER_V.match(signed.strip()) else \
-        (req.headers.get("X-GS-Helper") or "").strip()
-    if not HELPER_V.match(v) or not isinstance(bot, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,23}", bot):
+    if not isinstance(bot, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,23}", bot):
         return
-    doc = helper_versions()
-    if doc.get(bot) == v:
+    sv = signed.strip() if isinstance(signed, str) and HELPER_V.match(signed.strip()) else None
+    raw = req.headers.get("X-GS-Helper") if req is not None else None
+    hv = raw.strip() if isinstance(raw, str) and HELPER_V.match(raw.strip()) else None
+    recs = helper_records()
+    old = recs.get(bot) or {"signed": None, "header": None, "bare": False}
+    new = dict(old)
+    if sv:
+        new["signed"] = sv
+    if hv:
+        new["header"] = hv
+    elif not raw:
+        new["bare"] = True  # verified post with no header at all: a pre-0.11.7 helper
+    if new == old:
         return
-    doc[bot] = v
+    recs[bot] = new
     try:
         os.makedirs(os.path.dirname(HELPER_FILE), exist_ok=True)
-        atomic_write(HELPER_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+        atomic_write(HELPER_FILE, (json.dumps(recs, sort_keys=True) + "\n").encode())
     except OSError:
         pass
 
@@ -4361,7 +4399,7 @@ def forget_bot_status(slug):
     showed 'Update available' straight away.
     """
     _update_bad.pop(slug, None)  # the one-ask-per-10-min limits stay: they guard the bot, not the record
-    for fname, read in ((UPDATES_FILE, bot_updates), (HELPER_FILE, helper_versions)):
+    for fname, read in ((UPDATES_FILE, bot_updates), (HELPER_FILE, helper_records)):
         doc = read()
         if slug in doc:
             doc.pop(slug, None)
@@ -4670,8 +4708,7 @@ async def voice_reply(req):
         ok = note_update(bot, reply.get("text"))
         if ok:
             m = UPDATE_STATUS.match(reply["text"].strip())
-            if m.group(3) != "-":
-                note_helper(bot, req, m.group(3))  # signed helper version
+            note_helper(bot, req, m.group(3) if m.group(3) != "-" else None)  # signed helper version
         if ok:
             _update_bad.pop(bot, None)
         else:

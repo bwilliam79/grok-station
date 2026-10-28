@@ -1909,6 +1909,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "different"
         else:
             state = "needs"
+        if home and state == "done" and (b.get("helper") or {}).get("out_of_date"):
+            state = "needs"  # 0.12.13: an old or unconfirmed helper counts in the Bots-menu dot
         if err:
             state = "error"
         reason = ""
@@ -2512,19 +2514,27 @@ def _vtuple(v):
 def helper_view(b):
     """Home bots only: the helper release the station has seen from this bot, and whether it is behind ours.
 
-    0.12.12: out_of_date is True only when the station holds a version from this bot (recorded after a sealed post
-    verified, or from its signed update status) and that version is older than HELPER_RELEASE. A post without a
-    version (reply, avatar, test reply), a remembered answer, or nothing at all is never evidence of an old helper:
-    state is "unknown" (unconfirmed, not "up to date"; Nix L1) and the page shows no warning.
+    0.12.13: a signed version (signed update status or update_helper confirmation) wins over the unsigned X-GS-Helper
+    header (Nix L1). With no version at all, state is "unconfirmed" (shown, counted in the Bots-menu dot) only when
+    the station accepted a seal-verified post from this pairing that carried no header: every current helper post
+    sends it, so that means a helper older than 0.11.7 (Nix M1). No post yet is not evidence: state "unknown", no
+    warning, so nothing flashes right after Add bot.
     """
     if b.get("key_mode") != "home":
         return None
-    seen = b.get("helper_version") if HELPER_V.fullmatch(str(b.get("helper_version") or "")) else None
+
+    def ok(v):
+        return v if HELPER_V.fullmatch(str(v or "")) else None
+    seen = ok(b.get("helper_signed"))
     if seen is None:
         u = update_view(b.get("update"))
-        seen = u["helper"] if u and u.get("helper") and HELPER_V.fullmatch(u["helper"]) else None
+        seen = ok(u.get("helper")) if u else None
+    if seen is None:
+        seen = ok(b.get("helper_version"))
     cur = _vtuple(seen)
     if cur is None:
+        if b.get("helper_bare") is True:
+            return {"version": None, "release": HELPER_RELEASE, "state": "unconfirmed", "out_of_date": True}
         return {"version": None, "release": HELPER_RELEASE, "state": "unknown", "out_of_date": False}
     behind = cur < _vtuple(HELPER_RELEASE)
     return {"version": seen, "release": HELPER_RELEASE, "state": "behind" if behind else "current",
