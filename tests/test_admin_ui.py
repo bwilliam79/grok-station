@@ -280,7 +280,7 @@ class AdminUI(unittest.TestCase):
                      "The user approved this setup when they copied these instructions and pasted them to the bot. Run it without asking again. It is one time, on the home computer that stays on.",
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
-                     "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.",
+                     "The computer's name exactly as the Grok Bot app gives it to your bot, dots included. The station keeps it as typed and only shortens it on screen.",
                      "No new key or pairing needed."):
             self.assertIn(text, js, text)
         bots = _fn(js, "paintBots")
@@ -351,7 +351,7 @@ class AdminUI(unittest.TestCase):
     def test_replies_from_ui(self):
         js = self.js
         self.assertIn('Replies from: not set', js)
-        self.assertIn('Replies from: ${b.reply_host}', js)
+        self.assertIn('Replies from: ${displayComputer(b.reply_host)}', js)  # 0.12.9: shortened on screen only
         self.assertIn("is offline. Replies will wait until", js)
         self.assertNotIn("may be offline", js)
         self.assertIn('id="ahost"', js)
@@ -361,10 +361,10 @@ class AdminUI(unittest.TestCase):
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
         self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:", fn)
         self.assertIn("Computer name:\\n```\\n<computer name>\\n```", fn)
-        self.assertIn("Do not include the hostname.", fn)
+        self.assertIn("dots included. Do not shorten it.", fn)
         self.assertNotIn("hostname is fine", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Do not include the hostname.", add)
+        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Send it exactly as listed, dots included. Do not shorten it.", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
@@ -929,7 +929,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1057,7 +1057,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)

@@ -176,6 +176,7 @@ button.x:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
 .twait{background:var(--gs-lavender-bg);border-radius:12px;padding:14px 16px;margin-top:14px}
 .tbar{height:3px;border-radius:2px;background:rgba(169,156,255,.25);margin:10px 0;overflow:hidden}
 .tbar > i{display:block;height:100%;width:0;background:var(--gs-lavender)}
+.updating{gap:6px;align-items:center;font-size:var(--fs-help);color:var(--gs-muted)}
 .spin{width:14px;height:14px;border:2px solid var(--gs-lavender);border-right-color:transparent;border-radius:50%;display:inline-block;animation:gs-spin .8s linear infinite;flex:none}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
 .tokenbox{font-family:var(--mono);font-size:var(--fs-label);background:var(--gs-bg);border:1px solid var(--gs-rule-2);border-radius:12px;padding:12px 14px;word-break:break-all;margin-top:12px}

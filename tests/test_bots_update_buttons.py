@@ -24,7 +24,8 @@ class UpdateButtons(unittest.TestCase):
         if not shutil.which("node"):
             self.skipTest("node not installed")
         prog = PRELUDE + "".join(_fn(n) for n in ("finishComputers", "finishFind", "finishBehind", "finishNeedsUpdate",
-                                                   "updateRowBtnHTML", "updateAllBtnHTML")) + body
+                                                   "updateRowBtnHTML", "updateAllBtnHTML")) \
+            + "const ROW_SENDING = {};" + _fn("rowUpdating") + body
         out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
         return json.loads(out.stdout)

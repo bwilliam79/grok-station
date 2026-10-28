@@ -19,7 +19,7 @@ class ComputerNameInstructions(unittest.TestCase):
         for fn in (_between("function routineChangeComputer", "function openChangeComputer"),
                    _between("function routineForBot", "function addBot")):
             self.assertIn("exactly as it shows in the Grok Bot app", fn)
-            self.assertIn("Do not include the hostname.", fn)
+            self.assertIn("dots included. Do not shorten it.", fn)  # 0.12.9: the exact label, never trimmed
             self.assertNotIn("hostname is fine", fn)
             self.assertNotIn("as you see it", fn)
             self.assertIn("<computer name>", fn)
@@ -27,8 +27,8 @@ class ComputerNameInstructions(unittest.TestCase):
     def test_hint_and_fields_keep_the_typed_name(self):
         hint = re.search(r'const COMPUTER_HINT = "([^"]*)"', JS).group(1)
         self.assertIn("Grok Bot app", hint)
-        self.assertNotIn("first dot", hint)
-        self.assertNotIn("shortComputerName", JS)  # no hostname-style trimming of the label
+        self.assertIn("dots included", hint)
+        self.assertNotIn("shortComputerName", JS)  # 0.12.6's stored trimming; 0.12.9 trims only on screen
         self.assertNotIn("bindComputerName", JS)
         self.assertNotIn("gethostname", JS)
 

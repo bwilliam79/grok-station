@@ -339,6 +339,15 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.9
+
+Change note (2026-10-28): exact computer names, re-added bots, and Update in place on Bots.
+
+- **Computer name kept exactly.** The Grok Bot app gives bots a computer's full name, such as `name.example.lan`, or `name.local` on a fresh install, while its Computers list shows just `name`. Bots use the full name to find their computer, so the station now stores it exactly as the bot sends it and uses that exact name for matching, Finish update and Change computer. Only the screen shortens it: "Replies from:" and similar labels show the part before the first dot, and only for a name that looks like a network name (no spaces, letters, numbers and dashes between dots). Names like "Den iMac" are left alone. Hovering shows the full name, and the edit field holds it. The instructions ask the bot to send the name exactly as the Grok Bot app lists it, dots included. Finish update also accepts a home computer name with spaces when you pick which bot updates the shared helper.
+- **Re-added bots.** Deleting a bot now also clears the update status, helper version and refusal the relay kept for it, and pairing a new key does the same. Before, a bot deleted and added again with the same id inherited the old bot's status and showed "Update available for this bot" right away, even though 0.12.8 recorded the pairing release. The station also ignores any status older than the bot's latest pairing.
+- **Update in place.** The Update button on a Bots row and Update all no longer open the Finish update dialog. They ask the bot right away, through the same checks (pinned script, signed reply, one ask per bot every 10 minutes, 10 minutes to reply). The row shows a small spinner and "Updating…" until the bot answers, and that survives a page reload. On success the spinner and the amber note go away. On a failure the row says why (refused, no reply in 10 minutes, asked too recently, couldn't reach the bot) and the Update button comes back. A bot set up before 0.11.8 still opens the dialog, because it needs its instructions pasted by hand.
+- **Fixed along the way.** A bot that had been sent the update stayed "needs" instead of "waiting" when it was paired on 0.12.8 or later, so the reply window wasn't shown.
+
 ## 0.12.8
 
 Change note (2026-10-28): computer name, fresh bots, and Update buttons on Bots.

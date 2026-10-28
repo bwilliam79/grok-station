@@ -1149,6 +1149,16 @@ def _record_rtt(bot, rtt_ms=None, timeout=False):
         log("rtt write failed", type(e).__name__)
 
 
+_DNS_LABEL = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+\.?")
+
+
+def display_host(name):
+    """Spoken or shown form of a stored computer name: the first label of a DNS-style name, else unchanged.
+
+    The stored name stays exactly as the bot reported it (bots use it to find their computer)."""
+    return name.split(".")[0] if isinstance(name, str) and _DNS_LABEL.fullmatch(name) else name
+
+
 def handoff_line(name, verdict, host=None, reached=False):
     """The fixed sentence the station speaks. The model does not word it.
 
@@ -1159,7 +1169,7 @@ def handoff_line(name, verdict, host=None, reached=False):
     if verdict == "timeout" and reached:
         return f"{name} couldn't reply in time."
     if verdict == "timeout" and host:
-        return f"I couldn't reach {name}. {host} may be offline."
+        return f"I couldn't reach {name}. {display_host(host)} may be offline."
     return {"timeout": f"I couldn't reach {name}.",
             "limit": f"{name} has had a lot of questions from the station today; ask in the app.",
             "post-failed": f"Couldn't reach {name} just now; try again or ask in the app.",
@@ -4006,6 +4016,7 @@ async def admin_bots_delete(req):
         botreply.revoke_one(bot_keys_path(), slug)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
+    forget_bot_status(slug)
     audit(body["actor"], slug, "remove", tail)
     forget_ack_clips(slug)
     persona_list()
@@ -4312,6 +4323,23 @@ def bot_updates():
     return out
 
 
+def forget_bot_status(slug):
+    """Drop the signed update status, helper release and refusal recorded for slug (delete or new pairing).
+
+    0.12.9: these outlived a delete, so a re-added bot with the same id inherited the old bot's update status and
+    showed 'Update available' straight away.
+    """
+    _update_bad.pop(slug, None)  # the one-ask-per-10-min limits stay: they guard the bot, not the record
+    for fname, read in ((UPDATES_FILE, bot_updates), (HELPER_FILE, helper_versions)):
+        doc = read()
+        if slug in doc:
+            doc.pop(slug, None)
+            try:
+                atomic_write(fname, (json.dumps(doc, sort_keys=True) + "\n").encode())
+            except OSError:
+                pass
+
+
 def note_update(bot, text):
     """Record a signed update_bot status line. Returns False for anything else (the text is not stored)."""
     m = UPDATE_STATUS.match(text.strip()) if isinstance(text, str) else None
@@ -4531,6 +4559,7 @@ async def admin_key_put(req):
         return web.json_response({"error": "unavailable"}, status=500)
     if not ok:
         return web.json_response({"error": "bad request"}, status=400)
+    forget_bot_status(slug)  # a new key is a new pairing: the old key's update and helper status are not this bot's
     audit(body["actor"], slug, "pair", "-")
     return web.json_response({"ok": True})
 

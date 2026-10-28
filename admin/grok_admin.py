@@ -1739,6 +1739,7 @@ def read_finish():
     if not isinstance(doc, dict):
         doc = {}
     doc.setdefault("sent", {}); doc.setdefault("copied", {}); doc.setdefault("updaters", {}); doc.setdefault("setup", {})
+    doc.setdefault("failed", {})
     return doc
 
 
@@ -1761,7 +1762,7 @@ def forget_finish(slug):
         return
     doc = read_finish()
     changed = False
-    for key in ("sent", "copied", "setup"):
+    for key in ("sent", "copied", "setup", "failed"):
         bucket = doc.get(key)
         if isinstance(bucket, dict) and slug in bucket:
             bucket.pop(slug, None)
@@ -1774,6 +1775,18 @@ def forget_finish(slug):
                 changed = True
     if changed:
         write_json(path(FINISH), doc)
+
+
+SEND_FAIL_REASONS = ("Asked a few minutes ago. Wait, then try again.", "Couldn't reach the bot.",
+                     "Couldn't send the update.")
+
+
+def _setup_newer(setup, u):
+    """True when this id was paired again after the bot's last signed update status was recorded."""
+    try:
+        return float(setup.get("at") or 0) > float(u.get("at") or 0)
+    except (TypeError, ValueError):
+        return False
 
 
 def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None):
@@ -1796,30 +1809,45 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         except (gs_routine.Bad, OSError) as e:
             text, want, err = "", "", "Can't build instructions: %s" % e
         u = b.get("update") or {}
+        setup = (finish.get("setup") or {}).get(b["slug"]) or {}
+        if u and setup and _setup_newer(setup, u):
+            u = {}  # status from an earlier pairing of this id (deleted and re-added, or re-keyed): not this bot's
+        fail = (finish.get("failed") or {}).get(b["slug"]) or {}
         wait_left = 0
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
-        elif b.get("update_refused_at"):
+        elif b.get("update_refused_at") and not (setup and _setup_newer(setup, {"at": b.get("update_refused_at")})):
             state = "refused"
-        elif not u and (finish.get("setup") or {}).get(b["slug"], {}).get("release") == rel:
-            state = "done"  # paired with this release's Add bot instructions: nothing to update yet
-        elif not u and (finish.get("setup") or {}).get(b["slug"]):
-            state = "needs"  # set up by a newer template that already knows update_bot
-        elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
-            state = "copy"  # set up before 0.11.8: its instructions don't know update_bot yet
-        elif u.get("release") == rel and u.get("instr") != want:
-            state = "different"
-        elif finish["sent"].get(b["slug"], {}).get("instr") == want:
+        elif (not u or u.get("release") != rel) and finish["sent"].get(b["slug"], {}).get("instr") == want:
             try:
                 sent_at = float(finish["sent"][b["slug"]].get("at") or 0)
             except (TypeError, ValueError):
                 sent_at = 0.0
             wait_left = int(max(0, sent_at + FINISH_WAIT_S - now))
             state = "waiting" if wait_left > 0 else "noreply"  # stored with its time, so a restart keeps it
+        elif not u and setup.get("release") == rel:
+            state = "done"  # paired with this release's Add bot instructions: nothing to update yet
+        elif not u and setup:
+            state = "needs"  # set up by a newer template that already knows update_bot
+        elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
+            state = "copy"  # set up before 0.11.8: its instructions don't know update_bot yet
+        elif u.get("release") == rel and u.get("instr") != want:
+            state = "different"
         else:
             state = "needs"
         if err:
             state = "error"
+        reason = ""
+        if state == "refused":
+            reason = "The bot refused the update."
+        elif state == "noreply":
+            reason = "No reply within 10 minutes."
+        elif state == "different":
+            reason = "The bot's instructions don't match this release."
+        elif state == "error":
+            reason = err
+        elif state != "done" and fail.get("instr") == want and fail.get("reason") in SEND_FAIL_REASONS:
+            reason = fail["reason"]  # the last Update click failed before the bot was asked (kept across reloads)
         if state != "done":
             behind += 1
         if home:
@@ -1833,7 +1861,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home" if home else "cloud",
                           "state": state, "message": text, "instr": want, "have": u.get("instr"),
                           "have_release": u.get("release"), "error": err,
-                          "wait_left": wait_left if state == "waiting" else 0})
+                          "wait_left": wait_left if state == "waiting" else 0, "fail": reason})
     for g in groups.values():
         g["bots"].sort(key=lambda r: r["name"].lower())
         chosen = finish["updaters"].get(g["key"])
@@ -3973,7 +4001,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": "bad request"})
         if p == "/api/finish-update/updater":
             key, slug = j.get("computer"), j.get("slug")
-            if not (isinstance(key, str) and re.fullmatch(r"(c:[0-9a-f]{16}|h:[A-Za-z0-9.-]{1,63}|bot)", key)
+            if not (isinstance(key, str) and (re.fullmatch(r"(c:[0-9a-f]{16}|bot)", key) or (key.startswith("h:") and (host_name_ok(key[2:]) or slug_ok(key[2:]))))
                     and slug_ok(slug)):
                 return self.send(400, {"error": "bad request"})
             doc = read_finish(); doc["updaters"][key] = slug
@@ -4010,13 +4038,17 @@ class Handler(BaseHTTPRequestHandler):
         if r is None:
             return self.bots_unconfigured()
         status, data = r
-        if status == 429:
-            return self.send(429, {"error": "Asked a few minutes ago. Wait, then try again."})
-        if status == 502:
-            return self.send(502, {"error": "Couldn't reach the bot."})
         if status not in (200, 202):
+            reason = SEND_FAIL_REASONS[0] if status == 429 else SEND_FAIL_REASONS[1] if status == 502 \
+                else SEND_FAIL_REASONS[2]
+            doc = read_finish()
+            doc.setdefault("failed", {})[slug] = {"instr": sha, "reason": reason, "at": int(time.time())}
+            write_json(path(FINISH), doc)  # the row keeps its failure line after a reload
+            if status in (429, 502):
+                return self.send(status, {"error": reason})
             return self.relay_fail(status, data)
         doc = read_finish()
+        doc.setdefault("failed", {}).pop(slug, None)
         doc["sent"][slug] = {"instr": sha, "release": view["release"], "at": int(time.time())}
         write_json(path(FINISH), doc)
         audit(slug, "finish-send")
