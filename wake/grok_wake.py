@@ -5,6 +5,7 @@ Captures the USB headset mic at 48 kHz via `arecord`, decimates to 16 kHz for op
 On a wake it plays the listen tone, shows "listening", and opens one session to the voice relay on
 127.0.0.1: mic audio goes up as PCM16 24 kHz, reply audio comes back and plays on the headset via
 `aplay`, and the display follows listening -> thinking -> speaking -> idle through localhost POST /state.
+The thinking phase is also the waiting chime: one soft two-note tone every 2.5 s, after a short delay, until speech.
 A tool card (`{"type":"card",...}`) is forwarded on that same POST. Timers post their full list
 (`{"timers":[{id,label,ends_at_epoch,ringing,duration?}]}`) when the set changes — set, cancel, ring, clear —
 and the display counts down locally. While this process is up the deadline is monotonic, so a wall-clock
@@ -33,6 +34,7 @@ step, and scored on the same embedding stream as Hey Grok.
 """
 import base64, datetime, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
+import wait_tone
 
 E = os.environ.get
 MODEL = E("WAKE_MODEL", "/opt/grok-station/wake/models/hey_grok.onnx")  # the built-in word; used if the config is unreadable
@@ -494,28 +496,52 @@ def station_sounds():
 
 
 def play_file(dev, path, block=False):
-    """aplay one wav the catalog already resolved. No-op without a device or a file."""
+    """aplay one wav the catalog already resolved. No-op without a device or a file.
+
+    Holds the speaker so the thinking chime stops first and stays stopped until aplay exits.
+    A non-blocking call claims the speaker before it returns, so the chime cannot start in the gap.
+    """
     if not dev or not path:
         return
     cmd = ["aplay", "-q", "-D", dev, path]
-    try:
-        if block:
+
+    def run():
+        try:
             subprocess.run(cmd, stderr=subprocess.DEVNULL, timeout=10)
-        else:
-            subprocess.Popen(cmd, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    if block:
+        with wait_tone.speech():
+            run()
+        return
+    wait_tone.TONE.begin_speech()
+
+    def go():
+        try:
+            run()
+        finally:
+            wait_tone.TONE.end_speech()
+
+    threading.Thread(target=go, daemon=True).start()
 
 
 def play_seq(dev, paths):
-    """aplay files in order, off the capture thread. Skips missing ones."""
+    """aplay files in order, off the capture thread. Skips missing ones.
+
+    Claims the speaker before returning. Each file claims it again, so a gap cannot let the chime in.
+    """
     files = [p for p in paths if p]
     if not dev or not files:
         return
+    wait_tone.TONE.begin_speech()
 
     def go():
-        for p in files:
-            play_file(dev, p, block=True)
+        try:
+            for p in files:
+                play_file(dev, p, block=True)
+        finally:
+            wait_tone.TONE.end_speech()
 
     threading.Thread(target=go, daemon=True).start()
 
@@ -554,10 +580,11 @@ def _notice_and_chime(label):
     post_state("speaking", who="grok", text=text, done=True)
     dev = LIVE.get("play")
     wav = configured_wav("ALARM_SOUND")
-    for _ in range(3):
-        if dev and wav:
-            play_file(dev, wav, block=True)
-        time.sleep(0.4)
+    with wait_tone.speech():
+        for _ in range(3):
+            if dev and wav:
+                play_file(dev, wav, block=True)
+            time.sleep(0.4)
 
 
 def _ring_one(k, v):
@@ -1282,25 +1309,26 @@ def capture_enroll_clip(read16, play, chime_samples=None):
             got += int(fr.shape[0])
         return frames, got
 
-    proc = subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
-    if proc is None or not hasattr(proc, "poll"):
-        frames, _got = take(speech_n)
-        return np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)[:speech_n]
-    frames, got = [], 0
-    while proc.poll() is None and got < 16000 * 3:
-        fr = np.asarray(read16(raw=True), dtype=np.int16).reshape(-1)
-        frames.append(fr)
-        got += int(fr.shape[0])
-    chime_end = got
-    if chime_end < known:
-        more, extra = take(known - chime_end)
+    with wait_tone.speech():
+        proc = subprocess.Popen(["aplay", "-q", "-D", play, CHIME], stderr=subprocess.DEVNULL)
+        if proc is None or not hasattr(proc, "poll"):
+            frames, _got = take(speech_n)
+            return np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)[:speech_n]
+        frames, got = [], 0
+        while proc.poll() is None and got < 16000 * 3:
+            fr = np.asarray(read16(raw=True), dtype=np.int16).reshape(-1)
+            frames.append(fr)
+            got += int(fr.shape[0])
+        chime_end = got
+        if chime_end < known:
+            more, extra = take(known - chime_end)
+            frames.extend(more)
+            got += extra
+            chime_end = known
+        more, extra = take(speech_n)
         frames.extend(more)
-        got += extra
-        chime_end = known
-    more, extra = take(speech_n)
-    frames.extend(more)
-    raw = np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)
-    return raw[chime_end:chime_end + speech_n]
+        raw = np.asarray(np.concatenate(frames), dtype=np.int16).reshape(-1)
+        return raw[chime_end:chime_end + speech_n]
 
 
 def enroll(req, read16, play):
@@ -1734,7 +1762,15 @@ def handoff_keepalive_due(s):
 
 
 def post_state(state=None, **kw):
-    """POST /state. The log line is the state and the kinds of attachment (card / timer count), never the values."""
+    """POST /state. The log line is the state and the kinds of attachment (card / timer count), never the values.
+
+    A voice state is the one thinking phase: the display ring and the waiting chime both follow it.
+    """
+    if state:
+        try:
+            wait_tone.TONE.note_phase(state)
+        except Exception as exc:
+            print(f"wait tone: {type(exc).__name__}", flush=True)
     body = {}
     if state:
         body["state"] = state
@@ -1839,6 +1875,7 @@ class Session:
         self.card = None  # last tool card; attached to later state posts until the session ends
         self.ws, self.t1_card = None, None
         self._connected, self._end_played = False, False
+        self._reply_held = False  # thinking chime stays down for the whole reply playback
         self._cue_q, self._cue_thread, self.t_ack = None, None, None  # ack and handoff_still share one player
         CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
@@ -1870,17 +1907,31 @@ class Session:
             self._cue_thread.start()
         self._cue_q.put(bytes(pcm))
 
+    def _claim_reply(self):
+        if self._reply_held:
+            return
+        self._reply_held = True
+        wait_tone.TONE.begin_speech()
+
+    def _release_reply(self):
+        if not self._reply_held:
+            return
+        self._reply_held = False
+        wait_tone.TONE.end_speech()
+
     def _cue_loop(self, q):
         while True:
             pcm = q.get()
             if not pcm:
                 return
-            try:
-                p = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000", "-c", "1",
-                                      "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                p.communicate(pcm)
-            except Exception:
-                pass
+            # Asking clips and still-asking clips are speech. The ring stays on thinking.
+            with wait_tone.speech():
+                try:
+                    p = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000", "-c", "1",
+                                          "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                    p.communicate(pcm)
+                except Exception:
+                    pass
 
     def close_cue(self):
         q = self._cue_q
@@ -1962,6 +2013,7 @@ class Session:
                             lat = self.t_first_audio - (self.t_end_speech or self.t_first_audio)
                             print(f"first audio {lat:.2f}s after end of speech", flush=True)
                             self.state("speaking", heard=self.heard, text=self.reply or "…")
+                            self._claim_reply()  # chime is already stopped; hold it until this player exits
                             player = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000",
                                                        "-c", "1", "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
                         if self.save is not None:
@@ -2068,6 +2120,7 @@ class Session:
                         # multi-turn: let the reply finish playing, then listen for a follow-up (no wake word)
                         if player:
                             player.stdin.close(); player.wait(timeout=90); player = None
+                            self._release_reply()
                         self.turns += 1
                         print(f"relay: turn {self.turns} done, listening for a follow-up", flush=True)
                         while not self.q.empty():  # mic audio queued during playback is the reply's echo
@@ -2095,6 +2148,8 @@ class Session:
             if player:
                 player.stdin.close()
                 player.wait(timeout=90)
+                self._release_reply()
+                player = None
                 self.state("speaking", heard=self.heard, text=self.reply or "…", done=True)
             print(f"session over in {time.time() - t0:.1f}s", flush=True)
         except Exception as e:
@@ -2117,6 +2172,7 @@ class Session:
                     player.wait(timeout=90)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+            self._release_reply()
             try:
                 self.play_end_tone()
             except Exception:
@@ -2605,6 +2661,7 @@ def main():
     stale_build()
     threading.Thread(target=control_server, daemon=True).start()
     threading.Thread(target=_mic_poll, daemon=True).start()
+    wait_tone.TONE.start(lambda: LIVE.get("play"))
     timers_load()
     threading.Thread(target=timers_loop, daemon=True).start()
     threading.Thread(target=tap_loop, daemon=True).start()

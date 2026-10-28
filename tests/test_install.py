@@ -47,6 +47,17 @@ class Install(unittest.TestCase):
         for m in local:
             self.assertIn(m + ".py", line)
 
+    def test_wake_imports_are_installed(self):
+        """Every local module grok_wake.py imports ships with both installers (0.12.6: wait_tone.py was missed)."""
+        src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
+        local = {m for m in re.findall(r"^\s*import (\w+)", src, re.M) if os.path.isfile(os.path.join(ROOT, "wake", m + ".py"))}
+        self.assertIn("wait_tone", local)
+        full = [l for l in open(os.path.join(ROOT, "install.sh")) if "wake/grok_wake.py" in l and "$O/wake/" in l][0]
+        upd = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
+        for m in local:
+            self.assertIn(f"wake/{m}.py", full)
+            self.assertIn(f'"$S/wake/{m}.py"', upd)
+
     def test_admin_imports_are_installed(self):
         """Every repo module the admin page imports is installed (a missing one crash-looped the page on a fresh Pi).
         Relay pairing and the release-manifest updater are gone, and nothing may import them."""

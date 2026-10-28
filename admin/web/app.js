@@ -1138,6 +1138,7 @@ async function audioPanel(el) {
   const alarmCur = alarmOpts.includes(v.ALARM_SOUND) ? v.ALARM_SOUND : (defs.alarm != null ? defs.alarm : (alarmOpts[0] || ""));
   const listenCur = listenOpts.includes(v.LISTEN_TONE) ? v.LISTEN_TONE : (defs.listen || "none");
   const endCur = endOpts.includes(v.END_TONE) ? v.END_TONE : (defs.end || "none");
+  const waitOn = a.data.wait_tone !== false;
   const devs = [...new Set([...(d.inputs || []), ...(d.outputs || []), v.WAKE_DEVICE_NAME].filter(Boolean))];
   const mr = d.mic_reset || {};
   const mrOn = (k) => mr[k] !== false;
@@ -1170,6 +1171,7 @@ async function audioPanel(el) {
       <p class="note">Plays when the station wakes.</p></div>
     <div class="field"><label for="etn">End tone</label><div class="inline">${soundSelect("etn", endOpts, endCur)}<button class="btn" id="eprev" type="button">Preview</button></div>
       <p class="note">Plays when a conversation ends.</p></div>
+    <div class="row"><button type="button" class="tog${waitOn ? " on" : ""}" role="switch" id="wton" aria-checked="${waitOn ? "true" : "false"}" aria-label="Waiting tone"></button><div><div class="lbl">Waiting tone</div><div class="help">A soft chime while the station is thinking. It stops when speech starts.</div></div></div>
     </div></div>
     <h3 class="dgrp">Microphone reset</h3>
     <div class="row"><button type="button" class="tog${mrOn("button") ? " on" : ""}" role="switch" id="mrbtn" aria-checked="${mrOn("button") ? "true" : "false"}" aria-label="Reset button"></button><div><div class="lbl">Reset button</div><div class="help">Shows a button that turns the speakerphone's USB connection off and on.</div></div></div>
@@ -1226,6 +1228,17 @@ async function audioPanel(el) {
   bindMic("#mrbtn", "button");
   bindMic("#mrnight", "night");
   bindMic("#mrdrought", "drought");
+  $("#wton", el).onclick = async () => {
+    const btn = $("#wton", el);
+    const was = btn.classList.contains("on");
+    const on = !was;
+    setTog(btn, on);
+    const r = await api("PUT", "/api/audio/wait-tone", {on});
+    if (!r.ok) {
+      setTog(btn, was);
+      return toast((r.data && r.data.error) || "Couldn't save that.", "warn");
+    }
+  };
   $("#micreset", el).onclick = async () => {
     const r = await api("POST", "/api/audio/mic-reset", {});
     if (!r.ok) return toast((r.data && r.data.error) || "Couldn't reset the microphone.", "warn");

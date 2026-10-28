@@ -472,6 +472,26 @@ def mic_reset_path():
     return os.environ.get("WAKE_MIC_RESET_FILE") or path("mic-reset.json")
 
 
+def wait_tone_path():
+    """Same file the wake listener reads. Default on when it is missing."""
+    return os.environ.get("WAIT_TONE_FILE") or path("wait-tone.json")
+
+
+def wait_tone_on():
+    data = read_json(wait_tone_path(), {})
+    if isinstance(data, dict) and isinstance(data.get("on"), bool):
+        return data["on"]
+    return _env_bool("WAIT_TONE", True)
+
+
+def save_wait_tone(body):
+    """Store the switch. None when the body is not a bool `on`. Does not restart the listener."""
+    if not isinstance(body, dict) or not isinstance(body.get("on"), bool):
+        return None
+    write_json(wait_tone_path(), {"on": body["on"]}, 0o640)
+    return body["on"]
+
+
 def mic_reset_public():
     """The three microphone-reset switches. A bool in the file wins over the env. Default on."""
     data = read_json(mic_reset_path(), {})
@@ -3360,10 +3380,15 @@ class Handler(BaseHTTPRequestHandler):
                                "in_use": busy("arecord"), "capture": st.get("capture") if code == 200 else None,
                                "level_dbfs": st.get("level_dbfs") if code == 200 else None,
                                "level_at": st.get("level_at") if code == 200 else None,
-                               "mic_reset": flags})
+                               "mic_reset": flags, "wait_tone": wait_tone_on()})
 
     def api_put_audio(self, p, q, j):
         """Switches only. The listener re-reads the file; this does not stop it."""
+        if p == "/api/audio/wait-tone":
+            saved = save_wait_tone(j)
+            if saved is None:
+                return self.send(400, {"error": "Couldn't save that."})
+            return self.send(200, {"ok": True, "wait_tone": saved})
         if p != "/api/audio/mic-reset":
             return self.send(404, {"error": "not found"})
         saved = save_mic_reset(j)

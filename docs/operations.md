@@ -82,6 +82,14 @@ Or use **Updates** on the admin page: **Check now** compares this station's vers
 
 **0.6.0** adds bot list import, saves switches immediately (other fields keep a Save button), shows an add-bot routine to paste into the bot along with this station's certificate fingerprint, and leaves mic gain alone until that slider is moved. It also pins the wake packages (openwakeword 0.6.0, onnxruntime 1.31.0, numpy 2.5.4) and adds the peak sample and clipped ratio (`clipped=0.0012`) to the mic level line. Grok Bot on a home computer on the station's network posts replies. The key lives on the cloud computer (default) or, on a Mac, on that home machine (`gs-seal-reply`, one command, about 3 seconds faster; enabled in Add bot after its first validation run). A key exists on only one machine; switching mode revokes the pinned key. Add your main bot first. Notes are in [versioning.md](versioning.md).
 
+## Waiting tone
+
+While the screen shows the thinking ring, the station plays a soft two-note chime about every 2.5 seconds. It waits about 0.4 seconds after thinking starts, so a fast answer stays silent. The ring and the chime are the same state: Grok's own reply, a tool call, and a bot handoff all use it, and a repeat of that state (the handoff keepalive) does not restart the delay.
+
+The chime stops the moment any speech starts. That includes the reply and the "Asking …" clip. It does not play over speech. If the ring is still thinking when the clip ends, the chime waits out the short delay again.
+
+It plays on the station speaker, so the speaker volume applies. During the night clock (when brightness is off) or the dim window (when brightness is on a schedule, sunrise, or a light sensor), it is quieter in proportion to the night brightness, and never softer than about a third of the daytime chime. The Audio page has a Waiting tone switch. It is on by default and takes effect without a restart. The tone is generated on the station; nothing is downloaded.
+
 ## Microphone reset
 
 The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB reset (the connection turned off, then on) does, the same as unplugging it.

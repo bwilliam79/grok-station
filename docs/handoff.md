@@ -10,7 +10,7 @@ A paired bot can answer on the station. Handoff is on unless `HANDOFF_ENABLED=0`
 4. The bot answers with `POST /voice/reply` on the admin HTTPS port: `{"v":1,"bot","sealed"}`. The relay unseals, checks the pinned signature before parsing, then checks the schema, the open pending request, and the lint. The text is written for the waiting ask. Duplicate and expired requests are rejected.
 5. The station waits `REPLY_WAIT` seconds (default 30). The pending file stays valid for two minutes so a skewed clock does not fail a reply the station is still waiting for. On timeout the station says `I couldn't reach <Name>.`
 
-The screen shows the thinking ring during that wait. The spoken asking clip is separate and is described below.
+The screen shows the thinking ring during that wait. The same thinking state plays the waiting tone (a soft chime, after a short delay, until speech starts). The spoken asking clip is separate and is described below. It stops the tone while it plays; the tone starts again only if the ring is still thinking.
 
 ## Asking line
 
