@@ -1594,9 +1594,9 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
             ga.relay_call = old
         self.assertIsNone(ga.helper_view({"key_mode": "cloud"}))
         self.assertFalse(ga.helper_view({"key_mode": "home"})["out_of_date"])  # 0.12.11: nothing posted yet, no evidence
-        self.assertTrue(ga.helper_view({"key_mode": "home", "update": {"release": "0.12.0"}})["out_of_date"])  # posted, no version: old helper
+        self.assertFalse(ga.helper_view({"key_mode": "home", "update": {"release": "0.12.0"}})["out_of_date"])  # 0.12.12: no version is no evidence
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])
-        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])  # not a version
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": ga.HELPER_RELEASE})["out_of_date"])
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])
         common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()

@@ -139,8 +139,10 @@ class FreshHomeBotHelper(unittest.TestCase):
         self.assertIs(ga.helper_view(self._bot())["out_of_date"], False)
         self.assertIs(ga.safe_bot(self._bot())["helper"]["out_of_date"], False)
 
-    def test_bot_that_posted_without_a_version_is_still_old(self):
+    def test_bot_that_posted_without_a_version_is_unknown_not_old(self):
+        # 0.12.12: a post without a helper version is not evidence of an old helper.
         b = self._bot(status={"state": "connected", "last_answered_at": "2026-10-27T10:00:00Z"})
-        self.assertIs(ga.helper_view(b)["out_of_date"], True)
+        self.assertIs(ga.helper_view(b)["out_of_date"], False)
+        self.assertEqual(ga.helper_view(b)["state"], "unknown")
         self.assertIs(ga.helper_view(self._bot(helper_version="0.11.7"))["out_of_date"], True)
         self.assertIs(ga.helper_view(self._bot(helper_version=ga.HELPER_RELEASE))["out_of_date"], False)

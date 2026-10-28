@@ -339,6 +339,18 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.12
+
+Change note (2026-10-28): no "Helper out of date" flash after Add bot, and the 0.12.11 review items from Nix.
+
+- **No false helper warning (third report).** The Bots row showed "Helper out of date: use Update" for a few seconds right after Add bot. The station flagged a home bot when it had no helper version for it but believed the bot had posted before. "Posted before" included the bot's last answer time in `bot-status.json`, which outlives deleting and re-adding a bot, and any reply that came without the `X-GS-Helper` header. So a re-added bot was flagged from the moment it was added until its first Test reply recorded the helper version, and a bot whose reply carried no version stayed flagged. Now the warning appears only when the station holds a helper version from that bot (from a verified sealed post or its signed update status) and it is older than the helper this release pins. A reply, test reply or profile picture without a version, or an old answer on record, is never evidence. The Bots data has a new `helper.state`: `unknown` (no version seen yet; not "up to date", and no warning), `current`, or `behind`. The page shows the warning only for `behind`, from the server's state; it has no default that could flash it.
+- **Tested through the real flow.** A new end-to-end test drives the admin Add bot calls, the automatic post-add Test through a real webhook, the bot's sealed reply on `/voice/reply` with and without a helper version, its sealed picture on `/voice/avatar`, and its signed update status, and checks the Bots data and the row text (the page's own JS, under node) after every step, including delete and add again. Another test checks that a signed status with an old helper does show the warning.
+- **A refused voice question keeps the Test (Nix L2).** The daily limits and the minimum gap are checked before a waiting admin Test is cancelled, so a question those limits refuse no longer cancels the Test for nothing.
+- **Logged preemption (Nix L3).** When a voice question cancels a Test, the relay logs `handoff <request id> preempted test`.
+- **Notes missed in 0.12.11 (Nix L4).** 0.12.11 added a waiting tone style on the Audio page, saved as `style` (`soft`, the default, or `classic`) in the waiting tone file next to `on`; any other value reads as `soft`. 0.12.11 also changed the helper check so a bot with nothing signed yet was not flagged; 0.12.12 replaces that rule as described above. The old `~/.local/bin` helper wrapper on bot computers is left in place for now.
+- **College logos.** Unchanged: a college team still shows its abbreviation. Real college logos need ESPN's numeric team id; looking it up would add a new outbound service and a name-matching table to the station, which is left for its own reviewed release.
+- **Instructions.** The bot templates name release 0.12.12. Only the release line changed, so bots on 0.12.11 are not flagged for an update. `scripts/gs-update.sh` changed only in its two header lines, so the update manifest and deploy pins are regenerated.
+
 ## 0.12.11
 
 Change note (2026-10-28): voice questions are no longer turned away by Bots page checks, honest "busy" lines, a softer thinking tone, faster score tiles, and fixes from live use.

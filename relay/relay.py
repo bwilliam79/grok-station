@@ -1058,7 +1058,10 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
     rid = handoff.new_request_id()
     if detail is not None:
         detail["rid"] = rid
-    why = _limits.take(bot, rid, test=bool(test), preempt=None if test else cancel_admin_tests)
+    def _preempt(b):
+        log(f"handoff {rid} preempted test")  # 0.12.12 (Nix L3)
+        cancel_admin_tests(b)
+    why = _limits.take(bot, rid, test=bool(test), preempt=None if test else _preempt)
     if why:
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=limit ({why})")
         if detail is not None:

@@ -346,9 +346,17 @@ class Limits:
         s = self._load()
         b = s["bots"].setdefault(bot, {"n": 0, "last": 0.0})
         tests = s.setdefault("test_out", {})
-        if s["out"].get(bot):
-            if test or tests.get(bot) != s["out"][bot]:
-                return "outstanding"
+        if s["out"].get(bot) and (test or tests.get(bot) != s["out"][bot]):
+            return "outstanding"
+        # 0.12.12 (Nix L2): the caps and the gap are checked before a Test is preempted, so a question the
+        # limits refuse leaves the Test running.
+        if self.per_bot_day > 0 and b["n"] >= self.per_bot_day:
+            return "bot daily cap"
+        if self.global_day > 0 and s["total"] >= self.global_day:
+            return "global daily cap"
+        if self.gap_s > 0 and now - b["last"] < self.gap_s:
+            return "too soon"
+        if s["out"].get(bot):  # held by an admin Test: it gives way to this question
             if preempt is not None:
                 try:
                     preempt(bot)
@@ -356,12 +364,6 @@ class Limits:
                     pass
             s["out"].pop(bot, None)
             tests.pop(bot, None)
-        if self.per_bot_day > 0 and b["n"] >= self.per_bot_day:
-            return "bot daily cap"
-        if self.global_day > 0 and s["total"] >= self.global_day:
-            return "global daily cap"
-        if self.gap_s > 0 and now - b["last"] < self.gap_s:
-            return "too soon"
         b["n"] += 1
         b["last"] = now
         s["total"] += 1

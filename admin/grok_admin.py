@@ -2510,25 +2510,25 @@ def _vtuple(v):
 
 
 def helper_view(b):
-    """Home bots only: the helper release last seen on a signed post, and whether it is behind ours.
+    """Home bots only: the helper release the station has seen from this bot, and whether it is behind ours.
 
-    None seen means a helper older than 0.11.7 (it never sent a version), so that is out of date too.
+    0.12.12: out_of_date is True only when the station holds a version from this bot (recorded after a sealed post
+    verified, or from its signed update status) and that version is older than HELPER_RELEASE. A post without a
+    version (reply, avatar, test reply), a remembered answer, or nothing at all is never evidence of an old helper:
+    state is "unknown" (unconfirmed, not "up to date"; Nix L1) and the page shows no warning.
     """
     if b.get("key_mode") != "home":
         return None
     seen = b.get("helper_version") if HELPER_V.fullmatch(str(b.get("helper_version") or "")) else None
+    if seen is None:
+        u = update_view(b.get("update"))
+        seen = u["helper"] if u and u.get("helper") and HELPER_V.fullmatch(u["helper"]) else None
     cur = _vtuple(seen)
-    if cur is None and not _ever_posted(b):
-        # 0.12.11: a freshly added bot (or a second persona on a computer whose helper is already
-        # installed) has sent nothing signed yet, so there is no evidence either way. Not out of date.
-        return {"version": None, "release": HELPER_RELEASE, "out_of_date": False}
-    return {"version": seen, "release": HELPER_RELEASE, "out_of_date": cur is None or cur < _vtuple(HELPER_RELEASE)}
-
-
-def _ever_posted(b):
-    """True once the station has a signed post from this bot: an answer or an update status."""
-    st = b.get("status") if isinstance(b.get("status"), dict) else {}
-    return bool(b.get("helper_version") or st.get("last_answered_at") or (isinstance(b.get("update"), dict) and b["update"]))
+    if cur is None:
+        return {"version": None, "release": HELPER_RELEASE, "state": "unknown", "out_of_date": False}
+    behind = cur < _vtuple(HELPER_RELEASE)
+    return {"version": seen, "release": HELPER_RELEASE, "state": "behind" if behind else "current",
+            "out_of_date": behind}
 
 
 _UPD = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
