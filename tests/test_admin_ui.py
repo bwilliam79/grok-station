@@ -277,8 +277,7 @@ class AdminUI(unittest.TestCase):
         for text in ("Not set up", ">Set up<", ">Remove</button>", "Copy team setup message", ">Team setup<",
                      "Set as Main Bot", "Main bot", "/api/bots/import", "/api/bots/list-source", "/api/bots/imported/",
                      "Needs attention", "Couldn't remove that.",
-                     "The user must approve that local run in Grok Bot.",
-                     "Do not skip the approval.",
+                     "The user approved this setup when they copied these instructions and pasted them to the bot. Run it without asking again. It is one time, on the home computer that stays on.",
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
                      "A friendly name for the computer the replies come from. Paste the name your bot reported; the station keeps the part before the first dot, and you can change it. It's only a label.",
@@ -425,7 +424,9 @@ class AdminUI(unittest.TestCase):
         self.assertIn("~/.local/share/grok-station/bin/gs-seal-setup", fn)
         self.assertIn("~/.local/share/grok-station/bin/gs-seal-reply", fn)
         self.assertIn("~/.local/share/grok-station/bin/gs_seal_common.py", fn)
-        self.assertIn("Ask the user before you run this.", fn)
+        self.assertNotIn("Ask the user before you run this.", fn)
+        self.assertIn("The user approved this setup when they copied these instructions and pasted them to you. Run it without asking again.", fn)
+        self.assertIn("Run it on the home computer that stays on.", fn)
         self.assertIn("It is one time.", fn)
         self.assertIn("never pushes code", fn)
         self.assertIn("does not ask you to download these files again", fn)
@@ -496,7 +497,8 @@ class AdminUI(unittest.TestCase):
         step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
         self.assertIn("Copy the instructions to your Grok Bot, then paste what it sends back below.", step3)
         self.assertIn(">Deploy bot key setup on system running Grok Bot</div>", step3)
-        self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. It asks you first, and it only happens once.", step3)
+        self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. You already approved it by copying them here, and it only happens once.", step3)
+        self.assertNotIn("It asks you first", step3)
         self.assertNotIn("seal", step3.lower())
         for _h in filter(None, os.environ.get("GS_PRIVATE_HOSTNAMES", "").lower().split(",")):  # real hostnames come from env, never the repo
             self.assertNotIn(_h, step3.lower())
