@@ -12,11 +12,21 @@ def read(*p):
 
 
 class NoRedInAdmin(unittest.TestCase):
-    def test_admin_css_has_no_red(self):
+    def test_admin_red_is_only_the_offline_status_ring(self):
+        """0.12.6: --gs-red is the offline bot-avatar ring. Errors stay amber. Other reds stay out."""
         css = read("admin", "web", "admin.css")
-        self.assertNotIn("--gs-red", css)
-        for red in ("#FF5A52", "#FF4D4D", "#3A1513", "#5A2420", "#2A0705"):
+        self.assertEqual(css.lower().count("#ff5a52"), 1)
+        self.assertIn("--gs-red:#FF5A52", css.replace(" ", ""))
+        uses = [ln.strip() for ln in css.splitlines() if "var(--gs-red)" in ln and not ln.strip().startswith("/*")]
+        self.assertEqual(uses, [
+            ".avwrap.st.on{--st-c:var(--gs-teal)}.avwrap.st.offl{--st-c:var(--gs-red)}.avwrap.st.chk{--st-c:var(--gs-faint)}",
+        ])
+        for red in ("#FF4D4D", "#3A1513", "#5A2420", "#2A0705"):
             self.assertNotIn(red.lower(), css.lower())
+        for sel in (".err{", ".btn.d{", ".btn.dg{", ".bad{", ".need{"):
+            rule = css[css.index(sel):css.index("}", css.index(sel))]
+            self.assertNotIn("--gs-red", rule, sel)
+            self.assertNotIn("#FF5A52", rule.upper(), sel)
 
     def test_errors_and_danger_are_amber(self):
         css = read("admin", "web", "admin.css")

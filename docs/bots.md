@@ -86,6 +86,10 @@ The station public key (standard base64, 32 bytes) is on the Bots page, with a c
 
 Hey Grok stays on the list, even with no other bots. **Refresh avatars** sits directly left of **Add bot**, and **Revoke all bots** is where it always was. **Add bot** there is the only Add bot.
 
+Each bot's picture (not Hey Grok, and not a row that says Not set up) has a status ring. Teal means online, red means offline, and gray means the station is still checking. Point at the picture, or move the keyboard to it, to read Online, Offline, or Checking. The page checks every bot when you open Bots, and again about once a minute while you stay on the page. It does not run two checks for the same bot at once, and it stops checking when you leave. An offline bot still shows the reason in amber under its name. There is no Online pill and no Checking pill.
+
+On **Connect webhook** (Add bot), **Copy instructions** is highlighted until you have filled in the webhook URL, the webhook key, the bot's public key, and the home computer name. **Next** stays off until those four are filled in, and then the highlight moves to Next. **Back** returns to the previous step and keeps the URL, the public key, and the computer name you typed. **Copy** changes to Copied on the button for about a second and a half, then the label comes back. View instructions stays beside it.
+
 ## Keygen
 
 ```bash

@@ -1,8 +1,8 @@
-/* grok-station admin · Hearth theme. No red in the admin: errors and destructive actions are amber 'Needs attention' (design.md §8.2); red is only mic off and stock-down on the station.
+/* grok-station admin · Hearth theme. Errors and destructive actions are amber 'Needs attention' (design.md §8.2). Red (--gs-red) is only the offline status ring on bot avatars; mic off and stock-down stay on the station.
    Hearth theme, settings scale (see ADMIN-UI.md) */
 :root{--fs-help:13px;--fs-body:15px;--fs-label:14px;--fs-h3:18px;--fs-h2:22px;--fs-h1:28px;--fs-mono:13px;--fs-mono-sm:10px;--fs-caps:12px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--panel-pad:var(--sp-4) 0 var(--sp-2);--fs-preview-time:clamp(var(--fs-h1),14cqi,72px);--fs-preview-date:clamp(var(--fs-help),4cqi,var(--fs-h3));--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
 --gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#6F655A;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
---gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;
+--gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
 @media (max-width:767px){:root{--fs-body:16px}}  /* 16px stops iOS zoom on input focus */
 *{box-sizing:border-box;margin:0;padding:0}
@@ -166,6 +166,12 @@ button.x:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
 .avwrap.lg{width:56px;height:56px}
 .avwrap.lg .monoav{font-size:var(--fs-h3)}
 .avwrap.logo{background:var(--gs-surface-2);border-radius:50%;box-shadow:0 0 0 2px var(--gs-teal)}
+.avwrap.st{border-radius:50%;box-shadow:0 0 0 2px var(--gs-bg),0 0 0 4px var(--st-c,var(--gs-faint));outline:none}
+.avwrap.st.on{--st-c:var(--gs-teal)}.avwrap.st.offl{--st-c:var(--gs-red)}.avwrap.st.chk{--st-c:var(--gs-faint)}
+.avwrap.st:focus-visible{box-shadow:0 0 0 2px var(--gs-bg),0 0 0 4px var(--st-c),0 0 0 7px rgba(63,211,182,.30)}
+.tipwrap.avtip .tip{top:calc(100% + 10px)}
+.btn.halo{border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30)}
+.btn.cpy{min-width:9.25rem}
 .avwrap.logo .av{object-fit:contain;padding:18%;background:transparent}
 .twait{background:var(--gs-lavender-bg);border-radius:12px;padding:14px 16px;margin-top:14px}
 .tbar{height:3px;border-radius:2px;background:rgba(169,156,255,.25);margin:10px 0;overflow:hidden}
@@ -226,7 +232,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .iconbtn{all:unset;cursor:pointer;display:inline-flex;padding:6px;border-radius:6px;color:var(--gs-muted)}
 .iconbtn:hover{color:var(--gs-text);background:var(--gs-rule)}
 .iconbtn:focus-visible{outline:2px solid var(--gs-teal)}
-.copied{font-size:var(--fs-help);color:var(--gs-teal)}
+.oknote{font-size:var(--fs-help);color:var(--gs-teal)}
 .btn.fin{background:var(--gs-amber);color:#1A1408;border-color:var(--gs-amber);font-weight:700}
 .btn.fin .fincount{font-size:var(--fs-help);font-weight:700}
 .pill.red{color:#FFB4A8;background:#3A1712}
@@ -284,6 +290,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .editconn summary:focus-visible{outline:2px solid var(--gs-teal);outline-offset:3px;border-radius:4px}
 .acon{width:36px;height:36px;border-radius:50%;background:var(--gs-amber-bg);color:var(--gs-amber);display:flex;align-items:center;justify-content:center;font-weight:700;margin-bottom:10px}
 .acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.acts .back{margin-right:auto}
 .clips{display:grid;grid-template-columns:repeat(10,32px);gap:8px;margin-top:8px}
 .clips i{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:var(--gs-surface-3);font-weight:700}
 .clips i.ok{background:var(--gs-teal);color:var(--gs-on-teal)}

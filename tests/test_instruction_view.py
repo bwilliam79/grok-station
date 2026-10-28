@@ -28,6 +28,9 @@ class InstructionView(unittest.TestCase):
 
     def test_copy_comes_before_view(self):
         body = re.search(r"function instructionsHtml\(id, copyLabel, opts = \{\}\) \{(.*?)\n\}", JS, re.S).group(1)
-        c, st, v = body.index("data-copyfor="), body.index('class="copied"'), body.index("data-viewfor=")
-        self.assertLess(c, st)
-        self.assertLess(st, v)
+        self.assertNotIn('class="copied"', body)
+        self.assertNotIn('class="copied"', JS)
+        c, v = body.index("data-copyfor="), body.index("data-viewfor=")
+        self.assertLess(c, v)
+        self.assertIn('class="btn sm cpy"', body)
+        self.assertIn('aria-live="polite"', body)

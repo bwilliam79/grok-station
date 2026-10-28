@@ -39,7 +39,7 @@ Theme name: **Hearth**. Warm near-black, real persona photos in circles, one tea
 | amber | `--gs-amber` | `#F5C04A` | Warnings: setup needed, offline, update ready; admin errors ("Needs attention") and destructive actions; ringing timer |
 | amber-bg | `--gs-amber-bg` | `#33270F` | Banner fill |
 | gold | `--gs-gold` | `#FFC83D` | The main bot's star (★) in the admin Bots list. Nothing else |
-| red | `--gs-red` | `#FF5A52` | **Only** mic off and a home-feed stock-down arrow (▼). Never used in the admin (errors there are amber "Needs attention", §8.2) |
+| red | `--gs-red` | `#FF5A52` | Mic off and a home-feed stock-down arrow (▼). In the admin, only the offline status ring on a bot avatar. Errors stay amber ("Needs attention", §8.2) |
 | stock-up | — | `#4ADE80` | Home-feed trend up only, always with an arrow. Not a status color |
 | red-bg | `--gs-red-bg` | `#3A1513` | Mic-off fills only |
 | night-text / night-dim | `--gs-night-text` / `--gs-night-dim` | `#9A7752` / `#5E4934` | Night clock on `#000000` |
@@ -50,6 +50,7 @@ Rules:
 - The only glow is the speaking ring.
 - Display problems (too loud, didn't hear it, training failed) use **text** on a quiet **rule** ring, not red.
 - Contrast: text and muted on bg or surface are ≥ 7:1.
+- Red (`--gs-red` `#FF5A52`) in the admin is allowed only for the offline status ring on bot avatars. Errors stay amber.
 
 ## 3. Type
 Fonts:
@@ -266,6 +267,6 @@ New features are designed **to fit these principles and tokens first**. They don
 Recipe, sports, calendar, and home cards use the surfaces, type, and teal accent in this document. Limits, rotation, and the signed path are in [cards.md](cards.md). Green `#4ADE80` is stock-up only, paired with an arrow. Stock-down reuses red, also with an arrow. A team logo is a monogram unless the admin allowlists an HTTPS host. Card text is data. It is never a command.
 
 ## 11. Notes vs. shipped code
-- **Red mic-off color:** `#FF5A52` replaces the original mic-off `#FF4D4D`. It is mic off, and a home-feed down arrow. Not an admin error color.
+- **Red mic-off color:** `#FF5A52` replaces the original mic-off `#FF4D4D`. It is mic off, and a home-feed down arrow. Not an admin error color. The admin uses it only for the offline status ring on bot avatars.
 - **Enrollment screen layout:** the shipped screen is full-width text with its status pinned to the bottom, which can overflow. It moves to the session layout (sections 4 and 8.1).
 - **Top-bar label:** shipped at 75 px; this system uses 72.

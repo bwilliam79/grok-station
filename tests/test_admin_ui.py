@@ -688,7 +688,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("skel(4)", home)
         self.assertIn('id="hero"', home)
 
-        self.assertLess(css.find(".copied{"), css.find("/* station status:"))
+        self.assertLess(css.find(".oknote{"), css.find("/* station status:"))
         block = css.split("/* station status:", 1)[1]
         self.assertNotIn("#FF", block)
         self.assertNotIn("#ff", block)
@@ -1343,12 +1343,118 @@ class PostAddCheckUI(unittest.TestCase):
         self.assertIn("/test/", fn)
         self.assertIn('watchPicture(slug, before, document.body, res => { if (res === "updated") bustPortraits(el); });', fn)
         html = _fn(js, "botCheckHTML")
-        self.assertIn("Checking connection…", html)
-        self.assertIn(">Online<", html)
+        self.assertNotIn("Checking connection", html)
+        self.assertNotIn(">Online<", html)
+        self.assertNotIn("pill", html)
         self.assertIn("Offline: ", html)
         for extra in ("avatar", "picture", "Getting"):
             self.assertNotIn(extra, html.lower() if extra != "Getting" else html)
-        self.assertIn('const warn = check ? "" :', _fn(js, "paintBots"))  # no stale offline while checking
+        paint = _fn(js, "paintBots")
+        # A live check (including the gray Checking ring) hides the stale computer warning.
+        self.assertIn('const hideWarn = check || (known && known.state !== "offline");', paint)
+        self.assertIn('const warn = hideWarn ? "" :', paint)
+
+
+class StatusRingAndWebhookUI(unittest.TestCase):
+    """0.12.6: bot avatar status ring, check on load, Connect webhook halo and in-place Copied."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.js = _read(os.path.join("admin", "web", "app.js"))
+        cls.css = _read(os.path.join("admin", "web", "admin.css"))
+
+    def test_no_online_or_checking_pills_on_bot_rows(self):
+        html = _fn(self.js, "botCheckHTML")
+        paint = _fn(self.js, "paintBots")
+        for src in (html, paint):
+            self.assertNotIn('pill ok"><i></i>Online', src)
+            self.assertNotIn("Checking connection", src)
+            self.assertNotIn("Checking…", src)
+        self.assertIn("Offline: ", html)
+        self.assertIn(">Always on<", paint)  # Hey Grok keeps its own pill
+
+    def test_ring_classes_tooltip_and_keyboard_label(self):
+        ring = _fn(self.js, "botRing")
+        self.assertIn('{cls: "chk", word: "Checking"}', ring)
+        self.assertIn('{cls: "on", word: "Online"}', ring)
+        self.assertIn('{cls: "offl", word: "Offline"}', ring)
+        start = self.js.index("function avatar(")
+        avatar = self.js[start:self.js.index("\nfunction ", start + 1)]
+        self.assertIn('tabindex="0" role="img" aria-label="', avatar)
+        self.assertIn('class="tipwrap avtip"', avatar)
+        self.assertIn('class="tip" role="tooltip"', avatar)
+        self.assertIn('alt=""', avatar)
+        paint = _fn(self.js, "paintBots")
+        self.assertIn("avatar(b.slug, b.name, false, botRing(b))", paint)
+        self.assertIn('avatar("grok", "Grok")', paint)
+        self.assertNotIn("botRing", paint.split('avatar("grok", "Grok")', 1)[0])
+        pending = paint.split("pending.map", 1)[1]
+        self.assertNotIn("botRing", pending)
+        self.assertIn(".avwrap.st{border-radius:50%;box-shadow:0 0 0 2px var(--gs-bg),0 0 0 4px var(--st-c,var(--gs-faint));outline:none}", self.css)
+        self.assertIn(".avwrap.st.on{--st-c:var(--gs-teal)}.avwrap.st.offl{--st-c:var(--gs-red)}.avwrap.st.chk{--st-c:var(--gs-faint)}", self.css)
+        self.assertIn(".avwrap.st:focus-visible{box-shadow:0 0 0 2px var(--gs-bg),0 0 0 4px var(--st-c),0 0 0 7px rgba(63,211,182,.30)}", self.css)
+        self.assertIn(".tipwrap.avtip .tip{top:calc(100% + 10px)}", self.css)
+        self.assertNotIn(".tipwrap.force", self.css)
+
+    def test_status_is_checked_on_load_and_stops_off_the_page(self):
+        page = _fn(self.js, "pageBots")
+        self.assertLess(page.index("paintBots(el, bots)"), page.index("every(60000, () => recheckBots(el))"))
+        sweep = _fn(self.js, "recheckBots")
+        self.assertIn("if (botRecheckOn) return;", sweep)
+        self.assertIn("startBotCheck(b.slug, el, {avatar: false})", sweep)
+        self.assertIn("botRecheckOn = false", sweep)
+        fresh = _fn(self.js, "checkNewBots")
+        self.assertIn("if (c && c.state !== \"checking\") return;", fresh)
+        self.assertIn("startBotCheck(b.slug, el, {avatar: false})", fresh)
+        self.assertIn("checkNewBots(el)", _fn(self.js, "refreshBots"))
+        start = _fn(self.js, "startBotCheck")
+        self.assertIn("if (!slug || BOT_CHECK_BUSY[slug]) return;", start)
+        self.assertIn("wantAvatar ? {then_avatar: true} : {}", start)
+        self.assertIn("stopBotChecks()", _fn(self.js, "clearTimers"))
+        stop = _fn(self.js, "stopBotChecks")
+        self.assertIn("BOT_CHECK_GEN += 1", stop)
+        self.assertIn('api("DELETE", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`', stop)
+        paint = _fn(self.js, "paintBots")
+        self.assertIn('BOT_CHECKS[b.slug] = {state: "checking"}', paint)
+
+    def test_connect_webhook_halo_and_back(self):
+        step = _fn(self.js, "addBot")
+        self.assertIn(
+            '<div class="acts"><button class="btn g back" type="button" id="aback">Back</button>'
+            '<button class="btn p" id="anext" type="submit" disabled>Next</button></div>',
+            step,
+        )
+        self.assertIn("const syncHookHalo = () => {", step)
+        self.assertIn("[urlEl, keyEl, pubEl, hostEl].every(field => field && field.value.trim())", step)
+        self.assertIn('copy.classList.toggle("halo", !filled)', step)
+        self.assertIn("next.disabled = !filled", step)
+        self.assertIn('next.classList.toggle("halo", filled)', step)
+        self.assertIn('field.addEventListener("input", syncHookHalo)', step)
+        self.assertIn("draft.url = urlEl ? urlEl.value.trim() : \"\";", step)
+        self.assertIn("draft.pub = pubEl ? pubEl.value.trim() : \"\";", step)
+        self.assertIn("if (hostEl) draft.host = hostEl.value;", step)
+        self.assertIn("step2();", step)
+        self.assertIn("Paste the webhook URL and webhook key your bot sent back.", step)
+        self.assertIn(".btn.halo{border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30)}", self.css)
+        self.assertIn(".acts .back{margin-right:auto}", self.css)
+        self.assertIn(".sheet .acts{flex-direction:column-reverse}", self.css)
+        self.assertIn(".btn:disabled", self.css)
+
+    def test_copied_label_stays_in_place(self):
+        self.assertNotIn('class="copied"', self.js)
+        self.assertNotIn("<span class=\"copied\">", self.js)
+        self.assertNotIn(".copied{", self.css.replace(" ", ""))
+        copy = _fn(self.js, "copyText")
+        self.assertIn('btn.textContent = "Copied"', copy)
+        self.assertIn("}, 1500);", copy)
+        self.assertIn('btn.style.minWidth = w + "px"', copy)
+        self.assertIn('toast("Select it and copy it.", "warn")', copy)
+        html = _fn(self.js, "instructionsHtml")
+        self.assertIn('class="btn sm cpy"', html)
+        self.assertIn('aria-live="polite"', html)
+        self.assertLess(html.index("data-copyfor="), html.index("data-viewfor="))
+        self.assertIn(".btn.cpy{min-width:9.25rem}", self.css)
+        self.assertIn('class="oknote"', self.js)
 
 
 class StationAddressUI(unittest.TestCase):

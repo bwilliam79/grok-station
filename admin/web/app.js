@@ -153,9 +153,17 @@ async function copyText(text, btn) {
   }
   if (!ok) ok = legacyCopy(value);
   value = "";
-  if (btn) {
-    const tip = btn.parentElement && btn.parentElement.querySelector(".copied");
-    if (tip) { tip.textContent = ok ? "Copied" : "Select it and copy it"; tip.hidden = false; clearTimeout(tip._t); tip._t = setTimeout(() => (tip.hidden = true), 1500); }
+  if (btn && btn.classList && btn.classList.contains("iconbtn")) toast(ok ? "Copied." : "Select it and copy it.", ok ? "ok" : "warn");
+  else if (btn) {
+    if (!ok) toast("Select it and copy it.", "warn");
+    else {
+      if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+      const w = btn.offsetWidth;
+      if (w) btn.style.minWidth = w + "px";
+      btn.textContent = "Copied";
+      clearTimeout(btn._copied);
+      btn._copied = setTimeout(() => { btn.textContent = btn.dataset.label || ""; btn.style.minWidth = ""; }, 1500);
+    }
   } else if (ok) toast("Copied."); else toast("Select it and copy it.", "warn");
   return ok;
 }
@@ -164,8 +172,7 @@ const COPY_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="
 function staticValue(id, value, label, missing) {
   if (!value) return `<div class="static"><span class="static-missing" id="${id}">${esc(missing || "Not available")}</span></div>`;
   return `<div class="static"><code class="static-val mono" id="${id}">${esc(value)}</code>
-    <button type="button" class="iconbtn" data-copy="${id}" title="Copy ${esc(label)}" aria-label="Copy ${esc(label)}">${COPY_ICON}</button>
-    <span class="copied" role="status" hidden></span></div>`;
+    <button type="button" class="iconbtn" data-copy="${id}" title="Copy ${esc(label)}" aria-label="Copy ${esc(label)}">${COPY_ICON}</button></div>`;
 }
 document.addEventListener("click", ev => {
   const btn = ev.target && ev.target.closest ? ev.target.closest("[data-copy]") : null;
@@ -179,7 +186,7 @@ const STATION_KEY_MISSING = "Station key unavailable, see logs";
 // text Copy puts on the clipboard. Both read the same makeText() so they can never differ.
 function instructionsHtml(id, copyLabel, opts = {}) {
   const dis = opts.disabled ? " disabled" : "";
-  return `<div class="inline"><button type="button" class="btn sm" data-copyfor="${id}"${dis}>${esc(copyLabel)}</button><span class="copied" role="status" hidden></span>` +
+  return `<div class="inline"><button type="button" class="btn sm cpy" data-copyfor="${id}" aria-live="polite"${dis}>${esc(copyLabel)}</button>` +
     `<button type="button" class="btn sm" data-viewfor="${id}" aria-expanded="false" aria-controls="${id}"${dis}>View instructions</button></div>` +
     `<pre class="static-val instr" id="${id}" hidden></pre>`;
 }
@@ -199,7 +206,7 @@ function bindInstructions(root, id, makeText, onCopy) {
     return onCopy ? onCopy(text, ev.currentTarget) : copyText(text, ev.currentTarget);
   };
 }
-function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; }
+function clearTimers() { S.timers.forEach(clearInterval); S.timers = []; stopBotChecks(); }
 function every(ms, fn) { fn(); S.timers.push(setInterval(fn, ms)); }
 function ago(ts) {
   if (!ts) return "never";
@@ -2345,12 +2352,15 @@ function noteAvatarVersions(bots) {
     });
   });
 }
-function avatar(slug, name, lg) {
+function avatar(slug, name, lg, ring) {
   const letter = esc(String(name || slug || "?").trim().slice(0, 1).toUpperCase() || "?");
   const logo = slug === "grok";
   const fb = logo ? "/assets/mark.svg" : defaultAvatarSrc(slug);
   const src = logo ? "/assets/mark.svg" : esc(avatarSrc(slug));
-  return `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}" data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
+  const a11y = ring ? ` tabindex="0" role="img" aria-label="${esc(name || slug || "Bot")}: ${esc(ring.word)}"` : "";
+  const inner = `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}${ring ? " st " + ring.cls : ""}"${a11y} data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
+  if (!ring) return inner;
+  return `<span class="tipwrap avtip">${inner}<span class="tip" role="tooltip">${esc(ring.word)}</span></span>`;
 }
 function askPassword(title, text, label, send, onCancel) {
   const d = document.createElement("div");
@@ -2455,38 +2465,115 @@ function confirmRemove(bot, onDone) {
 }
 // Main bot first; every other bot keeps its order.
 // Which home computer posts this bot's replies, and a plain warning when the last request went unanswered.
-/* Post-add connection check (0.11.8). One state while it runs, then Online or Offline with the reason.
-   A pass also asks the bot for its picture (the relay does it); the new picture swaps in when it arrives. */
+/* Status ring (0.12.6). Reuses the connection test. One check per bot at a time; a rate-limit
+   result does not replace a ring we already have. Leaving the page cancels the test.
+   A post-add pass also asks the bot for its picture; the new picture swaps in when it arrives. */
 const BOT_CHECKS = {};
+const BOT_CHECK_BUSY = {};
+const BOT_CHECK_IDS = {};
+let BOT_CHECK_GEN = 0;
+let botRecheckOn = false;
 const CHECK_WAIT_S = 40;
+// relay check-rate refusals (relay.py check_limit): keep the last good status instead of flipping red
+const CHECK_LIMIT = r => /^(Daily |Too soon|A question is already in flight)/.test(r || "");
+function botRing(b) {
+  const c = b && BOT_CHECKS[b.slug];
+  if (!c || c.state === "checking") return {cls: "chk", word: "Checking"};
+  if (c.state === "online") return {cls: "on", word: "Online"};
+  return {cls: "offl", word: "Offline"};
+}
 function botCheckHTML(b) {
   const c = BOT_CHECKS[b && b.slug];
-  if (!c) return null;
-  if (c.state === "checking") return `<div class="help"><span class="pill busy"><i></i>Checking connection…</span></div>`;
-  if (c.state === "online") return `<div class="help"><span class="pill ok"><i></i>Online</span></div>`;
+  if (!c || c.state !== "offline") return "";
   return `<div class="need">${ICO_TRI}Offline: ${esc(c.reason || "No answer")}</div>`;
 }
 function repaintChecks(el) {
   if (el && el._bots && $("#blist", el)) paintBots(el, el._bots);
 }
-async function startBotCheck(slug, el) {
-  if (!slug || (BOT_CHECKS[slug] && BOT_CHECKS[slug].state === "checking")) return;
-  BOT_CHECKS[slug] = {state: "checking"};
-  repaintChecks(el);
-  const before = await portraitSig(slug);
-  const end = (state, reason) => { BOT_CHECKS[slug] = {state, reason: reason || ""}; repaintChecks(el); };
-  const r = await api("POST", `/api/bots/${encodeURIComponent(slug)}/test`, {then_avatar: true});
-  if (!r.ok || !r.data || !r.data.test_id) return end("offline", (r.data && r.data.error) || "Couldn't start the test.");
-  const id = r.data.test_id, t0 = Date.now();
-  for (;;) {
-    await new Promise(res => setTimeout(res, 1500));
-    const g = await api("GET", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`);
-    if (g.ok && g.data && g.data.state === "ok") break;
-    if (g.ok && g.data && g.data.state === "waiting" && Date.now() - t0 < CHECK_WAIT_S * 1000) continue;
-    return end("offline", (g.data && g.data.error) || "No answer");
+function stopBotChecks() {
+  BOT_CHECK_GEN += 1;
+  botRecheckOn = false;
+  Object.keys(BOT_CHECK_BUSY).forEach(slug => { delete BOT_CHECK_BUSY[slug]; });
+  Object.keys(BOT_CHECK_IDS).forEach(slug => {
+    const id = BOT_CHECK_IDS[slug];
+    delete BOT_CHECK_IDS[slug];
+    if (id) api("DELETE", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`, {});
+  });
+  Object.keys(BOT_CHECKS).forEach(slug => { delete BOT_CHECKS[slug]; });
+}
+function checkNewBots(el) {
+  if (!el || !$("#blist", el) || !document.body.contains(el)) return;
+  (el._bots || []).forEach(b => {
+    if (!b || !b.slug || BOT_CHECK_BUSY[b.slug]) return;
+    const c = BOT_CHECKS[b.slug];
+    if (c && c.state !== "checking") return;
+    startBotCheck(b.slug, el, {avatar: false});
+  });
+}
+async function recheckBots(el) {
+  if (botRecheckOn) return;
+  if (!el || !$("#blist", el) || !document.body.contains(el)) return;
+  const bots = (el._bots || []).filter(b => b && b.slug);
+  if (!bots.length) return;
+  botRecheckOn = true;
+  const gen = BOT_CHECK_GEN;
+  try {
+    await Promise.all(bots.map(b => startBotCheck(b.slug, el, {avatar: false})));
+  } finally {
+    if (gen === BOT_CHECK_GEN) botRecheckOn = false;
   }
-  end("online");
-  watchPicture(slug, before, document.body, res => { if (res === "updated") bustPortraits(el); });  // no status text either way
+}
+async function startBotCheck(slug, el, opts) {
+  if (!slug || BOT_CHECK_BUSY[slug]) return;
+  const gen = BOT_CHECK_GEN;
+  const wantAvatar = !opts || opts.avatar !== false;
+  const prev = BOT_CHECKS[slug] && BOT_CHECKS[slug].state !== "checking" ? {state: BOT_CHECKS[slug].state, reason: BOT_CHECKS[slug].reason || ""} : null;
+  BOT_CHECK_BUSY[slug] = gen;
+  if (!prev) { BOT_CHECKS[slug] = {state: "checking", reason: ""}; repaintChecks(el); }
+  const alive = () => gen === BOT_CHECK_GEN && !!(el && document.body.contains(el) && $("#blist", el));
+  const end = (state, reason) => {
+    if (gen !== BOT_CHECK_GEN) return;
+    BOT_CHECKS[slug] = {state, reason: reason || ""};
+    repaintChecks(el);
+  };
+  const keep = reason => !!(prev && CHECK_LIMIT(reason));
+  const fail = reason => { if (keep(reason)) return; end("offline", reason); };
+  try {
+    const before = wantAvatar ? await portraitSig(slug) : null;
+    if (!alive()) return;
+    const r = await api("POST", `/api/bots/${encodeURIComponent(slug)}/test`, wantAvatar ? {then_avatar: true} : {});
+    if (!alive()) {
+      if (r && r.data && r.data.test_id) api("DELETE", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(r.data.test_id)}`, {});
+      return;
+    }
+    if (!r.ok || !r.data || !r.data.test_id) {
+      const reason = (r.data && r.data.error) || "Couldn't start the test.";
+      if (r.status === 429 && prev) return;
+      return fail(reason);
+    }
+    const id = r.data.test_id;
+    BOT_CHECK_IDS[slug] = id;
+    const t0 = Date.now();
+    const drop = () => { if (BOT_CHECK_IDS[slug] === id) delete BOT_CHECK_IDS[slug]; };
+    const cancel = () => { drop(); api("DELETE", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`, {}); };
+    for (;;) {
+      await new Promise(res => setTimeout(res, 1500));
+      if (!alive()) return cancel();
+      const g = await api("GET", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`);
+      if (!alive()) return cancel();
+      if (g.ok && g.data && g.data.state === "ok") break;
+      if (g.ok && g.data && g.data.state === "waiting" && Date.now() - t0 < CHECK_WAIT_S * 1000) continue;
+      drop();
+      if (!g.ok && g.status === 429 && prev) return;
+      return fail((g.data && g.data.error) || "No answer");
+    }
+    drop();
+    if (!alive()) return;
+    end("online");
+    if (wantAvatar) watchPicture(slug, before, document.body, res => { if (res === "updated") bustPortraits(el); });  // no status text either way
+  } finally {
+    if (BOT_CHECK_BUSY[slug] === gen) delete BOT_CHECK_BUSY[slug];
+  }
 }
 function repliesFrom(b) {
   return b && b.reply_host ? `Replies from: ${b.reply_host}` : "Replies from: not set";
@@ -2549,6 +2636,7 @@ function helperBehind(b) {
 function paintBots(el, bots) {
   bots = mainFirst(bots || []);
   el._bots = bots;
+  bots.forEach(b => { if (b && b.slug && !BOT_CHECKS[b.slug]) BOT_CHECKS[b.slug] = {state: "checking"}; });
   paintSummary(el, bots);
   const pending = pendingTeammates(el);
   const list = $("#blist", el);
@@ -2561,10 +2649,12 @@ function paintBots(el, bots) {
     const word = botWord(b, el._words);
     const st = trainOf(b, el._words, el._train);
     const check = botCheckHTML(b);
-    const warn = check ? "" : (!b.reply_host ? "Choose a computer in Configure." : replyWarning(b));
+    const known = BOT_CHECKS[b.slug];
+    const hideWarn = check || (known && known.state !== "offline");
+    const warn = hideWarn ? "" : (!b.reply_host ? "Choose a computer in Configure." : replyWarning(b));
     const star = b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : "";
     const pill = b.main ? ` <span class="pill off mainpill">Main bot</span>` : "";
-    return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name)}
+    return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, botRing(b))}
       <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
         <div class="help">${esc(repliesFrom(b))}</div>
         ${check || ""}${warn ? `<div class="need">${ICO_TRI}${esc(warn)}</div>` : ""}
@@ -2657,6 +2747,7 @@ async function refreshBots(el) {
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, el._bots);
+  checkNewBots(el);
   return r.data;
 }
 /* Fingerprint of the portrait the station serves now: "" when there is none. */
@@ -2759,7 +2850,7 @@ function openBot(bot, el) {
     </div>
     <div role="tabpanel" id="panel-voice" class="cpanel" hidden>
       <div class="field"><label for="bvoice">Voice</label>
-        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<span class="copied" id="vsaved" role="status" hidden></span></div>
+        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<span class="oknote" id="vsaved" role="status" hidden></span></div>
         <div id="ve"></div></div>
       <div class="field avsec"><div class="lbl">Avatar</div>
         <div class="inline">
@@ -3752,13 +3843,29 @@ function addBot(voices, el, preset) {
       <div class="field"><label for="ahost">Home computer name</label><input class="inp" id="ahost" autocomplete="off" spellcheck="false" maxlength="40" required>
         <p class="help">${esc(COMPUTER_HINT)}</p></div>
       <div id="awe"></div>
-      <div class="field"><button class="btn p" id="anext" type="submit">Next</button></div></form>`;
+      <div class="acts"><button class="btn g back" type="button" id="aback">Back</button><button class="btn p" id="anext" type="submit" disabled>Next</button></div></form>`;
     const urlEl = $("#aurl", d), keyEl = $("#akey", d), pubEl = $("#apub", d), hostEl = $("#ahost", d);
     if (hostEl) hostEl.value = draft.host || "";
     bindComputerName(hostEl);
     bindInstructions(d, "aroutine", () => routineForBot(draft.slug, el._stationPub, el._fingerprint, draft.keyMode));
     if (urlEl) urlEl.value = draft.url;
     if (pubEl) pubEl.value = draft.pub;
+    const syncHookHalo = () => {
+      const filled = [urlEl, keyEl, pubEl, hostEl].every(field => field && field.value.trim());
+      const copy = d.querySelector('[data-copyfor="aroutine"]');
+      if (copy) copy.classList.toggle("halo", !filled);
+      const next = $("#anext", d);
+      if (next) { next.disabled = !filled; next.classList.toggle("halo", filled); }
+    };
+    [urlEl, keyEl, pubEl, hostEl].forEach(field => { if (field) field.addEventListener("input", syncHookHalo); });
+    syncHookHalo();
+    const back = $("#aback", d);
+    if (back) back.onclick = () => {
+      draft.url = urlEl ? urlEl.value.trim() : "";
+      draft.pub = pubEl ? pubEl.value.trim() : "";
+      if (hostEl) draft.host = hostEl.value;
+      step2();
+    };
     bindSheet(d, shut);
     d.querySelector("form").onsubmit = ev => {
       ev.preventDefault();
@@ -3871,6 +3978,7 @@ async function pageBots(el) {
   applyBotMeta(el, data);
   noteAvatarVersions(bots);
   paintBots(el, bots);
+  every(60000, () => recheckBots(el));
   if (r.ok) noteStepup(data);
   every(15000, () => { if ($("#sulock", el)) noteStepup({stepup_until: S.stepupUntil}); });
   // A bot's picture can arrive any time (after pairing, a test, or Ask bot for avatar): check every 10 s.
