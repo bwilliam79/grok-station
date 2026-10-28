@@ -269,6 +269,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .ico.faint{color:var(--gs-faint)}
 .ico.teal{color:var(--gs-teal)}
 .need{color:var(--gs-amber);font-size:var(--fs-help);display:flex;align-items:center;gap:6px;margin-top:4px}
+a.need{text-decoration:none}
+a.need:hover{text-decoration:underline}
 .mainpill{margin-left:8px}
 .note.amber,.chpanel .note.amber{background:var(--gs-amber-bg);color:var(--gs-text);border-radius:12px;padding:12px 14px}
 .ctabs{display:flex;align-items:flex-end;gap:2px;margin:12px 0 0;border-bottom:1px solid var(--gs-rule);flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}

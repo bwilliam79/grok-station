@@ -1514,7 +1514,11 @@ class FinishUpdateUI(unittest.TestCase):
         js = self.js
         self.assertNotIn("/helper-update", js)
         self.assertNotIn("data-helper=", js)
-        self.assertIn("Helper out of date: use Finish update", _fn(js, "paintBots"))
+        self.assertIn("Helper out of date: use Finish update", _fn(js, "finishNotes"))
+        self.assertIn("Update available for this bot", _fn(js, "finishNotes"))
+        self.assertIn('href="#updates"', _fn(js, "finishNotes"))
+        self.assertIn("finishNotes(b)", _fn(js, "paintBots"))
+        self.assertNotIn('head.innerHTML = page', js)
         pill = _fn(js, "finishPill")
         self.assertEqual(pill.count("pill red"), 2)  # red only for refused and error
         self.assertIn('b.state === "refused"', pill)

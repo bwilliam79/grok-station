@@ -86,10 +86,31 @@ console.log(JSON.stringify({{head: nodes.finhead.innerHTML, headHidden: nodes.fi
         self.assertTrue(r["headHidden"])
         self.assertIn("Finish update", r["page"])
 
-    def test_other_pages_keep_the_header_button(self):
+    def test_other_pages_have_no_header_button(self):
         r = self._paint(False)
-        self.assertIn("Finish update", r["head"])
-        self.assertFalse(r["headHidden"])
+        self.assertEqual(r["head"], "")
+        self.assertTrue(r["headHidden"])
+        self.assertIsNone(r["page"])
+
+    def test_behind_counts_only_listed_bots(self):
+        """A stale Finish view must not count a bot that is no longer on the Bots list."""
+        r = _node("""
+const nodes = {};
+const document = {getElementById: id => nodes[id] || null};
+""" + _fn("finishComputers") + _fn("finishListedSlugs") + _fn("finishBehind") + """
+const view = {behind: 2, computers: [{bots: [
+  {slug: "rhea", state: "needs"},
+  {slug: "ghost", state: "needs"}
+]}]};
+const off = finishBehind(view);
+nodes.blist = {};
+nodes.pg = {_bots: [{slug: "rhea"}, {slug: "kai", state: "done"}]};
+view.computers[0].bots.push({slug: "kai", state: "done"});
+const on = finishBehind(view);
+nodes.pg._bots = [];
+const empty = finishBehind(view);
+console.log(JSON.stringify({off: off, on: on, empty: empty}));""")
+        self.assertEqual(r, {"off": 2, "on": 1, "empty": 0})
 
 
 if __name__ == "__main__":

@@ -1722,6 +1722,31 @@ def read_finish():
     return doc
 
 
+def forget_finish(slug):
+    """Drop Finish update bookkeeping for a bot that is no longer listed.
+
+    finish_rows only counts the bots it is given. This keeps a deleted slug from looking behind if that
+    bot is added again, and from sitting in finish-update.json after it is gone.
+    """
+    if not isinstance(slug, str) or not slug:
+        return
+    doc = read_finish()
+    changed = False
+    for key in ("sent", "copied"):
+        bucket = doc.get(key)
+        if isinstance(bucket, dict) and slug in bucket:
+            bucket.pop(slug, None)
+            changed = True
+    ups = doc.get("updaters")
+    if isinstance(ups, dict):
+        for key, who in list(ups.items()):
+            if who == slug:
+                ups.pop(key, None)
+                changed = True
+    if changed:
+        write_json(path(FINISH), doc)
+
+
 def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None):
     """The Finish update dialog: computers, each with its bots, the exact text, and each row's state.
 
@@ -4089,6 +4114,10 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         audit(slug, "remove")
+        try:
+            forget_finish(slug)
+        except OSError:
+            pass  # the bot is already gone; a leftover finish row is not counted
         _gone, failed = delete_bot_phrases(slug)
         body = {"ok": True}
         if failed:

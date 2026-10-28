@@ -371,7 +371,7 @@ With the key on the bot computer, the sealed picture is pasted by hand into the 
 
 ## Finish update (0.11.8)
 
-After the station updates, an amber Finish update button shows in the page header and on Updates while any paired bot is behind. It opens one dialog with every bot, grouped by computer. Send (or Send all) gives the bot a webhook of kind `update_bot` that carries only the release and a commit id, never a command, link or text. The bot runs the one pinned command already in its instructions. That command downloads `scripts/gs-update.sh` at a fixed commit and checks its sha256 before it runs it. The script then checks, in code:
+After the station updates, an amber Finish update button shows on the Updates page while any paired, listed bot is behind. It is not in the page header. On Bots, a bot whose update is not done shows "Update available for this bot", and a home bot whose helper is behind shows "Helper out of date: use Finish update". Both open the Updates page. The count is only bots still on the list: deleting a bot drops it, including any leftover row in the finish record. The button opens one dialog with every bot, grouped by computer. Send (or Send all) gives the bot a webhook of kind `update_bot` that carries only the release and a commit id, never a command, link or text. The bot runs the one pinned command already in its instructions. That command downloads `scripts/gs-update.sh` at a fixed commit and checks its sha256 before it runs it. The script then checks, in code:
 
 - the commit is on the project's main branch (GitHub compare API; if GitHub can't be reached or rate-limits, it stops),
 - the release is newer than the one this bot last installed (no downgrades, no repeats),

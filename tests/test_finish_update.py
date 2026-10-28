@@ -441,6 +441,32 @@ class Station(unittest.TestCase):
         v = self.ga.finish_rows(bots, "https://st.example", FP, PUB, self.pins, self.fin)
         return v, {r["slug"]: r for g in v["computers"] for r in g["bots"]}
 
+    def test_deleted_bot_is_not_behind(self):
+        """A slug left only in finish-update.json is not a listed bot, so it does not count as behind."""
+        _, rows = self.rows([_bot("jules")])
+        want = rows["jules"]["instr"]
+        self.fin["sent"]["ghost"] = {"instr": want, "at": int(time.time())}
+        self.fin["copied"]["ghost"] = {"at": 1}
+        self.fin["updaters"]["h:ghost"] = "ghost"
+        v, rows = self.rows([])
+        self.assertEqual(v["behind"], 0)
+        self.assertEqual(v["computers"], [])
+        self.assertNotIn("ghost", rows)
+        v, rows = self.rows([_bot("jules")])
+        self.assertNotIn("ghost", rows)
+        self.assertEqual(v["behind"], 1)  # jules still needs a copy; the deleted slug does not
+        self.ga.write_json(self.ga.path(self.ga.FINISH), {
+            "sent": {"ghost": {"instr": want, "at": 1}, "jules": {"instr": "b", "at": 2}},
+            "copied": {"ghost": {"at": 1}},
+            "updaters": {"h:ghost": "ghost", "h:den": "jules"},
+        })
+        self.ga.forget_finish("ghost")
+        left = self.ga.read_finish()
+        self.assertNotIn("ghost", left["sent"])
+        self.assertNotIn("ghost", left["copied"])
+        self.assertEqual(left["updaters"], {"h:den": "jules"})
+        self.assertIn("jules", left["sent"])
+
     def test_states_and_e(self):
         _, rows = self.rows([_bot("jules")])
         want = rows["jules"]["instr"]

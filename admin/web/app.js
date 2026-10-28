@@ -658,7 +658,24 @@ async function pageUpdates(el) {
 
 /* Finish update: bots still behind this release. One dialog, polled while it is open. */
 const FINISH = {view: null};
+function finishListedSlugs() {
+  // On Bots, recount only bots still in the list. A deleted bot must not keep the count up.
+  // Other pages have no list yet (or anymore), so they use the server's behind.
+  const pg = document.getElementById("pg");
+  if (!pg || !document.getElementById("blist") || !Array.isArray(pg._bots)) return null;
+  const slugs = {};
+  pg._bots.forEach(b => { if (b && b.slug) slugs[b.slug] = true; });
+  return slugs;
+}
 function finishBehind(view) {
+  const slugs = finishListedSlugs();
+  if (slugs) {
+    let n = 0;
+    finishComputers(view).forEach(g => (g.bots || []).forEach(b => {
+      if (b && slugs[b.slug] && b.state !== "done") n += 1;
+    }));
+    return n;
+  }
   const n = view && Number(view.behind);
   return n > 0 ? n : 0;
 }
@@ -671,14 +688,11 @@ function finishBtnHTML(view) {
 function paintFinishButtons() {
   const html = finishBtnHTML(FINISH.view);
   const head = document.getElementById("finhead");
-  const page = document.getElementById("finpage");  // only on the Updates page, which keeps its own button
-  if (head) { head.innerHTML = page ? "" : html; head.hidden = !!page || !html; }
+  const page = document.getElementById("finpage");  // Finish update lives only on the Updates page
+  if (head) { head.innerHTML = ""; head.hidden = true; }
   if (page) { page.innerHTML = html; page.hidden = !html; }
-  [head, page].forEach(root => {
-    if (!root) return;
-    const b = root.querySelector("button");
-    if (b) b.onclick = () => openFinishDialog();
-  });
+  const b = page && page.querySelector("button");
+  if (b) b.onclick = () => openFinishDialog();
 }
 async function refreshFinishChrome() {
   const gen = (refreshFinishChrome.gen = (refreshFinishChrome.gen || 0) + 1);
@@ -686,6 +700,9 @@ async function refreshFinishChrome() {
   if (gen !== refreshFinishChrome.gen) return;
   if (r.ok && r.data) FINISH.view = r.data;
   paintFinishButtons();
+  if (!(r.ok && r.data)) return;
+  const pg = document.getElementById("pg");
+  if (pg && Array.isArray(pg._bots) && document.getElementById("blist") && !pg._holdPaint) paintBots(pg, pg._bots);
 }
 function finishComputers(view) {
   return view && Array.isArray(view.computers) ? view.computers : [];
@@ -2050,6 +2067,7 @@ function wirePair(root, bot, el) {
       const pairBtn = $("#pair", root);
       if (pairBtn) pairBtn.textContent = "Pair key";
       toast("Revoked.");
+      refreshFinishChrome();
       const btn = $("#revoke", root);
       if (btn) btn.remove();
       refreshBots(el);
@@ -2095,6 +2113,7 @@ function wirePair(root, bot, el) {
           if (edit) edit.hidden = true;
         }
         toast("Paired.");
+        refreshFinishChrome();
         const holder = pair.parentElement;
         if (holder && !$("#revoke", root)) {
           const b = document.createElement("button");
@@ -2161,6 +2180,7 @@ function wireKeyMode(root, bot, el) {
         attn($("#kme", root), "");
         markSaved();
         toast("Key location saved.");
+        refreshFinishChrome();
         refreshBots(el);
       } else if (!(res && res.status === 403)) {
         revert();
@@ -2460,6 +2480,7 @@ function confirmRemove(bot, onDone) {
       const list = failed.map(f => `${f.name}: ${f.reason || "couldn't delete it"}`).join("; ");
       toast(`Removed. These wake words couldn't be deleted - delete them on the Wake words page: ${list}`, "err");
     } else toast("Removed.");
+    refreshFinishChrome();
     if (onDone) onDone();
   };
 }
@@ -2633,6 +2654,14 @@ function paintUnused(el) {
 function helperBehind(b) {
   return !!(b && b.key_mode === "home" && b.paired && b.helper && b.helper.out_of_date);
 }
+function finishNotes(b) {
+  if (!b || !b.slug) return "";
+  const lines = [];
+  if (helperBehind(b)) lines.push("Helper out of date: use Finish update");
+  const row = finishFind(FINISH.view, b.slug);
+  if (row && row.state && row.state !== "done") lines.push("Update available for this bot");
+  return lines.map(t => `<a class="need" href="#updates">${ICO_TRI}${esc(t)}</a>`).join("");
+}
 function paintBots(el, bots) {
   bots = mainFirst(bots || []);
   el._bots = bots;
@@ -2658,7 +2687,7 @@ function paintBots(el, bots) {
       <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
         <div class="help">${esc(repliesFrom(b))}</div>
         ${check || ""}${warn ? `<div class="need">${ICO_TRI}${esc(warn)}</div>` : ""}
-        ${helperBehind(b) ? `<div class="need">${ICO_TRI}Helper out of date: use Finish update</div>` : ""}</div>
+        ${finishNotes(b)}</div>
       ${wakeControlHTML(b, word, st)}
       <div class="cfg"><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
   }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
@@ -2747,6 +2776,7 @@ async function refreshBots(el) {
   const msg = $("#bmsg", el);
   if (msg) { msg.hidden = !r.data.message; if (r.data.message) msg.textContent = r.data.message; }
   paintBots(el, el._bots);
+  refreshFinishChrome();
   checkNewBots(el);
   return r.data;
 }
@@ -3088,6 +3118,7 @@ function openBot(bot, el) {
         }
         markSaved();
         toast("Saved.");
+        refreshFinishChrome();
         refreshBots(el);
       }
       return r;
@@ -3101,6 +3132,7 @@ function openBot(bot, el) {
       bot.webhook = {configured: false, last4: null, saved_at: null};
       toast("Webhook removed.");
       d.remove();
+      refreshFinishChrome();
       refreshBots(el);
     }
     return r;
@@ -3379,6 +3411,7 @@ function mountWebhookStep(root, bot, el, onFinish) {
         errBox($("#herr", root), "");
         markSaved();
         toast("Saved.");
+        refreshFinishChrome();
         refreshBots(el);
       }
       return r;
@@ -3798,6 +3831,7 @@ function addBot(voices, el, preset) {
           if (r && r.data) r.data.voice_token = "";
           if (!r.ok) return fail(r, "Couldn't add that bot.");
           created = true;
+          refreshFinishChrome();
         }
         if (draft.pub) {
           const body = {public_key: draft.pub};
@@ -3807,6 +3841,7 @@ function addBot(voices, el, preset) {
           body.password = "";
           if (!r.ok) return fail(r, "The bot was added, but the key wasn't pinned.");
           draft.pub = "";
+          refreshFinishChrome();
         }
         let connected = false, last4 = "";
         if (draft.url && draft.key) {
@@ -3820,6 +3855,7 @@ function addBot(voices, el, preset) {
           draft.key = "";
           draft.url = "";
           connected = true;
+          refreshFinishChrome();
         }
         pw = "";
         refreshStepup();
