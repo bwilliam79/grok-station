@@ -923,3 +923,90 @@ class DefaultLogoHosts(unittest.TestCase):
         lid = c.fetch("https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/kc.png&w=200&h=200")
         self.assertIsNotNone(lid)
         self.assertTrue(os.path.exists(c.path_for(lid)))
+
+
+def _near(color, rgb, tol=18):
+    return all(abs(color[i] - rgb[i]) <= tol for i in range(3))
+
+
+def _red_box(surf, y0=0):
+    """Bounding box of the pure-red test logo, or None."""
+    w, h = surf.get_size()
+    xs, ys = [], []
+    for y in range(y0, h, 2):
+        for x in range(0, w, 2):
+            c = surf.get_at((x, y))
+            if c[0] > 240 and c[1] < 20 and c[2] < 20:
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _text_top(surf, x0, x1, y0):
+    """First warm-text pixel in a column. Names and scores use TEXT."""
+    w, h = surf.get_size()
+    x1 = min(x1, w)
+    target = tuple(gs.TEXT)[:3]
+    for y in range(y0, h, 2):
+        for x in range(x0, x1, 3):
+            if _near(surf.get_at((x, y)), target):
+                return y
+    return None
+
+
+class SportsLayout(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        pygame.display.init()
+        pygame.font.init()
+
+    def test_stack_reserves_no_gap_without_a_logo(self):
+        bare = gs.sports_stack(100, 400, 0, 40, 80, 10)
+        marked = gs.sports_stack(100, 400, 64, 40, 80, 10)
+        self.assertIsNone(bare[0])
+        self.assertLess(bare[1], marked[1])  # the name moves up; the logo's space is not kept
+        self.assertLess(marked[0], marked[1])
+        self.assertLess(marked[1], marked[2])
+        self.assertEqual(marked[1] - marked[0], 64 + 10)
+
+    def test_logo_is_centered_above_the_name(self):
+        root = tempfile.mkdtemp(prefix="gs-logo-layout-")
+        old = gs._LOGO
+        gs._LOGO = cards.LogoCache(root, ["a.espncdn.com"], opener=lambda url: (tiny_png(), "image/png"),
+                                   resolve=lambda host: ["23.1.2.3"])
+        try:
+            lid = "ab" * 32
+            with open(os.path.join(root, lid), "wb") as fh:
+                fh.write(tiny_png(48, 48))
+            home = team(logo_id=lid)
+            away = team("Ridgeview", "RV")  # no logo: name alone
+            card = cards.validate_card(sports(home=home, away=away))
+            surf = pygame.Surface((1920, 1080))
+            gs.draw_feed(surf, gs.Layout(1920, 1080), time.localtime(), card)
+            box = _red_box(surf, 80)
+            self.assertIsNotNone(box)
+            left, top, right, bottom = box
+            name_y = _text_top(surf, left - 40, right + 40, bottom + 2)
+            self.assertIsNotNone(name_y)
+            self.assertLess(bottom, name_y)  # logo above the name
+            col_cx = 1920 // 4
+            self.assertLess(abs(((left + right) // 2) - col_cx), 80)  # centered in the home column
+            # the away side has no logo and no abbreviation shield in that column
+            away_cx = 1920 - 1920 // 4
+            shield = 0
+            for y in range(120, 700, 4):
+                c = surf.get_at((away_cx, y))
+                if _near(c, tuple(gs.LISTENING)[:3]) or _near(c, tuple(gs.THINKING)[:3]) or _near(c, tuple(gs.AMBER)[:3]):
+                    shield += 1
+            self.assertEqual(shield, 0)
+        finally:
+            gs._LOGO = old
+
+    def test_a_failed_logo_hides_and_a_badge_does_not_leave_a_hole(self):
+        self.assertIsNone(gs.team_face({"name": "Harbor City", "abbr": "HC"}, 48))
+        self.assertIsNone(gs.team_face({"name": "Harbor City", "abbr": "HC", "logo_id": "cd" * 32}, 48))
+        badge = gs.team_face({"name": "Harbor City", "abbr": "HC", "logo_badge": True}, 48)
+        self.assertIsNotNone(badge)
+        self.assertEqual(badge.get_size(), (48, 48))

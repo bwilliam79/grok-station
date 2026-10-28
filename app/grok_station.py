@@ -2210,28 +2210,75 @@ def monogram_shield(abbr, px):
     return box
 
 
+def _loaded_logo(team, px):
+    """A cached logo scaled to px, or None when there is nothing to draw.
+
+    A missing file, or a file pygame cannot read, is None. This does not fetch
+    and does not leave a broken image.
+    """
+    lid = team.get("logo_id") if isinstance(team, dict) else None
+    path = logo_cache().path_for(lid) if isinstance(lid, str) else None
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        img = pygame.image.load(path)
+        try:
+            img = img.convert_alpha()
+        except pygame.error:
+            pass
+        return pygame.transform.smoothscale(img, (px, px))
+    except Exception:
+        return None
+
+
 def team_mark(team, px):
-    """Blit a cached logo, or a monogram. This does not fetch.
+    """A cached logo, or a monogram. This does not fetch.
 
     A logo id with no file yet (the download is still in the background) is a monogram.
+    The score card uses team_face instead, so a missing logo does not reserve a gap.
 
     convert_alpha needs a display mode. Demo renders and tests often have none,
     and a decoded logo should still show rather than falling back to a monogram.
     """
-    lid = team.get("logo_id") if isinstance(team, dict) else None
-    path = logo_cache().path_for(lid) if lid else None
-    if path and os.path.isfile(path):
-        try:
-            img = pygame.image.load(path)
-            try:
-                img = img.convert_alpha()
-            except pygame.error:
-                pass
-            return pygame.transform.smoothscale(img, (px, px))
-        except Exception:
-            pass
+    img = _loaded_logo(team, px)
+    if img is not None:
+        return img
     abbr = team.get("abbr") if isinstance(team, dict) else "?"
     return monogram_shield(abbr or "?", px)
+
+
+def team_face(team, px):
+    """What sits above the team name: a logo, an abbreviation badge, or nothing.
+
+    No logo_url (no logo id and no badge) is nothing, so the name is not pushed down.
+    A file that fails to load is nothing too, unless the station marked logo_badge
+    because the fetch was not ready. Never a broken image and never an empty gap.
+    """
+    img = _loaded_logo(team, px)
+    if img is not None:
+        return img
+    if isinstance(team, dict) and team.get("logo_badge") is True:
+        return monogram_shield(team.get("abbr") or "?", px)
+    return None
+
+
+def sports_stack(top, bottom, face_h, name_h, score_h, gap):
+    """Y positions for one team column, centered in [top, bottom].
+
+    face_h 0 means no logo and no reserved gap. Returns (face_y or None, name_y, score_y).
+    """
+    face_h = int(face_h or 0)
+    gap = int(gap)
+    block = int(name_h) + gap + int(score_h)
+    if face_h > 0:
+        block += face_h + gap
+    span = max(0, int(bottom) - int(top))
+    y = int(top) + max(0, (span - block) // 2)
+    face_y = None
+    if face_h > 0:
+        face_y = y
+        y += face_h + gap
+    return face_y, y, y + int(name_h) + gap
 
 
 def _trend(surf, x, y, size, trend):
@@ -2391,35 +2438,37 @@ def draw_sports(surf, L, card):
     surf.blit(period, (rect.right - pad - period.get_width(), head))
     league = _line(surf, "body", L(28), card["league"], FAINT, max(40, rect.w // 4))
     surf.blit(league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
-    mark = min(L(170), max(L(48), rect.w // 8))
+    mark = min(L(150), max(L(48), rect.w // 7))
     head_bottom = head + st.get_height()
-    avail = max(L(48), rect.bottom - head_bottom - L(24))
-    name_px = min(L(56), max(L(22), avail // 6))
-    name_w = max(40, rect.w // 2 - mark - L(120))
+    col_top = head_bottom + L(16)
+    col_bot = rect.bottom - L(28)
+    col_w = max(40, rect.w // 2 - L(72))
+    avail = max(L(48), col_bot - col_top)
+    name_px = min(L(48), max(L(22), avail // 8))
     score_px = min(
-        _fit_px("display", card["home_score"], L(220), name_w, L(48)),
-        _fit_px("display", card["away_score"], L(220), name_w, L(48)),
-        max(L(36), avail - name_px - L(12)))
-    block = max(mark, name_px + score_px + L(8))
-    y = head_bottom + max(L(12), (avail - block) // 2)
+        _fit_px("display", card["home_score"], L(180), col_w, L(36)),
+        _fit_px("display", card["away_score"], L(180), col_w, L(36)),
+        max(L(36), avail // 3))
+    gap = L(10)
+    score_mids = []
 
-    def paint_side(team, score, logo_x, text_right):
-        surf.blit(team_mark(team, mark), (logo_x, y))
-        name = _line(surf, "display", name_px, team["name"], TEXT, name_w)
+    def paint_side(team, score, cx):
+        face = team_face(team, mark)
+        name = _line(surf, "display", name_px, team["name"], TEXT, col_w)
         sc = font("display", score_px).render(str(score), True, TEXT)
-        if text_right:
-            tx = logo_x - L(28)
-            surf.blit(name, (tx - name.get_width(), y + L(6)))
-            surf.blit(sc, (tx - sc.get_width(), y + name.get_height() + L(4)))
-        else:
-            tx = logo_x + mark + L(28)
-            surf.blit(name, (tx, y + L(6)))
-            surf.blit(sc, (tx, y + name.get_height() + L(4)))
+        face_h = face.get_height() if face is not None else 0
+        face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), sc.get_height(), gap)
+        if face is not None and face_y is not None:
+            surf.blit(face, (cx - face.get_width() // 2, face_y))
+        surf.blit(name, (cx - name.get_width() // 2, name_y))
+        surf.blit(sc, (cx - sc.get_width() // 2, score_y))
+        score_mids.append(score_y + sc.get_height() // 2)
 
-    paint_side(card["home"], card["home_score"], rect.left + pad, False)
-    paint_side(card["away"], card["away_score"], rect.right - pad - mark, True)
+    paint_side(card["home"], card["home_score"], rect.left + rect.w // 4)
+    paint_side(card["away"], card["away_score"], rect.right - rect.w // 4)
     dash = font("display", min(L(60), max(16, score_px // 3))).render("–", True, MUTED)
-    surf.blit(dash, (rect.centerx - dash.get_width() // 2, y + name_px + max(0, (score_px - dash.get_height()) // 2)))
+    mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
+    surf.blit(dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
     if games and strip_h >= L(48) and rect.bottom + gap < bottom:
         strip = pygame.Rect(L.m, rect.bottom + gap, width, min(strip_h, bottom - rect.bottom - gap))
         pygame.draw.rect(surf, SURFACE, strip, border_radius=L(28))

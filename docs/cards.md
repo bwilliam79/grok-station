@@ -45,7 +45,7 @@ The card itself is at most 4096 bytes of JSON. `v` must be the integer 1. Any ot
 | `calendar` | `date` `YYYY-MM-DD`, `events` 0..8 of `{time` 16, `title` 48}`. The display shows five rows. The first is next (teal), then a summary line |
 | `home` | `title` (24), `items` 1..6 of `{label` 32, `value` 24, optional `trend` `up`\|`down}` |
 
-A team is `{name` 24, `abbr` `^[A-Z0-9]{2,4}$`, and either `logo_url` or `logo_id` or neither}`. A bot sends `logo_url` (https, at most 200 characters, a public host shape). The station stores a `logo_id` only after a successful cache write. Booleans are not numbers. Extra keys fail.
+A team is `{name` 24, `abbr` `^[A-Z0-9]{2,4}$`, and either `logo_url` or `logo_id` or neither}`. On the sports card the logo is centered above the team name. If `logo_url` is missing, or the picture does not load, the name stands alone: no empty gap and no broken image. A bot sends `logo_url` (https, at most 200 characters, a public host shape). The station stores a `logo_id` only after a successful cache write. Booleans are not numbers. Extra keys fail.
 
 ## Rotation and expiry
 
