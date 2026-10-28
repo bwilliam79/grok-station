@@ -484,12 +484,27 @@ def wait_tone_on():
     return _env_bool("WAIT_TONE", True)
 
 
+def wait_tone_style():
+    data = read_json(wait_tone_path(), {})
+    style = data.get("style") if isinstance(data, dict) else None
+    return style if style in ("soft", "classic") else "soft"
+
+
 def save_wait_tone(body):
-    """Store the switch. None when the body is not a bool `on`. Does not restart the listener."""
-    if not isinstance(body, dict) or not isinstance(body.get("on"), bool):
+    """Store the switch and, optionally, the sound ("soft" or "classic"). None when the body is bad.
+    Does not restart the listener."""
+    if not isinstance(body, dict):
         return None
-    write_json(wait_tone_path(), {"on": body["on"]}, 0o640)
-    return body["on"]
+    on, style = body.get("on"), body.get("style")
+    if on is None and style is None:
+        return None
+    if on is not None and not isinstance(on, bool):
+        return None
+    if style is not None and style not in ("soft", "classic"):
+        return None
+    doc = {"on": wait_tone_on() if on is None else on, "style": style or wait_tone_style()}
+    write_json(wait_tone_path(), doc, 0o640)
+    return doc["on"]
 
 
 def mic_reset_public():
@@ -1865,7 +1880,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         if u and setup and _setup_newer(setup, u):
             u = {}  # status from an earlier pairing of this id (deleted and re-added, or re-keyed): not this bot's
         fail = (finish.get("failed") or {}).get(b["slug"]) or {}
-        wait_left = 0
+        wait_left, unconfirmed = 0, False
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
         elif want and u and not (home and (b.get("helper") or {}).get("out_of_date")) \
@@ -1885,6 +1900,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         elif not u and setup and want and not (home and (b.get("helper") or {}).get("out_of_date")) \
                 and same_content(b, setup.get("release"), None, station, fingerprint, pub):
             state = "done"  # paired on an older release whose content is identical to this one
+            unconfirmed = True  # Nix 0.12.10: table match only; cleared by the bot's first signed status
         elif not u and setup:
             state = "needs"  # set up by a newer template that already knows update_bot
         elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
@@ -1919,7 +1935,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home" if home else "cloud",
                           "state": state, "message": text, "instr": want, "have": u.get("instr"),
                           "have_release": u.get("release"), "error": err,
-                          "wait_left": wait_left if state == "waiting" else 0, "fail": reason})
+                          "wait_left": wait_left if state == "waiting" else 0, "fail": reason,
+                          "unconfirmed": bool(unconfirmed and state == "done")})
     for g in groups.values():
         g["bots"].sort(key=lambda r: r["name"].lower())
         chosen = finish["updaters"].get(g["key"])
@@ -2501,7 +2518,17 @@ def helper_view(b):
         return None
     seen = b.get("helper_version") if HELPER_V.fullmatch(str(b.get("helper_version") or "")) else None
     cur = _vtuple(seen)
+    if cur is None and not _ever_posted(b):
+        # 0.12.11: a freshly added bot (or a second persona on a computer whose helper is already
+        # installed) has sent nothing signed yet, so there is no evidence either way. Not out of date.
+        return {"version": None, "release": HELPER_RELEASE, "out_of_date": False}
     return {"version": seen, "release": HELPER_RELEASE, "out_of_date": cur is None or cur < _vtuple(HELPER_RELEASE)}
+
+
+def _ever_posted(b):
+    """True once the station has a signed post from this bot: an answer or an update status."""
+    st = b.get("status") if isinstance(b.get("status"), dict) else {}
+    return bool(b.get("helper_version") or st.get("last_answered_at") or (isinstance(b.get("update"), dict) and b["update"]))
 
 
 _UPD = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
@@ -3482,7 +3509,8 @@ class Handler(BaseHTTPRequestHandler):
                                "in_use": busy("arecord"), "capture": st.get("capture") if code == 200 else None,
                                "level_dbfs": st.get("level_dbfs") if code == 200 else None,
                                "level_at": st.get("level_at") if code == 200 else None,
-                               "mic_reset": flags, "wait_tone": wait_tone_on()})
+                               "mic_reset": flags, "wait_tone": wait_tone_on(),
+                               "wait_tone_style": wait_tone_style()})
 
     def api_put_audio(self, p, q, j):
         """Switches only. The listener re-reads the file; this does not stop it."""
@@ -3490,7 +3518,7 @@ class Handler(BaseHTTPRequestHandler):
             saved = save_wait_tone(j)
             if saved is None:
                 return self.send(400, {"error": "Couldn't save that."})
-            return self.send(200, {"ok": True, "wait_tone": saved})
+            return self.send(200, {"ok": True, "wait_tone": saved, "wait_tone_style": wait_tone_style()})
         if p != "/api/audio/mic-reset":
             return self.send(404, {"error": "not found"})
         saved = save_mic_reset(j)

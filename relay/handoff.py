@@ -324,7 +324,7 @@ class Limits:
             s = {}
         kept = _list_ask_norm(s.get("list_ask"))
         if s.get("day") != self.day():
-            s = {"day": self.day(), "bots": {}, "total": 0, "out": {}}
+            s = {"day": self.day(), "bots": {}, "total": 0, "out": {}, "test_out": {}}
         s.pop("guest", None)  # stale guest flag from an older file: ignored, not kept
         s["list_ask"] = kept
         return s
@@ -335,13 +335,27 @@ class Limits:
             json.dump(s, f)
         os.replace(tmp, self.path)
 
-    def take(self, bot, rid, now=None):
-        """Reserve one handoff; None if allowed, else the reason. Counted before the POST, so failures count."""
+    def take(self, bot, rid, now=None, test=False, preempt=None):
+        """Reserve one handoff; None if allowed, else the reason. Counted before the POST, so failures count.
+
+        0.12.11: a slot held by an admin test (test=True when taken) gives way to a real question:
+        preempt(bot) is called to cancel that test and the question takes the slot. A slot held by a
+        real question still refuses with "outstanding". A test never preempts anything.
+        """
         now = time.time() if now is None else now
         s = self._load()
         b = s["bots"].setdefault(bot, {"n": 0, "last": 0.0})
+        tests = s.setdefault("test_out", {})
         if s["out"].get(bot):
-            return "outstanding"
+            if test or tests.get(bot) != s["out"][bot]:
+                return "outstanding"
+            if preempt is not None:
+                try:
+                    preempt(bot)
+                except Exception:
+                    pass
+            s["out"].pop(bot, None)
+            tests.pop(bot, None)
         if self.per_bot_day > 0 and b["n"] >= self.per_bot_day:
             return "bot daily cap"
         if self.global_day > 0 and s["total"] >= self.global_day:
@@ -352,6 +366,10 @@ class Limits:
         b["last"] = now
         s["total"] += 1
         s["out"][bot] = rid
+        if test:
+            tests[bot] = rid
+        else:
+            tests.pop(bot, None)
         self._save(s)
         return None
 
@@ -360,8 +378,9 @@ class Limits:
         now = time.time() if now is None else now
         s = self._load()
         b = (s.get("bots") or {}).get(bot) or {"n": 0, "last": 0.0}
-        if (s.get("out") or {}).get(bot):
-            return "outstanding"
+        held = (s.get("out") or {}).get(bot)
+        if held and (s.get("test_out") or {}).get(bot) != held:
+            return "outstanding"  # an admin test's slot gives way to a voice question
         if self.per_bot_day > 0 and b.get("n", 0) >= self.per_bot_day:
             return "bot daily cap"
         if self.global_day > 0 and s.get("total", 0) >= self.global_day:
@@ -370,9 +389,14 @@ class Limits:
             return "too soon"
         return None
 
-    def release(self, bot):
+    def release(self, bot, rid=None):
+        """Free this bot's slot. With rid, only when that request still holds it (a preempted test
+        must not free the question that took its place)."""
         s = self._load()
+        if rid is not None and s["out"].get(bot) not in (None, rid):
+            return
         s["out"].pop(bot, None)
+        s.setdefault("test_out", {}).pop(bot, None)
         self._save(s)
 
     def list_open(self):

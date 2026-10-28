@@ -292,7 +292,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         async with ClientSession() as http:
             self.assertEqual((await relay.ask_teammate(http, "jules", "q"))[1], "post-failed")
             self.assertEqual(len(self.calls), 1)                      # B4: never retried
-            self.assertEqual((await relay.ask_teammate(http, "jules", "q"))[1], "limit")   # counted: 30 s gap
+            self.assertEqual((await relay.ask_teammate(http, "jules", "q"))[1], "too-soon")   # counted: 30 s gap
         self.assertEqual(len(self.calls), 1)
 
     async def test_no_reply_times_out(self):
@@ -451,7 +451,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         async with ClientSession() as http:
             text, verdict = await relay.ask_teammate(http, "jules", q)
             self.assertEqual((text, verdict), ("Tacos on Tuesday.", "ok"))
-            self.assertEqual((await relay.ask_teammate(http, "jules", q))[1], "limit")   # 30 s gap, still per persona
+            self.assertEqual((await relay.ask_teammate(http, "jules", q))[1], "too-soon")   # 30 s gap, still per persona
             self.assertEqual(len(self.calls), 1)                                          # the limited call never POSTed
             text, verdict = await relay.ask_teammate(http, "hank", "what is on the menu?")
         self.assertEqual((text, verdict), (None, "no-webhook"))                          # hank has no entry; the router is ignored

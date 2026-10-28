@@ -142,6 +142,8 @@ HANDOFF = E("HANDOFF_ENABLED", "1") == "1"  # on: a bot answers only once it has
 WEBHOOKS_FILE = E("WEBHOOKS_FILE", os.path.join(STATE_DIR, "bots", "webhooks.json"))
 MINTED_FILE = E("VOICE_MINTED_FILE", os.path.join(STATE_DIR, "voice", "minted", "voice-tokens.json"))
 _hooks = {"mtime": None, "map": {}}
+TEST_COOLDOWN_S = 15
+_test_last = {}     # slug -> monotonic time of the last admin Test started
 _runs = {}          # admin test id -> in-memory record (pasted url/key live only until that test posts)
 _run_tasks = set()
 
@@ -1010,6 +1012,23 @@ async def ask_bot_list(http):
         _limits.release_list()
 
 
+def limit_verdict(why):
+    """0.12.11: only a real daily cap is "limit" (the "lot of questions today" line). One question
+    already in flight is "busy"; the optional minimum gap is "too-soon"."""
+    if why == "outstanding":
+        return "busy"
+    if why == "too soon":
+        return "too-soon"
+    return "limit"
+
+
+def cancel_admin_tests(bot):
+    """A voice question takes the slot from an admin Test of this bot: cancel the test's wait."""
+    for rec in list(_runs.values()):
+        if rec.get("slug") == bot and rec.get("state") == "waiting" and rec.get("cancel") is not None:
+            rec["cancel"].set()
+
+
 def limit_error(why):
     """Short status line for a handoff the caps refused. No question text."""
     if why in ("bot daily cap", "global daily cap"):
@@ -1039,13 +1058,14 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
     rid = handoff.new_request_id()
     if detail is not None:
         detail["rid"] = rid
-    why = _limits.take(bot, rid)
+    why = _limits.take(bot, rid, test=bool(test), preempt=None if test else cancel_admin_tests)
     if why:
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=limit ({why})")
         if detail is not None:
             detail["limit"] = why
-        _note_status(bot, error=limit_error(why))
-        return None, "limit"
+        if not test:  # a refused admin test is not news about the bot
+            _note_status(bot, error=limit_error(why))
+        return None, limit_verdict(why)
     nonce = secrets.token_urlsafe(24)
     now = time.time()
     # reply_by and the pending file both stay open for ANSWER_BY_S (~3 min), not the old 60 s / 2 min.
@@ -1138,7 +1158,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
     finally:
         if not parked:
             handoff.remove_pending(PENDING_DIR, rid)
-        _limits.release(bot)
+        _limits.release(bot, rid)
 
 
 def _record_rtt(bot, rtt_ms=None, timeout=False):
@@ -1172,6 +1192,8 @@ def handoff_line(name, verdict, host=None, reached=False):
         return f"I couldn't reach {name}. {display_host(host)} may be offline."
     return {"timeout": f"I couldn't reach {name}.",
             "limit": f"{name} has had a lot of questions from the station today; ask in the app.",
+            "busy": f"{name} is still working on another question. Try again in a minute.",
+            "too-soon": f"{name} just answered a question. Try again in a few seconds.",
             "post-failed": f"Couldn't reach {name} just now; try again or ask in the app.",
             "reject": f"{name}'s answer couldn't be read out here; ask in the app."}.get(
         verdict, f"{name} didn't answer; try again or ask in the app.")
@@ -4076,7 +4098,7 @@ TEST_QUESTION = "Station test from the admin page. Reply with the single word: o
 
 
 def _test_error(verdict, detail):
-    if verdict == "limit":
+    if verdict in ("limit", "busy", "too-soon"):
         return limit_error(detail.get("limit"))
     if verdict == "timeout":
         return "No answer"
@@ -4166,6 +4188,12 @@ async def admin_test_post(req):
             return web.json_response({"error": "bad webhook"}, status=400)
         hook = {"url": url, "token": key}
     then_avatar = body.get("then_avatar") is True and url is None  # only the saved webhook
+    # 0.12.11: a Test is a real question to the bot. One per bot per TEST_COOLDOWN_S, so clicking
+    # Test repeatedly cannot keep the bot busy and crowd out voice questions.
+    t_now = time.monotonic()
+    if t_now - _test_last.get(slug, -1e9) < TEST_COOLDOWN_S:
+        return web.json_response({"error": "Too soon. Try the test again in a few seconds."}, status=429)
+    _test_last[slug] = t_now
     tid = "t_" + secrets.token_urlsafe(12)
     _runs[tid] = {"slug": slug, "state": "waiting", "t0": time.monotonic(), "elapsed_s": 0.0,
                   "answered_in_s": None, "error": None, "cancel": asyncio.Event(), "hook": hook, "detail": {},

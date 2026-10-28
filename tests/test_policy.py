@@ -272,7 +272,7 @@ class TestFlag(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.load(open(r._limits.path))["bots"]["jules"]["n"], 1)
         async with ClientSession() as http:
             again, why = await r.ask_teammate(http, "jules", "another question", test=True)
-        self.assertEqual((again, why), (None, "limit"))
+        self.assertEqual((again, why), (None, "too-soon"))
         self.assertEqual(len(self.seen), 1)  # the capped call never posted
         self.assertEqual(json.load(open(r._limits.path))["bots"]["jules"]["n"], 1)
         self.assertGreater(pend["expires_ms"], time.time() * 1000)

@@ -17,7 +17,7 @@ class WaitToneState(unittest.TestCase):
         self.assertTrue(self.t.claim(100.0 + wt.WAIT_TONE_DELAY))
         self.t.playing = False
         self.assertFalse(self.t.due(100.5))
-        self.assertTrue(self.t.due(100.0 + wt.WAIT_TONE_DELAY + wt.WAIT_TONE_EVERY))
+        self.assertTrue(self.t.due(100.0 + wt.WAIT_TONE_DELAY + wt.tone_every()))
 
     def test_fast_reply_never_chimes(self):
         self.t.note_phase("thinking", now=10.0)

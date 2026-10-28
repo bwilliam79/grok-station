@@ -364,7 +364,10 @@ class AdminUI(unittest.TestCase):
         self.assertIn("dots included. Do not shorten it.", fn)
         self.assertNotIn("hostname is fine", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Send it exactly as listed, dots included. Do not shorten it.", add)
+        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app. Send it exactly as listed, dots included. Do not shorten it.", add)
+        self.assertIn("never put a placeholder in a code block", add)  # 0.12.11
+        self.assertNotIn("<webhook URL>", add)
+        self.assertNotIn("<webhook key>", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
@@ -403,7 +406,7 @@ class AdminUI(unittest.TestCase):
         self.assertEqual(js.count("Home computer will be available after it's been tested."), 2)
         self.assertIn("grok-station-reply seal", cloud)
         self.assertNotIn("gs-seal-reply", cloud)
-        self.assertIn("gs-seal-reply reply", home)
+        self.assertIn('/gs-seal-reply" reply', home)
         self.assertNotIn("<base64 seed>", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for token in ("<slug>", "<station public key>", "<station address>", "<fingerprint>"):
             self.assertIn(token, cloud, token)
@@ -434,13 +437,16 @@ class AdminUI(unittest.TestCase):
         self.assertIn("public key it printed", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertIn("Replace key", fn)
-        self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("your own computer"))
-        self.assertGreater(fn.rindex("Reply with the webhook URL"), fn.index("gs-seal-setup"))
+        self.assertGreater(fn.rindex("Reply with your public key"), fn.index("your own computer"))
+        self.assertGreater(fn.rindex("Reply with your public key"), fn.index("gs-seal-setup"))
         self.assertIn("webhook URL", fn)
         self.assertIn("webhook key", fn)
-        self.assertIn("Reply with the webhook URL, the webhook key, your public key, and the home computer's name. Put each value in its own fenced code block, with a short plain label on the line before it:", fn)
-        for lab, ph in (("Webhook URL", "<webhook URL>"), ("Webhook key", "<webhook key>"), ("Public key", "<public key>"), ("Computer name", "<computer name>")):
+        self.assertIn("Reply with your public key and the home computer's name. Put each real value in its own fenced code block, with a short plain label on the line before it:", fn)
+        for lab, ph in (("Public key", "<public key>"), ("Computer name", "<computer name>")):
             self.assertIn(lab + ":\\n```\\n" + ph + "\\n```", fn)
+        for ph in ("<webhook URL>", "<webhook key>"):  # 0.12.11: never a placeholder in a copyable block
+            self.assertNotIn(ph, fn)
+        self.assertIn("link the user straight to the routine you just created", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
@@ -456,13 +462,13 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("The bot needs Grok Bot", home)
         self.assertTrue(cloud.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in cloud)
         self.assertTrue(home.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in home)
-        self.assertIn("printf '%s' \"$CARD_JSON\" | gs-seal-reply show --persona <slug>", home)
+        self.assertIn("printf '%s' \"$CARD_JSON\" | \"$HOME/.local/share/grok-station/bin/gs-seal-reply\" show --persona <slug>", home)
         self.assertIn("macOS or Linux", fn)
         self.assertIn("macOS or Linux", installer)
         self.assertNotIn("Home mode runs on macOS only.", installer)
         self.assertNotIn("Home mode is faster and depends", fn)
         self.assertNotIn("old-hostname", js)
-        self.assertIn("printf '%s' \"$ANSWER\" | gs-seal-reply reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
+        self.assertIn("printf '%s' \"$ANSWER\" | \"$HOME/.local/share/grok-station/bin/gs-seal-reply\" reply --persona <slug> --request-id \"$REQUEST_ID\"", home)
         self.assertIn("STATION_ADDR.v", js.split("function stationAddress", 1)[1].split("function routineForBot", 1)[0])
         self.assertIn('instructionsHtml("aroutine", "Copy instructions")', js)
         self.assertIn("<pre ", js)
@@ -1073,7 +1079,7 @@ class BotPictureUI(unittest.TestCase):
         self.assertNotIn("Refresh avatar<", self.js)
         self.assertIn("grok-station-reply seal-avatar --bot <slug>", self.js)
         self.assertIn("post --avatar --station <station address>", self.js)
-        self.assertIn("gs-seal-reply avatar --persona <slug> < PICTURE_FILE", self.js)
+        self.assertIn('gs-seal-reply" avatar --persona <slug> < PICTURE_FILE', self.js)
         self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 2)
         self.assertIn("kind is avatar", self.js)
 
@@ -1421,17 +1427,12 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertIn(".tipwrap.avtip .tip{top:calc(100% + 10px)}", self.css)
         self.assertNotIn(".tipwrap.force", self.css)
 
-    def test_status_is_checked_on_load_and_stops_off_the_page(self):
+    def test_status_is_from_server_and_tests_stop_off_the_page(self):
+        """0.12.11: no automatic test questions; a manual or post-add test is cancelled when leaving the page."""
         page = _fn(self.js, "pageBots")
-        self.assertLess(page.index("paintBots(el, bots)"), page.index("every(60000, () => recheckBots(el))"))
-        sweep = _fn(self.js, "recheckBots")
-        self.assertIn("if (botRecheckOn) return;", sweep)
-        self.assertIn("startBotCheck(b.slug, el, {avatar: false})", sweep)
-        self.assertIn("botRecheckOn = false", sweep)
-        fresh = _fn(self.js, "checkNewBots")
-        self.assertIn("if (c && c.state !== \"checking\") return;", fresh)
-        self.assertIn("startBotCheck(b.slug, el, {avatar: false})", fresh)
-        self.assertIn("checkNewBots(el)", _fn(self.js, "refreshBots"))
+        self.assertNotIn("recheckBots", self.js)
+        self.assertNotIn("checkNewBots", self.js)
+        self.assertNotIn("startBotCheck", _fn(self.js, "refreshBots"))
         start = _fn(self.js, "startBotCheck")
         self.assertIn("if (!slug || BOT_CHECK_BUSY[slug]) return;", start)
         self.assertIn("wantAvatar ? {then_avatar: true} : {}", start)
@@ -1439,8 +1440,8 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         stop = _fn(self.js, "stopBotChecks")
         self.assertIn("BOT_CHECK_GEN += 1", stop)
         self.assertIn('api("DELETE", `/api/bots/${encodeURIComponent(slug)}/test/${encodeURIComponent(id)}`', stop)
-        paint = _fn(self.js, "paintBots")
-        self.assertIn('BOT_CHECKS[b.slug] = {state: "checking"}', paint)
+        self.assertIn("serverCheck(b)", _fn(self.js, "botRing"))
+        self.assertIn("paintBots(el, bots)", page)
 
     def test_connect_webhook_halo_and_back(self):
         step = _fn(self.js, "addBot")

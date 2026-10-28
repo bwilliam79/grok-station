@@ -155,8 +155,25 @@ def fail_file():
 WAIT_TONE_SR = 24000
 WAIT_TONE_PEAK = 0.10
 WAIT_TONE_QUIET_FLOOR = 0.35
-WAIT_TONE_NOTES = ((392.0, 0.14), (523.25, 0.18))  # G4, C5
+WAIT_TONE_NOTES = ((392.0, 0.14), (523.25, 0.18))  # G4, C5: the "classic" two-note chime (0.12.10 and earlier)
 WAIT_TONE_GAP_S = 0.06
+# 0.12.11 default "soft": one low, rounded pulse (A3 with a quiet octave), slow fade in and out, at
+# 45% of the classic chime's level, every WAIT_TONE_EVERY_SOFT seconds instead of every 2.5 s.
+WAIT_TONE_STYLES = ("soft", "classic")
+WAIT_TONE_SOFT_FREQ = 220.0
+WAIT_TONE_SOFT_DUR = 0.45
+WAIT_TONE_SOFT_LEVEL = 0.45
+WAIT_TONE_EVERY_SOFT = 5.0
+WAIT_TONE_EVERY_CLASSIC = 2.5
+
+
+def wait_tone_style(value):
+    """"soft" unless the saved choice is exactly "classic"."""
+    return value if value in WAIT_TONE_STYLES else "soft"
+
+
+def wait_tone_every(style):
+    return WAIT_TONE_EVERY_CLASSIC if wait_tone_style(style) == "classic" else WAIT_TONE_EVERY_SOFT
 
 
 def wait_tone_gain(station_volume=1.0, quiet=False, night_level=20, day_level=90):
@@ -197,8 +214,10 @@ def _note_env(i, n, sr):
     return env
 
 
-def wait_tone_pcm(peak):
-    """PCM16 mono at WAIT_TONE_SR. peak is the full-scale fraction from wait_tone_gain. Empty when silent."""
+def wait_tone_pcm(peak, style="soft"):
+    """PCM16 mono at WAIT_TONE_SR. peak is the full-scale fraction from wait_tone_gain. Empty when silent.
+
+    style "soft" (default) is one gentle low pulse; "classic" is the old two-note chime."""
     try:
         peak = float(peak)
     except (TypeError, ValueError):
@@ -207,6 +226,18 @@ def wait_tone_pcm(peak):
         return b""
     peak = min(1.0, peak)
     sr = WAIT_TONE_SR
+    if wait_tone_style(style) == "soft":
+        n = int(sr * WAIT_TONE_SOFT_DUR)
+        seq = []
+        for i in range(n):
+            x = i / n
+            env = math.sin(math.pi * x) ** 2  # raised-cosine swell: no click, no sharp attack
+            t = i / sr
+            seq.append(env * (math.sin(2 * math.pi * WAIT_TONE_SOFT_FREQ * t)
+                              + 0.15 * math.sin(2 * math.pi * 2 * WAIT_TONE_SOFT_FREQ * t)))
+        loudest = max(abs(v) for v in seq) or 1.0
+        scale = peak * WAIT_TONE_SOFT_LEVEL * 32767.0 / loudest
+        return array.array("h", (max(-32767, min(32767, int(v * scale))) for v in seq)).tobytes()
     seq = []
     gap = [0.0] * int(sr * WAIT_TONE_GAP_S)
     for n_i, (freq, dur) in enumerate(WAIT_TONE_NOTES):

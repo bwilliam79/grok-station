@@ -24,16 +24,17 @@ ROTATE_DEFAULT = 20
 MAX_CARDS = 24
 PER_BOT = 8
 HOSTS_MAX = 8
-LOGO_MAX = 64 * 1024
+LOGO_MAX = 160 * 1024  # 0.12.11: many 500 px college logos are 80-110 KiB (64 KiB dropped them)
 LOGO_PX = 512
 LOGO_FILES = 32
-LOGO_TOTAL = 1 << 20
+LOGO_TOTAL = 4 << 20
 LOGO_MAX_AGE = 7 * 24 * 3600
 # Conversation cards (recipe, sports, calendar) replace each other. Home cards still stack.
 CONVO_TYPES = frozenset(("recipe", "sports", "calendar"))
-CONVO_IDLE_S = 60          # sports and calendar leave this long after the conversation goes idle
+CONVO_IDLE_S = 60          # calendar leaves this long after the conversation goes idle
+SPORTS_TILE_S = 15         # 0.12.11: a score tile leaves 15 s after it showed (or when speech ends, if later)
 RECIPE_IDLE_S = 30 * 60    # a recipe stays while someone is cooking; refreshed by a step command
-LOGO_WAIT_S = 1.0          # show the card once both logos are cached, or this long, whichever is first
+LOGO_WAIT_S = 0.0          # 0.12.11: show the card now; logos fill in when their download lands
 ESPN_LOGO_HOST = "a.espncdn.com"
 # Documented team-logo file. The /combiner/ resize URL is a different path and is not fetched here.
 _ESPN_TEAMLOGO = re.compile(r"^/i/teamlogos/[a-z0-9][a-z0-9-]{0,31}/\d{2,4}/[a-z0-9]{1,16}\.png$")
@@ -859,14 +860,38 @@ def _logo_file_ready(cache, logo_id):
     return 0 < size <= getattr(cache, "max_bytes", LOGO_MAX)
 
 
-def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S):
-    """Cache ESPN team logos before a card is shown. Other cards are only re-validated.
+def sports_idle_span(shown_at, now, hold_s=SPORTS_TILE_S):
+    """Seconds from now until a score tile leaves: hold_s after it showed, never before now."""
+    try:
+        return max(0.0, float(shown_at) + float(hold_s) - float(now))
+    except (TypeError, ValueError):
+        return float(hold_s)
+
+
+_NCAA_PATH = re.compile(r"^/i/teamlogos/ncaa[a-z0-9-]*/\d{2,4}/([a-z0-9]{1,16})\.png$")
+
+
+def logo_known_missing(url):
+    """True for a college logo URL ESPN cannot serve: college logos are named by the numeric ESPN
+    team id (ncaa/500/2250.png), never by an abbreviation (ncaa/500/gonz.png is a 404)."""
+    parts = _split_url(url)
+    m = _NCAA_PATH.fullmatch((parts.path or "") if parts else "")
+    return bool(m) and not m.group(1).isdigit()
+
+
+def logo_id_of(url):
+    """The cache id a fetch of this URL will store. Does not fetch or resolve."""
+    return hashlib.sha256(canonical_logo_url(url).encode()).hexdigest()
+
+
+def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
+    """Settle ESPN team logos for a sports card without holding the card back. Other cards are only re-validated.
 
     HTTPS only, host a.espncdn.com, the /i/teamlogos/ file path only, and that host must
-    be on the cache allowlist. Both sides share one deadline (default 1 second). A logo
-    that is not ready becomes an abbreviation badge. No URL and no badge is the name alone.
-    A download that is still running when the deadline passes may finish into the cache
-    for the next card; this card does not wait for it.
+    be on the cache allowlist. A cached logo is used at once. Otherwise the side shows the
+    team's abbreviation badge, keeps the logo id, and the download runs in the background;
+    on_ready() is called when a file lands so the display repaints with the logo. A logo that
+    never arrives stays the abbreviation badge. No URL and no badge is the name alone.
     """
     card = validate_card(card)
     if card["type"] != "sports":
@@ -884,12 +909,21 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S):
                 if team.get("logo_badge") is not True:
                     team.pop("logo_badge", None)
             continue
-        allowed = (cache is not None and espn_teamlogo_url(url)
+        allowed = (cache is not None and espn_teamlogo_url(url) and not logo_known_missing(url)
                    and logo_url_ok(url, getattr(cache, "hosts", ())))
+        team.pop("logo_url", None)
+        team.pop("logo_id", None)
+        team["logo_badge"] = True
         if not allowed:
-            team.pop("logo_url", None)
-            team.pop("logo_id", None)
-            team["logo_badge"] = True
+            continue
+        try:
+            lid = logo_id_of(url)
+        except CardError:
+            continue
+        team["logo_id"] = lid
+        fresh = getattr(cache, "_fresh", None)
+        if _logo_file_ready(cache, lid) and (fresh is None or fresh(cache.path_for(lid))):
+            team.pop("logo_badge", None)
             continue
         box = {}
 
@@ -898,6 +932,11 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S):
                 box["id"] = cache.fetch(u)
             except Exception:
                 box["id"] = None
+            if box["id"] and on_ready is not None:
+                try:
+                    on_ready()
+                except Exception:
+                    pass
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
@@ -908,13 +947,9 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S):
         if left > 0:
             thread.join(left)
         lid = box.get("id")
-        team.pop("logo_url", None)
-        team.pop("logo_id", None)
-        team.pop("logo_badge", None)
-        if _logo_file_ready(cache, lid):
+        if lid and _logo_file_ready(cache, lid):
             team["logo_id"] = lid
-        else:
-            team["logo_badge"] = True
+            team.pop("logo_badge", None)
     return validate_card(card)
 
 

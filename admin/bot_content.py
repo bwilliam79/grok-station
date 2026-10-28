@@ -14,8 +14,11 @@ import hashlib
 import os
 import re
 
-HEADER_RX = re.compile(rb"Grok Station instructions, release [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.")
-HEADER_NORM = b"Grok Station instructions, release X.Y.Z."
+# 0.12.11 (Nix): only whole header lines are normalized: a template's own first line, or the line in
+# gs-update.sh's TEMPLATES dict that opens a template ('    "home": r''' + header). Header-looking text
+# anywhere else is content, so changing it changes the fingerprint.
+HEADER_RX = re.compile(rb"""(?m)^((?:    "(?:home|cloud)": r''')?)Grok Station instructions, release [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.$""")
+HEADER_NORM = rb"\1Grok Station instructions, release X.Y.Z."
 HELPER = {"home": "scripts/install-home.sh", "cloud": "tools/grok-station-reply"}
 _LINE = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) ([0-9a-f]{40}) ([0-9a-f]{64}) ([0-9a-f]{64}) ([0-9a-f]{64})$")
 TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-releases.txt")

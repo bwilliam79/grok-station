@@ -630,7 +630,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._acks(out["events"]), [])
         self.assertFalse(any(str(t).startswith("Asking") for t, _ in self.tts))
         self.assertEqual(self.calls, [])
-        self.assertIn("lot of questions", self._replies(out["events"])[-1])
+        self.assertIn("still working on another question", self._replies(out["events"])[-1])  # 0.12.11
         relay._limits = handoff.Limits(os.path.join(self.tmp, "limits-direct.json"), relay.today)
         relay._limits.take("jules", "already-out")
         self.tts.clear()

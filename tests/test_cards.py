@@ -1121,7 +1121,7 @@ class DisplayLogos(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 1.0)
         self.assertEqual(calls, ["https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"])
         self.assertIs(out["home"].get("logo_badge"), True)
-        self.assertNotIn("logo_id", out["home"])
+        self.assertIn("logo_id", out["home"])  # 0.12.11: kept, so the logo fills in when it lands
         self.assertNotIn("logo_url", out["home"])
         self.assertIs(out["away"].get("logo_badge"), True)
         self.assertNotIn("logo_url", out["away"])

@@ -101,6 +101,15 @@ def tile_step(tile, prev_state, state, now, hold_s):
     return "keep"
 
 
+def turn_over(msg):
+    """The session is idle: the same screen, but no listening/thinking/speaking state for the corner badge."""
+    if not isinstance(msg, dict):
+        return msg
+    out = dict(msg)
+    out.pop("state", None)
+    return out
+
+
 def tile_end(shown_at, hold_s, speech_end):
     """A tile reply goes back to the main display when speech ends or hold_s after it showed, whichever is later."""
     return max(float(speech_end), float(shown_at) + float(hold_s))
@@ -461,7 +470,15 @@ def logo_cache():
     return _LOGO
 
 
-def apply_show(doc, cache, deck, now=None):
+def logo_landed():
+    """A team logo finished downloading after its score tile went up: repaint so it fills in."""
+    try:
+        pygame.event.post(pygame.event.Event(STATUS_EV))
+    except Exception:
+        pass
+
+
+def apply_show(doc, cache, deck, now=None, on_logo=logo_landed):
     """Re-validate a card op, settle logos, and put or clear. Raises CardError."""
     if not isinstance(doc, dict):
         raise cards.CardError("schema")
@@ -474,7 +491,7 @@ def apply_show(doc, cache, deck, now=None):
     if show["op"] == "clear":
         deck.clear(bot, show["id"])
         return "clear", bot, show["id"]
-    card = cards.prepare_display_logos(show["card"], cache)
+    card = cards.prepare_display_logos(show["card"], cache, on_ready=on_logo)
     deck.put(bot, show["id"], show["priority"], show["ttl_s"], card, now)
     return "put", bot, show["id"]
 
@@ -3564,10 +3581,15 @@ def main():
                 text_hold = None
                 if msg and TILE:
                     now_s = time.time()
-                    deck().arm_idle(TILE.get("bot"), TILE.get("id"), now_s)
+                    msg = turn_over(msg)  # the corner badge stops showing listening/thinking
+                    anim_started = None
+                    deck().arm_idle(TILE.get("bot"), TILE.get("id"), now_s,
+                                    sports_idle=(cards.sports_idle_span(TILE.get("shown", now_s), now_s)
+                                                 if (TILE.get("card") or {}).get("type") == "sports" else cards.CONVO_IDLE_S))
                     deadline = deck().idle_deadline(TILE.get("bot"), TILE.get("id"))
                     until = deadline if deadline is not None else now_s + cards.CONVO_IDLE_S
                     card_hold = True
+                    paint()
                 elif msg and msg.get("card") and not card_hold:
                     card_hold = True
                     until = time.time() + CARD_HOLD

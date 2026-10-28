@@ -32,6 +32,18 @@ def wait_tone_enabled(path=None):
     return raw.strip().lower() not in ("0", "false", "off", "no")
 
 
+def wait_tone_style_saved(path=None):
+    """"soft" (0.12.11 default) or "classic" from the Audio-page file."""
+    path = path or os.environ.get("WAIT_TONE_FILE", _TONE_FILE)
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = None
+    style = data.get("style") if isinstance(data, dict) else None
+    return style if style in ("soft", "classic") else "soft"
+
+
 def _load(name, candidates):
     cached = getattr(_load, name, None)
     if cached:
@@ -140,7 +152,16 @@ def render_pcm(env=None, now=None, lux=None, volume=1.0):
         now = time.localtime()
     quiet, night, day = tone_context(env, now, lux=lux)
     gain = mod.wait_tone_gain(volume, quiet=quiet, night_level=night, day_level=day)
-    return mod.wait_tone_pcm(gain), mod.WAIT_TONE_SR
+    return mod.wait_tone_pcm(gain, wait_tone_style_saved()), mod.WAIT_TONE_SR
+
+
+def tone_every():
+    """Seconds between pulses: WAIT_TONE_EVERY_SOFT for the soft pulse, 2.5 s for the classic chime."""
+    mod = sounds_mod()
+    style = wait_tone_style_saved()
+    if mod is None or not hasattr(mod, "wait_tone_every"):
+        return WAIT_TONE_EVERY
+    return mod.wait_tone_every(style)
 
 
 class WaitTone:
@@ -225,7 +246,7 @@ class WaitTone:
                 return False
             self.playing = True
             self._cancel = False
-            self.next_at = now + WAIT_TONE_EVERY
+            self.next_at = now + tone_every()
             return True
 
     def _stop_playback(self):

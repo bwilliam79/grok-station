@@ -51,6 +51,8 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         r.locked.clear()
         r._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), r.today)
         r._runs.clear()
+        r._test_last.clear()
+        r.TEST_COOLDOWN_S = 0  # these tests run several Tests back to back; the cooldown has its own test
         self.lines = []
         r.log = lambda *a: self.lines.append(" ".join(map(str, a)))
         self._registry()
