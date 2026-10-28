@@ -28,6 +28,14 @@ class NoRedInAdmin(unittest.TestCase):
             self.assertNotIn("--gs-red", rule, sel)
             self.assertNotIn("#FF5A52", rule.upper(), sel)
 
+    def test_docs_allow_red_only_for_the_offline_avatar_ring(self):
+        css = read("admin", "web", "admin.css")
+        self.assertIn("Red is allowed only for the offline avatar status ring.", css.split("\n", 1)[0])
+        design = read("docs", "design.md")
+        self.assertGreaterEqual(design.lower().count("allowed only for the offline avatar status ring"), 3)
+        notes = read("docs", "versioning.md")
+        self.assertIn("Red in the admin is allowed only for that offline avatar status ring.", notes)
+
     def test_errors_and_danger_are_amber(self):
         css = read("admin", "web", "admin.css")
         for sel in (".err{", ".btn.d{", ".btn.dg{", ".bad{"):
