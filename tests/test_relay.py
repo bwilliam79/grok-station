@@ -178,6 +178,48 @@ class MultiTurn(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(relay.session_local_exit(phrase, {}), phrase)
             self.assertFalse(relay.session_local_exit(phrase, ringing), phrase)
 
+    def test_recipe_command_is_taken_before_a_bot_and_a_question_is_not(self):
+        calls = []
+
+        def post(cmd):
+            calls.append(cmd)
+            return {"ok": True, "say": "Simmer twenty minutes.", "bot": "jules", "closed": False, "step": 2}
+
+        for phrase in ("what's the next step in the soup", "can you go next", "back up the sauce", "I'm done with the onions"):
+            self.assertIsNone(relay.recipe_taken(phrase, post), phrase)
+        self.assertEqual(calls, [])
+        cmd, result = relay.recipe_taken("Hey Grok, next step", post)
+        self.assertEqual(cmd, "next")
+        self.assertEqual(result["say"], "Simmer twenty minutes.")
+        self.assertEqual(calls, ["next"])
+        self.assertIsNone(relay.recipe_taken("next", lambda c: {"ok": False}))  # words match, no card up
+        self.assertEqual(relay.recipe_voice({"jules": {"voice": "ara"}}, "jules"), "ara")
+        self.assertEqual(relay.recipe_voice({"jules": {}}, "jules"), relay.VOICE)
+        self.assertEqual(relay.recipe_voice({}, None), relay.VOICE)
+        self.assertEqual(relay.post_recipe_cmd("sideways", post=lambda c: {"ok": True}), {"ok": False})
+        st = {"persona": "grok", "buf": [{"type": "response.created"}], "utt": 2}
+        relay.arm_recipe_drop(st)
+        st["answered_utt"] = st["utt"]
+        self.assertTrue(st["swallow_done"])
+        self.assertEqual(st["buf"], [])
+        self.assertEqual(relay.on_response_done_flags(st), "swallow")
+        self.assertTrue(st["drop_model"])
+        self.assertFalse(relay.apply_pending_drop(st, "response.done"))  # this done stays muted
+        self.assertTrue(st["drop_model"])
+        self.assertTrue(relay.apply_pending_drop(st, "speech_started"))
+        self.assertFalse(st["drop_model"])  # Grok's next answer is not silenced
+        stuck = {"persona": "grok", "swallow_done": True, "drop_model": True}
+        self.assertTrue(relay.release_recipe_drop(stuck))
+        self.assertFalse(stuck["drop_model"])
+        self.assertFalse(stuck.get("swallow_done"))
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay", "relay.py"),
+                   encoding="utf-8").read()
+        heard_at = src.index('await pi.send_json({"type": "heard", "text": heard})')
+        take_at = src.index("taken = recipe_taken(heard, post_recipe_cmd)")
+        route_at = src.index("end = await route_to(st[\"persona\"], q, heard)")
+        self.assertLess(take_at, heard_at)
+        self.assertLess(take_at, route_at)
+
     def test_latest_utterance_strips_earlier_turns(self):
         q1 = "What is on my calendar today?"
         self.assertEqual(relay.latest_utterance([q1], q1 + " Goodbye Hank."), "Goodbye Hank.")

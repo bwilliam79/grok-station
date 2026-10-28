@@ -81,6 +81,13 @@ class Stale(unittest.TestCase):
         tile = {"shown": 100.0}
         self.assertEqual(gs.tile_step(tile, "thinking", "speaking", 101, 10), "keep")
 
+    def test_recipe_step_command_keeps_the_tile_once(self):
+        tile = {"shown": 100.0, "card": {"type": "recipe"}, "stale": True, "step_cmd": True}
+        self.assertEqual(gs.tile_step(tile, "listening", "speaking", 130, 10), "keep")
+        self.assertNotIn("stale", tile)
+        self.assertNotIn("step_cmd", tile)  # the one-shot is spent
+        self.assertEqual(gs.tile_step(tile, "listening", "speaking", 140, 10), "clear")
+
 
 if __name__ == "__main__":
     unittest.main()

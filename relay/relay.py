@@ -1958,13 +1958,14 @@ async def session(req):
                         continue
                     ev = json.loads(m.data)
                     t = ev.get("type", "")
+                    apply_pending_drop(st, t)
                     if t == "response.created":
                         st.update(xai_active=True, cancel_sent=False)
                     elif t == "response.done":
                         st.update(xai_active=False, cancel_sent=False)
-                        # A local connect to Grok (or a bot that is not routed) must not keep the model muted.
-                        if st.pop("release_model", None):
-                            st["drop_model"] = persona_routed(st["persona"])
+                        # A swallowed recipe done must not open a second follow-up. release_model
+                        # still unmutes a local connect once its fixed lines have been spoken.
+                        on_response_done_flags(st)
                     if t not in QUIET:
                         log("xai", t)  # event type only; no content, no key
                     # A routed turn: cancel and drop model speech. Never forward it, never response.create for it.
@@ -1994,6 +1995,7 @@ async def session(req):
                         n_down += len(b)
                         await pi.send_bytes(b)
                     elif t == "input_audio_buffer.speech_started":
+                        release_recipe_drop(st)  # the cancelled reply never finished; this utterance is a new one
                         st["utt"] = st.get("utt", 0) + 1
                         st["turn_heard"] = False
                         st["model_out"] = 0
@@ -2036,6 +2038,25 @@ async def session(req):
                                 await cancel_response()
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"
+                        # Recipe card commands are station-local. Match before "heard" (that would
+                        # show thinking) and before any bot route or model reply. No card: fall through.
+                        taken = recipe_taken(heard, post_recipe_cmd)
+                        if taken:
+                            cmd, result = taken
+                            arm_recipe_drop(st)
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st["answered_utt"] = st.get("utt")
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            say = result.get("say") if isinstance(result.get("say"), str) else ""
+                            if say.strip():
+                                await play_fixed(say, recipe_voice(roster, result.get("bot")), TTS_REPLY_S)
+                            log("recipe " + cmd)  # the command only; the step text is not logged
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         st["turn_heard"] = True
                         if not st.get("utt"):
                             st["utt"] = 1
@@ -2761,6 +2782,115 @@ class _ShowAudit:
     def __init__(self, bot, verdict):
         self.bot = bot if handoff.bot_slug_ok(bot) else "-"
         self.verdict = verdict
+
+
+def recipe_match(text):
+    """A whole-utterance recipe command, or None. A question that only contains a word is None."""
+    try:
+        cmd = load_cards().recipe_utterance(text)
+    except Exception:
+        return None
+    if cmd not in ("next", "prev", "repeat", "start", "close"):
+        return None
+    return cmd
+
+
+def recipe_taken(heard, post):
+    """(cmd, station result) when a recipe card is up and this utterance is its command.
+
+    None when it is not a command, or the station has no recipe card. post is not called
+    unless the words match, so an ordinary question never touches the card. The caller
+    speaks the step and does not hand the utterance to a bot or the model.
+    """
+    cmd = recipe_match(heard)
+    if not cmd:
+        return None
+    try:
+        result = post(cmd)
+    except Exception:
+        return None
+    if not isinstance(result, dict) or not result.get("ok"):
+        return None
+    return cmd, result
+
+
+def recipe_voice(roster, bot):
+    """The card owner's voice, or the station voice when that bot has none."""
+    if isinstance(roster, dict) and isinstance(bot, str) and bot and bot != "grok":
+        row = roster.get(bot)
+        voice = row.get("voice") if isinstance(row, dict) else None
+        if isinstance(voice, str) and voice.strip():
+            return voice.strip()
+    return VOICE
+
+
+def arm_recipe_drop(st):
+    """This utterance is a recipe command. Hold the model's reply; the station speaks the step."""
+    st["buf"] = []
+    st["turn_heard"] = True
+    st["drop_model"] = True
+    st["swallow_done"] = True
+
+
+def on_response_done_flags(st):
+    """response.done bookkeeping. 'swallow' means the recipe path already opened the follow-up.
+
+    A swallowed done stays muted until the next event, then drop_model returns to the persona's
+    normal route so the following question is not silenced.
+    """
+    if st.pop("swallow_done", None):
+        st["pending_drop"] = persona_routed(st.get("persona"))
+        st["drop_model"] = True
+        return "swallow"
+    if st.pop("release_model", None):
+        st["drop_model"] = persona_routed(st.get("persona"))
+        return "release"
+    return ""
+
+
+def apply_pending_drop(st, event_type):
+    """Apply the post-swallow route on the next event. response.done itself stays muted."""
+    if "pending_drop" in st and event_type != "response.done":
+        st["drop_model"] = bool(st.pop("pending_drop"))
+        return True
+    return False
+
+
+def release_recipe_drop(st):
+    """The person spoke again before the cancelled response finished. Don't mute that answer."""
+    if not st.pop("swallow_done", None):
+        return False
+    st.pop("pending_drop", None)
+    st["drop_model"] = persona_routed(st.get("persona"))
+    return True
+
+
+def post_recipe_cmd(cmd, post=None):
+    """POST /recipe on the station. No token: localhost only, same as /state. The step text is not logged."""
+    if cmd not in ("next", "prev", "repeat", "start", "close"):
+        return {"ok": False}
+    if post is not None:
+        try:
+            got = post(cmd)
+        except Exception:
+            return {"ok": False}
+        return got if isinstance(got, dict) else {"ok": False}
+    vals = _station_env_values(frozenset(("GROK_STATION_PORT",)))
+    try:
+        port = int(vals.get("GROK_STATION_PORT") or 8787)
+    except ValueError:
+        port = 8787
+    if not 1 <= port <= 65535:
+        return {"ok": False}
+    body = json.dumps({"cmd": cmd}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/recipe" % port, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read(4096) or b"{}")
+        return data if isinstance(data, dict) else {"ok": False}
+    except Exception:
+        return {"ok": False}
 
 
 def post_station_show(show, post=None):

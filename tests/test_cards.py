@@ -301,6 +301,63 @@ class DeckTests(unittest.TestCase):
         self.assertIsNone(fresh.idle_deadline("jules", "soup"))
         self.assertEqual(fresh.arm_idle("jules", "soup", 130), 100 + cards.RECIPE_IDLE_S)
 
+    def test_recipe_commands_match_the_whole_utterance(self):
+        yes = {
+            "next": "next", "Next step.": "next", "next step please": "next",
+            "hey grok, next": "next", "Hey Jules next step": "next",
+            "previous step": "prev", "go back": "prev", "back": "prev", "Back.": "prev",
+            "repeat": "repeat", "repeat that step": "repeat",
+            "what's this step": "repeat", "whats this step": "repeat", "what is this step?": "repeat",
+            "what’s this step": "repeat",
+            "start over": "start", "first step": "start",
+            "done": "close", "close recipe": "close", "done please": "close",
+        }
+        for phrase, cmd in yes.items():
+            self.assertEqual(cards.recipe_utterance(phrase), cmd, phrase)
+        no = (
+            "what's the next step in the soup",
+            "can you go to the next step",
+            "next step of the recipe is what",
+            "back up the sauce",
+            "I'm done with the onions",
+            "please next",
+            "repeat after me the whole recipe",
+            "close the recipe book",
+            "",
+        )
+        for phrase in no:
+            self.assertIsNone(cards.recipe_utterance(phrase), phrase)
+
+    def test_recipe_command_changes_the_step_and_the_idle_clock(self):
+        deck = cards.Deck(rotate_s=20, ttl_max=86400)
+        deck.put("jules", "soup", 1, 86400, recipe(), 0)  # step 2 of 3
+        self.assertEqual(cards.apply_recipe_command(deck, "nope", 10), {"ok": False})
+        nxt = cards.apply_recipe_command(deck, "next", 10)
+        self.assertEqual((nxt["ok"], nxt["step"], nxt["say"], nxt["closed"]),
+                         (True, 3, "Season and serve.", False))
+        self.assertEqual(deck.get("jules", "soup")["step"], 3)
+        self.assertIsNone(deck.idle_deadline("jules", "soup"))  # session still active: step remembered only
+        last = cards.apply_recipe_command(deck, "next", 20)
+        self.assertEqual(last["say"], cards.LAST_STEP_LINE)
+        self.assertEqual(last["step"], 3)
+        back = cards.apply_recipe_command(deck, "prev", 30)
+        self.assertEqual((back["step"], back["say"]), (2, "Simmer twenty minutes."))
+        self.assertEqual(cards.apply_recipe_command(deck, "start", 40)["step"], 1)
+        self.assertEqual(cards.apply_recipe_command(deck, "prev", 50)["say"], cards.FIRST_STEP_LINE)
+        again = cards.apply_recipe_command(deck, "repeat", 60)
+        self.assertEqual((again["step"], again["say"]), (1, "Chop the vegetables."))
+        deck.arm_idle("jules", "soup", 70)
+        cards.apply_recipe_command(deck, "next", 1000)
+        self.assertEqual(deck.idle_deadline("jules", "soup"), 1000 + cards.RECIPE_IDLE_S)
+        self.assertEqual(deck.get("jules", "soup")["step"], 2)
+        home_id = "stocks"
+        deck.put("mira", home_id, 1, 86400, home(), 0)
+        closed = cards.apply_recipe_command(deck, "close", 1001)
+        self.assertTrue(closed["closed"])
+        self.assertIsNone(deck.get("jules", "soup"))
+        self.assertIsNotNone(deck.get("mira", home_id))  # home cards stay
+        self.assertEqual(cards.apply_recipe_command(deck, "next", 1002), {"ok": False})
+
     def test_expiry_removes_the_card(self):
         deck = cards.Deck(rotate_s=20, ttl_max=100)
         deck.put("jules", "soup", 1, 10, recipe(), 0)
@@ -831,6 +888,32 @@ class Station(unittest.TestCase):
         self.assertNotIn("logo_url", stored)
         self.assertNotIn("logo_id", stored)
         self.assertIs(stored.get("logo_badge"), True)  # not an ESPN team-logo path: abbreviation, no fetch
+
+    def _recipe_post(self, body, addr=("127.0.0.1", 9)):
+        handler = object.__new__(gs.Handler)
+        raw = json.dumps(body).encode()
+        handler.client_address = addr
+        handler.path = "/recipe"
+        handler.headers = {"Content-Length": str(len(raw))}
+        handler.rfile = io.BytesIO(raw)
+        handler.replies = []
+        handler._reply = lambda code, obj: handler.replies.append((code, obj))
+        gs.Handler.do_POST(handler)
+        return handler.replies[-1]
+
+    def test_recipe_endpoint_advances_on_localhost_only(self):
+        gs.DECK.put("jules", "soup", 1, 3600, recipe(), time.time())
+        code, body = self._recipe_post({"cmd": "next"}, addr=("10.42.0.7", 9))
+        self.assertEqual((code, body["error"]), (403, "localhost only"))
+        self.assertEqual(gs.DECK.get("jules", "soup")["step"], 2)
+        code, body = self._recipe_post({"cmd": "sideways"})
+        self.assertEqual(code, 400)
+        code, body = self._recipe_post({"cmd": "next"})
+        self.assertEqual(code, 200)
+        self.assertEqual((body["ok"], body["step"], body["say"]), (True, 3, "Season and serve."))
+        code, body = self._recipe_post({"cmd": "close"})
+        self.assertTrue(body["closed"])
+        self.assertIsNone(gs.DECK.get("jules", "soup"))
 
     def test_screen_choice_and_feed_identity(self):
         self.assertEqual(gs.screen_for(None, False, None, False, {"type": "recipe"}), "feed")

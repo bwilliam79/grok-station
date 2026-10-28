@@ -88,6 +88,10 @@ def tile_step(tile, prev_state, state, now, hold_s):
     posts replaces the old one (the FEED handler stores it fresh), so it shows."""
     if not tile:
         return "keep"
+    # One state after a recipe step command: reading the step must not drop the card.
+    if tile.pop("step_cmd", None):
+        tile.pop("stale", None)
+        return "keep"
     if state == "listening" and prev_state is not None:
         tile["stale"] = True
     if now >= float(tile.get("shown", now)) + float(hold_s):
@@ -288,6 +292,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/state":
             return self._state()
+        if self.path == "/recipe":
+            return self._recipe()
         if not ipaddress.ip_address(self.client_address[0].removeprefix("::ffff:")).is_private:
             return self._reply(403, {"error": "lan only"})
         if self.path not in ("/show", "/enroll"):
@@ -389,6 +395,30 @@ class Handler(BaseHTTPRequestHandler):
             bits.append(f"timers {len(ev['timers'])}")
         print(f"state {' '.join(bits)} who={ev['who']}", flush=True)
         self._reply(200, {"ok": True})
+
+    def _recipe(self):
+        """Localhost, no token: a short recipe-card command. The step text is not logged."""
+        if not _localhost_client(self.client_address[0]):
+            return self._reply(403, {"error": "localhost only"})
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+            if n > 1024:
+                return self._reply(413, {"error": "too large"})
+            j = json.loads(self.rfile.read(n) or b"{}")
+        except Exception:
+            return self._reply(400, {"error": "bad json"})
+        cmd = j.get("cmd") if isinstance(j, dict) else None
+        if cmd not in ("next", "prev", "repeat", "start", "close"):
+            return self._reply(400, {"error": "bad command"})
+        result = cards.apply_recipe_command(deck(), cmd, time.time())
+        if result.get("ok") and result.get("closed"):
+            pygame.event.post(pygame.event.Event(FEED, tile=None, recipe_closed=True))
+        elif result.get("ok"):
+            page = deck().get(result["bot"], result["id"])
+            tile = {"bot": result["bot"], "id": result["id"], "card": page, "step_cmd": True}
+            pygame.event.post(pygame.event.Event(FEED, tile=tile, recipe_cmd=True))
+        print(f"recipe {cmd} ok={bool(result.get('ok'))} closed={bool(result.get('closed'))}", flush=True)
+        self._reply(200, result)
 
     def _status(self):
         """Localhost-only snapshot of the status icons. No relay URL, host, or address."""
@@ -3557,6 +3587,13 @@ def main():
                         paint(snapshot=not msg)
             continue
         if ev.type == FEED:
+            if getattr(ev, "recipe_closed", False):
+                TILE.clear()
+                if msg and msg.get("voice"):
+                    paint()
+                elif not night_face(time.localtime()):
+                    paint(snapshot=False)
+                continue
             tile = getattr(ev, "tile", None)
             if tile and msg and msg.get("voice"):
                 if text_hold and persona_match(text_hold.get("who"), tile.get("bot")):

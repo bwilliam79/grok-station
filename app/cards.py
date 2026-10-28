@@ -944,6 +944,95 @@ def _copy(doc):
     return json.loads(json.dumps(doc))
 
 
+# Whole-utterance recipe commands. A question that merely contains one of these words does not match.
+_RECIPE_PHRASES = {
+    "next": "next",
+    "next step": "next",
+    "previous step": "prev",
+    "go back": "prev",
+    "back": "prev",
+    "repeat": "repeat",
+    "repeat that step": "repeat",
+    "what's this step": "repeat",
+    "whats this step": "repeat",
+    "what is this step": "repeat",
+    "start over": "start",
+    "first step": "start",
+    "done": "close",
+    "close recipe": "close",
+}
+LAST_STEP_LINE = "That's the last step."
+FIRST_STEP_LINE = "That's the first step."
+
+
+def recipe_utterance(text):
+    """A recipe-card command, or None.
+
+    Exact after case, apostrophes, and surrounding punctuation are folded.
+    An optional leading "hey <name>" and a trailing "please" are allowed.
+    Anything else, including a question that contains "next", is None so it
+    still goes to the bot.
+    """
+    t = unicodedata.normalize("NFKC", str(text or ""))
+    t = t.replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    t = " ".join(t.casefold().split())
+    if not t:
+        return None
+    t = re.sub(r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?)[, ]+", "", t).strip()
+    t = t.strip(" \t.!?")
+    if t.endswith(" please"):
+        t = t[: -len(" please")].strip(" \t.!?")
+    return _RECIPE_PHRASES.get(t)
+
+
+def apply_recipe_command(deck, cmd, now):
+    """Advance, repeat, restart, or close the one recipe card. {ok: False} when none is up.
+
+    A step change is spoken by the caller. The follow-up window is not this function's job.
+    """
+    if cmd not in ("next", "prev", "repeat", "start", "close"):
+        return {"ok": False}
+    if type(now) not in (int, float) or type(now) is bool:
+        return {"ok": False}
+    with deck._lock:
+        deck._drop(now)
+        it = next((x for x in deck._ordered() if x["card"]["type"] == "recipe"), None)
+        if it is None:
+            return {"ok": False}
+        card = it["card"]
+        steps = card["steps"]
+        step = int(card["step"])
+        n = len(steps)
+        bot, cid = it["bot"], it["id"]
+        if cmd == "close":
+            deck._items = [x for x in deck._items if x is not it]
+            deck._anchor = None
+            return {"ok": True, "closed": True, "bot": bot, "id": cid, "step": step, "say": ""}
+        if cmd == "next":
+            if step >= n:
+                say = LAST_STEP_LINE
+            else:
+                step += 1
+                say = steps[step - 1]
+        elif cmd == "prev":
+            if step <= 1:
+                say = FIRST_STEP_LINE
+            else:
+                step -= 1
+                say = steps[step - 1]
+        elif cmd == "start":
+            step = 1
+            say = steps[0]
+        else:
+            say = steps[step - 1]
+        card["step"] = step
+        it["step_at"] = now
+        if it.get("idle_at") is not None:
+            it["idle_at"] = min(it["expires"], now + RECIPE_IDLE_S)
+        return {"ok": True, "closed": False, "bot": bot, "id": cid, "step": step,
+                "say": say, "title": card.get("title") or ""}
+
+
 class Deck:
     """In-memory cards for one station. Higher priority first, then older seq. Expired cards are gone."""
 
