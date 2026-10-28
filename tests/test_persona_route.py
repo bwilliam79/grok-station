@@ -103,6 +103,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
     def test_fixed_lines_and_registry_lint_stays_strict(self):
         self.assertEqual(relay.asking_line("Jules"), "Asking Jules\u2026")
         self.assertEqual(relay.handoff_line("Jules", "timeout"), "I couldn't reach Jules.")
+        self.assertEqual(relay.handoff_line("Jules", "timeout", reached=True), "Jules couldn't reply in time.")
         self.assertEqual(relay.handoff_line("Jules", "reject"),
                          "Jules's answer couldn't be read out here; ask in the app.")
         self.assertIsNotNone(relay.lint("see example.com", []))
@@ -542,7 +543,7 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
         self.mode = "silent"
         relay.REPLY_WAIT = 0.7
         out = await self.drive(DINNER, persona="jules", timeout=6)
-        line = "I couldn't reach Jules."
+        line = "Jules couldn't reply in time."
         self._assert_routed_silence(out)
         self.assertEqual(self._replies(out["events"]), [line])
         types = [e.get("type") for e in out["events"]]

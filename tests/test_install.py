@@ -109,6 +109,9 @@ class Install(unittest.TestCase):
             self.assertIn("$O/wake/models/hey_%s.onnx" % n, sh)
         self.assertNotIn("rm -f $O/wake/models/enrolled", sh)
         self.assertIn("$V/voice/ack", sh)  # cached "Asking <name>" clips; the relay unit already writes the state dir
+        # Late answers are spoken by user grok. voice/ is grok-admin only, so late/ is group grok and setgid.
+        self.assertIn("install -d -o grok-relay -g grok -m 2770 $V/late", sh)
+        self.assertNotIn("$V/voice/late", sh)
         self.assertNotIn("jarvis", sh.lower())
 
     def test_wake_venv_pins_exact_versions(self):

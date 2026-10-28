@@ -902,6 +902,23 @@ def control_server():
                     ENROLL_STATE["discard"] = True
                     ENROLL_STATE["pause"] = False
                 return self._r(200, {"ok": True, "op": op})
+            if self.path == "/late-reply":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except (ValueError, TypeError):
+                    return self._r(400, {"error": "bad json"})
+                if not isinstance(body, dict):
+                    return self._r(400, {"error": "bad json"})
+                late_id = body.get("id") if isinstance(body.get("id"), str) else ""
+                job = load_late_job(late_id)
+                action = late_reply_action(late_session_open(), job)
+                if action == "busy":
+                    return self._r(409, {"error": "busy"})
+                if action == "missing":
+                    return self._r(404, {"error": "not found"})
+                start_late(job, late_id)
+                return self._r(200, {"ok": True})
             if self.path == "/mic-reset":
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
@@ -1730,7 +1747,11 @@ def make_chime(path):
 
 
 THINKING_BLANK = " "  # thinking screen: spinning ring only, no dots (truthy so the display keeps no fallback text)
-HANDOFF_KEEPALIVE_S = 8  # well under the display's 20 s thinking hold
+HANDOFF_KEEPALIVE_S = 8  # well under the display's 20 s thinking hold; a teammate can take a few minutes
+LATE_DIR = E("GROK_LATE_DIR", "/var/lib/grok-station/late")  # not voice/: that tree is grok-admin only
+_LATE_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+_LATE_PCM = re.compile(r"^vs_[A-Za-z0-9_-]{22}\.pcm$")
+LATE_PLAYING = {"on": False}
 
 
 def handoff_wait_text(ev):
@@ -1762,6 +1783,81 @@ def ack_played_line(t_end_speech, now):
 
 def handoff_keepalive_due(s):
     return bool(getattr(s, "active", False) and getattr(s, "handoff_text", None) and not getattr(s, "t_first_audio", None))
+
+
+def late_session_open():
+    """True while a conversation, an enrollment, or a late line is already using the speaker."""
+    sess = CURRENT.get("session")
+    return bool(LIVE["session"] or ENROLL_STATE["busy"] or LATE_PLAYING["on"]
+                or (sess is not None and getattr(sess, "active", False)))
+
+
+def load_late_job(late_id):
+    """The job file for one request id, or None. A pcm name that is not that id is ignored."""
+    if not _LATE_ID.fullmatch(str(late_id or "")):
+        return None
+    try:
+        with open(os.path.join(LATE_DIR, late_id + ".json")) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("text"), str) or not doc["text"].strip():
+        return None
+    who = doc.get("who") if isinstance(doc.get("who"), str) else ""
+    pcm = doc.get("pcm") if isinstance(doc.get("pcm"), str) else ""
+    if pcm and not _LATE_PCM.fullmatch(pcm):
+        pcm = ""
+    return {"text": doc["text"].strip(), "who": " ".join(who.split())[:40], "pcm": pcm}
+
+
+def late_reply_action(session_open, job):
+    """'busy', 'missing', 'play', or 'show'. Play when a pcm file name came with the job."""
+    if session_open:
+        return "busy"
+    if not job:
+        return "missing"
+    return "play" if job.get("pcm") else "show"
+
+
+def _forget_late_job(late_id, pcm):
+    for name in (late_id + ".json", pcm or ""):
+        if not name:
+            continue
+        try:
+            os.unlink(os.path.join(LATE_DIR, name))
+        except OSError:
+            pass
+
+
+def play_late(job):
+    """Show the line, play PCM when there is some, then go back to idle. TTS failure still shows the text."""
+    post_state("speaking", text=job.get("text") or "", who=job.get("who") or "")
+    pcm_name, dev = job.get("pcm") or "", LIVE.get("play")
+    if pcm_name and dev and _LATE_PCM.fullmatch(pcm_name):
+        try:
+            with open(os.path.join(LATE_DIR, pcm_name), "rb") as f:
+                pcm = f.read()
+            if pcm:
+                p = subprocess.Popen(["aplay", "-q", "-D", dev, "-f", "S16_LE", "-r", "24000", "-c", "1", "-t", "raw"],
+                                     stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                p.communicate(pcm)
+        except Exception:
+            pass
+    post_state("idle")
+
+
+def start_late(job, late_id):
+    """Speak on a thread so the control request can return. A second late reply gets 409 until this ends."""
+    LATE_PLAYING["on"] = True
+
+    def run():
+        try:
+            play_late(job)
+        finally:
+            LATE_PLAYING["on"] = False
+            _forget_late_job(late_id, job.get("pcm"))
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def post_state(state=None, **kw):
@@ -1946,7 +2042,7 @@ class Session:
 
     def start_handoff_keepalive(self):
         """The display drops a "thinking" screen after VOICE_HOLDS["thinking"] (20 s) without a new post,
-        but a teammate can take REPLY_WAIT (120 s). Re-post the wait screen until audio, handoff_done or session end."""
+        but a teammate can take a few minutes. Re-post the wait screen until audio, handoff_done or session end."""
         if getattr(self, "_ka", None) and self._ka.is_alive():
             return
         def loop():

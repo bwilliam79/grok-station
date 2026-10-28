@@ -22,7 +22,7 @@ no daily talk-time cap (per-turn and per-session caps only); 5 bad tokens from a
 for 15 min; upstream audio per session is capped. The listener binds 127.0.0.1. Alerts (lockout, handoff) go as
 JSON files into ALERT_DIR for an ntfy forwarder, if that directory exists.
 """
-import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, stat, tempfile, time, unicodedata, urllib.error, urllib.request
+import asyncio, base64, datetime, errno, hashlib, hmac, io, json, os, re, secrets, stat, tempfile, threading, time, unicodedata, urllib.error, urllib.request
 from zoneinfo import ZoneInfo
 try:
     from aiohttp import web, ClientSession, ClientTimeout, WSMsgType
@@ -33,6 +33,7 @@ except ModuleNotFoundError as _e:  # a venv from an older install: say which pac
           "(it installs relay/requirements.txt on every run).", file=_sys.stderr, flush=True)
     raise SystemExit(1)
 import handoff
+import late_answer
 import tools as station_tools
 import t1
 
@@ -216,7 +217,10 @@ def webhooks():
 PENDING_DIR = E("HANDOFF_PENDING", os.path.join(STATE_DIR, "voice", "pending"))
 REPLIES_DIR = E("HANDOFF_REPLIES", os.path.join(STATE_DIR, "voice", "replies"))
 ACK_DIR = E("ACK_DIR", os.path.join(STATE_DIR, "voice", "ack"))  # cached "Asking <name>" clips
-REPLY_WAIT = float(E("REPLY_WAIT", "30"))           # seconds the station waits for a teammate's answer
+REPLY_WAIT = float(E("REPLY_WAIT", "180"))          # seconds the station waits for a teammate's answer
+ANSWER_BY_S = float(E("ANSWER_BY", str(botreply.REPLY_BY_S)))          # reply_by and pending validity for that answer
+CHECKING_AFTER_S = float(E("CHECKING_AFTER", "8"))  # one "Checking, one moment." while the ring stays up
+LATE_QUEUE_S = float(E("LATE_QUEUE", "120"))        # a late answer waits at most this long for idle
 _limits = handoff.Limits(E("HANDOFF_STATE", os.path.join(STATE_DIR, "state", "handoff.json")), lambda: today())
 _seen_rids = set()
 _reply_seen = set()       # request ids that already took a sealed reply; not the take_reply set
@@ -974,7 +978,7 @@ async def ask_bot_list(http):
     deadline = now + REPLY_WAIT
     try:
         reply_by = datetime.datetime.fromtimestamp(reply_at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + botreply.SKEW_S) * 1000),
+        handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
                               question=LIST_QUESTION, pii_mode=True, reply_by=reply_by, kind="bot_list")
         hook = handoff.route(webhooks(), slug)
         if not hook:
@@ -1044,15 +1048,16 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
         return None, "limit"
     nonce = secrets.token_urlsafe(24)
     now = time.time()
-    reply_at = now + botreply.REPLY_BY_S
+    # reply_by and the pending file both stay open for ANSWER_BY_S (~3 min), not the old 60 s / 2 min.
+    # The spoken wait is still REPLY_WAIT, so a test can shorten it without closing the accept window.
+    reply_at = now + ANSWER_BY_S
     deadline = now + REPLY_WAIT
+    posted_ok, parked, sent = False, False, False
     try:
         if cancel is not None and cancel.is_set():
             return None, "cancelled"
         reply_by = datetime.datetime.fromtimestamp(reply_at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # reply_by on the wire is 60 s. The pending file stays valid for SKEW_S (2 min) so a skewed clock
-        # does not fail a reply the station is still waiting for. The spoken wait is REPLY_WAIT, not 2 min.
-        handoff.write_pending(PENDING_DIR, rid, bot, nonce, int((now + botreply.SKEW_S) * 1000), question=q, pii_mode=pii,
+        handoff.write_pending(PENDING_DIR, rid, bot, nonce, int(reply_at * 1000), question=q, pii_mode=pii,
                               test=bool(test), reply_by=reply_by)
         if hook is None:
             hook = handoff.route(webhooks(), bot)
@@ -1065,10 +1070,13 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
         posted = dict(body)
         t_post, status = time.monotonic(), "error"
         try:
+            sent = True  # the body may already be on the wire if this await is cancelled
             async with http.post(hook["url"], json=posted, allow_redirects=False,
                                  headers={"Authorization": f"Bearer {hook['token']}"}, timeout=ClientTimeout(total=10)) as r:
                 status = r.status
                 ok = 200 <= r.status < 300
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             ok, status = False, type(e).__name__  # B4: the body may have been sent; never retry
         if detail is not None:
@@ -1080,9 +1088,11 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
             _note_status(bot, error="Key was refused (401)" if status == 401 else "Couldn't reach the bot")
             _note_icon(bot, "post-failed")  # red now; do not wait out REPLY_WAIT
             return None, "post-failed"
+        posted_ok = True
         if on_wait:
             await on_wait()
         t_wait = time.monotonic()
+        said_checking = False
         while time.time() < deadline:
             if cancel is not None and cancel.is_set():
                 return None, "cancelled"
@@ -1102,6 +1112,14 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                 _note_status(bot, answered=True, clear_error=True)
                 _note_icon(bot, "ok")
                 return text, "ok"
+            if not said_checking and on_still is not None and time.monotonic() - t_wait >= CHECKING_AFTER_S:
+                said_checking = True
+                try:
+                    await on_still()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass
             await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
         _record_rtt(bot, timeout=True)
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=timeout wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
@@ -1109,8 +1127,17 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
         _note_status(bot, error="No answer")
         _note_icon(bot, "timeout")
         return None, "timeout"
+    except asyncio.CancelledError:
+        # The session closed while the bot may still answer. Keep this request open so a matching
+        # reply can be spoken later. A normal timeout still removes it in finally.
+        if sent and not test:
+            _park_late(rid, bot, q, nonce, reply_at)
+            parked = True
+            _pickup_late_file(rid)
+        raise
     finally:
-        handoff.remove_pending(PENDING_DIR, rid)
+        if not parked:
+            handoff.remove_pending(PENDING_DIR, rid)
         _limits.release(bot)
 
 
@@ -1122,9 +1149,15 @@ def _record_rtt(bot, rtt_ms=None, timeout=False):
         log("rtt write failed", type(e).__name__)
 
 
-def handoff_line(name, verdict, host=None):
+def handoff_line(name, verdict, host=None, reached=False):
     """The fixed sentence the station speaks. The model does not word it.
-    host: the home computer that posts this bot's replies; a timeout names it, since that's what usually sleeps."""
+
+    host: the home computer that posts this bot's replies. A timeout names it only when the post
+    never landed, since that's what usually sleeps. reached: the webhook accepted the ask, so the
+    hard-limit line is that the bot didn't answer in time.
+    """
+    if verdict == "timeout" and reached:
+        return f"{name} couldn't reply in time."
     if verdict == "timeout" and host:
         return f"I couldn't reach {name}. {host} may be offline."
     return {"timeout": f"I couldn't reach {name}.",
@@ -1645,7 +1678,10 @@ async def health(req):
 
 
 def _mark_busy(n):
-    """Session flag plus a file the host updater can see. No await, no secrets."""
+    """Session flag plus a file the host updater can see. No await, no secrets.
+
+    Going idle speaks any late answer that was waiting for this conversation to end.
+    """
     stats["busy"] = n
     path = os.environ.get("VOICE_BUSY", os.path.join(STATE_DIR, "state", "voice-busy"))
     try:
@@ -1662,9 +1698,261 @@ def _mark_busy(n):
             try:
                 os.remove(path)
             except FileNotFoundError:
-                return
+                pass
     except OSError:
+        pass
+    if not n:
+        try:
+            _flush_late()
+        except Exception:
+            pass
+
+
+_LATE = {}          # request_id -> parked ask whose waiter is gone
+_LATE_LOCK = threading.Lock()
+_LATE_SINK = None   # tests set this; production speaks through the wake listener
+
+
+def _display_name(slug):
+    try:
+        p = persona_list().get(slug) or {}
+    except Exception:
+        p = {}
+    name = p.get("name") if isinstance(p, dict) else None
+    if isinstance(name, str) and name.strip():
+        return " ".join(name.split())[:40]
+    s = str(slug or "").strip()
+    return (s[:1].upper() + s[1:]) if s else "The bot"
+
+
+def _bot_voice(slug):
+    try:
+        p = persona_list().get(slug) or {}
+    except Exception:
+        p = {}
+    voice = p.get("voice") if isinstance(p, dict) else None
+    return voice or VOICE
+
+
+def _nonce_ok(expected, got):
+    if not isinstance(expected, str) or not isinstance(got, str) or len(expected) != len(got) or not expected:
+        return False
+    return hmac.compare_digest(expected, got)
+
+
+def _park_late(rid, bot, question, nonce, hard_at):
+    """Remember an ask whose session closed before the answer. The pending file stays."""
+    with _LATE_LOCK:
+        _LATE[rid] = {"rid": rid, "bot": bot, "name": _display_name(bot), "question": question,
+                      "nonce": nonce, "hard_at": float(hard_at), "text": None, "card": None,
+                      "queue_until": None, "arrived_at": None}
+
+
+def late_hold_show(show):
+    """Hold an already-checked card until the late answer for this bot is spoken. True if held."""
+    bot = show.get("bot") if isinstance(show, dict) else None
+    if not bot:
+        return False
+    with _LATE_LOCK:
+        for slot in _LATE.values():
+            if slot.get("bot") == bot:
+                slot["card"] = show
+                return True
+    return False
+
+
+def late_accept(rid, text, nonce):
+    """Attach an answer to a parked ask with this exact request id. False if nothing is parked.
+
+    A nonce that does not match is dropped and not spoken. The caller must not also hand the
+    text to a live waiter.
+    """
+    speak = None
+    with _LATE_LOCK:
+        slot = _LATE.get(rid)
+        if slot is None:
+            return False
+        if not _nonce_ok(slot.get("nonce"), nonce):
+            _LATE.pop(rid, None)
+            return True
+        if slot.get("text") is not None:
+            return True
+        now = time.time()
+        slot["text"] = text
+        slot["arrived_at"] = now
+        slot["queue_until"] = min(slot["hard_at"], now + LATE_QUEUE_S)
+        action = late_answer.late_decide(now, slot["hard_at"], bool(stats["busy"]), slot["queue_until"])
+        if action == "speak":
+            speak = _LATE.pop(rid)
+        elif action == "drop":
+            _LATE.pop(rid, None)
+    if speak:
+        _deliver_late(speak)
+    return True
+
+
+def _pickup_late_file(rid):
+    """If the reply file for this parked id is already on disk, deliver it and remove the file."""
+    path = os.path.join(REPLIES_DIR, rid + ".json")
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
         return
+    if not isinstance(doc, dict) or doc.get("request_id") != rid or not isinstance(doc.get("text"), str):
+        return
+    nonce = doc.get("nonce") if isinstance(doc.get("nonce"), str) else ""
+    if late_accept(rid, doc["text"], nonce):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _requeue_late(slot):
+    now = time.time()
+    qu = slot.get("queue_until")
+    if now > slot["hard_at"] or (qu is not None and now > qu):
+        return
+    with _LATE_LOCK:
+        _LATE.setdefault(slot["rid"], slot)
+
+
+def _flush_late():
+    """Speak parked answers that are still in time, or drop them. Idle only."""
+    now = time.time()
+    busy = bool(stats["busy"])
+    speak, drop_pending = [], []
+    with _LATE_LOCK:
+        for rid, slot in list(_LATE.items()):
+            if slot.get("text") is None:
+                if now > slot["hard_at"]:
+                    _LATE.pop(rid, None)
+                    drop_pending.append(rid)
+                continue
+            action = late_answer.late_decide(now, slot["hard_at"], busy, slot.get("queue_until"))
+            if action == "drop":
+                _LATE.pop(rid, None)
+            elif action == "speak":
+                speak.append(_LATE.pop(rid))
+    for rid in drop_pending:
+        handoff.remove_pending(PENDING_DIR, rid)
+    for slot in speak:
+        _deliver_late(slot)
+
+
+def _deliver_late(slot):
+    line = late_answer.late_line(slot.get("name"), slot.get("question"), slot.get("text"))
+    payload = {"text": line, "who": slot.get("name") or "", "card": slot.get("card"),
+               "bot": slot.get("bot"), "rid": slot.get("rid")}
+    sink = _LATE_SINK
+    if sink is not None:
+        try:
+            sink(payload)
+        except Exception:
+            pass
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        loop.create_task(_speak_late(slot, line))
+        return
+    _post_wake_late(slot["rid"], line, payload["who"], b"")
+    if slot.get("card"):
+        post_station_show(slot["card"])
+
+
+def _share_with_wake(path, directory=False):
+    """The wake listener runs as grok and cannot read voice/ (mode 0770, group grok-admin).
+
+    Group grok and mode 0640 (directory 2770, setgid) let it read and delete a job. A missing
+    grok group, as in a test, leaves the file owner-readable.
+    """
+    try:
+        os.chmod(path, 0o2770 if directory else 0o640)
+    except OSError:
+        pass
+    try:
+        import grp
+        os.chown(path, -1, grp.getgrnam("grok").gr_gid)
+    except (KeyError, OSError, ImportError):
+        pass
+
+
+def _write_late_job(rid, text, who, pcm):
+    """Job file plus optional PCM. The wake listener reads them; the HTTP body stays the id."""
+    if not handoff.REQUEST_ID.fullmatch(str(rid or "")):
+        return False
+    directory = E("GROK_LATE_DIR", os.path.join(STATE_DIR, "late"))
+    os.makedirs(directory, exist_ok=True)
+    _share_with_wake(directory, directory=True)
+    pcm_name = ""
+    if pcm:
+        pcm_path = os.path.join(directory, rid + ".pcm")
+        with open(pcm_path, "wb") as f:
+            f.write(pcm)
+            f.flush()
+        _share_with_wake(pcm_path)
+        pcm_name = rid + ".pcm"
+    path = os.path.join(directory, rid + ".json")
+    with open(path, "w") as f:
+        json.dump({"text": text, "who": who, "pcm": pcm_name}, f)
+        f.flush()
+    _share_with_wake(path)
+    return True
+
+
+def _post_wake_late(rid, text, who, pcm):
+    """Ask the wake listener to speak one late line. 409 means a conversation is up."""
+    try:
+        if not _write_late_job(rid, text, who, pcm):
+            return 400
+    except OSError:
+        return 503
+    try:
+        port = int(E("WAKE_CONTROL_PORT", "8789"))
+    except ValueError:
+        port = 8789
+    body = json.dumps({"id": rid}).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/late-reply" % port, data=body,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+    except Exception:
+        return 503
+
+
+async def _speak_late(slot, line):
+    """TTS once, then the wake listener. A busy listener waits out the queue window."""
+    pcm = b""
+    try:
+        async with ClientSession() as http:
+            got = await tts_pcm(http, line, _bot_voice(slot.get("bot")), TTS_REPLY_S)
+            if got:
+                pcm = got
+    except Exception:
+        pcm = b""
+    while True:
+        now = time.time()
+        qu = slot.get("queue_until")
+        if now > slot["hard_at"] or (qu is not None and now > qu):
+            return
+        if stats["busy"]:
+            _requeue_late(slot)
+            return
+        code = _post_wake_late(slot["rid"], line, slot.get("name") or "", pcm)
+        if code == 409:
+            await asyncio.sleep(1)
+            continue
+        break
+    if slot.get("card"):
+        post_station_show(slot["card"])
 
 
 async def session(req):
@@ -1854,8 +2142,23 @@ async def session(req):
                     # Ring only. The ack already played; do not TTS again and do not re-send to undo "speaking".
                     await pi.send_json({"type": "handoff_wait", "slug": bot, "name": name, "direct": direct or not cue})
 
+                async def checking():
+                    # One cue, not a reply. handoff_still leaves the thinking ring up.
+                    if pi.closed:
+                        return
+                    try:
+                        pcm = await tts_pcm(http, late_answer.CHECKING_LINE, voice)
+                    except Exception:
+                        return
+                    if not pcm or pi.closed:
+                        return
+                    try:
+                        await pi.send_json({"type": "handoff_still", "audio": base64.b64encode(pcm).decode()})
+                    except Exception:
+                        return
+
                 try:
-                    text, verdict = await ask_teammate(http, bot, question, waiting)
+                    text, verdict = await ask_teammate(http, bot, question, waiting, checking)
                 finally:
                     st.update(hold=False, turn_t0=time.monotonic(), held=st.get("held", 0) + time.monotonic() - h0)
                 await pi.send_json({"type": "handoff_done", "slug": bot})
@@ -1873,7 +2176,14 @@ async def session(req):
                     return await end_routed_turn()
                 if not text and verdict in ("timeout", "post-failed"):
                     await pi.send_json({"type": "comms_fail"})  # wake plays the fixed fail tone, then the line
-                await play_fixed(text if text else handoff_line(name, verdict, reply_host_of(bot)), voice, TTS_REPLY_S if text else TTS_SHORT_S)
+                if text:
+                    say = text
+                elif verdict == "timeout":
+                    # ask_teammate only returns timeout after the webhook accepted the ask.
+                    say = handoff_line(name, verdict, reached=True)
+                else:
+                    say = handoff_line(name, verdict, reply_host_of(bot))
+                await play_fixed(say, voice, TTS_REPLY_S if text else TTS_SHORT_S)
                 return await end_routed_turn()
 
             async def pi_to_xai():
@@ -4049,7 +4359,7 @@ async def admin_bot_update(req):
     reply_by = datetime.datetime.fromtimestamp(
         now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + botreply.SKEW_S) * 1000),
+        handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
                               question=UPDATE_ASK, reply_by=reply_by, kind="update_bot")
     except OSError:
         _update_asked.pop(slug, None)
@@ -4100,7 +4410,7 @@ async def admin_helper_update(req):
     reply_by = datetime.datetime.fromtimestamp(
         now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + botreply.SKEW_S) * 1000),
+        handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
                               question=HELPER_ASK, reply_by=reply_by, kind="update_helper")
     except OSError:
         _helper_asked.pop(slug, None)
@@ -4346,6 +4656,10 @@ async def voice_reply(req):
         return web.json_response({"ok": True})
     out = {"request_id": rid, "agent": bot, "nonce": reply.get("nonce") or "", "tier": 0,
            "action_class": "answer", "text": reply["text"]}
+    # A parked ask has no waiter left. Speak it only when the request id matches that park.
+    if late_accept(rid, reply["text"], reply.get("nonce") or ""):
+        audit_reply(bot, rid, "ok", len(raw))
+        return web.json_response({"ok": True})
     try:
         os.makedirs(REPLIES_DIR, exist_ok=True)
         atomic_write(os.path.join(REPLIES_DIR, rid + ".json"), json.dumps(out).encode())
@@ -4464,6 +4778,8 @@ async def voice_show(req):
         return web.json_response({"error": "unavailable"}, status=500)
 
     def post(show):
+        if late_hold_show(show):
+            return 200  # checked and accepted; shown when the late answer is spoken
         return post_station_show(show)
 
     status, body, info = accept_show(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),

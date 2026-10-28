@@ -597,6 +597,47 @@ class HandoffWaitScreen(unittest.TestCase):
         self.assertFalse(gw.handoff_keepalive_due(s))
 
 
+class LateReplyPlayback(unittest.TestCase):
+    def test_busy_does_not_play_and_idle_shows_or_plays(self):
+        job = {"text": "Rhea, about your calendar: Dinner.", "who": "Rhea", "pcm": ""}
+        self.assertEqual(gw.late_reply_action(True, job), "busy")
+        self.assertEqual(gw.late_reply_action(False, job), "show")
+        self.assertEqual(gw.late_reply_action(False, None), "missing")
+        played = dict(job, pcm="vs_" + "a" * 22 + ".pcm")
+        self.assertEqual(gw.late_reply_action(False, played), "play")
+
+    def test_load_rejects_a_bad_id_and_a_foreign_pcm_name(self):
+        self.assertIsNone(gw.load_late_job("../etc/passwd"))
+        self.assertIsNone(gw.load_late_job("vs_short"))
+        d = tempfile.mkdtemp()
+        old = gw.LATE_DIR
+        gw.LATE_DIR = d
+        try:
+            rid = "vs_" + "a" * 22
+            with open(os.path.join(d, rid + ".json"), "w") as f:
+                json.dump({"text": " Hello ", "who": " Rhea ", "pcm": rid + ".pcm"}, f)
+            job = gw.load_late_job(rid)
+            self.assertEqual((job["text"], job["who"], job["pcm"]), ("Hello", "Rhea", rid + ".pcm"))
+            with open(os.path.join(d, rid + ".json"), "w") as f:
+                json.dump({"text": "Hi", "who": "Rhea", "pcm": "../x.pcm"}, f)
+            self.assertEqual(gw.load_late_job(rid)["pcm"], "")
+        finally:
+            gw.LATE_DIR = old
+
+    def test_a_session_or_enrollment_is_busy(self):
+        old_live, old_enroll, old_play = gw.LIVE["session"], gw.ENROLL_STATE["busy"], gw.LATE_PLAYING["on"]
+        try:
+            gw.LIVE["session"] = gw.ENROLL_STATE["busy"] = gw.LATE_PLAYING["on"] = False
+            self.assertFalse(gw.late_session_open())
+            gw.LIVE["session"] = True
+            self.assertTrue(gw.late_session_open())
+            gw.LIVE["session"] = False
+            gw.ENROLL_STATE["busy"] = True
+            self.assertTrue(gw.late_session_open())
+        finally:
+            gw.LIVE["session"], gw.ENROLL_STATE["busy"], gw.LATE_PLAYING["on"] = old_live, old_enroll, old_play
+
+
 class AckPlayback(unittest.TestCase):
     def test_line_is_seconds_after_speech(self):
         self.assertEqual(gw.ack_played_line(100.0, 100.12), "ack played 0.12s after end of speech")

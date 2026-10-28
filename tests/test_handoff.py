@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Teammate handoff (real-bot pilot): B4, B6, B10, B13, B14 and tier scope, against a fake bot webhook."""
-import asyncio, base64, json, os, sys, tempfile, time, unittest
+import asyncio, base64, datetime, json, os, sys, tempfile, time, unittest
 
 from aiohttp import web, ClientSession
 from aiohttp.test_utils import TestServer
@@ -320,6 +320,63 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relay.handoff_error("Jules", "timeout"),
                          'Say exactly: "I couldn\'t reach Jules." Don\'t guess the answer.')
 
+    async def test_checking_line_fires_once_when_the_wait_is_long_enough(self):
+        self.mode = "silent"
+        old = relay.CHECKING_AFTER_S
+        relay.CHECKING_AFTER_S = 0
+        stills = []
+
+        async def on_still():
+            stills.append(1)
+
+        try:
+            async with ClientSession() as http:
+                self.assertEqual(await relay.ask_teammate(http, "jules", "q", None, on_still), (None, "timeout"))
+        finally:
+            relay.CHECKING_AFTER_S = old
+        self.assertEqual(stills, [1])
+
+    async def test_cancel_keeps_the_pending_request_for_a_matching_reply(self):
+        self.mode = "silent"
+        spoken = []
+        old_sink, old_late, old_busy = relay._LATE_SINK, dict(relay._LATE), relay.stats["busy"]
+        relay._LATE_SINK = spoken.append
+        relay._LATE.clear()
+        relay.stats["busy"] = 0
+        try:
+            async with ClientSession() as http:
+                task = asyncio.create_task(relay.ask_teammate(http, "jules", "what's on my calendar"))
+                for _ in range(50):
+                    if self.calls:
+                        break
+                    await asyncio.sleep(0.02)
+                self.assertTrue(self.calls)
+                task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+            rid = self.calls[0]["request_id"]
+            pend = json.load(open(os.path.join(relay.PENDING_DIR, rid + ".json")))
+            self.assertEqual(pend["request_id"], rid)
+            self.assertFalse(relay.late_accept("vs_" + "b" * 22, "nope", pend["nonce"]))
+            self.assertEqual(spoken, [])
+            self.assertTrue(relay.late_accept(rid, "Dinner at 6.", "not-the-nonce"))
+            self.assertEqual(spoken, [])
+            self.assertNotIn(rid, relay._LATE)
+            relay._park_late(rid, "jules", "what's on my calendar", pend["nonce"], time.time() + 180)
+            relay._LATE[rid]["name"] = "Jules"
+            self.assertTrue(relay.late_accept(rid, "Dinner at 6.", pend["nonce"]))
+            self.assertEqual(spoken[0]["text"], "Jules, about your calendar: Dinner at 6.")
+        finally:
+            relay._LATE_SINK = old_sink
+            relay._LATE.clear()
+            relay._LATE.update(old_late)
+            relay.stats["busy"] = old_busy
+            for name in os.listdir(relay.PENDING_DIR):
+                try:
+                    os.unlink(os.path.join(relay.PENDING_DIR, name))
+                except OSError:
+                    pass
+
     async def test_per_bot_path_logs_http_status_and_latency(self):
         self.assertNotIn("_router", relay.webhooks())                  # router retired: per-bot entry is used
         async with ClientSession() as http:
@@ -331,7 +388,8 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
 
     def test_defaults(self):
         src = open(relay.__file__).read()
-        self.assertIn('E("REPLY_WAIT", "30")', src); self.assertNotIn("STILL_AFTER", src)
+        self.assertIn('E("REPLY_WAIT", "180")', src); self.assertNotIn("STILL_AFTER", src)
+        self.assertIn('E("ANSWER_BY", str(botreply.REPLY_BY_S))', src); self.assertIn('E("CHECKING_AFTER", "8")', src)
         self.assertNotIn("can't reach your \"\n", src); self.assertNotIn("full notes from the station yet", src)
 
     def test_hot_reload(self):
@@ -408,7 +466,14 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(dropped, body)
         self.assertRegex(body["request_id"], handoff.REQUEST_ID)
         pend = self.pendings[0]
-        self.assertGreater(pend["expires_ms"], time.time() * 1000 + 90000)  # 2 min skew window, not the 30 s wait
+        self.assertGreater(pend["expires_ms"], time.time() * 1000 + 90000)  # accept window, not the short test wait
+        rb = datetime.datetime.strptime(body["reply_by"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        ahead = rb.timestamp() - time.time()
+        self.assertGreater(ahead, 150)  # about 3 min on the wire, not the old 60 s
+        self.assertLess(ahead, 200)
+        left = pend["expires_ms"] - time.time() * 1000
+        self.assertGreater(left, 150000)
+        self.assertLess(left, 200000)
         self.assertEqual(pend["question"], q)
         self.assertIs(pend["pii_mode"], True)
         self.assertEqual(pend["tier_max"], 0)

@@ -150,6 +150,9 @@ st_users() {
     run install -d -o grok-relay -g grok-admin -m 0770 "$d"
   done
   run chmod 0755 $V
+  # Late answers are spoken by the wake listener (user grok). voice/ is grok-admin only, so this
+  # directory is group grok and setgid: new files stay readable by grok, not by everyone.
+  run install -d -o grok-relay -g grok -m 2770 $V/late
   run install -d -o grok -g grok -m 0750 $V/enroll $V/enroll/inbox
   # Wi-Fi powersave off when NetworkManager is installed (2 = disabled). Journal cap. Both overwrite the same bytes.
   if [ -d /etc/NetworkManager/conf.d ]; then
@@ -178,7 +181,7 @@ st_display() {
 
 st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
-for f in relay.py handoff.py tools.py t1.py botreply.py; do run install -m644 relay/$f $O/relay/; done
+for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py; do run install -m644 relay/$f $O/relay/; done
   sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
   if [ "$OFFLINE" != 1 ]; then run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt; fi
   run install -m644 systemd/grok-station-relay.service /etc/systemd/system/

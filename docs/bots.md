@@ -28,7 +28,7 @@ The webhook body for an answer is exactly:
 {"v":1,"request_id":"<rid>","persona":"<slug>","question":"<cleaned question>","reply_by":"<ISO UTC>"}
 ```
 
-`reply_by` is about 60 seconds from when the station sends. An admin test ping adds `"test": true` and nothing else. The question is on the wire, so there is no request route on the admin port.
+`reply_by` is about 3 minutes from when the station sends (`ANSWER_BY`, default 180 seconds, environment override). An admin test ping adds `"test": true` and nothing else. The question is on the wire, so there is no request route on the admin port.
 
 ## Main bot
 
@@ -59,7 +59,9 @@ A list is names from the bot's own agent list only. The station ignores anything
 
 `bots` has 0 to 24 entries. Each entry is an object with exactly the key `name`. A name is 1 to 32 characters after cleaning and matches `^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$`. Lookalikes (a non-ASCII letter, a fullwidth letter, a zero-width character) are rejected, not folded into ASCII. An empty `bots` array is not applied: nothing already stored is marked missing, and the station says the source returned no names. The list never carries webhook URLs, keys, voices, or commands, and the station never runs anything in it. A list from a bot that is not the saved list source is rejected. An answer cannot satisfy a list request, and a list cannot satisfy an answer.
 
-The station waits `REPLY_WAIT` seconds (default 30, environment override) and then says `I couldn't reach <Name>.` A thinking ring is always shown. It also says "Asking <Name>…" from a cached clip on every handoff. See [handoff.md](handoff.md).
+The station waits `REPLY_WAIT` seconds (default 180, environment override). The thinking ring stays up the whole time. After about 8 seconds with no answer it says "Checking, one moment." once, in that bot's voice or the station voice, without leaving the ring. If the webhook was reached and there is still no answer at the limit, it says `<Name> couldn't reply in time.` A webhook it could not post says it couldn't reach the bot right away. It also says "Asking <Name>…" from a cached clip on every handoff except that bot's own wake word. See [handoff.md](handoff.md).
+
+A reply that arrives after the conversation has ended is still spoken when the station is idle, with the bot's name in front (`Rhea, about your calendar: ...`), and its card is shown then. It has to match the pending request id exactly. If another conversation is going, it waits until the station is idle, for at most about 2 minutes, and it is dropped once the 3 minute limit has passed.
 
 ## Setup
 
@@ -185,7 +187,7 @@ A bot's replies are posted from one home computer on your network. If that compu
 
 - **Setup.** The Add bot instructions tell the bot to pick the always-on home computer it can run commands on, use it for the setup step and every reply, and send back its name with the webhook URL, webhook key and public key. Paste the name into **Home computer name** on the same screen.
 - **Bots page and Configure** show **Replies from: <name>**, and Configure shows the last reply time. A bot added before 0.10.2 shows **Replies from: not set** until you use Change computer. On a home-key bot that still has no computer name, Change computer shows the name field so you can set it. Once the name is set, a home key has no name field: moving needs Replace key.
-- **No reply.** When a request times out, the station says "I couldn't reach <bot>. <name> may be offline." The bot's row says "<name> is offline. Replies will wait until it's back." until the next reply arrives.
+- **No reply.** When the station cannot post the webhook, it says "I couldn't reach <bot>. <name> may be offline." When the webhook was reached and the bot still has not answered at the limit, it says "<bot> couldn't reply in time." The bot's row says "<name> is offline. Replies will wait until it's back." until the next reply arrives.
 - **Change computer** (Configure):
   - Key on the bot computer (cloud key): an inline panel, "Move replies to another computer". Copy the instructions, then type the new computer's name and save. The key and the pairing stay the same. An empty name is "Needs attention: type the computer's name."
   - Key on a home computer: the key is tied to that computer, so the panel says "This needs a new key" and offers **Replace key**. No name field, except the not-set case above.
