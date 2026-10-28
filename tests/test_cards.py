@@ -249,19 +249,57 @@ class DeckTests(unittest.TestCase):
 
     def test_replace_keeps_sequence_and_clear_is_per_bot(self):
         deck = cards.Deck(rotate_s=10, ttl_max=100)
-        deck.put("jules", "soup", 1, 80, recipe(), 0)
-        deck.put("jules", "game", 9, 80, sports(), 1)
+        deck.put("jules", "soup", 1, 80, home(title="Soup"), 0)
+        deck.put("jules", "game", 9, 80, home(title="Game"), 1)
         seq = next(it["seq"] for it in deck._items if it["id"] == "soup")
-        deck.put("jules", "soup", 1, 80, recipe(step=3), 2)
+        deck.put("jules", "soup", 1, 80, home(title="Soup again"), 2)
         again = next(it for it in deck._items if it["id"] == "soup")
         self.assertEqual(again["seq"], seq)
-        self.assertEqual(again["card"]["step"], 3)
+        self.assertEqual(again["card"]["title"], "Soup again")
         self.assertEqual(deck.current(2)["id"], "game")
         self.assertFalse(deck.clear("hank", "soup"))
         self.assertTrue(any(it["id"] == "soup" for it in deck._items))
         self.assertTrue(deck.clear("jules", "soup"))
         self.assertFalse(any(it["id"] == "soup" for it in deck._items))
         self.assertFalse(deck.clear("jules", "missing"))
+
+    def test_a_new_conversation_card_replaces_the_previous_one(self):
+        deck = cards.Deck(rotate_s=10, ttl_max=4000)
+        deck.put("jules", "game", 5, 3600, sports(), 0)
+        deck.put("hank", "day", 1, 3600, calendar(), 1)
+        self.assertEqual([it["id"] for it in deck._items], ["day"])
+        deck.put("jules", "soup", 1, 3600, recipe(), 2)
+        self.assertEqual([it["id"] for it in deck._items], ["soup"])
+        deck.put("jules", "stocks", 1, 3600, home(), 3)
+        deck.put("mira", "game2", 9, 3600, sports(), 4)
+        ids = {it["id"] for it in deck._items}
+        self.assertEqual(ids, {"stocks", "game2"})  # home cards stack; the old recipe is gone
+        self.assertEqual(deck.current(4)["id"], "game2")
+
+    def test_idle_clock_beats_a_long_ttl_and_a_recipe_waits_on_the_last_step(self):
+        deck = cards.Deck(rotate_s=20, ttl_max=86400)
+        deck.put("jules", "game", 5, 3600, sports(), 0)
+        self.assertIsNotNone(deck.current(120))  # not armed yet: ttl is the only limit
+        self.assertIsNone(deck.idle_deadline("jules", "game"))
+        armed = deck.arm_idle("jules", "game", 10)
+        self.assertEqual(armed, 70)  # 60 s from the idle moment
+        self.assertIsNotNone(deck.current(69))
+        self.assertIsNone(deck.current(70))
+        deck.put("jules", "soon", 5, 30, sports(), 0)
+        self.assertEqual(deck.arm_idle("jules", "soon", 0), 30)  # ttl caps the idle clock
+        self.assertIsNone(deck.current(30))
+        deck.put("jules", "soup", 1, 86400, recipe(), 0)
+        self.assertEqual(deck.arm_idle("jules", "soup", 0), cards.RECIPE_IDLE_S)
+        self.assertIsNotNone(deck.current(60))
+        self.assertTrue(deck.touch_recipe("jules", "soup", 1000))
+        self.assertEqual(deck.idle_deadline("jules", "soup"), 1000 + cards.RECIPE_IDLE_S)
+        self.assertIsNotNone(deck.current(1000 + cards.RECIPE_IDLE_S - 1))
+        self.assertIsNone(deck.current(1000 + cards.RECIPE_IDLE_S))
+        fresh = cards.Deck(rotate_s=20, ttl_max=86400)
+        fresh.put("jules", "soup", 1, 86400, recipe(), 0)
+        self.assertTrue(fresh.touch_recipe("jules", "soup", 100))  # session still active: no idle yet
+        self.assertIsNone(fresh.idle_deadline("jules", "soup"))
+        self.assertEqual(fresh.arm_idle("jules", "soup", 130), 100 + cards.RECIPE_IDLE_S)
 
     def test_expiry_removes_the_card(self):
         deck = cards.Deck(rotate_s=20, ttl_max=100)
@@ -792,6 +830,7 @@ class Station(unittest.TestCase):
         stored = gs.DECK.current(time.time())["card"]["away"]
         self.assertNotIn("logo_url", stored)
         self.assertNotIn("logo_id", stored)
+        self.assertIs(stored.get("logo_badge"), True)  # not an ESPN team-logo path: abbreviation, no fetch
 
     def test_screen_choice_and_feed_identity(self):
         self.assertEqual(gs.screen_for(None, False, None, False, {"type": "recipe"}), "feed")
@@ -954,6 +993,71 @@ def _text_top(surf, x0, x1, y0):
             if _near(surf.get_at((x, y)), target):
                 return y
     return None
+
+
+class DisplayLogos(unittest.TestCase):
+    def _cache(self, opener, hosts=None):
+        root = tempfile.mkdtemp(prefix="gs-prep-")
+        return cards.LogoCache(root, hosts if hosts is not None else ["a.espncdn.com"],
+                                opener=opener, resolve=lambda host: ["23.1.2.3"])
+
+    def test_an_espn_team_logo_is_cached_and_the_url_is_dropped(self):
+        calls = []
+
+        def opener(url):
+            calls.append(url)
+            return tiny_png(), "image/png"
+
+        cache = self._cache(opener)
+        card = sports()
+        card["home"] = team(logo_url="https://a.espncdn.com/i/teamlogos/nfl/500/kc.png")
+        card["away"] = team("Ridgeview", "RV")  # no url: name alone
+        out = cards.prepare_display_logos(card, cache, wait_s=1)
+        self.assertEqual(calls, ["https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"])
+        self.assertRegex(out["home"].get("logo_id") or "", r"^[a-f0-9]{64}$")
+        self.assertNotIn("logo_url", out["home"])
+        self.assertNotIn("logo_badge", out["home"])
+        self.assertTrue(os.path.isfile(cache.path_for(out["home"]["logo_id"])))
+        self.assertNotIn("logo_id", out["away"])
+        self.assertNotIn("logo_badge", out["away"])
+
+    def test_a_slow_logo_becomes_a_badge_and_a_foreign_url_is_not_fetched(self):
+        calls = []
+
+        def opener(url):
+            calls.append(url)
+            time.sleep(2)
+            return tiny_png(), "image/png"
+
+        cache = self._cache(opener)
+        card = sports()
+        card["home"] = team(logo_url="https://a.espncdn.com/i/teamlogos/nfl/500/kc.png")
+        card["away"] = team("Ridgeview", "RV", logo_url="https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/rv.png&w=200&h=200")
+        t0 = time.monotonic()
+        out = cards.prepare_display_logos(card, cache, wait_s=0.05)
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertEqual(calls, ["https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"])
+        self.assertIs(out["home"].get("logo_badge"), True)
+        self.assertNotIn("logo_id", out["home"])
+        self.assertNotIn("logo_url", out["home"])
+        self.assertIs(out["away"].get("logo_badge"), True)
+        self.assertNotIn("logo_url", out["away"])
+        empty = self._cache(lambda url: calls.append("nope") or (tiny_png(), "image/png"), hosts=[])
+        blocked = sports()
+        blocked["home"] = team(logo_url="https://a.espncdn.com/i/teamlogos/nfl/500/kc.png")
+        banned = cards.prepare_display_logos(blocked, empty, wait_s=0.2)
+        self.assertIs(banned["home"].get("logo_badge"), True)
+        self.assertNotIn("nope", calls)
+
+    def test_logo_badge_must_be_true(self):
+        ok = sports()
+        ok["home"] = team(logo_badge=True)
+        cleaned = cards.validate_card(ok)
+        self.assertIs(cleaned["home"]["logo_badge"], True)
+        bad = sports()
+        bad["home"] = team(logo_badge=False)
+        with self.assertRaises(cards.CardError):
+            cards.validate_card(bad)
 
 
 class SportsLayout(unittest.TestCase):

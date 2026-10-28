@@ -70,6 +70,9 @@ def score_hold_s(env=None):
 
 SCORE_HOLD = score_hold_s()
 FULL_TILES = ("recipe", "sports", "calendar")
+# A spoken reply and its card arrive as two posts. Hold the reply text this long so a card
+# from the same persona can take the screen without a flash of text. Audio is not delayed.
+TEXT_CARD_WAIT = 1.5
 # A full-screen tile a bot posted during a conversation (items 5 and 9): shown at once, alone, while the bot speaks.
 TILE = {}
 
@@ -97,6 +100,39 @@ def tile_step(tile, prev_state, state, now, hold_s):
 def tile_end(shown_at, hold_s, speech_end):
     """A tile reply goes back to the main display when speech ends or hold_s after it showed, whichever is later."""
     return max(float(speech_end), float(shown_at) + float(hold_s))
+
+
+def reply_visual(now, hold_until, card, had_prior):
+    """"card", "text", or "hold" when a reply and a card can arrive apart.
+
+    A card already in hand wins, so the reply text is never flashed.
+    With no previous screen, or once the wait has elapsed, the text shows.
+    Otherwise hold: the caller keeps the previous picture and stops the thinking
+    ring. This does not delay spoken audio; that plays on its own path.
+    """
+    if card:
+        return "card"
+    if not had_prior:
+        return "text"
+    try:
+        deadline = float(hold_until)
+    except (TypeError, ValueError):
+        return "text"
+    if now >= deadline:
+        return "text"
+    return "hold"
+
+
+def persona_match(who, bot):
+    """True when a display name and a card slug are the same persona."""
+    wk, bk = name_key(who or ""), name_key(bot or "")
+    if not wk or not bk:
+        return False
+    names = persona_names()
+    left, right = names.get(wk), names.get(bk)
+    if left and right:
+        return left[1] == right[1]
+    return wk == bk
 
 
 CARD_HOLD = 4  # a finished session that showed a card stays up this long; a notice uses VOICE_HOLDS["notice"]
@@ -408,7 +444,7 @@ def apply_show(doc, cache, deck, now=None):
     if show["op"] == "clear":
         deck.clear(bot, show["id"])
         return "clear", bot, show["id"]
-    card = cards.settle_logos(show["card"], cache)
+    card = cards.prepare_display_logos(show["card"], cache)
     deck.put(bot, show["id"], show["priority"], show["ttl_s"], card, now)
     return "put", bot, show["id"]
 
@@ -3275,6 +3311,7 @@ def main():
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
     msg, until, last_key, anim_started = None, 0.0, None, None
+    text_hold = None    # {"until", "pending", "who"} while a reply waits to see if a card follows
     card_hold = False   # the card hold after a session that showed a card has started
     strip_at = 0.0      # last time the timer strip was painted; ticks are at least 0.9 s apart
 
@@ -3409,6 +3446,10 @@ def main():
         why = refresh_dim()
         if why and not setup["doc"] and (why == "overlay" or not msg):
             paint(snapshot=False)  # a session stays a session; only the overlay changes under it
+        if card_hold and TILE:
+            deadline = deck().idle_deadline(TILE.get("bot"), TILE.get("id"))
+            if deadline is not None:
+                until = deadline  # a step command can push a recipe's idle clock out
         t = time.time()
         minute = 60.2 - (t % 60)  # wake just after the minute boundary; no busy loop
         if thinking():
@@ -3426,7 +3467,7 @@ def main():
             setup["checked"] = time.time()
             sd = read_setup()
             if sd != setup["doc"]:
-                setup["doc"], msg, anim_started, card_hold = sd, None, None, False
+                setup["doc"], msg, anim_started, card_hold, text_hold = sd, None, None, False, None
                 paint(fade=True)
                 print(f"setup screen: {sd['mode'] if sd else 'off'}", flush=True)
         if setup["doc"]:
@@ -3446,6 +3487,8 @@ def main():
             left = deck().seconds_until_change(time.time())
             if left is not None:
                 wait = min(wait, max(0.05, left))
+        if text_hold:
+            wait = min(wait, max(0.05, text_hold["until"] - time.time()))
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW, FEED):
             continue  # nothing else is shown until setup is done; the deck still kept the card
@@ -3465,16 +3508,35 @@ def main():
                 else:
                     anim_started = None
                 prev_state = msg.get("state") if msg else None
-                if TILE and tile_step(TILE, prev_state, ev.state, time.time(), SCORE_HOLD) == "clear":
+                now_s = time.time()
+                if TILE and tile_step(TILE, prev_state, ev.state, now_s, SCORE_HOLD) == "clear":
                     deck().clear(TILE.get("bot"), TILE.get("id"))
                     TILE.clear()  # back to the full-screen status as the response starts
-                msg = new
-                until = time.time() + hold
+                had = msg is not None
+                live_card = bool(TILE)  # a card already up wins; a stale one was cleared just above
+                if ev.state == "speaking" and not ev.done:
+                    decision = reply_visual(now_s, now_s + TEXT_CARD_WAIT, live_card, had)
+                else:
+                    decision = "text"
+                if decision == "hold":
+                    # Stay off the reply text. Speaking (not thinking) so the ring stops; audio is already going.
+                    text_hold = {"until": now_s + TEXT_CARD_WAIT, "pending": new, "who": ev.who}
+                    shown = dict(new)
+                    shown["text"] = "…"
+                    msg = shown
+                else:
+                    text_hold = None
+                    msg = new
+                until = now_s + hold
                 paint()
             elif ev.state == "idle":
-                # session end: one card hold while a card is up, then the idle clock
+                # session end: a conversation card returns on its idle clock (ttl is only the cap)
+                text_hold = None
                 if msg and TILE:
-                    until = tile_end(TILE["shown"], SCORE_HOLD, time.time())
+                    now_s = time.time()
+                    deck().arm_idle(TILE.get("bot"), TILE.get("id"), now_s)
+                    deadline = deck().idle_deadline(TILE.get("bot"), TILE.get("id"))
+                    until = deadline if deadline is not None else now_s + cards.CONVO_IDLE_S
                     card_hold = True
                 elif msg and msg.get("card") and not card_hold:
                     card_hold = True
@@ -3497,13 +3559,18 @@ def main():
         if ev.type == FEED:
             tile = getattr(ev, "tile", None)
             if tile and msg and msg.get("voice"):
+                if text_hold and persona_match(text_hold.get("who"), tile.get("bot")):
+                    msg = text_hold["pending"]  # badge only; the reply text is not the screen
+                text_hold = None
                 TILE.clear()
                 TILE.update(tile, shown=time.time())
                 paint()
             elif not msg and not night_face(time.localtime()):
+                if tile:
+                    deck().arm_idle(tile.get("bot"), tile.get("id"), time.time())
                 paint(snapshot=False)
         elif ev.type == SHOW:
-            msg, until, anim_started, card_hold = ev.msg, time.time() + HOLD, None, False
+            msg, until, anim_started, card_hold, text_hold = ev.msg, time.time() + HOLD, None, False, None
             paint()
             print("rendered", flush=True)
         elif ev.type == WEATHER:
@@ -3514,7 +3581,13 @@ def main():
         elif ev.type == pygame.QUIT:
             break
         elif ev.type == pygame.NOEVENT:
-            if msg and time.time() >= until:
+            if text_hold and time.time() >= text_hold["until"]:
+                pending = text_hold["pending"]
+                text_hold = None
+                if not TILE:
+                    msg = pending  # no card came; show the reply as before
+                    paint()
+            elif msg and time.time() >= until:
                 if TILE:
                     deck().clear(TILE.get("bot"), TILE.get("id"))  # do not leave the tile up on the idle feed
                     TILE.clear()

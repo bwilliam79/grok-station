@@ -29,6 +29,14 @@ LOGO_PX = 512
 LOGO_FILES = 32
 LOGO_TOTAL = 1 << 20
 LOGO_MAX_AGE = 7 * 24 * 3600
+# Conversation cards (recipe, sports, calendar) replace each other. Home cards still stack.
+CONVO_TYPES = frozenset(("recipe", "sports", "calendar"))
+CONVO_IDLE_S = 60          # sports and calendar leave this long after the conversation goes idle
+RECIPE_IDLE_S = 30 * 60    # a recipe stays while someone is cooking; refreshed by a step command
+LOGO_WAIT_S = 1.0          # show the card once both logos are cached, or this long, whichever is first
+ESPN_LOGO_HOST = "a.espncdn.com"
+# Documented team-logo file. The /combiner/ resize URL is a different path and is not fetched here.
+_ESPN_TEAMLOGO = re.compile(r"^/i/teamlogos/[a-z0-9][a-z0-9-]{0,31}/\d{2,4}/[a-z0-9]{1,16}\.png$")
 _PUT_KEYS = frozenset(("v", "op", "id", "priority", "ttl_s", "card", "kind", "nonce", "exp_ms"))
 _CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 _NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
@@ -240,6 +248,22 @@ def logo_url_ok(url, hosts):
         if isinstance(h, str):
             allow.add(h.strip().lower().rstrip("."))
     return host in allow
+
+
+def espn_teamlogo_url(url):
+    """True only for https://a.espncdn.com/i/teamlogos/<league>/<size>/<abbr>.png.
+
+    The combiner URL (a query string on /combiner/) is not this path. Other hosts are not.
+    """
+    parts = _split_url(url)
+    if parts is None:
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    if host != ESPN_LOGO_HOST:
+        return False
+    if parts.query or (parts.port and parts.port != 443):
+        return False
+    return _ESPN_TEAMLOGO.fullmatch(parts.path or "") is not None
 
 
 def ip_ok(ip):
@@ -660,7 +684,7 @@ def _list(items, lo, hi, cap, clean):
 
 
 def _team(doc):
-    _keys(doc, {"name", "abbr", "logo_url", "logo_id"}, {"name", "abbr"})
+    _keys(doc, {"name", "abbr", "logo_url", "logo_id", "logo_badge"}, {"name", "abbr"})
     if "logo_url" in doc and "logo_id" in doc:
         raise CardError("schema")
     out = {"name": escape_text(doc.get("name"), 24), "abbr": doc.get("abbr")}
@@ -674,6 +698,10 @@ def _team(doc):
         if not isinstance(doc.get("logo_id"), str) or not LOGO_ID.fullmatch(doc["logo_id"]):
             raise CardError("schema")
         out["logo_id"] = doc["logo_id"]
+    if "logo_badge" in doc:
+        if doc.get("logo_badge") is not True:
+            raise CardError("schema")
+        out["logo_badge"] = True
     return out
 
 
@@ -817,6 +845,79 @@ def validate_show(doc, ttl_max):
     return {"v": 1, "op": "put", "id": doc["id"], "priority": priority, "ttl_s": ttl_s, "card": card, **replay}
 
 
+def _logo_file_ready(cache, logo_id):
+    """True when this cache has a non-empty file for the id. Does not fetch."""
+    if cache is None or not isinstance(logo_id, str):
+        return False
+    path = cache.path_for(logo_id)
+    if not path or not os.path.isfile(path):
+        return False
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False
+    return 0 < size <= getattr(cache, "max_bytes", LOGO_MAX)
+
+
+def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S):
+    """Cache ESPN team logos before a card is shown. Other cards are only re-validated.
+
+    HTTPS only, host a.espncdn.com, the /i/teamlogos/ file path only, and that host must
+    be on the cache allowlist. Both sides share one deadline (default 1 second). A logo
+    that is not ready becomes an abbreviation badge. No URL and no badge is the name alone.
+    A download that is still running when the deadline passes may finish into the cache
+    for the next card; this card does not wait for it.
+    """
+    card = validate_card(card)
+    if card["type"] != "sports":
+        return card
+    jobs = []
+    for side in ("home", "away"):
+        team = card[side]
+        url = team.get("logo_url")
+        if not url:
+            team.pop("logo_url", None)
+            if _logo_file_ready(cache, team.get("logo_id")):
+                team.pop("logo_badge", None)
+            else:
+                team.pop("logo_id", None)
+                if team.get("logo_badge") is not True:
+                    team.pop("logo_badge", None)
+            continue
+        allowed = (cache is not None and espn_teamlogo_url(url)
+                   and logo_url_ok(url, getattr(cache, "hosts", ())))
+        if not allowed:
+            team.pop("logo_url", None)
+            team.pop("logo_id", None)
+            team["logo_badge"] = True
+            continue
+        box = {}
+
+        def run(u=url, box=box, cache=cache):
+            try:
+                box["id"] = cache.fetch(u)
+            except Exception:
+                box["id"] = None
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        jobs.append((team, thread, box))
+    deadline = time.monotonic() + max(0.0, float(wait_s))
+    for team, thread, box in jobs:
+        left = deadline - time.monotonic()
+        if left > 0:
+            thread.join(left)
+        lid = box.get("id")
+        team.pop("logo_url", None)
+        team.pop("logo_id", None)
+        team.pop("logo_badge", None)
+        if _logo_file_ready(cache, lid):
+            team["logo_id"] = lid
+        else:
+            team["logo_badge"] = True
+    return validate_card(card)
+
+
 def settle_logos(card, cache):
     """Drop logo URLs. Keep a logo id only when this cache stored the image. Never fetch while drawing."""
     card = validate_card(card)
@@ -856,8 +957,17 @@ class Deck:
         self._seq = 0
         self._anchor = None
 
+    def _live(self, it, now):
+        """ttl is the upper bound. An armed idle deadline can remove the card sooner."""
+        if it["expires"] <= now:
+            return False
+        idle = it.get("idle_at")
+        if idle is not None and idle <= now:
+            return False
+        return True
+
     def _drop(self, now):
-        self._items = [it for it in self._items if it["expires"] > now]
+        self._items = [it for it in self._items if self._live(it, now)]
         if not self._items:
             self._anchor = None
 
@@ -894,6 +1004,11 @@ class Deck:
             card = validate_card(card)
         with self._lock:
             self._drop(now)
+            # One conversation card at a time, whatever the id or the bot. Home cards stay.
+            if card["type"] in CONVO_TYPES:
+                self._items = [it for it in self._items
+                               if it["card"]["type"] not in CONVO_TYPES
+                               or (it["bot"] == bot and it["id"] == card_id)]
             existing = next((it for it in self._items if it["bot"] == bot and it["id"] == card_id), None)
             if existing is None:
                 if sum(1 for it in self._items if it["bot"] == bot) >= self.per_bot:
@@ -906,7 +1021,7 @@ class Deck:
                 seq = existing["seq"]
                 self._items.remove(existing)
             self._items.append({"bot": bot, "id": card_id, "priority": priority, "seq": seq,
-                                "expires": now + ttl_s, "card": card})
+                                "expires": now + ttl_s, "card": card, "idle_at": None, "step_at": None})
             self._anchor = None
 
     def clear(self, bot, card_id):
@@ -946,11 +1061,56 @@ class Deck:
                     homes = homes[i:] + homes[:i]
             return [self._view(it) for it in homes[:n]]
 
-    def seconds_until_change(self, now):
-        """Seconds until the slot or the next expiry. None when nothing is showing.
+    def arm_idle(self, bot, card_id, now, sports_idle=CONVO_IDLE_S, recipe_idle=RECIPE_IDLE_S):
+        """Start the idle clock for one conversation card. None when that card is not here.
 
-        Does not set the anchor. At a boundary (including the moment a slot is chosen)
-        the wait is a full rotate interval.
+        Sports and calendar use sports_idle from now. A recipe uses recipe_idle from the
+        last step command, or from now when there has not been one. ttl still caps it.
+        While a conversation is active this is not called, so only ttl applies.
+        """
+        if type(now) not in (int, float) or type(now) is bool:
+            return None
+        with self._lock:
+            for it in self._items:
+                if it["bot"] != bot or it["id"] != card_id:
+                    continue
+                if it["card"]["type"] not in CONVO_TYPES:
+                    return None
+                if it["card"]["type"] == "recipe":
+                    base = it["step_at"] if it.get("step_at") is not None else now
+                    span = recipe_idle
+                else:
+                    base, span = now, sports_idle
+                it["idle_at"] = min(it["expires"], float(base) + float(span))
+                return it["idle_at"]
+            return None
+
+    def idle_deadline(self, bot, card_id):
+        """The armed idle time, or None when the card is not waiting on idle."""
+        with self._lock:
+            for it in self._items:
+                if it["bot"] == bot and it["id"] == card_id:
+                    return it.get("idle_at")
+            return None
+
+    def touch_recipe(self, bot, card_id, now, recipe_idle=RECIPE_IDLE_S):
+        """Remember a step command. If the idle clock is already running, extend it."""
+        if type(now) not in (int, float) or type(now) is bool:
+            return False
+        with self._lock:
+            for it in self._items:
+                if it["bot"] == bot and it["id"] == card_id and it["card"]["type"] == "recipe":
+                    it["step_at"] = now
+                    if it.get("idle_at") is not None:
+                        it["idle_at"] = min(it["expires"], now + recipe_idle)
+                    return True
+            return False
+
+    def seconds_until_change(self, now):
+        """Seconds until the slot, the next expiry, or an armed idle deadline.
+
+        None when nothing is showing. Does not set the anchor. At a boundary
+        (including the moment a slot is chosen) the wait is a full rotate interval.
         """
         with self._lock:
             self._drop(now)
@@ -960,7 +1120,12 @@ class Deck:
             step = self.rotate_s if self.rotate_s > 0 else 1
             into = (now - anchor) % step
             rot_left = step if into == 0 else step - into
-            exp_left = min(it["expires"] - now for it in self._items)
+            limits = []
+            for it in self._items:
+                limits.append(it["expires"] - now)
+                if it.get("idle_at") is not None:
+                    limits.append(it["idle_at"] - now)
+            exp_left = min(limits)
             if exp_left < 0:
                 exp_left = 0
             return min(rot_left, exp_left)

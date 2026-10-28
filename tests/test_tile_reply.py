@@ -34,8 +34,26 @@ class TileReply(unittest.TestCase):
         d = cards.Deck()
         self.assertIsNone(d.get("kai", "x"))
 
+    def test_reply_waits_briefly_for_a_card_and_never_on_the_wake_path(self):
+        # A card already here skips the text. No previous screen shows the text at once.
+        self.assertEqual(gs.reply_visual(10, 11.5, {"type": "sports"}, True), "card")
+        self.assertEqual(gs.reply_visual(10, 11.5, None, False), "text")
+        self.assertEqual(gs.reply_visual(10, 11.5, None, True), "hold")
+        self.assertEqual(gs.reply_visual(11.5, 11.5, None, True), "text")
+        wake = open(os.path.join(ROOT, "wake", "grok_wake.py"), encoding="utf-8").read()
+        self.assertNotIn("TEXT_CARD_WAIT", wake)
+
+    def test_same_persona_matches_a_display_name_to_a_slug(self):
+        self.assertTrue(gs.persona_match("Grok", "grok"))
+        self.assertTrue(gs.persona_match("Jules", "jules"))
+        self.assertFalse(gs.persona_match("Grok", "jules"))
+        self.assertFalse(gs.persona_match("", "grok"))
+
     def test_loop_wiring(self):
         src = open(os.path.join(ROOT, "app", "grok_station.py"), encoding="utf-8").read()
         self.assertIn("pygame.event.Event(FEED, tile=tile)", src)
-        self.assertIn("until = tile_end(TILE[\"shown\"], SCORE_HOLD, time.time())", src)
+        self.assertIn("deck().arm_idle(", src)
+        self.assertIn("TEXT_CARD_WAIT", src)
+        self.assertIn("reply_visual(", src)
+        self.assertNotIn("until = tile_end(TILE[\"shown\"], SCORE_HOLD, time.time())", src)
         self.assertIn("deck().clear(TILE.get(\"bot\"), TILE.get(\"id\"))", src)
