@@ -339,6 +339,14 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.17
+
+Change note (2026-10-28): patch release; installs over 0.12.16. Bots need an update for the instruction change.
+
+- **Which home computer.** The "Which home computer" paragraph (pick the computer that stays on) lived only in the Bots page pairing text, outside the instruction body, so the body that `gs-update.sh` prints on an update never carried it and updated bots lost it. It is now part of the home and cloud templates (`admin/routine-*.txt`, `admin/gs_routine.py` and its copy in `scripts/gs-update.sh`, `BOT_ROUTINE*` in `admin/web/app.js`, `docs/bots.md`), and the pairing text no longer adds its own copy, so setup and update carry the same body. Test: `tests/test_gs1217_home_computer.py`.
+- **Setup reply field links.** The setup reply now spells out the two routine field links, `grokbot://app/v1/sidebar?target=webhook-url&automation=<routine folder id>` and the same with `target=webhook-key`, labeled Webhook URL and Webhook key, and tells the bot not to link the Routines panel.
+- **Instructions.** The bot templates name release 0.12.17. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
+
 ## 0.12.16
 
 Change note (2026-10-28): the bottom-zone layout from the design spec (rev2) with the owner's decisions. Patch release; installs over 0.12.15. Bots need an update for the new picture-file wording in their instructions.

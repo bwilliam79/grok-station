@@ -370,7 +370,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("If you can't", add)
         self.assertNotIn("<webhook URL>", add)
         self.assertNotIn("<webhook key>", add)
-        self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
+        self.assertIn("stays on all the time", js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0])  # 0.12.17: in the template
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
         host = js.split('<input class="inp" id="ahost"', 1)[1].split(">", 1)[0]
@@ -451,7 +451,7 @@ class AdminUI(unittest.TestCase):
         # 0.12.16: done line, then direct field links for the webhook URL and key, then the two code blocks
         i1, i2, i3 = fn.index("1. One short line saying setup is done."), fn.index("2. Webhook URL and Webhook key"), fn.index("Public key:\\n```")
         self.assertLess(i1, i2); self.assertLess(i2, i3); self.assertLess(i3, fn.index("Computer name:\\n```"))
-        self.assertIn("the webhook-url and webhook-key targets), not a general link to Routines", fn)
+        self.assertIn("grokbot://app/v1/sidebar?target=webhook-url&automation=<routine folder id>", fn)  # 0.12.17: spelled-out field links
         self.assertNotIn("link the user straight to the routine", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
@@ -941,7 +941,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1069,7 +1069,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
