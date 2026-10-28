@@ -27,7 +27,9 @@ scan() {  # stdin: text; $1: label. Reports "label line N" per hit; returns 1 on
   text="$(cat)"
   printf '%s\n' "$text" | python3 "$LEAK" "$1" || rc=1
   [ "$nopat" = 1 ] && return $rc
-  out="$(printf '%s\n' "$text" | LC_ALL=C grep -nIE -f "$PAT" | cut -d: -f1)" || true
+  out="$(printf '%s\n' "$text" | LC_ALL=C grep -nIE -f "$PAT")"; local g=$?
+  [ "$g" -gt 1 ] && { echo "pii-guard: pattern scan failed for $1 (grep exit $g); refusing" >&2; return 1; }
+  out="$(printf '%s\n' "$out" | cut -d: -f1)"
   [ -z "$out" ] && return $rc
   [ -z "$out" ] && return 0
   printf '%s\n' "$out" | sed "s|^|pii-guard: match in $1 line |" >&2
@@ -45,15 +47,26 @@ case "$mode" in
     grep -v '^#' "${2:?usage: pii-guard msg FILE}" | scan "commit message" || hits=1
     ;;
   push)
+    # Fail closed: any git error here means the scan did not run, so the push is refused.
     z=0000000000000000000000000000000000000000
+    perr() { echo "pii-guard: push scan error: $1. Push refused (nothing was scanned for that ref)." >&2; exit 1; }
     while read -r lref lsha rref rsha; do
       [ -n "$lsha" ] || continue
-      [ "$lsha" = "$z" ] && continue
-      if [ "$rsha" = "$z" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi  # unknown remote sha (rewritten history): scan everything not on a remote
-      for c in $(git rev-list $range); do
-        git show -s --format='%an %ae %cn %ce%n%B' "$c" | scan "commit ${c:0:7} message/author" || hits=1
-        git show --format= --name-only "$c" | scan "commit ${c:0:7} file names" || hits=1
-        git show --format= -U0 "$c" -- . ':!tools/leak-scan.py' ':!tests/test_leak_scan.py' | grep '^+' | grep -v '^+++' | scan "commit ${c:0:7} diff" || hits=1
+      [ "$lsha" = "$z" ] && continue                     # delete push: nothing new to scan
+      git cat-file -e "$lsha^{commit}" 2>/dev/null || perr "local commit ${lsha:0:7} for $lref not found"
+      if [ "$rsha" != "$z" ] && git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+        range=("$rsha..$lsha")                           # normal / fast-forward
+      else
+        range=("$lsha" --not --remotes)                  # new branch, or remote sha unknown (rewritten history); full history if no remote refs
+      fi
+      commits="$(git rev-list "${range[@]}" 2>&1)" || perr "git rev-list failed for $lref"
+      for c in $commits; do
+        meta="$(git show -s --format='%an %ae %cn %ce%n%B' "$c")" || perr "git show failed for ${c:0:7}"
+        names="$(git show --format= --name-only "$c")" || perr "git show failed for ${c:0:7}"
+        diff="$(git show --format= -U0 "$c" -- . ':!tools/leak-scan.py' ':!tests/test_leak_scan.py')" || perr "git show failed for ${c:0:7}"
+        printf '%s\n' "$meta" | scan "commit ${c:0:7} message/author" || hits=1
+        printf '%s\n' "$names" | scan "commit ${c:0:7} file names" || hits=1
+        printf '%s\n' "$diff" | grep '^+' | grep -v '^+++' | scan "commit ${c:0:7} diff" || hits=1
       done
     done
     ;;
