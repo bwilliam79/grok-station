@@ -339,6 +339,17 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.10
+
+Change note (2026-10-28): bots flagged only for real changes, no Finish update button, a Bots menu dot, one notice after an update, and the team tip.
+
+- **No false "Update available".** Every release used to flag every bot, because the bot's instructions and update script name the release in their first line. Now a bot counts as behind only when what it runs changed: its instructions template, the pinned update script, or its helper (`install-home.sh` or `grok-station-reply`). The station compares a fingerprint of those files with only the "release X.Y.Z" header line taken out. The release tooling (`tools/gen-update-manifest.py`) writes the fingerprints to `admin/bot-releases.txt`, which stays on the station; the manifest bots read is unchanged. A bot on an older release counts as up to date only when its signed status hash matches this release's instructions rebuilt with its own release number and its own pinned update command. A helper that is out of date still needs an update.
+- **Why this is safe.** Nothing a bot checks changed: the pinned update script, its sha256, the template byte checks, the main-branch commit check, the manifest and the signed reply are all as before. The new check can only turn a row from "needs" into "Updated", and only when the bot's own signed hash proves its text is this release's text apart from the release number. When the table has no line for this release, or anything doesn't match, the row stays "needs" as before.
+- **No Finish update button.** The Updates page and the page header no longer have a Finish update button. Bots update from the Bots page with a row's Update or Update all. A bot set up before 0.11.8 still opens the paste dialog, from its Bots row.
+- **Bots menu dot.** While a listed bot needs an update, Bots in the menu has the same small update dot as Updates (same place in the collapsed sidebar, announced to screen readers as "Bot update available"). Deleted bots don't count.
+- **One notice after an update.** After a station update, if a bot needs one, the admin page shows: "Some bots need an update. Open Bots to update them." Open Bots or OK closes it for that release (stored on the station). It never shows when no bot needs an update.
+- **Team tip.** With only the main bot (and built-in Grok), the Bots tip says: Say "Hey Grok, import the rest of my team." to add your other bots, even after an import that found nobody. Once there are teammates beyond the main bot, it says: Added a bot? Say "Hey Grok, update my team list."
+
 ## 0.12.9
 
 Change note (2026-10-28): exact computer names, re-added bots, and Update in place on Bots.

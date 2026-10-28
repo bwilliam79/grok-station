@@ -1681,6 +1681,7 @@ def silence_weak(doc):
 
 sys.path.insert(0, HERE)
 import gs_routine  # noqa: E402  (shared with scripts/gs-update.sh; a test keeps them byte-identical)
+import bot_content  # noqa: E402  (0.12.10: release-free content fingerprints, station side only)
 
 ROUTINES = {m: os.path.join(HERE, "routine-%s.txt" % m) for m in ("home", "cloud")}
 FINISH = "finish-update.json"
@@ -1716,6 +1717,57 @@ def render_bot_routine(bot, station, fingerprint, pub, pins=None):
     if rel != version():
         raise gs_routine.Bad("release")
     return text
+
+
+def _content_entries(rel, mode, table):
+    """Table lines for release rel whose content for mode equals this release's. [] when this release isn't listed."""
+    cur = [e for e in table if e["release"] == version()]
+    if not cur:
+        return []
+    want = cur[-1]["fp"][mode]
+    return [e for e in table if e["release"] == rel and e["fp"][mode] == want]
+
+
+def same_content(b, have_rel, have_instr, station, fingerprint, pub, table=None):
+    """0.12.10: True when a bot on an older release already runs exactly this release's content.
+
+    have_instr is the bot's signed hash of the text it adopted. We rebuild that text from THIS release's template
+    with only the header naming have_rel, and with have_rel's own pinned update command (whose script, apart from
+    its header lines, is byte-identical to this release's per the fingerprint table). If the hash matches, the
+    bot's instructions differ from ours only in the release number. have_instr None: the bot was paired with
+    have_rel's Add bot instructions and has sent no status yet, so the fingerprint alone decides.
+    Only the Bots page state uses this. What an update sends and what a bot checks are unchanged.
+    """
+    if not (isinstance(have_rel, str) and gs_routine.RELEASE.match(have_rel)) or have_rel == version():
+        return False
+    if version_order(have_rel, version()) != "newer":
+        return False  # never call a newer or unknown release "the same"
+    mode = "home" if b.get("key_mode") == "home" else "cloud"
+    entries = _content_entries(have_rel, mode, bot_content.read_table() if table is None else table)
+    if not entries:
+        return False
+    if have_instr is None:
+        return True
+    try:
+        with open(ROUTINES[mode], encoding="utf-8") as fh:
+            template = fh.read()
+    except OSError:
+        return False
+    if template != gs_routine.TEMPLATES[mode]:
+        return False
+    first, rest = template.split("\n", 1)
+    old = "Grok Station instructions, release %s.\n" % have_rel + rest
+    fp = str(fingerprint or "").upper()
+    for e in entries:
+        try:
+            text = gs_routine.render(old, mode, b.get("slug", ""), e["update_commit"], e["update_sha"],
+                                     station if mode == "cloud" else "", fp if mode == "cloud" else "",
+                                     pub if mode == "cloud" else "")
+        except gs_routine.Bad:
+            continue
+        if gs_routine.instr_hash(text) == have_instr:
+            return True
+    return False
 
 
 def portrait_version(slug):
@@ -1816,6 +1868,9 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         wait_left = 0
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
+        elif want and u and not (home and (b.get("helper") or {}).get("out_of_date")) \
+                and same_content(b, u.get("release"), u.get("instr"), station, fingerprint, pub):
+            state = "done"  # 0.12.10: an older release with identical content apart from the release line
         elif b.get("update_refused_at") and not (setup and _setup_newer(setup, {"at": b.get("update_refused_at")})):
             state = "refused"
         elif (not u or u.get("release") != rel) and finish["sent"].get(b["slug"], {}).get("instr") == want:
@@ -1827,6 +1882,9 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "waiting" if wait_left > 0 else "noreply"  # stored with its time, so a restart keeps it
         elif not u and setup.get("release") == rel:
             state = "done"  # paired with this release's Add bot instructions: nothing to update yet
+        elif not u and setup and want and not (home and (b.get("helper") or {}).get("out_of_date")) \
+                and same_content(b, setup.get("release"), None, station, fingerprint, pub):
+            state = "done"  # paired on an older release whose content is identical to this one
         elif not u and setup:
             state = "needs"  # set up by a newer template that already knows update_bot
         elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
@@ -1872,7 +1930,10 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             g["updater"] = None  # no shared helper on a bot computer
         g["want_helper"] = HELPER_RELEASE if g["home"] else None
     order = sorted(groups.values(), key=lambda g: (g["key"] != "bot", g["label"].lower()))
-    return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order}
+    # 0.12.10: one "Some bots need an update" notice per station release, only while a listed bot is behind.
+    notice = behind > 0 and finish.get("notice_dismissed") != rel
+    return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order,
+            "notice": notice}
 
 
 def enroll_live(st):
@@ -4005,6 +4066,10 @@ class Handler(BaseHTTPRequestHandler):
                     and slug_ok(slug)):
                 return self.send(400, {"error": "bad request"})
             doc = read_finish(); doc["updaters"][key] = slug
+            write_json(path(FINISH), doc)
+            return self.send(200, {"ok": True})
+        if p == "/api/finish-update/notice":  # dismiss the post-update Bots notice for this release
+            doc = read_finish(); doc["notice_dismissed"] = version()
             write_json(path(FINISH), doc)
             return self.send(200, {"ok": True})
         if p not in ("/api/finish-update/send", "/api/finish-update/copied"):

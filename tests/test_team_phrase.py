@@ -18,7 +18,7 @@ def _fn(name):
 class TeamPhrase(unittest.TestCase):
     def test_phrases_are_station_voice_phrases(self):
         import relay
-        self.assertEqual(PHRASE, "Hey Grok, import my team")
+        self.assertEqual(PHRASE, "Hey Grok, import the rest of my team")  # 0.12.10
         self.assertEqual(UPDATE, "Hey Grok, update my team list")
         for said in (PHRASE, PHRASE + ".", UPDATE, UPDATE + ".", "import the rest of my team"):
             self.assertTrue(relay.import_team_request(said), said)
@@ -86,11 +86,14 @@ console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#te
     def test_before_import(self):
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": None})
         self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
-        self.assertEqual(r["html"], 'Say <span class="saychip">“Hey Grok, import my team.”</span> to add your other bots.')
+        self.assertEqual(r["html"], 'Say <span class="saychip">“Hey Grok, import the rest of my team.”</span> to add your other bots.')
 
     def test_after_import(self):
         want = 'Added a bot? Say <span class="saychip">“Hey Grok, update my team list.”</span>'
+        # 0.12.10: an import that found nobody (only the main bot) still invites the import, not the update phrase
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": 1710000000})
+        self.assertIn("import the rest of my team", r["html"])
+        r = self._paint([{"name": "Rhea", "main": True}, {"name": "Kai", "slug": "kai"}], {"rows": [], "updated_at": 1710000000})
         self.assertEqual(r["html"], want)
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [{"name": "Kai", "state": "new"}]})
         self.assertEqual(r["html"], want)

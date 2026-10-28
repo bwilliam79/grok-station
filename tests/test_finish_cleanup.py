@@ -66,31 +66,13 @@ class FinishDialog(unittest.TestCase):
 
 
 class FinishButtons(unittest.TestCase):
-    def _paint(self, on_updates):
-        return _node(f"""
-function mk(){{return {{innerHTML:"", hidden:false, querySelector(){{return null;}}}};}}
-const nodes = {{finhead: mk()}};
-if ({json.dumps(on_updates)}) nodes.finpage = mk();
-const document = {{getElementById: id => nodes[id] || null}};
-const FINISH = {{view: {{behind: 1}}}};
-function finishBehind(v){{return v.behind;}}
-{_fn("finishBtnHTML")}
-{_fn("paintFinishButtons")}
-paintFinishButtons();
-console.log(JSON.stringify({{head: nodes.finhead.innerHTML, headHidden: nodes.finhead.hidden,
-  page: nodes.finpage ? nodes.finpage.innerHTML : null}}));""")
+    """0.12.10: no Finish update button on Updates or in the header (see test_gs1210 for the Bots dot)."""
 
-    def test_updates_page_shows_only_the_in_page_button(self):
-        r = self._paint(True)
-        self.assertEqual(r["head"], "")
-        self.assertTrue(r["headHidden"])
-        self.assertIn("Finish update", r["page"])
-
-    def test_other_pages_have_no_header_button(self):
-        r = self._paint(False)
-        self.assertEqual(r["head"], "")
-        self.assertTrue(r["headHidden"])
-        self.assertIsNone(r["page"])
+    def test_no_finish_button_anywhere(self):
+        js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
+        for gone in ("finhead", "finpage", "finishBtnHTML"):
+            self.assertNotIn(gone, js)
+        self.assertNotIn("Finish update", _fn("paintFinishButtons"))
 
     def test_behind_counts_only_listed_bots(self):
         """A stale Finish view must not count a bot that is no longer on the Bots list."""
