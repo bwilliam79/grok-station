@@ -61,17 +61,8 @@ if __name__ == "__main__":
 
 
 class ComputerName(unittest.TestCase):
-    def test_short_form_before_the_first_dot(self):
-        if not shutil.which("node"):
-            self.skipTest("node not installed")
-        prog = _fn("shortComputerName") + """
-console.log(JSON.stringify([shortComputerName("den-mac.lan"), shortComputerName(" office.local "),
-  shortComputerName("Den Mac"), shortComputerName(".lan")]));"""
-        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
-        self.assertEqual(json.loads(out.stdout), ["den-mac", "office", "Den Mac", ".lan"])
-
-    def test_name_is_editable_and_bots_report_what_they_see(self):
+    def test_name_is_editable_and_kept_as_typed(self):
         self.assertIn('id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(host)}"', JS)
         self.assertIn("Save name", JS)
-        self.assertNotIn("exactly as it shows in the Grok Bot app", JS)
-        self.assertIn("bindComputerName(hostEl)", JS)
+        self.assertIn("exactly as it shows in the Grok Bot app", JS)
+        self.assertNotIn("shortComputerName", JS)

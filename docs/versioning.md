@@ -339,6 +339,14 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.8
+
+Change note (2026-10-28): computer name, fresh bots, and Update buttons on Bots.
+
+- **Computer name.** Add bot and Change computer again ask for the computer's name exactly as it shows in the Grok Bot app, and say not to include the hostname. 0.12.6 had switched them to "the name you see (its hostname is fine)" and cut the pasted name at the first dot, so bots sent a hostname. The name you type is kept as typed.
+- **Freshly added bots.** A bot paired with this release's Add bot instructions no longer shows "Update available for this bot". The station records the release a bot was set up with. A bot set up on an older release still shows the note. Bots added before 0.12.8 have no record, so they still need the one-time Finish update paste.
+- **Update buttons on Bots.** A bot that needs an update has an Update button on its row, and Update all shows beside Revoke all bots when at least one listed bot needs one. Both open the same Finish update dialog and use its checks (pinned script, signed replies, one ask per bot every 10 minutes). Deleted bots are never counted.
+
 ## 0.12.7
 
 Patch release. Installs over 0.12.6. This is the work pushed on the evening of October 27 after 0.12.6 was released; it went out still numbered 0.12.6, so a station already on 0.12.6 never offered it. `python3 tools/check-version.py` now also fails when code changes after a release's manifest and pin commits without a new `VERSION`.

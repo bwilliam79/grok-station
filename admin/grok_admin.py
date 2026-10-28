@@ -1738,8 +1738,17 @@ def read_finish():
     doc = read_json(path(FINISH), {})
     if not isinstance(doc, dict):
         doc = {}
-    doc.setdefault("sent", {}); doc.setdefault("copied", {}); doc.setdefault("updaters", {})
+    doc.setdefault("sent", {}); doc.setdefault("copied", {}); doc.setdefault("updaters", {}); doc.setdefault("setup", {})
     return doc
+
+
+def note_setup(slug, rel=None):
+    """Remember the release whose Add bot instructions paired this bot, so it is not shown as needing an update."""
+    if not isinstance(slug, str) or not slug:
+        return
+    doc = read_finish()
+    doc["setup"][slug] = {"release": rel or version(), "at": time.time()}
+    write_json(path(FINISH), doc)
 
 
 def forget_finish(slug):
@@ -1752,7 +1761,7 @@ def forget_finish(slug):
         return
     doc = read_finish()
     changed = False
-    for key in ("sent", "copied"):
+    for key in ("sent", "copied", "setup"):
         bucket = doc.get(key)
         if isinstance(bucket, dict) and slug in bucket:
             bucket.pop(slug, None)
@@ -1792,6 +1801,10 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "done"
         elif b.get("update_refused_at"):
             state = "refused"
+        elif not u and (finish.get("setup") or {}).get(b["slug"], {}).get("release") == rel:
+            state = "done"  # paired with this release's Add bot instructions: nothing to update yet
+        elif not u and (finish.get("setup") or {}).get(b["slug"]):
+            state = "needs"  # set up by a newer template that already knows update_bot
         elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
             state = "copy"  # set up before 0.11.8: its instructions don't know update_bot yet
         elif u.get("release") == rel and u.get("instr") != want:
@@ -4182,6 +4195,7 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"), key))
         audit(slug, "pair")
+        note_setup(slug)
         return self.send(200, {"ok": True})
 
     def bots_key_delete(self, slug, j):

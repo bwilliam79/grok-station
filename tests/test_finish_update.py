@@ -678,3 +678,27 @@ class TemplateReleaseIsVersion(unittest.TestCase):
             self.assertEqual(rows[slug]["error"], "", slug)
             self.assertNotEqual(rows[slug]["state"], "error", slug)
             self.assertTrue(rows[slug]["message"].startswith("Grok Station instructions, release %s.\n" % rel))
+
+
+class FreshBotNotBehind(unittest.TestCase):
+    """0.12.8: a bot paired with this release's Add bot instructions is not flagged 'Update available'."""
+
+    def test_fresh_bot_done_old_bot_still_behind(self):
+        ga = _ga()
+        old, ga.VERSION_FILE = ga.VERSION_FILE, os.path.join(ROOT, "VERSION")
+        self.addCleanup(setattr, ga, "VERSION_FILE", old)
+        rel = open(os.path.join(ROOT, "VERSION")).read().strip()
+        pins = {"commit": U, "update_commit": C, "files": {"scripts/gs-update.sh": sha(open(SCRIPT, "rb").read())}}
+        fin = {"sent": {}, "copied": {}, "updaters": {}, "setup": {"fresh": {"release": rel}, "older": {"release": "0.12.0"}}}
+        bots = [_bot("fresh"), _bot("older"), _bot("legacy")]
+        v = ga.finish_rows(bots, "https://st.example", FP, PUB, pins, fin)
+        rows = {r["slug"]: r["state"] for g in v["computers"] for r in g["bots"]}
+        self.assertEqual(rows["fresh"], "done")
+        self.assertEqual(rows["older"], "needs")
+        self.assertEqual(rows["legacy"], "copy")
+        self.assertEqual(v["behind"], 2)
+
+    def test_pairing_records_the_release(self):
+        src = open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8").read()
+        body = src.split("def bots_key_put", 1)[1].split("\n    def ", 1)[0]
+        self.assertIn("note_setup(slug)", body)

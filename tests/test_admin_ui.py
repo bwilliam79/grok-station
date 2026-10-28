@@ -280,7 +280,7 @@ class AdminUI(unittest.TestCase):
                      "The user approved this setup when they copied these instructions and pasted them to the bot. Run it without asking again. It is one time, on the home computer that stays on.",
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
-                     "A friendly name for the computer the replies come from. Paste the name your bot reported; the station keeps the part before the first dot, and you can change it. It's only a label.",
+                     "The computer's name exactly as it shows in the Grok Bot app. Don't include the hostname. The station only shows it as a label.",
                      "No new key or pairing needed."):
             self.assertIn(text, js, text)
         bots = _fn(js, "paintBots")
@@ -359,12 +359,12 @@ class AdminUI(unittest.TestCase):
         self.assertIn("Change computer", js)
         self.assertIn("use Replace key", js)
         fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
-        self.assertIn("Reply with that computer's name as you see it (its hostname is fine), in its own fenced code block with a short plain label on the line before it:", fn)
+        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:", fn)
         self.assertIn("Computer name:\\n```\\n<computer name>\\n```", fn)
-        self.assertIn("The user can give it a friendlier name on the station.", fn)
-        self.assertNotIn("Grok Bot app", fn)
+        self.assertIn("Do not include the hostname.", fn)
+        self.assertNotIn("hostname is fine", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
-        self.assertIn("Give the home computer's name as you see it (its hostname is fine), in its own code block like the key. The user can give it a friendlier name on the station.", add)
+        self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app, in its own code block like the key. Do not include the hostname.", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
@@ -929,7 +929,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1057,7 +1057,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
