@@ -29,7 +29,7 @@ frames at or above the threshold). A wake opens the session as that persona (rel
 Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. Without the file: hey_grok alone.
 `grok_wake.py --test file.wav` reports which word/persona the clip triggers (never opens a session);
 `grok_wake.py --bench [seconds | file.wav]` times the loaded models on noise or on recorded audio.
-Recorded wake words (wake/fewshot.py) are built on this station from the user's 10 recordings, with no training
+Recorded wake words (wake/fewshot.py) are built on this station from the user's 5 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
 import base64, datetime, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
@@ -722,7 +722,7 @@ def enroll_stage(stage, message, phrase=None, session=None):
     last["message"] = message
 CLIP_S, LEAD_S, RETRY_S = 2.4, 0.9, 1.5  # recording window per clip, pause before the chime (the screen's get-ready
                                          # ring fills over it), too loud / didn't hear it hold before the retry
-ENROLL_COUNT, TOPUP_COUNT = 10, 10       # clips per session, fixed; "Train more" records another 10 and merges them
+ENROLL_COUNT, TOPUP_COUNT = 5, 5         # clips per session, fixed; "Train more" records another 5 and merges them
 SESSION_OPEN = threading.Event()         # a voice session is on screen: enrollment result notices wait for it
 
 
@@ -935,7 +935,7 @@ def control_server():
             if req is None:
                 return self._r(400, {"error": "unknown phrase", "phrases": sorted(enroll_phrases())})
             if req.get("error") == "count":
-                return self._r(400, {"error": "count must be 10"})
+                return self._r(400, {"error": "count must be %d" % ENROLL_COUNT})
             if setup_mode():
                 return self._r(423, {"error": "setup needed"})
             if ENROLL_STATE["busy"]:
@@ -1073,7 +1073,9 @@ def finished_sessions(phrase):
     """Full, unique sessions for one phrase: (directory, clip names, noise path or None).
 
     A finished session is a YYYYMMDD-HHMMSS directory with a session.json object and at
-    least ENROLL_COUNT clip files (NN.wav), or 5 for a Train more session (prior set), as enroll() keeps. Empty directories, partial sessions, and
+    least ENROLL_COUNT clip files (NN.wav). A Train more session (prior set) needs 5, which matches
+    ENROLL_COUNT, so an older top-up kept at 5 still counts, and a first session of 10 still does too.
+    Empty directories, partial sessions, and
     directories with no completion marker are skipped. Two sessions with the same clip
     bytes count once; the earlier directory is kept. Room noise is only from those.
     """
@@ -1093,7 +1095,8 @@ def finished_sessions(phrase):
         if not isinstance(doc, dict):
             continue
         names = _session_clip_names(d)
-        # enroll() keeps a first session at 10 saved clips and a Train more session at 5 (prior set)
+        # First session: ENROLL_COUNT saved clips. Train more: 5 (prior set). At 5 those are the same,
+        # so a word enrolled earlier from 10 clips still counts, and an old top-up of 5 still counts.
         if len(names) < (5 if doc.get("prior") else ENROLL_COUNT):
             continue
         fp = _session_fingerprint(d, names)
@@ -1398,7 +1401,7 @@ def enroll(req, read16, play):
             enroll_stage("cancelled", "Stopped.", phrase, ses)
             print(f"enroll discarded {phrase} session {ses}", flush=True)
             return
-        ok = sent >= (5 if prior else 10)
+        ok = sent >= (5 if prior else ENROLL_COUNT)
         body = {"phrase": phrase, "persona": persona, "count": sent, **({"prior": prior} if prior else {})}
         try:
             with open(os.path.join(d, "session.json"), "w") as f:
@@ -1441,7 +1444,7 @@ def training_notice(phrase, published):
     label = " ".join((w[:1].upper() + w[1:]) for w in words if w) or "Hey"
     if published:
         return f"{label} is ready"
-    return f"{label} is not good enough yet. Train more to add 10 more recordings, somewhere quiet."
+    return f"{label} is not good enough yet. Train more to add 5 more recordings, somewhere quiet."
 
 
 def _train_outcome(j):

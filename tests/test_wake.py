@@ -213,24 +213,24 @@ class TestEnroll(unittest.TestCase):
             self.assertEqual(ph["hey_kitchen"], "kitchen-bot")
             self.assertEqual(ph["hey_finn"], "grok")  # override persona wins over the config
             self.assertEqual(ph["hey_hank"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10, "speaker": "spk-ab12", "speakers": ["a"]}),
-                             {"phrase": "hey_hank", "persona": "hank", "count": 10, "topup": False})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5, "speaker": "spk-ab12", "speakers": ["a"]}),
+                             {"phrase": "hey_hank", "persona": "hank", "count": 5, "topup": False})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "persona": "grok"})["persona"], "hank")
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 10)  # omitted count is the default
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank"})["count"], 5)  # omitted count is the default
             self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen"})["persona"], "kitchen-bot")
-            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 10, "topup": True}),
-                             {"phrase": "okay_finn", "persona": "finn", "count": 10, "topup": True})
+            self.assertEqual(gw.parse_enroll({"phrase": "okay_finn", "persona": "finn", "count": 5, "topup": True}),
+                             {"phrase": "okay_finn", "persona": "finn", "count": 5, "topup": True})
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn"}))
             self.assertIsNone(gw.parse_enroll({"phrase": "okay_finn", "persona": "Not A Slug"}))
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5}), {"error": "count"})
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10}), {"error": "count"})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 19}), {"error": "count"})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 31}), {"error": "count"})
             self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 20}), {"error": "count"})
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 10})["count"], 10)
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_hank", "count": 5})["count"], 5)
             self.assertIsNone(gw.parse_enroll({"phrase": "hey_hank", "count": "ten"}))
             self.assertTrue(gw.wake_name_ok("hey_kitchen-bot"))
             self.assertFalse(gw.phrase_ok("hey_kitchen-bot"))  # phrase_ok stays letters-only
-            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen-bot", "persona": "kitchen-bot", "count": 10})["persona"],
+            self.assertEqual(gw.parse_enroll({"phrase": "hey_kitchen-bot", "persona": "kitchen-bot", "count": 5})["persona"],
                              "kitchen-bot")
         finally:
             gw.WAKE_CONFIG, gw.OVERRIDES = old
@@ -327,7 +327,7 @@ class EnrollFlow(unittest.TestCase):
         return posted, uploads
 
     def test_stages_and_default_count(self):
-        self.assertEqual(gw.ENROLL_COUNT, 10); self.assertEqual(gw.TOPUP_COUNT, 10)
+        self.assertEqual(gw.ENROLL_COUNT, 5); self.assertEqual(gw.TOPUP_COUNT, 5)
         self.assertEqual((gw.LEAD_S, gw.CLIP_S, gw.RETRY_S), (0.9, 2.4, 1.5))
         posted, uploads = self.run_enroll(loud_at=(2,))
         self.assertEqual(posted[0], "prompt")
@@ -431,10 +431,12 @@ class TrainingNotice(unittest.TestCase):
 
         try:
             st, j = post({"phrase": "hey_finn", "count": 25})
-            self.assertEqual((st, j.get("error")), (400, "count must be 10"))
+            self.assertEqual((st, j.get("error")), (400, "count must be 5"))
             st, j = post({"phrase": "hey_finn", "count": 31})
-            self.assertEqual((st, j.get("error")), (400, "count must be 10"))
+            self.assertEqual((st, j.get("error")), (400, "count must be 5"))
             st, j = post({"phrase": "hey_finn", "count": 10})
+            self.assertEqual((st, j.get("error")), (400, "count must be 5"))
+            st, j = post({"phrase": "hey_finn", "count": 5})
             self.assertNotEqual(st, 400)  # count accepted
             st, j = post({"phrase": "hey_finn"})
             self.assertNotEqual(st, 400)
@@ -728,5 +730,5 @@ class ForgetWord(unittest.TestCase):
         self.assertEqual([w["name"] for w in json.load(open(os.path.join(enr, "wakewords.enrolled.json")))["words"]], ["hey_finn"])
         self.assertTrue(gw.RELOAD.is_set())
 
-    def test_fixed_ten_clips(self):
-        self.assertEqual((gw.ENROLL_COUNT, gw.TOPUP_COUNT), (10, 10))
+    def test_fixed_five_clips(self):
+        self.assertEqual((gw.ENROLL_COUNT, gw.TOPUP_COUNT), (5, 5))

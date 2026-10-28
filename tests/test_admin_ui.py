@@ -736,9 +736,13 @@ class Release092UI(unittest.TestCase):
         self.assertIn("BOT_ROUTINE", fn)
         self.assertNotIn("deployScript", fn)
 
-    def test_fixed_ten_reps_train_more_and_delete(self):
+    def test_fixed_five_reps_train_more_and_delete(self):
         self.assertNotIn('id="cnt"', self.js)
-        self.assertIn("You’ll say it 10 times", self.js)
+        self.assertIn("You’ll say it 5 times", self.js)
+        self.assertIn("of 5. Speak after the chime.", self.js)
+        self.assertIn("of 5 more.", self.js)
+        self.assertNotIn("of 10. Speak after the chime.", self.js)
+        self.assertNotIn("of 10 more.", self.js)
         self.assertIn("Train more", self.js)
         self.assertIn("topup: true", self.js)
         self.assertIn('"DELETE", "/api/wakewords/"', self.js)
@@ -971,14 +975,18 @@ class Release0113UI(unittest.TestCase):
         fn = _fn(self.js, "openSetWake")
         self.assertIn("clipSquares", fn)
         self.assertNotIn("clipFeed", fn)
+        self.assertIn("i <= 5", self.js)
+        self.assertIn("repeat(5,32px)", self.css)
+        self.assertIn("repeat(5,28px)", self.css)
+        self.assertNotIn("repeat(10,", self.css)
 
     def test_pass_mark_is_eighty_percent_of_the_clips(self):
         fn = self.js.split("function clipsNeeded", 1)[1].split("function clipSquares", 1)[0]
         self.assertIn("Math.ceil(0.8 * n)", fn)
         weak = self.js.split('state === "failed_quality"', 1)[1].split("if (state === \"failed\")", 1)[0]
         self.assertIn("clipsNeeded(m[2])", weak)
-        self.assertIn("Ten more recordings should help.", weak)
-        self.assertIn("isn't good enough yet. Ten more recordings should help.", weak)
+        self.assertIn("Five more recordings should help.", weak)
+        self.assertIn("isn't good enough yet. Five more recordings should help.", weak)
         self.assertNotIn("It needs 8", weak)
         self.assertNotIn("needs 8 of 10", self.js)
         script = "function clipsNeeded" + fn + "\nprocess.stdout.write([10, 30, 40].map(clipsNeeded).join(','));"

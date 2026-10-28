@@ -1,8 +1,9 @@
 """Finished enroll sessions are the only recordings that count.
 
 A full session is a YYYYMMDD-HHMMSS directory with a session.json object and at least
-10 NN.wav clips. Empty dirs, partial sessions, missing markers, and a later copy of the
-same clip bytes do not add to the count. The admin list and the wake trainer share that rule.
+5 NN.wav clips (Train more is 5 too; an older session of 10 still counts). Empty dirs,
+partial sessions, missing markers, and a later copy of the same clip bytes do not add
+to the count. The admin list and the wake trainer share that rule.
 """
 import json, os, sys, tempfile, unittest, wave
 
@@ -50,7 +51,7 @@ class ClipCount(unittest.TestCase):
 
     def test_full_partial_empty_and_duplicate_sessions(self):
         _session(self.tmp, "hey_rhea", "20261026-120000", n=10, mark=1)          # full
-        _session(self.tmp, "hey_rhea", "20261026-120100", n=9, mark=2)           # partial
+        _session(self.tmp, "hey_rhea", "20261026-120100", n=4, mark=2)           # partial (under 5)
         _session(self.tmp, "hey_rhea", "20261026-120200", n=10, mark=3, marker=False)  # no marker
         os.makedirs(os.path.join(self.tmp, "hey_rhea", "20261026-120300"))       # empty
         _session(self.tmp, "hey_rhea", "20261026-120400", n=10, mark=1)          # duplicate of the first
@@ -84,10 +85,26 @@ class ClipCount(unittest.TestCase):
     def test_topup_session_of_five_counts(self):
         _session(self.tmp, "hey_finn", "20261023-080000", n=10, mark=1)
         _session(self.tmp, "hey_finn", "20261023-090000", n=6, mark=2, marker_doc={"phrase": "hey_finn", "count": 6, "prior": "20261023-080000"})
-        _session(self.tmp, "hey_finn", "20261023-100000", n=6, mark=3)  # first session with only 6: not kept
+        _session(self.tmp, "hey_finn", "20261023-100000", n=4, mark=3)  # first session with only 4: not kept
         got = gw.finished_sessions("hey_finn")
         self.assertEqual([len(n) for _d, n, _z in got], [10, 6])
         self.assertEqual(ga.clip_count("hey_finn"), 16)
+
+    def test_existing_ten_clip_session_still_counts(self):
+        _session(self.tmp, "hey_ash", "20261020-080000", n=10, mark=1)
+        _session(self.tmp, "hey_ash", "20261020-090000", n=5, mark=2,
+                 marker_doc={"phrase": "hey_ash", "count": 5, "prior": "20261020-080000"})
+        _session(self.tmp, "hey_ash", "20261020-100000", n=4, mark=3)  # short first session: not kept
+        got = gw.finished_sessions("hey_ash")
+        self.assertEqual([len(n) for _d, n, _z in got], [10, 5])
+        self.assertEqual(ga.clip_count("hey_ash"), 15)
+        self.assertEqual(len(gw.phrase_clips("hey_ash")[0]), 15)
+
+    def test_five_clip_first_session_counts_four_does_not(self):
+        _session(self.tmp, "hey_milo", "20261021-080000", n=5, mark=1)
+        _session(self.tmp, "hey_milo", "20261021-090000", n=4, mark=2)
+        self.assertEqual([len(n) for _d, n, _z in gw.finished_sessions("hey_milo")], [5])
+        self.assertEqual(ga.clip_count("hey_milo"), 5)
 
     def test_outside_the_inbox_counts_as_nothing(self):
         other = tempfile.mkdtemp(prefix="gs-clips-out-")

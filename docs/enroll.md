@@ -1,6 +1,6 @@
 # Custom wake words
 
-Hey Grok is built in. Every other wake word is made on the station from your own voice. You record the phrase 10
+Hey Grok is built in. Every other wake word is made on the station from your own voice. You record the phrase 5
 times and the station builds the word from those recordings in a few seconds. There's no training computer and no
 upload.
 
@@ -9,10 +9,10 @@ upload.
 1. Open the admin page, go to **Bots**, and open **Configure** on the bot. Hey Grok is built in and always on, and it is not configured here.
 2. Under **Wake word**, press **Set wake word**. It starts as "Hey Kai". Two or three syllables works best.
 3. Press **Start recording**. Stand where you normally talk to the station, and keep the room quiet. The station listens to the room for 3 seconds first, so stay quiet until the first chime.
-4. Say the phrase after each chime, 10 times, the way you would normally say it. A clip it can't use is asked again right away, so the word is built from 10 kept recordings.
+4. Say the phrase after each chime, 5 times, the way you would normally say it. A clip it can't use is asked again right away, so the word is built from 5 kept recordings.
 5. Then it shows one of these:
    - **Ready.** Say the phrase and the station starts that bot. It's on now.
-   - **Not good enough yet.** Press **Train more** to record 10 more. The first 10 are kept, and the word is rebuilt. You can do this more than once.
+   - **Not good enough yet.** Press **Train more** to record 5 more. The recordings you already have are kept, including a word made from 10, and the word is rebuilt. You can do this more than once.
    - Too close to Hey Grok, or already used by another bot. A word that already belongs to this bot, or to a bot that was deleted, can be used again. Otherwise pick a different phrase.
 6. **Remove wake word** stops listening and leaves the recordings under **Unused wake words** on the Bots page. **Delete** there removes every recording session, the trained model and the row. It still works when the recordings are already gone. Deleting the bot moves its wake word to Unused the same way; it does not delete the recordings. Adding that same bot id again reclaims the word. A word whose bot is gone, including one that was never finished or was switched off, is listed there too, and Delete works for it.
 
@@ -25,12 +25,12 @@ upload.
   This adds no audio processing (`wake/fewshot.py`).
 - **Templates.** Each recording becomes a template: the frames that cover the spoken phrase, up to 1.44 s.
   At most 20 recordings per word are kept, the ones most like the others.
-  Only finished sessions count: a session with its `session.json` and 10 clips (5 for Train more). Empty, unfinished and duplicate sessions are skipped, so the "N recordings" shown matches what you recorded.
+  Only finished sessions count: a session with its `session.json` and at least 5 clips. Train more is 5 clips too, and an older session of 10 still counts. Empty, unfinished and duplicate sessions are skipped, so the "N recordings" shown matches what you recorded.
 - **Matching.** Each new frame is compared with every template using streaming dynamic time warping with cosine
   distance, so a slower or faster delivery still lines up. The word's score is the mean of its best two template
   scores. It has to stay over the word's threshold for 2 frames in a row (patience). The listener's normal cooldown
   applies after any wake.
-- **How strict it is (calibration).** Each recording is scored against the other 9 (leave one out). The station
+- **How strict it is (calibration).** Each recording is scored against the other recordings (leave one out). The station
   also scores these, which must never wake it:
   - the 3 s of room noise recorded before the first chime
   - a bank of everyday speech shipped with the station (`wake/models/fewshot_negatives.npz`, 210 sentences from
@@ -38,7 +38,7 @@ upload.
   - your other custom words
   - Hey Grok
   The threshold sits between the loudest of those and the recordings it must hear.
-- **The quality gate.** The word is ready when at least 8 of 10 recordings are heard (80% after Train more) and the
+- **The quality gate.** The word is ready when it hears at least 80% of the kept recordings (4 of 5, or 8 of 10 for a word already built from 10) and the
   weakest of them still beats the loudest negative by 0.03. Otherwise the station shows "Not good enough yet". If
   Hey Grok fires on your recordings, or another of your words does, the phrase is refused.
 - **Files on the Pi.**

@@ -348,7 +348,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0))
             j = json.loads(self.rfile.read(min(n, 1024)) or b"{}")
-            body = json.dumps({"phrase": str(j.get("phrase", ""))[:24], "count": int(j.get("count", 10)), "topup": bool(j.get("topup"))}).encode()
+            body = json.dumps({"phrase": str(j.get("phrase", ""))[:24], "count": int(j.get("count", 5)), "topup": bool(j.get("topup"))}).encode()
         except Exception:
             return self._reply(400, {"error": "bad json"})
         try:
@@ -2756,7 +2756,7 @@ def enroll_copy(phrase, i, n, stage, extra):
     if stage == "passed":
         return f"{q} is ready", "Try it now.", MUTED, None, None
     if stage == "failed":
-        more = int(extra) if extra.isdigit() else 10
+        more = int(extra) if extra.isdigit() else 5
         return f"Needs {more} more clips", f"A short top-up will make {q} more reliable.", MUTED, None, None
     if stage == "error":
         return "Enrollment stopped", "Nothing was lost. Try again later.", MUTED, None, None

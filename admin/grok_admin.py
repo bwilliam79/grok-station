@@ -37,7 +37,7 @@ if os.path.isfile(os.path.join(_PARENT, "dimming.py")) and _PARENT not in sys.pa
 import dimming
 WAKE_CTL = E("ADMIN_WAKE_CTL", "http://127.0.0.1:8789")
 WAKE_CONFIG = E("WAKE_CONFIG", "/opt/grok-station/wake/wakewords.json")
-ENROLL_REPS = 10  # clips per training session, not configurable
+ENROLL_REPS = 5  # clips per training session, not configurable
 WAKE_DROP_DIR = E("WAKE_DROP_DIR", "/var/lib/grok-station/wakewords")
 ENROLLED = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled") + "/wakewords.enrolled.json"
 ENROLL_INBOX = E("WAKE_ENROLL_DIR", "/var/lib/grok-station/enroll/inbox")
@@ -856,7 +856,7 @@ def finished_clip_files(phrase_dir):
             names = sorted(fn for fn in os.listdir(real) if _CLIP_WAV.fullmatch(fn))
         except OSError:
             continue
-        if len(names) < (5 if doc.get("prior") else _FULL_SESSION):  # Train more keeps 5+
+        if len(names) < (5 if doc.get("prior") else _FULL_SESSION):  # Train more keeps 5+; a full session is 5 too
             continue
         fp = _session_fingerprint(real, names)
         if fp is None or fp in seen:

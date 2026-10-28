@@ -18,7 +18,6 @@ MIN_ROWS = 4
 MAX_TEMPLATES = 20     # CPU cap: at most 20 recordings per word are kept (the most typical ones)
 STAY_PENALTY = 0.08    # holding on one template row costs a little more, so noise can't idle along a template
 TOPK = 2
-REPS_NEEDED = 8        # of 10 leave-one-out recordings must be heard
 MARGIN = 0.03          # the weakest recording kept must clear the loudest negative by this much
 VERSION = 1
 
@@ -98,6 +97,11 @@ class Matcher:
         return float(max(0.0, top.mean()))
 
 
+def reps_needed(n):
+    """Leave-one-out recordings that must be heard. 80% of whatever was kept: 4 of 5, 8 of 10."""
+    return int(np.ceil(0.8 * n))
+
+
 def peak(matcher, frames):
     matcher.reset()
     p = 0.0
@@ -132,7 +136,7 @@ def calibrate(word_frames, word_lens, negatives, others=()):
             collide.append(name)
     neg_max = max(neg, default=0.0)
     pos_s = sorted(pos, reverse=True)
-    need = min(REPS_NEEDED, n) if n <= 10 else int(np.ceil(0.8 * n))
+    need = reps_needed(n)
     floor = pos_s[need - 1]                          # the weakest of the recordings we must hear
     thr = float(np.clip(max(neg_max + MARGIN, (floor + neg_max) / 2), 0.5, 0.97))
     heard = int(sum(p >= thr for p in pos))
@@ -143,7 +147,7 @@ def calibrate(word_frames, word_lens, negatives, others=()):
         msg = f"Ready. It heard {heard} of {n} recordings."
     else:
         msg = (f"Not good enough yet. It heard {heard} of {n} recordings. "
-               "Train more to add 10 more recordings, somewhere quiet.")
+               "Train more to add 5 more recordings, somewhere quiet.")
     return {"ok": bool(ok), "threshold": round(thr, 3), "templates": [tmpl[i] for i in keep], "pos": [round(p, 3) for p in pos],
             "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "message": msg}
 

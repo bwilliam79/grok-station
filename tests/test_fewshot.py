@@ -62,7 +62,9 @@ class Calibrate(unittest.TestCase):
         finally:
             fs.clip_frames = fs_orig
         self.assertTrue(cal["ok"], cal["message"])
-        self.assertGreaterEqual(cal["heard"], fs.REPS_NEEDED)
+        self.assertEqual(cal["count"], 10)
+        self.assertGreaterEqual(cal["heard"], fs.reps_needed(10))
+        self.assertGreaterEqual(cal["heard"], 8)  # a 10-clip word still needs 8
         self.assertGreater(cal["threshold"], cal["neg_max"])
         self.assertTrue(cal["message"].startswith("Ready"))
 
@@ -76,7 +78,42 @@ class Calibrate(unittest.TestCase):
             fs.clip_frames = fs_orig
         self.assertFalse(cal["ok"])
         self.assertTrue(cal["message"].startswith("Not good enough"))
-        self.assertIn("Train more", cal["message"])
+        self.assertIn("Train more to add 5 more recordings", cal["message"])
+
+    def test_reps_needed_is_eighty_percent(self):
+        self.assertEqual(fs.reps_needed(5), 4)
+        self.assertEqual(fs.reps_needed(10), 8)
+        self.assertFalse(hasattr(fs, "REPS_NEEDED"))
+
+    def test_five_clean_reps_pass(self):
+        fs_orig = fs.clip_frames
+        fs.clip_frames = lambda f, s, lead_s=fs.LEAD_S: f[14:-5]
+        try:
+            frames, lens = self._reps(WORD, n=5)
+            negs = [say(OTHER)[0] for _ in range(5)] + [rng.standard_normal((40, 96)).astype(np.float32)]
+            cal = fs.calibrate(frames, lens, negs)
+        finally:
+            fs.clip_frames = fs_orig
+        self.assertTrue(cal["ok"], cal["message"])
+        self.assertEqual(cal["count"], 5)
+        self.assertGreaterEqual(cal["heard"], 4)
+
+    def test_saved_ten_templates_score_the_same(self):
+        templates = []
+        for i in range(10):
+            t = WORD[:10].copy()
+            t = t + (0.01 * (i + 1)) * rng.standard_normal((10, 96)).astype(np.float32)
+            templates.append(np.asarray(t, np.float32))
+        stream = say(WORD)[0]
+        before = fs.peak(fs.Matcher(templates), stream)
+        path = os.path.join(tempfile.mkdtemp(), "ten.fewshot.npz")
+        fs.save(path, templates, {})
+        loaded = fs.load(path)
+        self.assertEqual(len(loaded), 10)
+        for got, want in zip(loaded, templates):
+            self.assertTrue(np.allclose(got, want, atol=1e-2))
+        after = fs.peak(fs.Matcher(loaded), stream)
+        self.assertAlmostEqual(before, after, delta=0.02)
 
     def test_templates_capped(self):
         fs_orig = fs.clip_frames

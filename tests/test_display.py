@@ -280,6 +280,7 @@ class EnrollScreens(unittest.TestCase):
         self.assertEqual(gs.enroll_copy("Hey Finn", 3, 10, "saved", "")[3], "Clip 4 of 10")
         self.assertIn("2nd in line", gs.enroll_copy("Hey Finn", 0, 0, "queued", "2")[1])
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "10")[0], "Needs 10 more clips")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "")[0], "Needs 5 more clips")
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "passed", "")[0], "“Hey Finn” is ready")
         self.assertEqual(gs.enroll_parse({"heard": "3/25|Recording… speak now"})[2], "custom")  # old wake build
         self.assertEqual(gs.VOICE_HOLDS["notice"], 10)  # a training notice holds about 10 s

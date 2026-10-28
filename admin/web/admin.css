@@ -300,7 +300,7 @@ a.need:hover{text-decoration:underline}
 .acon{width:36px;height:36px;border-radius:50%;background:var(--gs-amber-bg);color:var(--gs-amber);display:flex;align-items:center;justify-content:center;font-weight:700;margin-bottom:10px}
 .acts{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
 .acts .back{margin-right:auto}
-.clips{display:grid;grid-template-columns:repeat(10,32px);gap:8px;margin-top:8px}
+.clips{display:grid;grid-template-columns:repeat(5,32px);gap:8px;margin-top:8px}
 .clips i{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;background:var(--gs-surface-3);font-weight:700}
 .clips i.ok{background:var(--gs-teal);color:var(--gs-on-teal)}
 .clips i.bad{background:var(--gs-amber);color:#1A1408}
@@ -332,7 +332,7 @@ a.need:hover{text-decoration:underline}
   .btn{min-height:48px;height:auto}
   .btn.sm{min-height:40px;height:40px}
   input.inp,select.sel{min-height:44px}
-  .clips{grid-template-columns:repeat(10,28px);gap:6px}
+  .clips{grid-template-columns:repeat(5,28px);gap:6px}
   .clips i{width:28px;height:28px}
   .sheet .card::before{content:"";display:block;width:36px;height:4px;border-radius:4px;background:var(--gs-rule-2);margin:0 auto 12px}
   .sheet .acts{flex-direction:column-reverse}

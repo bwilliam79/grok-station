@@ -895,7 +895,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.assertEqual(st, 202)
         self.assertEqual(j["id"], "hey_kitchen")
         self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
-        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 10, "topup": False, "persona": "kitchen-bot"})
+        self.assertEqual(self.sent[-1][2], {"phrase": "hey_kitchen", "count": 5, "topup": False, "persona": "kitchen-bot"})
         self.assertNotIn("speaker", json.dumps(self.sent))
         self.assertNotIn("spk-legacy", json.dumps(self.sent))
         ov_path = os.path.join(os.environ["ADMIN_STATE_DIR"], "wake-overrides.json")
@@ -1523,7 +1523,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertIn("Built in, always on", js)
         self.assertNotIn("Jarvis", js)
         self.assertNotIn("Higher wakes more easily", js)
-        self.assertIn("You’ll say it 10 times", js)
+        self.assertIn("You’ll say it 5 times", js)
         self.assertIn("Block personal info in replies", js)
         self.assertIn('["privacy", "Privacy"]', js)
 

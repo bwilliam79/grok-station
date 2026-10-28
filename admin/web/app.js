@@ -1328,7 +1328,7 @@ function clipsNeeded(total) {
 function clipSquares(kept, recording, rejected) {
   const k = typeof kept === "number" ? kept : 0;
   let html = "";
-  for (let i = 1; i <= 10; i++) {
+  for (let i = 1; i <= 5; i++) {
     let cls = "", mark = "";
     if (i <= k) { cls = "ok"; mark = "✓"; }
     else if (rejected && i === k + 1) { cls = "bad"; mark = "!"; }
@@ -1441,7 +1441,7 @@ function openSetWake(bot, el, d, opts) {
     const busy = !!(el && el._session);
     const preset = "Hey " + (bot.name || "");
     body.innerHTML = `<h2 class="h-dialog">Set wake word for ${esc(bot.name || "")}</h2>
-      <p>You’ll say it 10 times at the station. It takes about a minute.</p>
+      <p>You’ll say it 5 times at the station. It takes about a minute.</p>
       <div class="field"><label for="wwphrase">Wake word</label>
         <input class="inp" id="wwphrase" maxlength="48" autocomplete="off" spellcheck="false" value="${esc(preset)}">
         <p class="help">Two or three syllables works best. Avoid words you say a lot.</p></div>
@@ -1528,8 +1528,8 @@ function openSetWake(bot, el, d, opts) {
       stop();
       const m = String(row.message || "").match(/(\d+) of (\d+)/);
       const heard = m
-        ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs " + clipsNeeded(m[2]) + ". Ten more recordings should help."
-        : esc(label) + " isn't good enough yet. Ten more recordings should help.";
+        ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs " + clipsNeeded(m[2]) + ". Five more recordings should help."
+        : esc(label) + " isn't good enough yet. Five more recordings should help.";
       body.innerHTML = `<h2 class="h-dialog">Not good enough yet</h2>
         <p>${heard}</p>
         <p class="note">${esc(label)} stays off until it’s ready. Other wake words keep working.</p>
@@ -1549,7 +1549,7 @@ function openSetWake(bot, el, d, opts) {
     }
     if (state === "training" || state === "processing" || state === "uploading") {
       body.innerHTML = `<h2 id="wwtrain" class="h-dialog">Training ${esc(label)}…</h2>
-        <p>All 10 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
+        <p>All 5 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
         ${barHTML(100, true)}
         <p class="help">Training · about 3 min left</p>`;
       return;
@@ -1560,16 +1560,16 @@ function openSetWake(bot, el, d, opts) {
     const lead = !progress
       ? "Recording. Speak after the chime."
       : topup
-        ? "Recording " + Math.max(1, index) + " of 10 more. Your first 10 are kept."
-        : "Recording " + Math.max(1, index) + " of 10. Speak after the chime.";
+        ? "Recording " + Math.max(1, index) + " of 5 more. The ones you already have are kept."
+        : "Recording " + Math.max(1, index) + " of 5. Speak after the chime.";
     const grid = progress ? clipSquares(kept, true, rejected) : clipSquares(0, false, false);
-    const first = topup ? `<div class="help">First 10</div>${clipSquares(10, false, false)}<div class="help">10 more</div>` : "";
+    const first = topup ? `<div class="help">Already kept</div>${clipSquares(5, false, false)}<div class="help">5 more</div>` : "";
     const title = topup ? "Train more: say “" + label + "”" : "Say “" + label + "”";
     body.innerHTML = `<h2 class="h-dialog">${esc(title)}</h2>
       <p>${esc(lead)}</p>
       ${first}${grid}
       ${levelMeter(level)}
-      ${barHTML(progress ? (kept / 10) * 100 : 0, false)}
+      ${barHTML(progress ? (kept / 5) * 100 : 0, false)}
       <div class="acts"><button class="btn" id="wwpause" type="button">Pause</button>
         <button class="btn g" id="wwstop" type="button">Stop and discard</button></div>`;
     const pause = $("#wwpause", body);
