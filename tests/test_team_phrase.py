@@ -1,10 +1,12 @@
-"""0.12.6: Bots team card says the station phrase once a main bot is paired."""
+"""0.12.6: Bots team tip. No main bot, before an import, and after an import."""
 import json, os, re, shutil, subprocess, sys, unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, os.path.join(ROOT, "relay"))
 JS = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+CSS = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
 PHRASE = re.search(r'const TEAM_PHRASE = "([^"]+)";', JS).group(1)
+UPDATE = re.search(r'const TEAM_UPDATE_PHRASE = "([^"]+)";', JS).group(1)
 
 
 def _fn(name):
@@ -14,11 +16,12 @@ def _fn(name):
 
 
 class TeamPhrase(unittest.TestCase):
-    def test_phrase_is_the_station_voice_phrase(self):
+    def test_phrases_are_station_voice_phrases(self):
         import relay
-        self.assertEqual(PHRASE, "Hey Grok, import the rest of my team")
-        self.assertTrue(relay.import_team_request(PHRASE))
-        self.assertTrue(relay.import_team_request(PHRASE + "."))
+        self.assertEqual(PHRASE, "Hey Grok, import my team")
+        self.assertEqual(UPDATE, "Hey Grok, update my team list")
+        for said in (PHRASE, PHRASE + ".", UPDATE, UPDATE + ".", "import the rest of my team"):
+            self.assertTrue(relay.import_team_request(said), said)
 
     def test_no_typed_chat_phrase_in_templates(self):
         for f in ("routine-home.txt", "routine-cloud.txt"):
@@ -26,30 +29,46 @@ class TeamPhrase(unittest.TestCase):
             self.assertNotIn("Set up the rest of my team", body)
         self.assertNotIn("Set up the rest of my team", JS)
 
-    def test_card_markup(self):
-        i = JS.index('id="teamcard"')
-        card = JS[i:JS.index('id="unusedwrap"', i)]
+    def test_card_markup_and_css(self):
+        bsum = JS.index('class="bsumrow')
+        card_at = JS.index('class="card teamtip" id="teamcard"')
+        sheet = JS.index('class="card botsheet"')
+        self.assertLess(bsum, card_at)
+        self.assertLess(card_at, sheet)
+        card = JS[card_at:sheet]
+        self.assertIn('id="teamphrase"', card)
+        self.assertIn('class="ico teal"', card)
         self.assertNotIn("copyteam", card)
+        self.assertNotIn("teamsay", JS)
         self.assertNotIn("teamnote", JS)
-        self.assertIn('class="note" id="teamphrase"', card)
         self.assertNotIn("copyphrase", JS)
-        self.assertIn('.teamsay{color:var(--gs-text);font-weight:600}',
-                      open(os.path.join(ROOT, "admin", "web", "admin.css")).read())
+        self.assertIn("#teamcard.teamtip{display:flex;align-items:center;gap:10px;padding:12px 16px;"
+                      "font-size:var(--fs-label);line-height:1.6;color:var(--gs-muted)}", CSS)
+        self.assertIn(".saychip{display:inline-block;white-space:nowrap;color:var(--gs-teal);"
+                      "background:var(--gs-teal-bg);border-radius:var(--gs-radius-pill);padding:2px 8px;font-weight:600}", CSS)
+        self.assertNotIn(".teamsay{", CSS)
         for bad in ("mailbox", "seal"):
             self.assertNotIn(bad, _fn("teamPhraseHtml").lower())
+        paint = _fn("paintTeam")
+        self.assertIn('document.getElementById("add")', paint)
+        self.assertIn("btn.click", paint)
 
-    def _paint(self, bots, pending):
+    def _paint(self, bots, imported=None):
         if not shutil.which("node"):
             self.skipTest("node not installed")
+        if imported is None:
+            imported = {"rows": []}
         prog = f"""
 const TEAM_PHRASE = {json.dumps(PHRASE)};
+const TEAM_UPDATE_PHRASE = {json.dumps(UPDATE)};
 const esc = s => String(s);
 function mk() {{ return {{hidden: true, innerHTML: "", textContent: ""}}; }}
 const nodes = {{"#teamcard": mk(), "#teamphrase": mk()}};
 const $ = sel => nodes[sel];
+{_fn("teamState")}
 {_fn("teamPhraseHtml")}
 {_fn("paintTeam")}
-paintTeam({{_bots: {json.dumps(bots)}}});
+paintTeam({{_bots: {json.dumps(bots)}, _imported: {json.dumps(imported)}}});
 console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#teamphrase"].hidden,
   html: nodes["#teamphrase"].innerHTML}}));
 """
@@ -57,17 +76,24 @@ console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#te
         self.assertEqual(out.returncode, 0, out.stderr)
         return json.loads(out.stdout)
 
-    def test_hidden_with_no_bots(self):
+    def test_no_main_bot_offers_add(self):
         r = self._paint([], [])
-        self.assertTrue(r["card"]); self.assertTrue(r["phrase"])
-
-    def test_shown_with_main_bot(self):
-        r = self._paint([{"name": "Rhea", "main": True}], [])
         self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
-        self.assertEqual(r["html"], 'Say <strong class="teamsay">“Hey Grok, import the rest of my team.”</strong>'
-                                    ' Grok Station sets up the rest of your team for you.')
-        r = self._paint([{"name": "Kai"}], [])  # bots but no main bot yet
-        self.assertTrue(r["card"])
+        self.assertEqual(r["html"], 'No bots yet. Use <button type="button" class="tipadd" id="teamadd">Add bot</button> to connect your main bot.')
+        r = self._paint([{"name": "Kai"}], [])
+        self.assertIn("No bots yet.", r["html"])
+
+    def test_before_import(self):
+        r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": None})
+        self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
+        self.assertEqual(r["html"], 'Say <span class="saychip">“Hey Grok, import my team.”</span> to add your other bots.')
+
+    def test_after_import(self):
+        want = 'Added a bot? Say <span class="saychip">“Hey Grok, update my team list.”</span>'
+        r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": 1710000000})
+        self.assertEqual(r["html"], want)
+        r = self._paint([{"name": "Rhea", "main": True}], {"rows": [{"name": "Kai", "state": "new"}]})
+        self.assertEqual(r["html"], want)
 
 
 if __name__ == "__main__":

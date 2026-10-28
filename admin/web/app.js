@@ -180,7 +180,8 @@ document.addEventListener("click", ev => {
   const src = document.getElementById(btn.getAttribute("data-copy"));
   if (src) copyText(src.textContent, btn);
 });
-const TEAM_PHRASE = "Hey Grok, import the rest of my team";  // the station handles it itself (wake/grok_wake.py import intent)
+const TEAM_PHRASE = "Hey Grok, import my team";  // the station handles it itself (relay import_team_request)
+const TEAM_UPDATE_PHRASE = "Hey Grok, update my team list";
 const STATION_KEY_MISSING = "Station key unavailable, see logs";
 // Every copy-paste set of bot instructions uses this pair, Copy first then View: View toggles a <pre> that shows the exact
 // text Copy puts on the clipboard. Both read the same makeText() so they can never differ.
@@ -3483,15 +3484,30 @@ function teamSetupMessage(rows, el) {
   });
   return lines.join("\n");
 }
-function teamPhraseHtml() {
-  return `Say <strong class="teamsay">“${esc(TEAM_PHRASE)}.”</strong> Grok Station sets up the rest of your team for you.`;
+function teamState(el) {
+  const bots = (el && el._bots) || [];
+  if (!bots.some(b => b && b.main)) return "none";
+  const imp = (el && el._imported) || {};
+  const rows = Array.isArray(imp.rows) ? imp.rows : [];
+  if (imp.updated_at || rows.length) return "after";
+  return "before";
+}
+function teamPhraseHtml(state) {
+  if (state === "none") return 'No bots yet. Use <button type="button" class="tipadd" id="teamadd">Add bot</button> to connect your main bot.';
+  if (state === "after") return `Added a bot? Say <span class="saychip">“${esc(TEAM_UPDATE_PHRASE)}.”</span>`;
+  return `Say <span class="saychip">“${esc(TEAM_PHRASE)}.”</span> to add your other bots.`;
 }
 function paintTeam(el) {
   const card = $("#teamcard", el), ph = $("#teamphrase", el);
   if (!card) return;
-  const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
-  card.hidden = !main;  // the station handles the phrase itself, so it only needs a paired main bot
-  if (ph) { ph.hidden = !main; ph.innerHTML = main ? teamPhraseHtml() : ""; }
+  const state = teamState(el);
+  card.hidden = false;
+  if (ph) { ph.hidden = false; ph.innerHTML = teamPhraseHtml(state); }
+  const add = card.querySelector ? card.querySelector("#teamadd") : null;
+  if (add) add.onclick = () => {
+    const btn = document.getElementById("add");
+    if (btn && btn.click) btn.click();
+  };
 }
 const BOT_ROUTINE = `Grok Station instructions, release 0.12.6.
 
@@ -4001,10 +4017,8 @@ async function pageBots(el) {
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
       <span class="right inline botacts"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
+    <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
     <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
-    <div class="card" id="teamcard" hidden>
-      <p class="note" id="teamphrase" hidden></p>
-</div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>

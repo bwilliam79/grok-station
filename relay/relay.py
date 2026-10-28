@@ -1422,15 +1422,17 @@ def connect_request(text, bots, current="grok"):
 
 _IMPORT_TEAM = re.compile(
     r"^(?:hey [a-z0-9][a-z0-9'-]* )?(?:(?:can you|could you|please) ){0,2}"
-    r"import (?:the rest of my team|my team|the rest of my bots)(?: please)?$")
+    r"(?:import (?:the rest of my team|my team|the rest of my bots)|update my team list)(?: please)?$")
 
 
 def import_team_request(text):
-    """True when the sentence asks the station to import the rest of the team.
+    """True when the sentence asks the station to import or refresh the team list.
 
-    Same cleanup as connect_request: a leading "hey <name>" for any single-token
-    wake word (letters, digits, apostrophe, hyphen), up to two of
-    "can you" / "could you" / "please", and trailing punctuation.
+    Matches "import the rest of my team", "import my team", "import the rest of my bots",
+    and "update my team list". Same cleanup as connect_request: a leading "hey <name>"
+    for any single-token wake word (letters, digits, apostrophe, hyphen), up to two of
+    "can you" / "could you" / "please", and trailing punctuation. Either phrase runs the
+    same import: a name that is already a bot is not added again.
     """
     raw = " ".join(str(text or "").split())
     if not raw:

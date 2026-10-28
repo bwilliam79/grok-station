@@ -163,11 +163,11 @@ An unknown name is spoken back: "I don't see a bot called Sol. Your bots are Kai
 
 ## Import the rest of my team
 
-During a session you can say "Hey Grok, import the rest of my team", "import my team", or "import the rest of my bots" (a leading "Hey Grok", and "please" or "can you", are optional). The station handles that sentence itself, the same way it handles "connect me with". It does not send the sentence to a bot.
+During a session you can say "Hey Grok, import the rest of my team", "import my team", "import the rest of my bots", or "update my team list" (a leading "Hey Grok", and "please" or "can you", are optional). The station handles that sentence itself, the same way it handles "connect me with". It does not send the sentence to a bot. "Update my team list" runs the same import: a bot that is already on the station is not added again.
 
 If no main bot is set up, it says "Set up your main bot first." Otherwise it says "Asking <main bot name> for your team." and asks the main bot for the list. The reply is merged the same way as any other list. The station speaks the counts, not the names.
 
-Once a main bot is paired, the team card on Bots starts with: Say **“Hey Grok, import the rest of my team.”** Grok Station sets up the rest of your team for you. The card is hidden while no main bot is paired. The phrase on the page is the same one the station listens for (one constant, checked by a test).
+The team tip sits at the top of the Bots list, under the summary row. With no main bot it says: No bots yet. Use **Add bot** to connect your main bot. **Add bot** opens the Add bot dialog. Once a main bot is paired and nothing has been imported, it says: Say “Hey Grok, import my team.” to add your other bots. After an import (a time was saved, or the list has a row), it says: Added a bot? Say “Hey Grok, update my team list.” The phrase in the chip is one the station listens for. "Import the rest of my team" still works when spoken.
 
 Each imported name that is not a bot yet is a row on Bots with the state "Not set up", a **Set up** button (Add bot with that name filled in), and **Remove**. Those rows are not bots. A name that already matches a bot is not shown again, and a name that dropped off the main bot's last list is not shown.
 
