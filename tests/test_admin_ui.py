@@ -1373,7 +1373,22 @@ class StatusRingAndWebhookUI(unittest.TestCase):
             self.assertNotIn("Checking connection", src)
             self.assertNotIn("Checking…", src)
         self.assertIn("Offline: ", html)
-        self.assertIn(">Always on<", paint)  # Hey Grok keeps its own pill
+        self.assertNotIn(">Always on<", paint)
+        self.assertIn("Built in, always on", paint)
+        self.assertIn('class="phrase">“Hey Grok”</span>', paint)
+        self.assertIn("wakeControlHTML(b, word, st, true)", paint)
+        self.assertIn('class="ww none"></div>', paint)
+        wake = _fn(self.js, "wakeControlHTML")
+        self.assertIn('aria-label="No wake word">—</span>', wake)
+        self.assertIn('class="phrase${on ? "" : " muted"}"', wake)
+        self.assertLess(wake.index('class="phrase'), wake.index("data-wtog="))
+        page = _fn(self.js, "pageBots")
+        self.assertIn('class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span>', page)
+        self.assertLess(page.index("bothead"), page.index('id="blist"'))
+        css = self.css.replace(" ", "")
+        self.assertIn(".bothead{display:grid;grid-template-columns:44pxminmax(0,1fr)minmax(180px,300px)128px", css)
+        self.assertIn(".bothead{display:none}", css)
+        self.assertIn(".ww.none{display:none}", css)
 
     def test_ring_classes_tooltip_and_keyboard_label(self):
         ring = _fn(self.js, "botRing")

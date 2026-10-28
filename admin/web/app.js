@@ -1370,9 +1370,16 @@ function confirmSheet(opts) {
     close();
   };
 }
-function wakeControlHTML(bot, word, st) {
+function wakeControlHTML(bot, word, st, list) {
   if (st === "training") return `<div class="ww"><span class="pill busy">Training…</span></div>`;
   if (st === "weak") return `<div class="ww"><span class="pill warn">Not good enough yet</span></div>`;
+  if (list) {
+    if (!word || !word.has_model) return `<div class="ww none"><span class="dash" aria-label="No wake word">—</span></div>`;
+    const label = wordLabel(word);
+    const on = !!word.enabled;
+    return `<div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase${on ? "" : " muted"}">“${esc(label)}”</span><button class="tog${on ? " on" : ""}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-wtog="${esc(word.name)}" data-wlabel="${esc(label)}"></button></div>`;
+  }
+  // Configure already prints the phrase in .wwphrase. This is only the switch.
   if (!word || !word.has_model) {
     return `<div class="ww">${ICO_MICOFF.replace('class="ico"', 'class="ico faint"')} <span class="muted">No wake word</span></div>`;
   }
@@ -2673,7 +2680,7 @@ function paintBots(el, bots) {
   if (!list) return;
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
     <div><div class="lbl">Grok</div><div class="help">Built in, always on</div></div>
-    <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span>Hey Grok</span> <span class="pill ok">Always on</span></div>
+    <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase">“Hey Grok”</span></div>
     <div class="cfg"><span class="lock" aria-hidden="true">${ICO_LOCK}</span></div></div>`;
   list.innerHTML = hey + bots.map(b => {
     const word = botWord(b, el._words);
@@ -2689,10 +2696,11 @@ function paintBots(el, bots) {
         <div class="help">${esc(repliesFrom(b))}</div>
         ${check || ""}${warn ? `<div class="need">${ICO_TRI}${esc(warn)}</div>` : ""}
         ${finishNotes(b)}</div>
-      ${wakeControlHTML(b, word, st)}
+      ${wakeControlHTML(b, word, st, true)}
       <div class="cfg"><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
   }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
       <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div></div>
+      <div class="ww none"></div>
       <div class="cfg"><button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>
         <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>`).join("");
   bindAvatars(list);
@@ -4018,7 +4026,7 @@ async function pageBots(el) {
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
       <span class="right inline botacts"><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
     <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
-    <div class="card botsheet"><div id="blist"></div><div id="vere"></div></div>
+    <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist"></div><div id="vere"></div></div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>
