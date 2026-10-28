@@ -455,5 +455,5 @@ p#emptybot{margin:10px 2px 0}
 #teamcard.teamtip p{margin:0;font:inherit;color:inherit}
 #teamcard.teamtip b{font-weight:600;color:var(--gs-text)}
 .saychip{display:inline-block;white-space:nowrap;color:var(--gs-teal);background:var(--gs-teal-bg);border-radius:var(--gs-radius-pill);padding:2px 8px;font-weight:600}
-.tipadd{font:inherit;font-weight:600;color:var(--gs-text);background:none;border:0;padding:0;cursor:pointer}
+.tipadd{font:inherit;font-weight:600;color:var(--gs-text);background:none;border:0;padding:0;cursor:pointer;appearance:none}
 .finbtns{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
