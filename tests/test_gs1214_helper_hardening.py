@@ -98,7 +98,9 @@ class CorruptHelperFile(t13._F):
         self.assertEqual([n for n in os.listdir(os.path.dirname(path)) if n.startswith("helpers")], ["helpers.json"])
         self.assertIn("helper status file replaced", "\n".join(self.st.lines[n0:]))
         st, j = self.c.req("GET", "/api/bots")
-        self.assertIs(j.get("helper_status_unreadable"), False)
+        # 0.12.15 (Nix Low on 0.12.14): a header-only post no longer ends the warning; the banner stays until every
+        # bot paired at the time sends a signed version (test_gs1215_helper_recovery covers the rest).
+        self.assertIs(j.get("helper_status_unreadable"), True)
 
 
 if __name__ == "__main__":

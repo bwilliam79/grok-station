@@ -3878,6 +3878,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_refresh_avatars()
         if p == "/api/bots/revoke-all":
             return self.bots_revoke_all(j)
+        if p == "/api/bots/helper-status/dismiss":
+            return self.bots_helper_status_dismiss()
         am = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/avatar-request", p)
         if am and slug_ok(am.group(1)):
             return self.bots_avatar_request(am.group(1))
@@ -3972,6 +3974,7 @@ class Handler(BaseHTTPRequestHandler):
                                "list_source": src, "routed": safe_routed(data.get("routed")),
                                "imported": safe_imported(data.get("imported")),
                                "helper_status_unreadable": data.get("helper_status_unreadable") is True,
+                               "update_status_unsaved": data.get("update_status_unsaved") is True,
                                "station_address": station_base(),
                                "fingerprint": tls_info()["fingerprint"]})
 
@@ -4160,6 +4163,17 @@ class Handler(BaseHTTPRequestHandler):
         write_json(path(FINISH), doc)
         audit(slug, "finish-send")
         return self.send(202, {"ok": True})
+
+    def bots_helper_status_dismiss(self):
+        """0.12.15: dismiss the 'Helper status unreadable' banner. Bots stay 'not confirmed' until they confirm."""
+        got = relay_call("POST", "/admin/bots/helper-status/dismiss", {"actor": RELAY_ACTOR})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not (isinstance(data, dict) and data.get("ok") is True):
+            return self.relay_fail(status, data)
+        audit("-", "helper-status-dismiss")
+        return self.send(200, {"ok": True})
 
     def bots_helper_update(self, slug):
         """Ask a home bot to update its helper. The webhook carries only kind update_helper: no command, no URL."""

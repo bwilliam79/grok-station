@@ -5,7 +5,7 @@ How the station screen handles different sizes, taken from the code.
 ## How it draws
 
 - `app/grok_station.py` renders with pygame into an off-screen surface and writes it to the Linux framebuffer (`/dev/fb0`, or `GROK_STATION_FB`). It doesn't use a browser, X or Wayland.
-- At startup it reads the size and color depth from `/sys/class/graphics/fb0` (`virtual_size`, `bits_per_pixel`, `stride`). Whatever mode the Pi's firmware or KMS picked is the size it uses. grok-station doesn't set a resolution: `tools/boot-config.py` only adds quiet-boot options to `cmdline.txt` and leaves `config.txt` alone.
+- At startup it reads the size and color depth from `/sys/class/graphics/fb0` (`virtual_size`, `bits_per_pixel`, `stride`). Whatever mode the Pi's firmware or KMS picked is the size it uses. grok-station doesn't set a resolution: `tools/boot-config.py` only adds quiet-boot options to `cmdline.txt` (and refuses to touch one with no `root=` option or with more than one non-empty line, since the Pi reads only the first line and there is no backup). A failure before the file is renamed into place leaves `cmdline.txt` untouched; a failure after it (syncing the folder) means the change is in place, so it still prints `reboot` (install.sh sets its reboot flag) and then exits nonzero and leaves `config.txt` alone.
 - The layout is designed at 1920x1080 and scaled by the limiting side (`min(h/1080, w/1920)`). Screens taller than 16:9 get the extra height placed relative to the real edges. Icons are never smaller than 28 px.
 
 ## Supported range

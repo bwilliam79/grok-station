@@ -78,6 +78,9 @@ class Station:
         r.ADMIN_TOKEN = b"admin-secret"
         r.HANDOFF = True
         r._reply_rate = None  # a fresh reply limiter per test
+        # 0.12.15: helper status keeps a little process state (retry clock, degraded view); start each test clean.
+        if hasattr(r, "_helper_reset_state"):
+            r._helper_reset_state()
         import botreply
         r._avatar_seen = botreply.ShowSeen(os.path.join(self.tmp, "avatar-seen.json"))
         r.REPLY_WAIT = 20

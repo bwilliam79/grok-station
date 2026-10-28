@@ -174,7 +174,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.status, 404)
         self.assertNotIn(GOOD, await r.text())
 
-    async def test_save_shows_last4_keeps_bak_and_rejects_a_bad_doc(self):
+    async def test_save_shows_last4_no_bak_and_rejects_a_bad_doc(self):
         h = self.headers()
         r = await self.client.put("/admin/bots/jules/webhook", headers=h, json={"url": GOOD, "key": KEY1, "actor": "admin"})
         text = await r.text()
@@ -204,10 +204,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(secret, logged)
         bak = os.path.join(self.tmp, "webhooks.json.bak")
         self.assertEqual(self.mode(self.relay.WEBHOOKS_FILE), 0o600)
-        self.assertEqual(self.mode(bak), 0o600)
-        old = json.load(open(bak))
-        self.assertEqual(old["jules"]["token"], KEY1)          # the previous file, one bak only
-        self.assertNotIn(KEY2, open(bak).read())
+        self.assertFalse(os.path.exists(bak))  # 0.12.15: no backup copy of the old keys
         new = json.load(open(self.relay.WEBHOOKS_FILE))
         self.assertEqual(new["jules"]["token"], KEY2)
         self.assertEqual(self.handoff.load_webhooks(json.dumps(new))["jules"]["url"], GOOD_443)
@@ -219,7 +216,6 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("api2.cursor.sh", audit)
         self.assertEqual(self.mode(self.relay.audit_path()), 0o600)
         before = open(self.relay.WEBHOOKS_FILE, "rb").read()
-        bak_before = open(bak, "rb").read()
         self.assertFalse(self.relay.write_webhooks({"jules": {"url": "http://evil.example/h", "token": "12345678"}}))
         self.assertEqual(open(self.relay.WEBHOOKS_FILE, "rb").read(), before)
         real = self.handoff.load_webhooks
@@ -234,7 +230,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         finally:
             self.handoff.load_webhooks = real
         self.assertEqual(open(self.relay.WEBHOOKS_FILE, "rb").read(), before)
-        self.assertEqual(open(bak, "rb").read(), bak_before)
+        self.assertFalse(os.path.exists(bak))
         self.assertFalse(any(n.startswith(".tmp-") for n in os.listdir(self.tmp)))
 
     async def test_add_rename_remove_mints_a_token_once(self):

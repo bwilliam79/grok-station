@@ -2745,7 +2745,7 @@ def current_webhooks():
 
 
 def write_webhooks(doc):
-    """Replace webhooks.json only if handoff.load_webhooks accepts the new document. One .bak, mode 600."""
+    """Replace webhooks.json only if handoff.load_webhooks accepts the new document. Atomic, mode 600, no copy."""
     if not isinstance(doc, dict):
         return False
     try:
@@ -2765,12 +2765,28 @@ def write_webhooks(doc):
     data = (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode()
     if handoff.load_webhooks(data.decode()) != loaded:
         return False
-    if os.path.isfile(WEBHOOKS_FILE):
-        with open(WEBHOOKS_FILE, "rb") as f:
-            atomic_write(os.path.join(bots_dir(), "webhooks.json.bak"), f.read())
-    atomic_write(WEBHOOKS_FILE, data)
+    atomic_write(WEBHOOKS_FILE, data)  # temp file + rename, 0600; 0.12.15: no .bak copy (owner rule: no backups)
     _hooks["mtime"] = None  # reload only after the new file is in place
     return True
+
+
+STALE_BACKUPS = ("webhooks.json.bak",)  # written by releases before 0.12.15
+
+
+def drop_stale_backups():
+    """0.12.15: delete backup copies older releases left in the state folder (they hold webhook keys). Startup."""
+    n = 0
+    for name in STALE_BACKUPS:
+        try:
+            os.remove(os.path.join(bots_dir(), name))
+            n += 1
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log("could not remove an old backup copy (%s)" % type(e).__name__)
+    if n:
+        log("removed %d old backup cop%s" % (n, "y" if n == 1 else "ies"))
+    return n
 
 
 def _status_item(ent):
@@ -3800,7 +3816,8 @@ async def admin_bots_get(req):
                      "reply_host": ov_now["reply_host"].get(slug),
                      "helper_version": (helpers.get(slug) or {}).get("header"),
                      "helper_signed": (helpers.get(slug) or {}).get("signed"),
-                     "helper_bare": bool((helpers.get(slug) or {}).get("bare")),
+                     "helper_bare": bool((helpers.get(slug) or {}).get("bare")
+                                         or (helpers.get(slug) or {}).get("recover")),
                      "update": updates.get(slug),
                      "update_refused_at": _update_bad.get(slug),
                      "stats": stats.bot_view(slug)})
@@ -3810,7 +3827,8 @@ async def admin_bots_get(req):
                               "station_pub": station_pub, "station_pub_error": station_err, "killed": killed,
                               "stats": stats.overall_view(), "list_source": list_source_slug(),
                               "routed": routed_bots(), "imported": imported_public(),
-                              "helper_status_unreadable": helper_file_unreadable()})
+                              "helper_status_unreadable": helper_file_unreadable(),
+                              "update_status_unsaved": updates_degraded()})
 
 
 async def admin_bots_post(req):
@@ -4309,70 +4327,314 @@ _helper_asked = {}
 
 
 _helper_file_bad = [False]  # 0.12.14 (Nix L2): helpers.json exists but cannot be read or parsed
+HELPER_RETRY_S = 60  # 0.12.15 (Nix): a failed rebuild or save is retried at most once a minute
+_helper_clock = time.monotonic  # tests replace this
+HELPER_RECOVERY = "_recovery"  # 0.12.15: not a bot id (bot ids start with a letter)
+_BOT_ID = re.compile(r"[a-z][a-z0-9-]{1,23}")
+
+
+def _helper_fresh_state():
+    return {
+        # Degraded mode (0.12.15): while "mem" is set, it is the station's helper status and the file is behind it.
+        # Entered when helpers.json is unreadable, or vanished after this process saw it, or a save failed. Every
+        # change (bot posts, signed confirmations, deletes, a dismissal) goes into mem, so nothing is lost, and the
+        # banner shows. A retry (at most once per HELPER_RETRY_S) rebuilds from the bot list if needed, then saves.
+        "mem": None,          # (recs, recovery) or None
+        "rebuild": False,     # the recovery set still has to come from a reliable bot list
+        "dismissed": False,   # the admin dismissed the banner while degraded: the rebuild adds no marker
+        "retry_at": None,
+        "logged": set(),      # one log line per condition
+        "known": set(),       # home bots seen in a good file or a reliable list (last-resort recovery set)
+        "seen_file": False,   # helpers.json existed during this process (see also _helper_marker)
+        "marked": None,       # HELPER_FILE whose marker is known to exist
+        "dropped": 0,
+        "at_damage": None,    # home bots on the roster when the damage was found (None: roster unreadable then)
+        "forgotten": set(),   # deleted or re-paired while degraded: a pending rebuild does not mark them
+    }
+
+
+_hs = _helper_fresh_state()
+
+
+def _helper_reset_state():
+    """Tests: forget the in-process helper status state."""
+    _hs.clear()
+    _hs.update(_helper_fresh_state())
+    _helper_file_bad[0] = False
+    _us.update(mem=None, retry_at=None, logged=False)
+
+
+def _log_once(key, msg):
+    if key not in _hs["logged"]:
+        _hs["logged"].add(key)
+        log(msg)
+
+
+def _helper_marker():
+    """0.12.15 (Nix I2): an empty 0600 file next to helpers.json, no bot data. It says helpers.json has existed,
+    so a helpers.json deleted while the relay was stopped counts as damage, not as a fresh install."""
+    return os.path.join(os.path.dirname(HELPER_FILE), ".helpers-existed")
+
+
+def _mark_helper_file():
+    if _hs.get("marked") == HELPER_FILE:
+        return
+    try:
+        if not os.path.exists(_helper_marker()):
+            atomic_write(_helper_marker(), b"")
+        _hs["marked"] = HELPER_FILE
+    except OSError as e:
+        _log_once("marker", "helper status marker could not be written (%s)" % type(e).__name__)
 
 
 def _read_helper_file():
-    """helpers.json as a dict. Missing is normal ({}). Unreadable or corrupt also reads as {} (never a crash), but it
-    is logged once (no names or contents) and helper_file_unreadable() turns on a station-level warning. The next
-    good write replaces the bad file in place (atomic, 0600): no .corrupt or backup copy is kept."""
+    """helpers.json as a dict. Missing is normal ({}) unless this process already saw the file (then it is treated
+    as damaged). Unreadable or corrupt reads as {} with _helper_file_bad set; logged once with no names or contents."""
     try:
         with open(HELPER_FILE) as f:
             doc = json.load(f)
         if not isinstance(doc, dict):
             raise ValueError("not an object")
     except FileNotFoundError:
-        doc, bad = {}, False
+        doc, bad = {}, _hs["seen_file"] or os.path.exists(_helper_marker())
+        if bad and not _helper_file_bad[0]:
+            log("helper status file missing (FileNotFoundError); rebuilding the warnings")
     except (OSError, ValueError, UnicodeDecodeError) as e:
         doc, bad = {}, True
         if not _helper_file_bad[0]:
-            log("helper status file unreadable (%s); helper warnings are off until the next bot post rewrites it"
-                % type(e).__name__)
+            log("helper status file unreadable (%s); rebuilding the warnings" % type(e).__name__)
     else:
         bad = False
+        _hs["seen_file"] = True
+        _mark_helper_file()
     _helper_file_bad[0] = bad
     return doc
 
 
-def helper_file_unreadable():
-    """True while helpers.json exists but cannot be read: the Bots page shows 'Helper status unreadable'."""
-    _read_helper_file()
-    return _helper_file_bad[0]
+def _paired_home_bots():
+    """Bot ids that are listed, home-key and paired right now (what the Bots page shows as paired home bots).
+
+    None when the key, overlay or persona data cannot be loaded (0.12.15, Nix): the file is then not rewritten on a
+    guess; the degraded view uses _home_bots_fallback() until a retry gets a reliable list."""
+    try:
+        keys = botreply.load_keys(bot_keys_path())
+        if keys.get("killed") is True:
+            return []
+        roster, modes = persona_list(), load_overlay_doc()["key_mode"]
+        bots = sorted(s for s in roster if modes.get(s) == "home" and botreply.pinned_bytes(keys, s) is not None)
+    except Exception as e:  # advisory: never break a post or the Bots page over this
+        _log_once("list", "helper status rebuild waiting: bot list unreadable (%s)" % type(e).__name__)
+        return None
+    _hs["logged"].discard("list")
+    _hs["known"] |= set(bots)
+    return bots
 
 
-def _write_helper_file(recs):
+def _home_bots_fallback():
+    """Best available set while the full list cannot load: home bots on the roster, plus the last known set.
+    0.12.15 (Nix I1): when the keys file is readable, only bots with a pinned key count (paired home bots).
+    Records the roster part as the set at the moment of the damage (None if the roster could not be read)."""
+    try:
+        roster, modes = persona_list(), load_overlay_doc()["key_mode"]
+        bots = set(s for s in roster if modes.get(s) == "home")
+        _hs["at_damage"] = set(bots)
+    except Exception:
+        bots = set()
+        _hs["at_damage"] = None
+    bots |= _hs["known"]
+    try:
+        keys = botreply.load_keys(bot_keys_path())
+    except Exception:
+        return sorted(bots)  # keys unreadable: the wider set (the current behavior)
+    if keys.get("killed") is True:
+        return []
+    bots = set(b for b in bots if botreply.pinned_bytes(keys, b) is not None)
+    if _hs["at_damage"] is not None:
+        _hs["at_damage"] &= bots
+    return sorted(bots)
+
+
+def _write_helper_file(recs, recovery=None):
+    doc = dict(recs)
+    if recovery:
+        doc[HELPER_RECOVERY] = recovery
     os.makedirs(os.path.dirname(HELPER_FILE), exist_ok=True)
-    atomic_write(HELPER_FILE, (json.dumps(recs, sort_keys=True) + "\n").encode())
+    atomic_write(HELPER_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+    _hs["seen_file"] = True
+    _mark_helper_file()
     if _helper_file_bad[0]:
         log("helper status file replaced with a fresh one")
         _helper_file_bad[0] = False
 
 
+def _blank(recover=False):
+    return {"signed": None, "header": None, "bare": False, "recover": recover}
+
+
+def _parse_helper_doc(doc, count=True):
+    """(records, recovery). 0.12.15: an entry with a valid bot id but a damaged value is kept as 'recover' (shown
+    not confirmed) instead of dropped, so its warning cannot vanish; entries with no valid id are dropped. Only
+    the count is logged, once per change."""
+    out, rec_doc, dropped = {}, None, 0
+    if not isinstance(doc, dict):
+        return out, None
+    for k, v in doc.items():
+        if k == HELPER_RECOVERY:
+            rec_doc = v
+            continue
+        if not isinstance(k, str) or not _BOT_ID.fullmatch(k):
+            dropped += 1
+            continue
+        if isinstance(v, str):
+            v = {"header": v}
+        ok = isinstance(v, dict)
+        if ok:
+            sv, hv = v.get("signed"), v.get("header")
+            good = lambda x: x is None or (isinstance(x, str) and HELPER_V.match(x))  # noqa: E731
+            ok = good(sv) and good(hv) and all(isinstance(v.get(f, False), bool) for f in ("bare", "recover"))
+        if not ok:
+            dropped += 1
+            out[k] = _blank(recover=True)
+            continue
+        rec = {"signed": sv, "header": hv, "bare": v.get("bare") is True, "recover": v.get("recover") is True}
+        if rec["signed"]:
+            rec["recover"] = False  # a signed version is the confirmation recovery waits for
+        if rec["signed"] or rec["header"] or rec["bare"] or rec["recover"]:
+            out[k] = rec
+    if count and dropped != _hs["dropped"]:  # log a change only (the Bots page reads this every few seconds)
+        if dropped:
+            log("helper status file: %d invalid entr%s ignored" % (dropped, "y" if dropped == 1 else "ies"))
+        _hs["dropped"] = dropped
+    recovery = None
+    if isinstance(rec_doc, dict) and isinstance(rec_doc.get("pending"), list):
+        recovery = _recovery_for(out, rec_doc["pending"], rec_doc.get("at"))
+    return out, recovery
+
+
+def _recovery_for(recs, pending, at=None):
+    left = sorted(x for x in pending if isinstance(x, str) and (recs.get(x) or {}).get("recover"))
+    return {"pending": left, "at": at if isinstance(at, int) else int(time.time())} if left else None
+
+
+def _degrade(recs, recovery, rebuild=False):
+    """Enter (or stay in) degraded mode with this view; the next try comes after the backoff."""
+    _hs["mem"] = (recs, recovery)
+    _hs["rebuild"] = _hs["rebuild"] or rebuild
+    if _hs["retry_at"] is None:
+        _hs["retry_at"] = _helper_clock() + HELPER_RETRY_S
+
+
+def _try_flush():
+    """Degraded mode: rebuild the recovery set from a reliable list if still needed, then save. On success leave
+    degraded mode. Called at most once per HELPER_RETRY_S (and at once when the damage is first found)."""
+    recs, recovery = _hs["mem"]
+    _hs["retry_at"] = _helper_clock() + HELPER_RETRY_S
+    if _hs["rebuild"]:
+        bots = _paired_home_bots()
+        if bots is None:
+            return False  # fail closed: no rewrite on a guess; the degraded view and banner stay
+        bots = [b for b in bots if b not in _hs["forgotten"]
+                and (_hs["at_damage"] is None or b in _hs["at_damage"] or b in recs)]  # added later: normal rules
+        recs = {k: r for k, r in recs.items() if k in bots or r["signed"] or r["header"] or r["bare"]}
+        for b in bots:
+            recs.setdefault(b, _blank(recover=True))  # a bot confirmed meanwhile keeps its signed version
+        pend = [b for b in bots if recs[b]["recover"]]
+        recovery = None if _hs["dismissed"] else _recovery_for(recs, pend)
+        _hs["mem"] = (recs, recovery)
+        _hs["rebuild"] = False
+        log("helper status rebuilt: %d paired home bot(s) not confirmed until each sends a signed version"
+            % len(pend))
+    try:
+        _write_helper_file(recs, recovery)
+    except OSError as e:
+        _log_once("save", "helper status could not be saved (%s); retrying once a minute" % type(e).__name__)
+        return False
+    if "save" in _hs["logged"]:
+        log("helper status saved again")
+    _hs.update(mem=None, rebuild=False, dismissed=False, retry_at=None, at_damage=None, forgotten=set())
+    _hs["logged"].discard("save")
+    return True
+
+
+def _helper_state():
+    """(records, recovery): the station's helper status.
+
+    0.12.15 (Nix reviews of 0.12.14 and 0.12.15): when helpers.json is found unreadable (or vanished), every home bot
+    the station can see is marked "recover" ('Helper version not confirmed', counted in the Bots-menu dot) until it
+    sends a signed helper version, and the banner stays up until all have, or an admin dismisses it. The file is
+    rewritten (atomic, 0600, no copy of the bad file) only from a reliable bot list. Until then, and while a save
+    is failing, the view lives in memory (see _helper_fresh_state) and nothing that arrives meanwhile is lost.
+    Viewing the Bots page can therefore repair the file. A bot added after the damage is not in the set.
+    """
+    if _hs["mem"] is not None:
+        if _helper_clock() >= _hs["retry_at"] and _try_flush():
+            return _parse_helper_doc(_read_helper_file(), count=False)
+        return _copy_view(_hs["mem"])
+    doc = _read_helper_file()
+    if not _helper_file_bad[0]:
+        recs, recovery = _parse_helper_doc(doc)
+        _hs["known"] |= set(recs)
+        return recs, recovery
+    recs = {b: _blank(recover=True) for b in _home_bots_fallback()}
+    _hs.update(mem=(recs, _recovery_for(recs, list(recs))), rebuild=True, retry_at=_helper_clock())
+    _try_flush()  # first try at once
+    return _copy_view(_hs["mem"]) if _hs["mem"] is not None else _parse_helper_doc(_read_helper_file(), count=False)
+
+
+def _copy_view(view):
+    recs, recovery = view
+    return {k: dict(r) for k, r in recs.items()}, (dict(recovery) if recovery else None)
+
+
+def _commit(recs, recovery):
+    """Store a changed view: into memory while degraded (the retry saves it), else to the file (a failed save
+    enters degraded mode, logged once, banner on). Never silently drops a change."""
+    if _hs["mem"] is not None:
+        _hs["mem"] = (recs, recovery)
+        return
+    try:
+        _write_helper_file(recs, recovery)
+    except OSError as e:
+        _log_once("save", "helper status could not be saved (%s); retrying once a minute" % type(e).__name__)
+        _degrade(recs, recovery)
+
+
 def helper_records():
-    """{slug: {"signed": v|None, "header": v|None, "bare": bool}} for the current pairing.
+    """{slug: {"signed": v|None, "header": v|None, "bare": bool, "recover": bool}} for the current pairing.
 
     0.12.13 (Nix L1): the signed version (update_helper confirmation or signed update status) and the unsigned
     X-GS-Helper header are kept apart; the signed one wins and a header never overwrites it. (Nix M1) "bare" is True
     once a seal-verified post from this bot arrived WITHOUT the header: every current helper post carries it, so that
     is evidence of a helper older than 0.11.7. No post at all is not evidence. A legacy plain string is a header value.
+    0.12.15: "recover" is True for a bot that has to re-confirm after the status file was damaged (see _helper_state).
     """
-    doc = _read_helper_file()
-    out = {}
-    if not isinstance(doc, dict):
-        return out
-    for k, v in doc.items():
-        if not isinstance(k, str):
-            continue
-        if isinstance(v, str):
-            v = {"header": v}
-        if not isinstance(v, dict):
-            continue
-        sv, hv = v.get("signed"), v.get("header")
-        rec = {"signed": sv if isinstance(sv, str) and HELPER_V.match(sv) else None,
-               "header": hv if isinstance(hv, str) and HELPER_V.match(hv) else None,
-               "bare": v.get("bare") is True}
-        if rec["signed"] or rec["header"] or rec["bare"]:
-            out[k] = rec
-    return out
+    return _helper_state()[0]
+
+
+def helper_file_unreadable():
+    """True while the helper status is degraded, or while a recovery is still waiting on a bot (banner)."""
+    recs, recovery = _helper_state()
+    return _hs["mem"] is not None or bool(recovery) or updates_degraded()
+
+
+async def admin_helper_status_dismiss(req):
+    """Dismiss the 'Helper status unreadable' banner. The affected bots stay 'not confirmed' until they confirm.
+    While degraded the dismissal is part of the pending state, so a later rebuild or save does not bring it back."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if body is None or not actor_ok(body.get("actor", "admin")):
+        return web.json_response({"error": "bad request"}, status=400)
+    recs, recovery = _helper_state()
+    if _hs["mem"] is not None:
+        _hs["dismissed"] = True
+    if recovery or _hs["mem"] is not None:
+        _commit(recs, None)
+        log("helper status recovery banner dismissed (%d bot(s) still not confirmed)"
+            % sum(1 for r in recs.values() if r["recover"]))
+    audit(body.get("actor", "admin"), "-", "helper-status-dismiss", "-")
+    return web.json_response({"ok": True})
 
 
 def helper_versions():
@@ -4387,16 +4649,17 @@ def note_helper(bot, req, signed=None):
     apart, never overwritten by the unsigned X-GS-Helper header, and always wins. A version field inside every signed body would be a
     protocol change: older stations reject unknown signed keys, so a new helper could no longer talk to them.
     """
-    if not isinstance(bot, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,23}", bot):
+    if not isinstance(bot, str) or not _BOT_ID.fullmatch(bot):
         return
     sv = signed.strip() if isinstance(signed, str) and HELPER_V.match(signed.strip()) else None
     raw = req.headers.get("X-GS-Helper") if req is not None else None
     hv = raw.strip() if isinstance(raw, str) and HELPER_V.match(raw.strip()) else None
-    recs = helper_records()
-    old = recs.get(bot) or {"signed": None, "header": None, "bare": False}
+    recs, recovery = _helper_state()
+    old = recs.get(bot) or _blank()
     new = dict(old)
     if sv:
         new["signed"] = sv
+        new["recover"] = False  # 0.12.15: a signed version is the re-confirmation recovery waits for
         new["bare"] = False  # 0.12.14 (Nix L3): only a signed version clears the old-helper evidence
     if hv:
         new["header"] = hv
@@ -4404,13 +4667,14 @@ def note_helper(bot, req, signed=None):
         # Verified post with no usable header: missing, or present but not a version (0.12.14, Nix L1). Either way
         # it is not a current helper. A signed version in the same post wins instead.
         new["bare"] = True
-    if new == old and not _helper_file_bad[0]:
+    if new == old:
         return
     recs[bot] = new
-    try:
-        _write_helper_file(recs)
-    except OSError:
-        pass
+    if recovery:
+        recovery = _recovery_for(recs, recovery["pending"], recovery["at"])
+        if recovery is None:
+            log("helper status recovery finished: every bot confirmed")
+    _commit(recs, recovery)
 
 
 UPDATE_ASK = "Update your instructions for this station."
@@ -4421,8 +4685,48 @@ _update_asked = {}
 _update_bad = {}  # slug -> when its last update reply was not a valid status line (shown as refused)
 
 
+_us = {"mem": None, "retry_at": None, "logged": False}  # 0.12.15: signed update statuses the file did not take
+
+
+def _updates_reset_state():
+    """Tests: forget the in-memory update status state."""
+    _us.update(mem=None, retry_at=None, logged=False)
+
+
+def _commit_updates(doc):
+    """Save update statuses. A failed save keeps them in memory (the Bots page keeps using them), logs the error
+    type once, shows the banner, and is retried at most once per HELPER_RETRY_S. Nothing is dropped (0.12.15)."""
+    if _us["mem"] is not None:
+        _us["mem"] = doc  # degraded: the retry saves the newest view
+        return True
+    try:
+        os.makedirs(os.path.dirname(UPDATES_FILE), exist_ok=True)
+        atomic_write(UPDATES_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+    except OSError as e:
+        if not _us["logged"]:
+            log("bot update status could not be saved (%s); retrying once a minute" % type(e).__name__)
+        _us.update(mem=doc, retry_at=_helper_clock() + HELPER_RETRY_S, logged=True)
+    return True
+
+
+def updates_degraded():
+    bot_updates()  # runs a due retry
+    return _us["mem"] is not None
+
+
 def bot_updates():
     """{slug: {release, instr, helper, computer, at}} from signed update_bot confirmations only."""
+    if _us["mem"] is not None:
+        if _helper_clock() < _us["retry_at"]:
+            return {k: dict(v) for k, v in _us["mem"].items()}
+        try:
+            os.makedirs(os.path.dirname(UPDATES_FILE), exist_ok=True)
+            atomic_write(UPDATES_FILE, (json.dumps(_us["mem"], sort_keys=True) + "\n").encode())
+        except OSError:
+            _us["retry_at"] = _helper_clock() + HELPER_RETRY_S
+            return {k: dict(v) for k, v in _us["mem"].items()}
+        log("bot update status saved again")
+        _updates_reset_state()
     doc = read_json_file(UPDATES_FILE)
     out = {}
     if isinstance(doc, dict):
@@ -4441,14 +4745,19 @@ def forget_bot_status(slug):
     showed 'Update available' straight away.
     """
     _update_bad.pop(slug, None)  # the one-ask-per-10-min limits stay: they guard the bot, not the record
-    for fname, read in ((UPDATES_FILE, bot_updates), (HELPER_FILE, helper_records)):
-        doc = read()
-        if slug in doc:
-            doc.pop(slug, None)
-            try:
-                atomic_write(fname, (json.dumps(doc, sort_keys=True) + "\n").encode())
-            except OSError:
-                pass
+    recs, recovery = _helper_state()
+    if slug in recs:
+        recs.pop(slug, None)
+        if recovery:
+            recovery = _recovery_for(recs, recovery["pending"], recovery["at"])
+        _commit(recs, recovery)
+    if _hs["mem"] is not None:
+        _hs["known"].discard(slug)  # a deleted or re-paired bot is not re-added by a pending rebuild
+        _hs["forgotten"].add(slug)
+    doc = bot_updates()
+    if slug in doc:
+        doc.pop(slug, None)
+        _commit_updates(doc)
 
 
 def note_update(bot, text):
@@ -4459,12 +4768,7 @@ def note_update(bot, text):
     doc = bot_updates()
     doc[bot] = {"release": m.group(1), "instr": m.group(2), "helper": m.group(3), "computer": m.group(4),
                 "at": int(time.time())}
-    try:
-        os.makedirs(os.path.dirname(UPDATES_FILE), exist_ok=True)
-        atomic_write(UPDATES_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
-    except OSError:
-        return False
-    return True
+    return _commit_updates(doc)
 
 
 async def admin_bot_update(req):
@@ -4973,6 +5277,7 @@ ADMIN_ROUTES = [
     web.delete("/admin/bots/{slug}/test/{test_id}", admin_test_delete),
     web.post("/admin/bots/{slug}/avatar", admin_avatar_post),
     web.post("/admin/bots/{slug}/avatar-request", admin_avatar_request),
+    web.post("/admin/bots/helper-status/dismiss", admin_helper_status_dismiss),
     web.post("/admin/bots/{slug}/helper-update", admin_helper_update),
     web.post("/admin/bots/{slug}/update", admin_bot_update),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
@@ -4988,6 +5293,7 @@ if __name__ == "__main__":
     except OSError as e:
         log("policy init failed", type(e).__name__)
     seed_offered_voices()
+    drop_stale_backups()
     app = web.Application()  # default body cap; the picture routes read with their own cap (_read_capped)
     app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),
