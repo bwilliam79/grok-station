@@ -77,9 +77,52 @@ def problem(repo):
     return None
 
 
+_RELEASE_SUBJECT = re.compile(r"^release: (?:update manifest|re-pin deploy files) for (\d+\.\d+\.\d+)\b")
+_NOTES_ONLY = ("docs/", "tests/", "README.md")
+
+
+def reused_release(repo):
+    """None when VERSION has not already shipped with later code. Otherwise a one-line reason.
+
+    A release ends with its "release: update manifest/re-pin deploy files for X" commits. A commit after the
+    last of those that changes anything outside docs/, tests/ or README.md ships new code, so it needs a new
+    VERSION; reusing X means a station already on X is never offered it (0.12.6 to 0.12.7). Also fails unless
+    docs/versioning.md has exactly one entry for VERSION. Passes when VERSION, the notes, or git history are unavailable.
+    """
+    try:
+        version = open(os.path.join(repo, "VERSION")).read().strip()
+        notes = open(os.path.join(repo, "docs", "versioning.md")).read()
+    except OSError:
+        return None  # not a full checkout (no release notes): nothing to compare
+    count = len(re.findall(r"^## " + re.escape(version) + r"\s*$", notes, re.M))
+    if count != 1:
+        return f"docs/versioning.md has {count} entries for {version}, expected 1."
+    log = subprocess.run(["git", "-C", repo, "log", "--format=%H %s", "-400"], capture_output=True, text=True)
+    if log.returncode != 0:
+        return None
+    after = []
+    for line in log.stdout.splitlines():
+        sha, _, subject = line.partition(" ")
+        m = _RELEASE_SUBJECT.match(subject)
+        if m:
+            if m.group(1) != version:
+                return None
+            break
+        after.append(sha)
+    else:
+        return None
+    for sha in after:
+        files = subprocess.run(["git", "-C", repo, "show", "--name-only", "--format=", sha],
+                               capture_output=True, text=True).stdout.split()
+        code = [f for f in files if not f.startswith(_NOTES_ONLY)]
+        if code:
+            return f"VERSION {version} was already released; commit {sha[:7]} changes {code[0]} without a new VERSION."
+    return None
+
+
 def main(argv):
     repo = argv[1] if len(argv) > 1 else os.getcwd()
-    msg = problem(repo)
+    msg = problem(repo) or reused_release(repo)
     if msg:
         print(msg, file=sys.stderr)
         return 1

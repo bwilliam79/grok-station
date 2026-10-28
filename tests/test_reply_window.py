@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.12.6 F regression: a home bot's answer at ~70 s was refused because reply_by was 60 s."""
+"""0.12.7 regression: a home bot's answer at ~70 s was refused because reply_by was 60 s."""
 import os, re, sys, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

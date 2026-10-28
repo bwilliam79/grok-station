@@ -1,4 +1,4 @@
-"""0.12.6: Bots team tip. No main bot, before an import, and after an import."""
+"""0.12.7: Bots team tip. No main bot, before an import, and after an import."""
 import json, os, re, shutil, subprocess, sys, unittest
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")

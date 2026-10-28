@@ -148,5 +148,13 @@ class CheckVersion(unittest.TestCase):
             self.assertIsNone(check_version.problem(repo))
 
 
+class ReusedReleaseTest(unittest.TestCase):
+    """Regression: 0.12.6 shipped at a54d0e6, then more code went out under the same 0.12.6 (re-released as 0.12.7)."""
+
+    def test_released_version_not_reused(self):
+        self.assertIsNone(check_version.reused_release(ROOT))
+
+
 if __name__ == "__main__":
     unittest.main()
+

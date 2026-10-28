@@ -13,7 +13,7 @@ def read(*p):
 
 class NoRedInAdmin(unittest.TestCase):
     def test_admin_red_is_only_the_offline_status_ring(self):
-        """0.12.6: --gs-red is the offline bot-avatar ring. Errors stay amber. Other reds stay out."""
+        """0.12.7: --gs-red is the offline bot-avatar ring. Errors stay amber. Other reds stay out."""
         css = read("admin", "web", "admin.css")
         self.assertEqual(css.lower().count("#ff5a52"), 1)
         self.assertIn("--gs-red:#FF5A52", css.replace(" ", ""))

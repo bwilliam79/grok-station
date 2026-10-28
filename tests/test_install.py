@@ -48,7 +48,7 @@ class Install(unittest.TestCase):
             self.assertIn(m + ".py", line)
 
     def test_wake_imports_are_installed(self):
-        """Every local module grok_wake.py imports ships with both installers (0.12.6: wait_tone.py was missed)."""
+        """Every local module grok_wake.py imports ships with both installers (0.12.7: wait_tone.py was missed)."""
         src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         local = {m for m in re.findall(r"^\s*import (\w+)", src, re.M) if os.path.isfile(os.path.join(ROOT, "wake", m + ".py"))}
         self.assertIn("wait_tone", local)
