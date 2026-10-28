@@ -3809,7 +3809,8 @@ async def admin_bots_get(req):
     return web.json_response({"bots": bots, "voices": sorted(offered_voices()), "default_voice": VOICE,
                               "station_pub": station_pub, "station_pub_error": station_err, "killed": killed,
                               "stats": stats.overall_view(), "list_source": list_source_slug(),
-                              "routed": routed_bots(), "imported": imported_public()})
+                              "routed": routed_bots(), "imported": imported_public(),
+                              "helper_status_unreadable": helper_file_unreadable()})
 
 
 async def admin_bots_post(req):
@@ -4307,6 +4308,45 @@ HELPER_ASK_GAP_S = 600  # one update ask per bot per 10 minutes
 _helper_asked = {}
 
 
+_helper_file_bad = [False]  # 0.12.14 (Nix L2): helpers.json exists but cannot be read or parsed
+
+
+def _read_helper_file():
+    """helpers.json as a dict. Missing is normal ({}). Unreadable or corrupt also reads as {} (never a crash), but it
+    is logged once (no names or contents) and helper_file_unreadable() turns on a station-level warning. The next
+    good write replaces the bad file in place (atomic, 0600): no .corrupt or backup copy is kept."""
+    try:
+        with open(HELPER_FILE) as f:
+            doc = json.load(f)
+        if not isinstance(doc, dict):
+            raise ValueError("not an object")
+    except FileNotFoundError:
+        doc, bad = {}, False
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        doc, bad = {}, True
+        if not _helper_file_bad[0]:
+            log("helper status file unreadable (%s); helper warnings are off until the next bot post rewrites it"
+                % type(e).__name__)
+    else:
+        bad = False
+    _helper_file_bad[0] = bad
+    return doc
+
+
+def helper_file_unreadable():
+    """True while helpers.json exists but cannot be read: the Bots page shows 'Helper status unreadable'."""
+    _read_helper_file()
+    return _helper_file_bad[0]
+
+
+def _write_helper_file(recs):
+    os.makedirs(os.path.dirname(HELPER_FILE), exist_ok=True)
+    atomic_write(HELPER_FILE, (json.dumps(recs, sort_keys=True) + "\n").encode())
+    if _helper_file_bad[0]:
+        log("helper status file replaced with a fresh one")
+        _helper_file_bad[0] = False
+
+
 def helper_records():
     """{slug: {"signed": v|None, "header": v|None, "bare": bool}} for the current pairing.
 
@@ -4315,7 +4355,7 @@ def helper_records():
     once a seal-verified post from this bot arrived WITHOUT the header: every current helper post carries it, so that
     is evidence of a helper older than 0.11.7. No post at all is not evidence. A legacy plain string is a header value.
     """
-    doc = read_json_file(HELPER_FILE)
+    doc = _read_helper_file()
     out = {}
     if not isinstance(doc, dict):
         return out
@@ -4357,16 +4397,18 @@ def note_helper(bot, req, signed=None):
     new = dict(old)
     if sv:
         new["signed"] = sv
+        new["bare"] = False  # 0.12.14 (Nix L3): only a signed version clears the old-helper evidence
     if hv:
         new["header"] = hv
-    elif not raw:
-        new["bare"] = True  # verified post with no header at all: a pre-0.11.7 helper
-    if new == old:
+    elif not sv:
+        # Verified post with no usable header: missing, or present but not a version (0.12.14, Nix L1). Either way
+        # it is not a current helper. A signed version in the same post wins instead.
+        new["bare"] = True
+    if new == old and not _helper_file_bad[0]:
         return
     recs[bot] = new
     try:
-        os.makedirs(os.path.dirname(HELPER_FILE), exist_ok=True)
-        atomic_write(HELPER_FILE, (json.dumps(recs, sort_keys=True) + "\n").encode())
+        _write_helper_file(recs)
     except OSError:
         pass
 

@@ -339,6 +339,14 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.12.14
+Change note (2026-10-28): Nix review of 0.12.13 (Low items 1-3).
+- **Invalid header counts as no header (Nix 1).** A seal-verified post whose `X-GS-Helper` is present but is not a version is recorded as `bare`, the same as a missing header. Recorded only after the seal check.
+- **Unreadable helper status (Nix 2).** A corrupt or unreadable `helpers.json` still reads as empty (no crash), but the relay logs one line with no names or contents, and `/api/bots` returns `helper_status_unreadable: true`, shown as a "Helper status unreadable" banner on the Bots page. The next good write replaces the file in place (atomic, mode 0600) and logs that; no `.corrupt` or backup copy is kept.
+- **Bare is sticky until signed (Nix 3).** Once a bot has been `bare`, it stays `unconfirmed` even if later posts carry a header. Only a signed helper version (update_helper confirmation or signed update status) clears it. Delete or a new pairing still clears the record.
+- **Tests.** `tests/test_gs1214_helper_hardening.py` uses the real handlers and the page's own JS: invalid header shows the badge and the menu dot; a corrupt file gives the banner and a log line and is replaced at 0600 with no extra copy; bare then a header stays unconfirmed, bare then a signed status clears it.
+- **Instructions.** The bot templates name release 0.12.14. Only the release lines changed, so bots are not flagged for an update.
+
 ## 0.12.13
 
 Change note (2026-10-28): Nix review of 0.12.12 (M1, L1).
