@@ -3145,13 +3145,17 @@ class _ShowAudit:
         self.verdict = verdict
 
 
+# "dismiss" (or "clear that") drops a chip on the recipe (0.12.16); the station says ok only when one is up.
+RECIPE_CMDS = ("next", "prev", "repeat", "start", "close", "dismiss")
+
+
 def recipe_match(text):
     """A whole-utterance recipe command, or None. A question that only contains a word is None."""
     try:
         cmd = load_cards().recipe_utterance(text)
     except Exception:
         return None
-    if cmd not in ("next", "prev", "repeat", "start", "close"):
+    if cmd not in RECIPE_CMDS:
         return None
     return cmd
 
@@ -3228,7 +3232,7 @@ def release_recipe_drop(st):
 
 def post_recipe_cmd(cmd, post=None):
     """POST /recipe on the station. No token: localhost only, same as /state. The step text is not logged."""
-    if cmd not in ("next", "prev", "repeat", "start", "close"):
+    if cmd not in RECIPE_CMDS:
         return {"ok": False}
     if post is not None:
         try:
@@ -4161,11 +4165,16 @@ async def _run_bot_test(tid):
             # The handoff may be stubbed, or it may only have stamped last_answered_at. Either way a pass is reachable.
             _note_status(rec["slug"], answered=True, clear_error=True)
             _note_icon(rec["slug"], "ok")
-            if rec.get("then_avatar"):  # post-add check: ask for the picture once, silently; a miss changes nothing
+            # Post-add check (then_avatar), or 0.12.16: the first pass of a bot that has no picture yet, so a new
+            # bot's avatar arrives without pressing Refresh. Silent; a miss changes nothing.
+            auto = avatar_auto_due(rec["slug"], time.monotonic())
+            if rec.get("then_avatar") or auto:
                 try:
                     rec["avatar_asked"] = await ask_avatar(rec["slug"], rec.get("actor") or "admin")
                 except Exception:
                     rec["avatar_asked"] = False
+                if auto:
+                    avatar_auto_mark(rec["slug"])
         else:
             rec["state"] = "failed"
             rec["error"] = _test_error(verdict, detail)
@@ -4745,6 +4754,7 @@ def forget_bot_status(slug):
     showed 'Update available' straight away.
     """
     _update_bad.pop(slug, None)  # the one-ask-per-10-min limits stay: they guard the bot, not the record
+    avatar_auto_forget(slug)  # a new pairing gets its own automatic picture ask
     recs, recovery = _helper_state()
     if slug in recs:
         recs.pop(slug, None)
@@ -4897,6 +4907,65 @@ async def admin_avatar_request(req):
     if not await ask_avatar(slug, actor):
         return web.json_response({"error": "Couldn't reach the bot."}, status=502)
     return web.json_response({"ok": True}, status=202)
+
+
+_avatar_auto = {}  # slug -> time of the automatic picture ask (0.12.16); mirrors avatar-auto.json
+AVATAR_AUTO_FILE = os.path.join(STATE_DIR, "avatar-auto.json")  # survives a restart; 0600 like other state
+PORTRAIT_EXTS = ("png", "jpg", "jpeg", "webp")
+
+
+def _avatar_auto_disk():
+    try:
+        with open(AVATAR_AUTO_FILE) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in doc.items() if isinstance(k, str)} if isinstance(doc, dict) else {}
+
+
+def _avatar_auto_save(doc):
+    try:
+        atomic_write(AVATAR_AUTO_FILE, json.dumps(doc, sort_keys=True).encode())
+    except OSError:
+        pass
+
+
+def avatar_auto_mark(slug):
+    _avatar_auto[slug] = time.time()
+    doc = _avatar_auto_disk()
+    doc[slug] = _avatar_auto[slug]
+    _avatar_auto_save(doc)
+
+
+def avatar_auto_forget(slug):
+    _avatar_auto.pop(slug, None)
+    doc = _avatar_auto_disk()
+    if doc.pop(slug, None) is not None:
+        _avatar_auto_save(doc)
+
+
+def has_portrait(slug):
+    """True when the station has a picture for slug in any format: the bot's upload, a <slug>.png/jpg/jpeg/webp in
+    the persona folder or a portrait dir, or the registry's named portrait (the lookup the station serves from)."""
+    if os.path.isfile(os.path.join(PORTRAIT_WRITE, slug + ".png")):
+        return True
+    dirs = [d for d in PORTRAIT_DIRS] + [os.path.dirname(PERSONAS_FILE)]
+    for d in dirs:
+        for ext in PORTRAIT_EXTS:
+            if os.path.isfile(os.path.join(d, slug + "." + ext)):
+                return True
+    p = persona_list().get(slug) if SLUG.match(slug) else None
+    name = p.get("portrait") if isinstance(p, dict) else None
+    return bool(name) and any(os.path.isfile(os.path.join(d, name)) for d in PORTRAIT_DIRS)
+
+
+def avatar_auto_due(slug, now=None):
+    """True when a passing test should ask this bot for its picture by itself: the station has no picture for it in
+    any format and it was never auto-asked since it was paired. The ask is recorded in avatar-auto.json, so a restart
+    does not ask again; pairing again or deleting the bot resets it."""
+    if not handoff.bot_slug_ok(slug) or has_portrait(slug):
+        return False
+    return slug not in _avatar_auto and slug not in _avatar_auto_disk()
 
 
 async def ask_avatar(slug, actor):

@@ -12,13 +12,15 @@ SPORTS = {"type": "sports", "home": "A", "away": "B", "home_score": 3, "away_sco
 class TileReply(unittest.TestCase):
     def test_tile_wins_over_session_text_and_spinner(self):
         msg = {"voice": True, "state": "speaking", "text": "The score is 3 to 2."}
-        self.assertEqual(gs.screen_for(None, False, msg, False, SPORTS, False, SPORTS), "feed")
-        self.assertEqual(gs.screen_for(None, True, msg, False, SPORTS, False, SPORTS), "feed")
-        # without a tile the session still shows
-        self.assertEqual(gs.screen_for(None, False, msg, False, None, False, None), "session")
+        # 0.12.16: a score tile takes the bottom zone (the bot's status goes to the upper left)
+        self.assertEqual(gs.screen_for(None, False, msg, False, SPORTS, False, SPORTS), "zone")
+        self.assertEqual(gs.screen_for(None, True, msg, False, SPORTS, False, SPORTS), "zone")
+        # without a tile the bot state fills the zone; plain text keeps the full-screen session
+        self.assertEqual(gs.screen_for(None, False, msg, False, None, False, None), "zone")
+        self.assertEqual(gs.screen_for(None, False, {"text": "Dinner"}, False, None, False, None), "session")
         # setup still wins; a non-tile card does not take over
         self.assertEqual(gs.screen_for({"mode": "setup"}, False, msg, False, SPORTS, False, SPORTS), "setup")
-        self.assertEqual(gs.screen_for(None, False, msg, False, None, False, {"type": "weather"}), "session")
+        self.assertEqual(gs.zone_view(msg, {"type": "weather"})["tile"], None)
 
     def test_hold_is_whichever_is_longer(self):
         self.assertEqual(gs.tile_end(100, 10, 105), 110)   # speech ended early: 10 s after it showed

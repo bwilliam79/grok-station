@@ -273,8 +273,11 @@ class DeckTests(unittest.TestCase):
         deck.put("jules", "stocks", 1, 3600, home(), 3)
         deck.put("mira", "game2", 9, 3600, sports(), 4)
         ids = {it["id"] for it in deck._items}
-        self.assertEqual(ids, {"stocks", "game2"})  # home cards stack; the old recipe is gone
-        self.assertEqual(deck.current(4)["id"], "game2")
+        # 0.12.16: home cards stack, and a score card no longer ends the recipe (it is a chip on it)
+        self.assertEqual(ids, {"soup", "stocks", "game2"})
+        self.assertEqual(deck.current(4)["id"], "soup")  # the recipe stays current over a higher priority
+        deck.put("jules", "soup2", 1, 3600, recipe(), 5)
+        self.assertEqual({it["id"] for it in deck._items}, {"stocks", "soup2"})  # a recipe still replaces all
 
     def test_idle_clock_beats_a_long_ttl_and_a_recipe_waits_on_the_last_step(self):
         deck = cards.Deck(rotate_s=20, ttl_max=86400)
@@ -963,10 +966,12 @@ class Station(unittest.TestCase):
                     gs.DECK = cards.Deck(rotate_s=20, ttl_max=86400)
                     gs.DECK.put("jules", "stocks", 1, 60, card, time.time())
                     gs.draw_idle(surf, layout, now, wx)
-                else:
+                elif kind == "recipe":
                     gs.draw_feed(surf, layout, now, card)
+                else:
+                    gs.draw_zone(surf, layout, now, wx, True, gs.zone_view(None, None, card))
             for card in edges:
-                gs.draw_feed(surf, layout, now, cards.validate_card(card))
+                gs.draw_zone(surf, layout, now, wx, True, gs.zone_view(None, None, cards.validate_card(card)))
         self.assertEqual(gs.friendly_date("2026-10-22"), "Thursday, October 22")
         self.assertEqual(gs.friendly_date("2026-02-31"), "2026-02-31")
         # Trend arrows use green and red. Nothing else in this small surface does.
@@ -1171,7 +1176,7 @@ class SportsLayout(unittest.TestCase):
             away = team("Ridgeview", "RV")  # no logo: name alone
             card = cards.validate_card(sports(home=home, away=away))
             surf = pygame.Surface((1920, 1080))
-            gs.draw_feed(surf, gs.Layout(1920, 1080), time.localtime(), card)
+            gs.draw_sports(surf, gs.Layout(1920, 1080), card, pygame.Rect(0, 100, 1920, 600))
             box = _red_box(surf, 80)
             self.assertIsNotNone(box)
             left, top, right, bottom = box

@@ -649,6 +649,10 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             srv, seen = await self._fake("reply")
             self._seed_hook(str(srv.make_url("/hook")))
             self.relay.REPLY_WAIT = 2
+            # 0.12.16 asks a bot with no picture for one after a passing test (test_avatar covers it); this test
+            # counts only the question webhooks.
+            self.relay._avatar_auto["jules"] = time.monotonic()
+            self.addCleanup(self.relay._avatar_auto.clear)
             r = await self.client.post("/admin/bots/jules/test", headers=h, json={})
             self.assertEqual(r.status, 202)
             tid = (await r.json())["test_id"]

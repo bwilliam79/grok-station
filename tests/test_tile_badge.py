@@ -11,6 +11,10 @@ CARD = {"v": 1, "type": "sports", "league": "NCAAM", "home": {"name": "Arkansas"
         "away": {"name": "Gonzaga", "abbr": "GONZ"}, "home_score": 70, "away_score": 68, "status": "final", "period": "F", "schedule": []}
 
 
+RECIPE = {"v": 1, "type": "recipe", "title": "Weeknight soup", "servings": 4, "ingredients": ["onion"],
+          "steps": ["Chop.", "Simmer."], "step": 1}
+
+
 def setUpModule():
     pygame.display.init()
     pygame.font.init()
@@ -20,7 +24,8 @@ class Screen(unittest.TestCase):
     def test_session_keeps_the_tile(self):
         msg = {"from": "Rhea", "text": "…", "state": "thinking", "voice": True}
         for busy in (True, False):
-            self.assertEqual(gs.screen_for(None, busy, msg, False, CARD, False, CARD), "feed")
+            self.assertEqual(gs.screen_for(None, busy, msg, False, CARD, False, CARD), "zone")  # 0.12.16
+            self.assertEqual(gs.screen_for(None, busy, msg, False, RECIPE, False, RECIPE), "feed")
 
     def _draw(self, msg):
         calls = []
@@ -31,7 +36,7 @@ class Screen(unittest.TestCase):
         gs._line = line
         try:
             surf = pygame.Surface((1920, 1080))
-            gs.draw_feed(surf, gs.Layout(1920, 1080), time.localtime(), CARD, True, msg, msg and msg.get("state"), 0.3)
+            gs.draw_feed(surf, gs.Layout(1920, 1080), time.localtime(), RECIPE, True, msg, msg and msg.get("state"), 0.3)
         finally:
             gs._line = real_line
         return calls
@@ -39,7 +44,7 @@ class Screen(unittest.TestCase):
     def test_badge_and_name_replace_the_caption(self):
         calls = self._draw({"from": "Rhea", "text": "…", "state": "speaking", "voice": True})
         self.assertIn("Rhea", calls)
-        self.assertNotIn("Sports", calls)
+        self.assertNotIn("Weeknight soup", calls)
         r = gs.LAST_PORTRAIT_RECT
         self.assertIsNotNone(r)
         L = gs.Layout(1920, 1080)
@@ -49,7 +54,7 @@ class Screen(unittest.TestCase):
 
     def test_idle_brings_back_the_caption(self):
         calls = self._draw(None)
-        self.assertIn("Sports", calls)
+        self.assertIn("Weeknight soup", calls)
         self.assertIsNone(gs.LAST_PORTRAIT_RECT)
 
     def test_missing_avatar_falls_back(self):

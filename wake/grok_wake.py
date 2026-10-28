@@ -1890,6 +1890,47 @@ def post_state(state=None, **kw):
         print(f"state post failed: {type(e).__name__}", flush=True)
 
 
+class SpeechClock:
+    """0.12.16: how far one streamed reply has played, for the display's reply window.
+
+    The relay streams 24 kHz mono PCM16 (48000 bytes a second) and aplay plays it from the first chunk, so the
+    spoken position is the time since the first chunk, capped at the audio received so far. Progress is that
+    over the audio received. There are no per-word timings in this pipeline."""
+
+    BYTES_PER_S = 48000
+
+    def __init__(self, t0):
+        self.t0, self.bytes = float(t0), 0
+
+    def add(self, n):
+        self.bytes += int(n)
+
+    def progress(self, now):
+        total = self.bytes / self.BYTES_PER_S
+        if total <= 0:
+            return 0.0
+        return max(0.0, min(1.0, (now - self.t0) / total))
+
+
+SPEECH_HZ = 5  # the display asks for progress at 5 Hz or more
+
+
+def post_speech(p):
+    """POST {"speech": {"p": …}} to /state. Not logged: it runs five times a second while a reply plays."""
+    try:
+        req = urllib.request.Request(STATE_URL, json.dumps({"speech": {"p": round(float(p), 4)}}).encode(),
+                                     {"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=0.5).read()
+    except Exception:
+        pass
+
+
+def speech_ticker(clock, stop, post=post_speech, hz=SPEECH_HZ):
+    """Post the clock's progress hz times a second until stop is set. Runs in its own thread."""
+    while not stop.wait(1.0 / hz):
+        post(clock.progress(time.time()))
+
+
 def scores(model, pcm):
     """openWakeWord scores, plus a score for each recorded word from the same 80 ms embedding Hey Grok just used."""
     sc = model.predict(pcm)
@@ -1976,8 +2017,20 @@ class Session:
         self._connected, self._end_played = False, False
         self._reply_held = False  # thinking chime stays down for the whole reply playback
         self._cue_q, self._cue_thread, self.t_ack = None, None, None  # ack and handoff_still share one player
+        self.speech, self._speech_stop = None, None  # playback clock for the display's reply window
         CURRENT["session"] = self
         threading.Thread(target=self.run, daemon=True).start()
+
+    def start_speech_clock(self, t0):
+        """First audio of a reply: report its playback progress to the display until playback ends."""
+        self.stop_speech_clock()
+        self.speech, self._speech_stop = SpeechClock(t0), threading.Event()
+        threading.Thread(target=speech_ticker, args=(self.speech, self._speech_stop), daemon=True).start()
+
+    def stop_speech_clock(self):
+        if getattr(self, "_speech_stop", None) is not None:
+            self._speech_stop.set()
+        self.speech, self._speech_stop = None, None
 
     def state(self, state, **kw):
         if getattr(self, "card", None) and "card" not in kw:
@@ -2115,6 +2168,9 @@ class Session:
                             self._claim_reply()  # chime is already stopped; hold it until this player exits
                             player = subprocess.Popen(["aplay", "-q", "-D", self.play_dev, "-f", "S16_LE", "-r", "24000",
                                                        "-c", "1", "-t", "raw"], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                            self.start_speech_clock(self.t_first_audio)
+                        if self.speech is not None:
+                            self.speech.add(len(m))
                         if self.save is not None:
                             out.append(m)
                         try:
@@ -2220,6 +2276,7 @@ class Session:
                         if player:
                             player.stdin.close(); player.wait(timeout=90); player = None
                             self._release_reply()
+                        self.stop_speech_clock()
                         self.turns += 1
                         print(f"relay: turn {self.turns} done, listening for a follow-up", flush=True)
                         while not self.q.empty():  # mic audio queued during playback is the reply's echo
@@ -2249,6 +2306,7 @@ class Session:
                 player.wait(timeout=90)
                 self._release_reply()
                 player = None
+                self.stop_speech_clock()
                 self.state("speaking", heard=self.heard, text=self.reply or "…", done=True)
             print(f"session over in {time.time() - t0:.1f}s", flush=True)
         except Exception as e:
@@ -2256,6 +2314,7 @@ class Session:
             self.state("error", text="Can’t reach Grok right now.")
         finally:
             self.feeding = False
+            self.stop_speech_clock()
             self.ws, self.t1_card = None, None
             if CURRENT["session"] is self:
                 CURRENT["session"] = None

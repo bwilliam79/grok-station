@@ -30,7 +30,10 @@ LOGO_FILES = 32
 LOGO_TOTAL = 4 << 20
 LOGO_MAX_AGE = 7 * 24 * 3600
 # Conversation cards (recipe, sports, calendar) replace each other. Home cards still stack.
+# 0.12.16: a sports or calendar card that arrives while a recipe is up does not end the recipe. It is shown as
+# a chip on the recipe; the recipe stays the current card until it ends.
 CONVO_TYPES = frozenset(("recipe", "sports", "calendar"))
+ZONE_TYPES = frozenset(("sports", "calendar"))
 CONVO_IDLE_S = 60          # calendar leaves this long after the conversation goes idle
 SPORTS_TILE_S = 15         # 0.12.11: a score tile leaves 15 s after it showed (or when speech ends, if later)
 RECIPE_IDLE_S = 30 * 60    # a recipe stays while someone is cooking; refreshed by a step command
@@ -995,6 +998,8 @@ _RECIPE_PHRASES = {
     "first step": "start",
     "done": "close",
     "close recipe": "close",
+    "dismiss": "dismiss",  # 0.12.16: a chip on the recipe; the station says no when there is none
+    "clear that": "dismiss",
 }
 LAST_STEP_LINE = "That's the last step."
 FIRST_STEP_LINE = "That's the first step."
@@ -1108,6 +1113,9 @@ class Deck:
             return None
         if self._anchor is None:
             self._anchor = now
+        recipe = next((it for it in self._ordered() if it["card"]["type"] == "recipe"), None)
+        if recipe is not None:
+            return self._view(recipe)  # a recipe stays on screen; other tiles are its chips
         step = self.rotate_s if self.rotate_s > 0 else 1
         slot = int((now - self._anchor) // step)
         return self._view(self._ordered()[slot % len(self._items)])
@@ -1130,8 +1138,11 @@ class Deck:
             self._drop(now)
             # One conversation card at a time, whatever the id or the bot. Home cards stay.
             if card["type"] in CONVO_TYPES:
+                # A recipe replaces every conversation card. A sports or calendar card replaces the other
+                # sports or calendar card and keeps a recipe.
+                gone = CONVO_TYPES if card["type"] == "recipe" else ZONE_TYPES
                 self._items = [it for it in self._items
-                               if it["card"]["type"] not in CONVO_TYPES
+                               if it["card"]["type"] not in gone
                                or (it["bot"] == bot and it["id"] == card_id)]
             existing = next((it for it in self._items if it["bot"] == bot and it["id"] == card_id), None)
             if existing is None:
@@ -1166,6 +1177,14 @@ class Deck:
             for it in self._items:
                 if it["bot"] == bot and it["id"] == card_id:
                     return it["card"]
+        return None
+
+    def expiry(self, bot, card_id):
+        """When this card's ttl ends (epoch seconds), or None."""
+        with self._lock:
+            for it in self._items:
+                if it["bot"] == bot and it["id"] == card_id:
+                    return it["expires"]
         return None
 
     def current(self, now):

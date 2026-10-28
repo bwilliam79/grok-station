@@ -69,7 +69,13 @@ def score_hold_s(env=None):
 
 
 SCORE_HOLD = score_hold_s()
-FULL_TILES = ("recipe", "sports", "calendar")
+# 0.12.16: only a recipe takes the whole screen. Every other tile, and every bot state, uses the bottom zone
+# under the clock, date and weather (docs/display.md "Bottom zone").
+FULL_TILES = ("recipe",)
+ZONE_TILES = ("sports", "calendar")
+TILE_TYPES = FULL_TILES + ZONE_TILES
+ZONE_STATES = ("listening", "thinking", "speaking", "error", "notice")  # voice states drawn in the bottom zone
+STATE_WORDS = {"listening": "Listening", "thinking": "Thinking", "speaking": "Replying"}
 # A spoken reply and its card arrive as two posts. Hold the reply text this long so a card
 # from the same persona can take the screen without a flash of text. Audio is not delayed.
 TEXT_CARD_WAIT = 1.5
@@ -99,6 +105,233 @@ def tile_step(tile, prev_state, state, now, hold_s):
     if state == "speaking" and prev_state != "speaking" and tile.get("stale"):
         return "clear"
     return "keep"
+
+
+class ChipTray:
+    """0.12.16: tiles that arrive while a recipe is up, shown as top-bar chips (docs/display.md "Recipe chips").
+
+    At most MAX chips, oldest first. A third replaces the oldest. Each chip ends on its tile's own TTL
+    ("until", epoch seconds). The HTTP thread (voice "dismiss") and the main loop share it, so it locks."""
+
+    MAX = 2
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._chips = []
+
+    def _prune(self, now):
+        before = len(self._chips)
+        self._chips = [c for c in self._chips if c["until"] > now]
+        return len(self._chips) != before
+
+    def add(self, tile, now):
+        """Store a tile {"bot", "id", "card", "expires"} as a chip. Returns the chip it replaced, or None."""
+        until = float(tile.get("expires") or now + SCORE_HOLD)
+        chip = {"bot": tile.get("bot"), "id": tile.get("id"), "card": tile.get("card"), "until": until, "at": now}
+        with self._lock:
+            self._prune(now)
+            self._chips = [c for c in self._chips if (c["bot"], c["id"]) != (chip["bot"], chip["id"])]
+            dropped = self._chips.pop(0) if len(self._chips) >= self.MAX else None
+            self._chips.append(chip)
+            return dropped
+
+    def visible(self, now):
+        with self._lock:
+            self._prune(now)
+            return [dict(c) for c in self._chips]
+
+    def prune(self, now):
+        """Drop expired chips. True when one went, so the screen repaints."""
+        with self._lock:
+            return self._prune(now)
+
+    def dismiss(self, now):
+        """Voice "dismiss" / "clear that", or a tap: the newest chip (nearest the clock) goes. Returns it, or None."""
+        with self._lock:
+            self._prune(now)
+            return self._chips.pop() if self._chips else None
+
+    def handoff(self, now):
+        """The recipe ended: the newest chip with TTL left moves to the bottom zone. The tray empties."""
+        with self._lock:
+            self._prune(now)
+            chip = self._chips[-1] if self._chips else None
+            self._chips = []
+            return chip
+
+    def next_change(self, now):
+        with self._lock:
+            return min((c["until"] - now for c in self._chips), default=None)
+
+    def __bool__(self):
+        with self._lock:
+            return bool(self._chips)
+
+
+CHIPS = ChipTray()
+
+
+def reduce_motion(env=None):
+    """GROK_STATION_REDUCE_MOTION=1: the reply window pages instead of scrolling. There is no admin switch yet."""
+    return str((os.environ if env is None else env).get("GROK_STATION_REDUCE_MOTION", "0")).strip() in ("1", "true", "on")
+
+
+class Teleprompter:
+    """0.12.16: the 4-line reply window's motion (docs/display.md "Reply teleprompter"). Pure: every call takes now.
+
+    Geometry comes from the painter (set_geometry). Progress is spoken audio time / total audio time, posted by the
+    wake listener at 5 Hz or more ("speech" on POST /state). With no progress the window waits HOLD_S, then
+    drifts at FALLBACK_PX (spec units, scaled by the layout) per second. The shown offset eases toward the target
+    with a TAU_S time constant, so timing jitter never jerks. Reduced motion pages a whole window at a time with
+    a FADE_S cross-fade."""
+
+    WINDOW_LINES = 4
+    HOLD_S = 1.5
+    FALLBACK_PX = 45   # 60 px/s at 2560x1706 (s = 1.333)
+    TAU_S = 0.25
+    FADE_S = 0.2
+
+    def __init__(self, now, reduced=False):
+        self.started = float(now)
+        self.reduced = bool(reduced)
+        self.progress = None   # 0..1 once the wake listener reports it
+        self.stopped = False   # barge-in or a tile: frozen in place
+        self.settled = False   # speech ended: last window, no fades
+        self.offset = 0.0
+        self.line_h, self.text_h, self.scale = 1, 1, 1.0
+        self._t = float(now)
+        self._page, self._page_at, self._prev_page = 0, None, 0
+
+    @property
+    def win_h(self):
+        return self.WINDOW_LINES * self.line_h
+
+    @property
+    def max_offset(self):
+        return max(0, self.text_h - self.win_h)
+
+    @property
+    def scrolls(self):
+        return self.text_h > self.win_h
+
+    def set_geometry(self, n_lines, line_h, scale):
+        self.line_h, self.text_h, self.scale = max(1, int(line_h)), max(1, int(n_lines) * max(1, int(line_h))), float(scale)
+        self.offset = min(self.offset, self.max_offset)
+
+    def feed(self, progress, now):
+        if self.stopped or self.settled:
+            return
+        try:
+            p = float(progress)
+        except (TypeError, ValueError):
+            return
+        if p == p:  # not NaN
+            self.progress = min(1.0, max(0.0, p))
+
+    def stop(self, now):
+        self.step(now)
+        self.stopped = True
+
+    def settle(self, now):
+        if not self.stopped:
+            self.settled = True
+            self.offset = float(self.max_offset)
+            self._page = self._prev_page = self._last_page()
+
+    def _last_page(self):
+        return max(0, -(-self.text_h // self.win_h) - 1) if self.scrolls else 0
+
+    def target(self, now):
+        if not self.scrolls:
+            return 0.0
+        if self.settled:
+            return float(self.max_offset)
+        return float(min(self.max_offset, max(0.0, self._spoken(now) - 1.5 * self.line_h)))
+
+    def _spoken(self, now):
+        """Pixels into the text of the line being spoken: progress, or the fallback pace after the hold."""
+        if self.progress is not None:
+            return self.progress * self.text_h
+        drift = (now - self.started - self.HOLD_S) * self.FALLBACK_PX * self.scale
+        return 1.5 * self.line_h + drift if drift > 0 else 0.0
+
+    def step(self, now):
+        """Advance to now. Returns the offset to draw (pixels into the text)."""
+        dt = max(0.0, now - self._t)
+        self._t = now
+        if self.stopped or not self.scrolls:
+            return self.offset if self.scrolls else 0.0
+        if self.settled:
+            self.offset = float(self.max_offset)
+            return self.offset
+        if self.reduced:
+            page = min(self._last_page(), int(self._spoken(now) // self.win_h))
+            if page != self._page:
+                self._prev_page, self._page, self._page_at = self._page, page, now
+            self.offset = float(min(self.max_offset, self._page * self.win_h))
+            return self.offset
+        goal = self.target(now)
+        self.offset += (goal - self.offset) * (1.0 - math.exp(-dt / self.TAU_S)) if dt else 0.0
+        return self.offset
+
+    def crossfade(self, now):
+        """Reduced motion only: (previous offset, alpha 0..1 of the new page) while a page change fades, else None."""
+        if not self.reduced or self._page_at is None:
+            return None
+        a = (now - self._page_at) / self.FADE_S
+        if a >= 1.0:
+            self._page_at = None
+            return None
+        return float(min(self.max_offset, self._prev_page * self.win_h)), max(0.0, a)
+
+    def fades(self):
+        """(top, bottom) edge fades on? Off when the text fits, and both off once speech has ended."""
+        if not self.scrolls or self.settled:
+            return False, False
+        return self.offset > 0.5, self.offset < self.max_offset - 0.5
+
+    def moving(self, now):
+        """True while the window still has to repaint on its own (scroll, ease, or a page fade)."""
+        if not self.scrolls or self.stopped or self.settled:
+            return False
+        if self.reduced:
+            return self._page_at is not None or self.progress is None or self._page < self._last_page()
+        return abs(self.target(now) - self.offset) > 0.5 or self.target(now) < self.max_offset
+
+
+def recipe_up(tile_card, current):
+    """True while a recipe is the full-screen tile: the session's tile, or the deck's current card (a recipe in the
+    deck is always current). A sports or calendar tile that arrives then becomes a chip."""
+    if isinstance(tile_card, dict) and tile_card.get("type") == "recipe":
+        return True
+    return isinstance(current, dict) and (current.get("card") or {}).get("type") == "recipe"
+
+
+def tele_next(tele, prev_state, state, done, now, reduced=False):
+    """The reply window across a voice state change. A new reply starts a window; the finished-playback post
+    (speaking, done) settles it on its last lines; any other state (barge-in back to listening, thinking,
+    error) stops it in place and drops it."""
+    if state == "speaking":
+        if done:
+            if tele is not None:
+                tele.settle(now)
+            return tele
+        if tele is None or tele.stopped or tele.settled or prev_state != "speaking":
+            return Teleprompter(now, reduced)
+        return tele
+    if tele is not None:
+        tele.stop(now)
+    return None
+
+
+def zone_voice(msg):
+    """A voice session message the bottom zone draws (listening, thinking, replying, error, notice).
+
+    Plain /show text, enrollment, the T1 read-back, and a reply that carries an inline info card keep the
+    full-screen session layout."""
+    if not isinstance(msg, dict) or not msg.get("voice") or msg.get("card"):
+        return False
+    return (msg.get("state") or "speaking") in ZONE_STATES
 
 
 def turn_over(msg):
@@ -346,8 +579,8 @@ class Handler(BaseHTTPRequestHandler):
         tile = None
         if kind == "put":
             page = deck().get(bot, cid)
-            if page and page.get("type") in FULL_TILES:
-                tile = {"bot": bot, "id": cid, "card": page}
+            if page and page.get("type") in TILE_TYPES:
+                tile = {"bot": bot, "id": cid, "card": page, "expires": deck().expiry(bot, cid)}
         pygame.event.post(pygame.event.Event(FEED, tile=tile))
         print(f"show card {kind} bot={bot} id={cid}", flush=True)
         self._reply(200, {"ok": True})
@@ -397,6 +630,8 @@ class Handler(BaseHTTPRequestHandler):
             err = str(e)
             return self._reply(400, {"error": err if err.startswith("state must") else "bad json"})
         pygame.event.post(pygame.event.Event(STATE, **ev))
+        if ev["speech"] is not None and not ev["state"] and not ev["has_card"] and not ev["has_timers"]:
+            return self._reply(200, {"ok": True})  # 5 Hz speech progress: not logged
         bits = [ev["state"] or "-"]
         if ev["has_card"]:
             bits.append("card" if ev["card"] else "card-ignored")
@@ -417,8 +652,13 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._reply(400, {"error": "bad json"})
         cmd = j.get("cmd") if isinstance(j, dict) else None
-        if cmd not in ("next", "prev", "repeat", "start", "close"):
+        if cmd not in ("next", "prev", "repeat", "start", "close", "dismiss"):
             return self._reply(400, {"error": "bad command"})
+        if cmd == "dismiss":
+            # "dismiss" / "clear that" with a chip on the recipe: the newest chip goes. No chip: not ours.
+            chip = dismiss_chip(time.time())
+            print(f"recipe dismiss ok={bool(chip)}", flush=True)
+            return self._reply(200, {"ok": bool(chip), "closed": False, "say": ""})
         result = cards.apply_recipe_command(deck(), cmd, time.time())
         if result.get("ok") and result.get("closed"):
             pygame.event.post(pygame.event.Event(FEED, tile=None, recipe_closed=True))
@@ -1596,13 +1836,34 @@ def state_event(j):
     has_card = "card" in j
     card = clean_card(j.get("card")) if has_card else None
     timers = clean_timers(j.get("timers")) if "timers" in j else None
-    if not has_state and card is None and timers is None:
+    speech = speech_progress(j.get("speech"))
+    if not has_state and card is None and timers is None and speech is None:
         raise ValueError("nothing to apply")
     heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
     who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
-            "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers}
+            "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
+            "speech": speech}
+
+
+def speech_progress(raw):
+    """{"p": 0..1} from the wake listener while a reply plays (spoken audio time / audio received), or None."""
+    if not isinstance(raw, dict):
+        return None
+    p = raw.get("p")
+    if type(p) not in (int, float) or p != p:
+        return None
+    return min(1.0, max(0.0, float(p)))
+
+
+def dismiss_chip(now):
+    """Drop the newest recipe chip and its deck card. Returns the chip, or None when there was none."""
+    chip = CHIPS.dismiss(now)
+    if chip:
+        deck().clear(chip["bot"], chip["id"])
+        pygame.event.post(pygame.event.Event(FEED, tile=None, chips_changed=True))
+    return chip
 
 
 def merge_card(prior, has_card, card, done):
@@ -2191,7 +2452,9 @@ def draw_card(surf, card, x, y, max_w, max_h):
     return rect
 
 
-def draw_idle(surf, L, now, wx, colon_on=True):
+def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
+    """The idle clock, date and weather. Returns the lowest y they use, which is where the bottom zone starts.
+    home_band=False leaves out the home cards: the bottom zone is in use."""
     global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT
     LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
@@ -2216,9 +2479,11 @@ def draw_idle(surf, L, now, wx, colon_on=True):
         draw_offline_badge(surf, L, base)
     elif wx.data:
         draw_weather(surf, L, wx.data, base)
-    draw_next_up(surf, L, now)
+    if home_band:
+        draw_next_up(surf, L, now)
     draw_timer_strip(surf, L)
     draw_status_icons(surf, L)
+    return max(r.bottom for r in (LAST_DATE_RECT, LAST_CLOCK_RECT, LAST_WEATHER_RECT, LAST_OFFLINE_RECT) if r)
 
 
 def draw_weather(surf, L, d, clock_base):
@@ -2420,15 +2685,6 @@ def draw_next_up(surf, L, now):
     draw_home_band(surf, L, deck().home_row(time.time()))
 
 
-def _panel(surf, L):
-    top = L(120)
-    bottom = content_limit(L)
-    rect = pygame.Rect(L.m, top, L.w - 2 * L.m, max(L(120), bottom - top))
-    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
-    pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
-    return rect
-
-
 def draw_recipe(surf, L, card):
     """Two cards, as on the recipe screen: ingredients, then the current step with a teal bar."""
     top = L(120)
@@ -2484,31 +2740,19 @@ def draw_recipe(surf, L, card):
     surf.blit(hint, (sx, stp.bottom - L(36) - hint.get_height()))
 
 
-def _feed_span(L):
-    """The card column under the top bar and above the timer strip."""
-    top = L(120)
-    bottom = content_limit(L)
-    return top, max(top + L(120), bottom), max(L(160), L.w - 2 * L.m)
-
-
-def draw_sports(surf, L, card):
-    """Score card, shields or cached logos, then a next-game strip. No fetch while drawing."""
-    top, bottom, width = _feed_span(L)
-    games = card["schedule"][:4]
-    gap = L(24)
-    span = bottom - top
-    strip_h = 0
-    if games:
-        strip_h = min(L(150) if len(games) == 1 else L(200), max(L(72), span // 3))
-    score_h = span - (strip_h + gap if strip_h else 0)
-    if games and score_h < L(180):
-        strip_h = max(0, span - L(180) - gap)
-        score_h = span - (strip_h + gap if strip_h else 0)
-    rect = pygame.Rect(L.m, top, width, max(L(120), score_h))
+def _card_chrome(surf, L, rect):
     pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
     pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
+
+
+def draw_sports(surf, L, card, rect):
+    """Score tile in the bottom zone: header row, the two teams, and the next game as a band inside the card.
+    Shields or cached logos only; no fetch while drawing."""
+    _card_chrome(surf, L, rect)
+    games = card["schedule"][:4]
     pad = L(48)
-    head = rect.top + L(36)
+    strip_h = L(112) if games and rect.h >= L(300) else 0
+    head = rect.top + L(30)
     live = card["status"] == "live"
     label = "LIVE" if live else card["status"].upper()
     st = _line(surf, "display", L(44), label, LISTENING if live else MUTED, max(40, rect.w // 3))
@@ -2519,20 +2763,21 @@ def draw_sports(surf, L, card):
         surf.blit(st, (rect.left + pad, head))
     period = _line(surf, "display", L(44), card["period"], MUTED, max(40, rect.w // 3))
     surf.blit(period, (rect.right - pad - period.get_width(), head))
-    league = _line(surf, "body", L(28), card["league"], FAINT, max(40, rect.w // 4))
+    # MUTED, not FAINT: FAINT on SURFACE is 3.24:1 and fails AA for small text (Noor's contrast table).
+    league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
     surf.blit(league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
-    mark = min(L(150), max(L(48), rect.w // 7))
-    head_bottom = head + st.get_height()
-    col_top = head_bottom + L(16)
-    col_bot = rect.bottom - L(28)
+    strip_top = rect.bottom - strip_h
+    col_top = head + st.get_height() + L(12)
+    col_bot = (strip_top if strip_h else rect.bottom) - L(16)
     col_w = max(40, rect.w // 2 - L(72))
     avail = max(L(48), col_bot - col_top)
-    name_px = min(L(48), max(L(22), avail // 8))
+    mark = min(L(110), max(L(40), avail // 3))
+    name_px = min(L(48), max(L(22), avail // 6))
     score_px = min(
         _fit_px("display", card["home_score"], L(180), col_w, L(36)),
         _fit_px("display", card["away_score"], L(180), col_w, L(36)),
-        max(L(36), avail // 3))
-    gap = L(10)
+        max(L(36), avail * 2 // 3))
+    gap = L(8)
     score_mids = []
 
     def paint_side(team, score, cx):
@@ -2552,27 +2797,17 @@ def draw_sports(surf, L, card):
     dash = font("display", min(L(60), max(16, score_px // 3))).render("–", True, MUTED)
     mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
     surf.blit(dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
-    if games and strip_h >= L(48) and rect.bottom + gap < bottom:
-        strip = pygame.Rect(L.m, rect.bottom + gap, width, min(strip_h, bottom - rect.bottom - gap))
-        pygame.draw.rect(surf, SURFACE, strip, border_radius=L(28))
-        pygame.draw.rect(surf, RULE, strip, max(2, L(2)), border_radius=L(28))
+    if strip_h:
+        pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), max(2, L(2)))
         cap = _line(surf, "display", L(28), "NEXT GAME", MUTED, L(240))
         game = games[0]
-        when = _line(surf, "display", L(44), game["when"], LISTENING, max(40, strip.w // 4))
-        label_w = max(40, strip.w - cap.get_width() - when.get_width() - L(180))
+        when = _line(surf, "display", L(44), game["when"], LISTENING, max(40, rect.w // 4))
+        label_w = max(40, rect.w - cap.get_width() - when.get_width() - L(180))
         name = _line(surf, "display", L(44), game["label"], TEXT, label_w)
-        row_y = strip.top + L(28)
-        if len(games) > 1 and strip.h >= cap.get_height() + L(70):
-            row_y = strip.top + L(24)
-        else:
-            row_y = strip.centery - max(cap.get_height(), name.get_height(), when.get_height()) // 2
-        surf.blit(cap, (strip.left + pad, row_y + (name.get_height() - cap.get_height()) // 2))
-        surf.blit(name, (strip.left + pad + cap.get_width() + L(32), row_y))
-        surf.blit(when, (strip.right - pad - when.get_width(), row_y))
-        if len(games) > 1 and strip.bottom - (row_y + name.get_height()) > L(28):
-            extra = "   ·   ".join(f"{g['when']}  {g['label']}" for g in games[1:])
-            more = _line(surf, "body", L(28), extra, MUTED, strip.w - 2 * pad)
-            surf.blit(more, (strip.left + pad, row_y + name.get_height() + L(8)))
+        row_y = strip_top + (strip_h - max(cap.get_height(), name.get_height(), when.get_height())) // 2
+        surf.blit(cap, (rect.left + pad, row_y + (name.get_height() - cap.get_height()) // 2))
+        surf.blit(name, (rect.left + pad + cap.get_width() + L(32), row_y))
+        surf.blit(when, (rect.right - pad - when.get_width(), row_y))
     elif games:
         line = _line(surf, "body", L(28), f"{games[0]['when']}  {games[0]['label']}", MUTED, rect.w - 2 * pad)
         surf.blit(line, (rect.left + pad, rect.bottom - L(16) - line.get_height()))
@@ -2587,14 +2822,15 @@ def friendly_date(iso):
     return time.strftime("%A, %B %-d", parsed)
 
 
-def draw_calendar(surf, L, card):
-    """Five rows. The first event is next (teal). A summary line names it."""
-    rect = _panel(surf, L)
-    shown = card["events"][:5]
-    extra = len(card["events"]) - len(shown)
+def draw_calendar(surf, L, card, rect):
+    """Calendar tile in the bottom zone: up to five rows, as many as fit. The first event is next (teal).
+    A summary line names it."""
+    _card_chrome(surf, L, rect)
     foot_h = L(64)
     y = rect.top + L(28)
     room = max(L(48), rect.bottom - y - foot_h)
+    shown = card["events"][:max(1, min(5, room // L(52)))]
+    extra = len(card["events"]) - len(shown)
     row_h = min(L(118), max(L(52), room // max(1, len(shown) or 1)))
     time_col = L(260)
     for i, ev in enumerate(shown):
@@ -2620,10 +2856,58 @@ def draw_calendar(surf, L, card):
     surf.blit(foot, (rect.left + L(48), rect.bottom - L(24) - foot.get_height()))
 
 
+RING_COLOR = {"listening": LISTENING, "thinking": THINKING, "speaking": SPEAKING}
+
+
+def draw_state_glyph(surf, state, x, cy, h, color):
+    """The shape that goes with each state word, so state never rests on colour alone: bars (listening),
+    three dots (thinking), a speaker with waves (replying). Drawn from x, centred on cy. Returns its rect."""
+    if state == "listening":
+        bw, gap = max(2, h // 6), max(2, h // 9)
+        for i, k in enumerate((0.45, 0.8, 1.0, 0.65, 0.35)):
+            bh = max(2, int(h * k))
+            pygame.draw.rect(surf, color, (x + i * (bw + gap), cy - bh // 2, bw, bh), border_radius=max(1, bw // 2))
+        return pygame.Rect(x, cy - h // 2, 5 * bw + 4 * gap, h)
+    if state == "thinking":
+        r = max(2, h // 7)
+        for i in range(3):
+            pygame.draw.circle(surf, color, (x + r + i * 3 * r, cy), r)
+        return pygame.Rect(x, cy - r, 8 * r, 2 * r)
+    if state == "speaking":
+        u = max(1, h // 10)
+        pygame.draw.rect(surf, color, (x, cy - 2 * u, 3 * u, 4 * u))
+        pygame.draw.polygon(surf, color, [(x + 3 * u, cy - 2 * u), (x + 6 * u, cy - 5 * u), (x + 6 * u, cy + 5 * u), (x + 3 * u, cy + 2 * u)])
+        lw = max(2, u)
+        for k in (1, 2):
+            arc = pygame.Rect(0, 0, 2 * (k * 2 + 1) * u, 2 * (k * 2 + 1) * u)
+            arc.center = (x + 6 * u, cy)
+            pygame.draw.arc(surf, color, arc, -0.9, 0.9, lw)
+        return pygame.Rect(x, cy - h // 2, 12 * u, h)
+    return pygame.Rect(x, cy, 0, 0)
+
+
+def draw_state_label(surf, L, state, px, x, cy, align="left"):
+    """Icon and word ("Listening", "Thinking", "Replying") in the ring colour. Returns the rect, or None."""
+    word = STATE_WORDS.get(state)
+    if not word:
+        return None
+    color = RING_COLOR[state]
+    img = font("display", px).render(word, True, color)
+    gh = int(px * 0.7)
+    gap = L(14)
+    probe = draw_state_glyph(pygame.Surface((1, 1)), state, 0, 0, gh, color)
+    total = probe.w + gap + img.get_width()
+    left = x if align == "left" else x - total
+    g = draw_state_glyph(surf, state, left, cy, gh, color)
+    tr = img.get_rect(midleft=(g.right + gap, cy))
+    surf.blit(img, tr)
+    return g.union(tr)
+
+
 def draw_tile_badge(surf, L, msg, state, t=1.0):
-    """Top-left corner status while a tile is up in a session: the full-screen avatar and ring scaled down
-    (52 px, 5 px ring at 1920x1080), then the bot's name. Returns the x where the name ends, or None."""
-    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
+    """Upper-left status while a tile is up in a session: the avatar and ring scaled down (52 px, 5 px ring at
+    1920x1080), the bot's name, then the state icon and word. Returns the x where the badge ends."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG, LAST_BADGE_RECT
     who = msg.get("from") or VOICE_NAME
     d, ring_w = L(52), max(3, L(5))
     cy = L(34) + L(72) // 2
@@ -2633,44 +2917,265 @@ def draw_tile_badge(surf, L, msg, state, t=1.0):
     surf.blit(img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
-    name = _line(surf, "body", L(40), who, TEXT, max(40, L.w // 2))
+    LAST_PORTRAIT_BG = BG
+    name = _line(surf, "body", L(40), who, TEXT, max(40, L.w // 3))
     x = L.m + d + L(24)
-    surf.blit(name, (x, cy - name.get_height() // 2))
-    return x + name.get_width()
+    nr = surf.blit(name, (x, cy - name.get_height() // 2))
+    LAST_BADGE_RECT = LAST_PORTRAIT_RECT.union(nr)
+    lr = draw_state_label(surf, L, state, L(40), nr.right + L(24), cy)
+    if lr:
+        LAST_BADGE_RECT = LAST_BADGE_RECT.union(lr)
+    return LAST_BADGE_RECT.right
 
 
-def draw_feed(surf, L, now, card, colon_on=True, msg=None, state=None, t=1.0):
-    """Full-screen recipe, sports, or calendar. Home cards stay on the idle clock.
-    With a voice session (msg) the corner badge and the bot's name replace the caption (0.12.6)."""
-    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
-    surf.fill(BG)
-    LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
-    kind = card.get("type") if isinstance(card, dict) else None
-    st = (state or (msg or {}).get("state")) if isinstance(msg, dict) and msg.get("voice") else None
-    if st in BADGE_STATES:
-        if isinstance(now, time.struct_time):
-            draw_topbar_clock(surf, L, now)
-        draw_tile_badge(surf, L, msg, st, t)
-    elif isinstance(now, time.struct_time):
-        draw_topbar_clock(surf, L, now)
-        if kind == "recipe":
-            caption = card.get("title", "")
-        elif kind == "sports":
-            caption = "Sports"
-        elif kind == "calendar":
-            caption = friendly_date(card.get("date", ""))
+def zone_rect(L, top_of):
+    """The bottom zone: under the clock, date and weather (top_of is their lowest y) and above the safe area,
+    or the timer strip when it shows (content_limit). Full width inside the side margins."""
+    top = int(top_of) + L(80)
+    bottom = content_limit(L)
+    return pygame.Rect(L.m, top, L.w - 2 * L.m, max(L(120), bottom - top))
+
+
+def ZONE_PAD(L):
+    return L(26)  # inner top and bottom padding of the voice card
+
+
+def zone_reply_metrics(L, rect, has_heard):
+    """(name px, heard px or 0, reply px, line step) for the voice card. The window is always 4 lines; on a
+    short zone the heard line goes first, then the reply size steps down (never under 40 spec px)."""
+    pad = ZONE_PAD(L)
+    name_px, heard_px, reply_px = L(96), L(54), L(64)
+    floor = L(40)
+    while True:
+        step = max(1, int(reply_px * 1.18))  # Inter 500 at line height 1.18
+        need = font("display", name_px).get_height() + L(12) + Teleprompter.WINDOW_LINES * step
+        if has_heard and heard_px:
+            need += font("italic", heard_px).get_height() + L(12)
+        if need <= rect.h - 2 * pad:
+            return name_px, heard_px if has_heard else 0, reply_px, step
+        if has_heard and heard_px:
+            heard_px = 0
+            continue
+        if reply_px <= floor:
+            return name_px, 0, floor, step
+        reply_px = max(floor, int(reply_px * 0.92))
+        name_px = max(L(56), int(name_px * 0.92))
+
+
+LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
+LAST_PORTRAIT_BG = None
+LAST_CHIP_RECTS = []
+
+
+def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
+    """A bot state in the bottom zone: avatar on the left, name, heard line and the 4-line reply window on the
+    right, and the state icon and word at the top right."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG, LAST_TELE
+    LAST_TELE = None
+    _card_chrome(surf, L, rect)
+    who, heard, text = msg.get("from") or VOICE_NAME, msg.get("heard", ""), msg.get("text") or ""
+    if state == "thinking":
+        text = thinking_body(text)
+    pad = ZONE_PAD(L)
+    ring_w = max(4, L(10))
+    d = max(L(80), min(L(390), rect.h - 2 * pad - 2 * ring_w))
+    photo_ok = bool(msg.get("voice"))
+    img, ppad = portrait(who, d, ring_w, state, t, photo_ok=photo_ok)
+    origin = (rect.left + L(54) - ppad, rect.centery - d // 2 - ppad)
+    surf.blit(img, origin)
+    LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
+    LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
+    LAST_PORTRAIT_BG = SURFACE
+    label = draw_state_label(surf, L, state, L(64), rect.right - L(54), rect.top + pad + L(36), align="right")
+    x = rect.left + L(54) + d + L(96)
+    width = max(L(120), rect.right - L(60) - x)
+    name_px, heard_px, reply_px, step = zone_reply_metrics(L, rect, bool(heard))
+    y = rect.top + pad
+    name_w = width - (label.w + L(32) if label else 0)
+    nm = _line(surf, "display", name_px, who, TEXT, max(40, name_w))
+    surf.blit(nm, (x, y))
+    y += nm.get_height() + L(12)
+    if heard_px:
+        hl = _line(surf, "italic", heard_px, f"“{heard}”", MUTED, width)
+        surf.blit(hl, (x, y))
+        y += hl.get_height() + L(12)
+    color = AMBER if state == "error" else TEXT
+    f = font("body", reply_px)
+    lines = wrap(f, text, width) if text else []
+    win = pygame.Rect(x, y, width, Teleprompter.WINDOW_LINES * step)
+    if tele is not None:
+        tele.set_geometry(len(lines), step, L.s)
+    if not lines:
+        return
+    full = pygame.Surface((width, max(1, len(lines)) * step), pygame.SRCALPHA)
+    for i, ln in enumerate(lines):
+        full.blit(f.render(ln if f.size(ln)[0] <= width else ellipsize(f, ln, width), True, color), (0, i * step))
+    LAST_TELE = {"rect": win, "text": full, "fade": L(45), "tele": tele}
+    paint_tele(surf, now_s if now_s is not None else time.time())
+
+
+def _window_at(full, offset, w, h):
+    """The text surface cropped to the window at a pixel offset (SRCALPHA)."""
+    out = pygame.Surface((w, h), pygame.SRCALPHA)
+    out.blit(full, (0, -int(round(offset))))
+    return out
+
+
+def _fade_edges(win, fade, top, bottom):
+    """Multiply a linear alpha ramp onto the top and/or bottom fade rows (Noor's 60 px mask)."""
+    w, h = win.get_size()
+    fade = max(1, min(fade, h // 2))
+    for i in range(fade):
+        a = int(255 * (i + 0.5) / fade)
+        if top:
+            win.fill((255, 255, 255, a), (0, i, w, 1), special_flags=pygame.BLEND_RGBA_MULT)
+        if bottom:
+            win.fill((255, 255, 255, a), (0, h - 1 - i, w, 1), special_flags=pygame.BLEND_RGBA_MULT)
+
+
+def paint_tele(surf, now_s):
+    """Repaint only the reply window (the main loop calls this at 30 fps while it scrolls). Returns its rect."""
+    st = LAST_TELE
+    if not st:
+        return None
+    rect, full, tele = st["rect"], st["text"], st["tele"]
+    surf.fill(SURFACE, rect)
+    if tele is None or not tele.scrolls:
+        surf.blit(full, rect.topleft, pygame.Rect(0, 0, rect.w, rect.h))
+        return rect
+    offset = tele.step(now_s)
+    win = _window_at(full, offset, rect.w, rect.h)
+    fade = tele.crossfade(now_s)
+    if fade is not None:
+        old = _window_at(full, fade[0], rect.w, rect.h)
+        old.fill((255, 255, 255, int(255 * (1 - fade[1]))), special_flags=pygame.BLEND_RGBA_MULT)
+        win.fill((255, 255, 255, int(255 * fade[1])), special_flags=pygame.BLEND_RGBA_MULT)
+        surf.blit(old, rect.topleft)
+    top, bottom = tele.fades()
+    if not tele.reduced:
+        _fade_edges(win, st["fade"], top, bottom)
+    surf.blit(win, rect.topleft)
+    return rect
+
+
+def zone_view(msg, tile_card, feed_card=None):
+    """What the bottom zone shows. A tile wins the zone; a bot state then moves to the upper-left badge and its
+    reply text is hidden (no caption). With no tile, the bot state fills the zone."""
+    tile = tile_card if isinstance(tile_card, dict) and tile_card.get("type") in ZONE_TILES else None
+    if tile is None and not msg and isinstance(feed_card, dict) and feed_card.get("type") in ZONE_TILES:
+        tile = feed_card
+    voice = msg if zone_voice(msg) else None
+    state = (voice.get("state") or "speaking") if voice else None
+    if tile is not None:
+        badge = state if isinstance(msg, dict) and msg.get("voice") and msg.get("state") in BADGE_STATES else None
+        return {"tile": tile, "voice": None, "badge": badge, "msg": msg}
+    return {"tile": None, "voice": voice, "badge": None, "msg": msg, "state": state}
+
+
+def draw_zone(surf, L, now, wx, colon_on=True, zone=None, t=1.0, tele=None, now_s=None):
+    """The idle clock, date and weather, unchanged, with the bottom zone under them (docs/display.md)."""
+    global LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE
+    zone = zone or {}
+    busy = bool(zone.get("tile") or zone.get("voice"))
+    top_of = draw_idle(surf, L, now, wx, colon_on, home_band=not busy)
+    LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
+    if not busy:
+        return
+    rect = zone_rect(L, top_of)
+    LAST_ZONE_RECT = rect
+    if zone.get("tile"):
+        card = zone["tile"]
+        if card["type"] == "sports":
+            draw_sports(surf, L, card, rect)
         else:
-            caption = ""
+            draw_calendar(surf, L, card, rect)
+        if zone.get("badge"):
+            draw_tile_badge(surf, L, zone["msg"], zone["badge"], t)
+        return
+    draw_zone_voice(surf, L, rect, zone["voice"], zone["state"], t, tele, now_s)
+
+
+def chip_text(card):
+    """(status word, live?, league, main) for a recipe chip. Calendar: "Next 6:30 · Practice"."""
+    if card.get("type") == "sports":
+        live = card.get("status") == "live"
+        main = f"{card['home'].get('abbr') or card['home']['name']} {card['home_score']} – {card['away_score']} {card['away'].get('abbr') or card['away']['name']}"
+        return ("LIVE" if live else str(card.get("status", "")).upper()), live, card.get("league", ""), main
+    ev = (card.get("events") or [{}])[0]
+    main = f"Next {ev.get('time', '')} · {ev.get('title', '')}" if ev else "Nothing on this day"
+    return "", False, "", main
+
+
+def draw_tile_chip(surf, L, card, right_x, cy):
+    """One recipe chip: an 82 px pill (at 2560x1706) in the top bar, right edge at right_x. Returns its rect.
+    Drops the league first when the pill would pass its 760 px cap."""
+    h, pad, gap = L(62), L(26), L(14)
+    status, live, league, main = chip_text(card)
+    parts = []
+    if status:
+        parts.append(("status", font("display", L(33)).render(status, True, LISTENING if live else MUTED)))
+    if league:
+        parts.append(("league", font("body", L(33)).render(league, True, MUTED)))
+    parts.append(("main", font("display", L(36)).render(main, True, TEXT)))
+    dot = L(8) if live else 0
+    cap = L(570)
+
+    def width(ps):
+        return 2 * pad + (2 * dot + gap if dot else 0) + sum(p.get_width() for _, p in ps) + gap * (len(ps) - 1)
+
+    if width(parts) > cap:
+        parts = [p for p in parts if p[0] != "league"]
+    if width(parts) > cap:
+        f = font("display", L(36))
+        parts[-1] = ("main", f.render(ellipsize(f, main, cap - width(parts[:-1]) - gap), True, TEXT))
+    w = min(cap, width(parts))
+    rect = pygame.Rect(right_x - w, cy - h // 2, w, h)
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=h // 2)
+    pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=h // 2)
+    x = rect.left + pad
+    if dot:
+        pygame.draw.circle(surf, LISTENING, (x + dot, cy), dot)
+        x += 2 * dot + gap
+    for _, img in parts:
+        surf.blit(img, (x, cy - img.get_height() // 2))
+        x += img.get_width() + gap
+    return rect
+
+
+def draw_feed(surf, L, now, card, colon_on=True, msg=None, state=None, t=1.0, chips=()):
+    """Full-screen recipe (the one full-screen tile). Other tiles that arrive meanwhile are chips left of the
+    top-bar clock, newest nearest it. With a voice session (msg) the upper-left badge replaces the caption."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_CHIP_RECTS, LAST_BADGE_RECT
+    surf.fill(BG)
+    LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = LAST_BADGE_RECT = None
+    LAST_CHIP_RECTS = []
+    st = (state or (msg or {}).get("state")) if isinstance(msg, dict) and msg.get("voice") else None
+    clock = draw_topbar_clock(surf, L, now) if isinstance(now, time.struct_time) else None
+    if st in BADGE_STATES:
+        draw_tile_badge(surf, L, msg, st, t)
+    elif clock is not None:
+        caption = card.get("title", "")
         if caption:
-            title = _line(surf, "body", L(40), caption, MUTED, max(40, L.w // 2))
+            title = _line(surf, "body", L(40), caption, MUTED, max(40, L.w // 3))
             surf.blit(title, (L.m, L(34)))
-    if kind == "recipe":
-        draw_recipe(surf, L, card)
-    elif kind == "sports":
-        draw_sports(surf, L, card)
-    elif kind == "calendar":
-        draw_calendar(surf, L, card)
+    if chips:
+        right = (clock.left if clock is not None else L.w - L.m) - L(36)
+        cy = L(34) + L(72) // 2
+        for chip in reversed(list(chips)[-ChipTray.MAX:]):
+            r = draw_tile_chip(surf, L, chip["card"], right, cy)
+            LAST_CHIP_RECTS.insert(0, r)
+            right = r.left - L(12)
+    draw_recipe(surf, L, card)
     draw_timer_strip(surf, L)
+
+
+def chip_at(x, y):
+    """Index into the visible chips for a tap at (x, y), or None. The station has no touch input yet; this is
+    the hit test a pointer would use."""
+    for i, r in enumerate(LAST_CHIP_RECTS):
+        if r.collidepoint(x, y):
+            return i
+    return None
 
 
 def draw_night(surf, L, now, colon_on=True):
@@ -3209,30 +3714,32 @@ def draw_hotspot(surf, L, now, d):
 
 
 def screen_for(setup_doc, busy, msg, night, feed=None, timers=False, tile=None):
-    """Which screen paint() shows. Setup (or hotspot) until setup is done; after that a conversation, the night
-    clock, a full-screen card, the timer rings when any timer is up, or the idle clock with date and weather.
-    Night hides timers. Night and a voice session win over cards. A full-screen card keeps the timer strip
-    instead of the rings; home cards stay on the idle clock, which the rings replace.
-    Nothing else (no certificate or pairing screen) can take over."""
+    """Which screen paint() shows. Setup (or hotspot) until setup is done. After that:
+    - "feed": a recipe, full screen (the one full-screen tile), during a session or from the deck;
+    - "zone": the idle clock, date and weather with the bottom zone under them, holding a sports or calendar
+      tile, or a bot state (listening, thinking, replying, error) when no tile is up;
+    - "session": the full-screen layouts that stay as they were (plain /show text, enrollment, the T1
+      read-back, a reply with an inline info card);
+    - the night clock, the timer rings when any timer is up, or the idle clock.
+    Night hides timers. Night and a voice session win over cards. A tile keeps the timer strip instead of the
+    rings. Nothing else (no certificate or pairing screen) can take over."""
     if setup_doc:
         return "hotspot" if setup_doc.get("mode") == "hotspot" else "setup"
-    if msg and isinstance(tile, dict) and tile.get("type") in FULL_TILES:
-        return "feed"  # a tile reply: only the tile on screen, speech still plays
-    if busy:
-        return "thinking"
-    if msg:
-        return "session"
+    if msg and isinstance(tile, dict) and tile.get("type") in TILE_TYPES:
+        return "feed" if tile["type"] in FULL_TILES else "zone"  # a tile reply; speech still plays
+    if busy or msg:
+        return "zone" if zone_voice(msg) else "session"
     if night:
         return "night"
-    if isinstance(feed, dict) and feed.get("type") in ("recipe", "sports", "calendar"):
-        return "feed"
+    if isinstance(feed, dict) and feed.get("type") in TILE_TYPES:
+        return "feed" if feed["type"] in FULL_TILES else "zone"
     if timers:
         return "timers"
     return "idle"
 
 
 SCREENS = {"idle": draw_idle, "night": draw_night, "session": draw_session, "setup": draw_setup, "hotspot": draw_hotspot,
-           "timers": draw_timers, "feed": draw_feed}
+           "timers": draw_timers, "feed": draw_feed, "zone": draw_zone}
 
 
 # ---------------------------------------------------------------- output
@@ -3361,6 +3868,7 @@ def main():
     text_hold = None    # {"until", "pending", "who"} while a reply waits to see if a card follows
     card_hold = False   # the card hold after a session that showed a card has started
     strip_at = 0.0      # last time the timer strip was painted; ticks are at least 0.9 s apart
+    tele = None         # the reply window's motion while a reply is up in the bottom zone (Teleprompter)
 
     def thinking():  # any animated ring (thinking spin, listening pulse, enrollment fill/pulse until it finishes)
         a = anim_of(msg)
@@ -3377,7 +3885,8 @@ def main():
 
     def paint(fade=False, snapshot=True):
         nonlocal last_key, strip_at
-        global LAST_TIMER_RECT
+        global LAST_TIMER_RECT, LAST_PORTRAIT_BG, LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE
+        LAST_PORTRAIT_BG = LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None  # set again by what this paint draws
         now = time.localtime()
         on = colon_blink_on()
         sd = setup["doc"]
@@ -3387,21 +3896,37 @@ def main():
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
         night = night_face(now)
+        t_now = time.time()
         view_card = None
         if not thinking() and not msg and not night:
-            page = deck().current(time.time())
-            if page and page["card"]["type"] in ("recipe", "sports", "calendar"):
+            page = deck().current(t_now)
+            if page and page["card"]["type"] in TILE_TYPES:
                 view_card = page["card"]
         tile_card = TILE.get("card") if msg else None
+        if CHIPS and not ((tile_card or view_card or {}).get("type") == "recipe"):
+            # The recipe ended (closed, expired, or the session moved on): the newest chip with TTL left
+            # takes the bottom zone. With no session the deck already holds that card.
+            chip = CHIPS.handoff(t_now)
+            if chip and msg and not TILE and deck().get(chip["bot"], chip["id"]):
+                TILE.update({"bot": chip["bot"], "id": chip["id"], "card": chip["card"]}, shown=t_now)
+                tile_card = TILE["card"]
         if tile_card:
             view_card = tile_card
         view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
-        if view == "thinking":
-            disp.show(draw_session, now, msg, msg["state"], phase_now(), fade=fade, snapshot=snapshot)
+        ph = phase_now() if thinking() else 1.0
+        if view == "session":
+            if thinking():
+                disp.show(draw_session, now, msg, msg["state"], ph, fade=fade, snapshot=snapshot)
+            else:
+                disp.show(draw_session, now, msg, fade=fade, snapshot=snapshot)
             key = ("session", now.tm_min)
-        elif view == "session":
-            disp.show(draw_session, now, msg, fade=fade, snapshot=snapshot)
-            key = ("session", now.tm_min)
+        elif view == "zone":
+            zone = zone_view(msg, tile_card, view_card)
+            if tele is not None and zone.get("voice") is None:
+                tele.stop(t_now)  # a tile took the zone: the reply window freezes where it is
+            run = tele if zone.get("state") == "speaking" else None
+            disp.show(draw_zone, now, wx, on, zone, ph, run, t_now, fade=fade, snapshot=snapshot)
+            key = ("zone", now.tm_min, wx.offline(), json.dumps(wx.data), feed_identity())
         elif view == "night":
             disp.show(draw_night, now, on, fade=fade, snapshot=snapshot)
             key = ("night", now.tm_min)
@@ -3409,11 +3934,12 @@ def main():
             disp.show(draw_timers, now, fade=fade, snapshot=snapshot)
             key = ("timers", now.tm_min, len(TIMER_CHIPS))
         elif view == "feed":
+            chips = CHIPS.visible(t_now)
             if msg and msg.get("voice"):
                 ph = phase_now() if anim_started and anim_of(msg) else 1.0
-                disp.show(draw_feed, now, view_card, on, msg, msg.get("state"), ph, fade=fade, snapshot=snapshot)
+                disp.show(draw_feed, now, view_card, on, msg, msg.get("state"), ph, chips, fade=fade, snapshot=snapshot)
             else:
-                disp.show(draw_feed, now, view_card, on, fade=fade, snapshot=snapshot)
+                disp.show(draw_feed, now, view_card, on, None, None, 1.0, chips, fade=fade, snapshot=snapshot)
             key = ("feed", now.tm_min, feed_identity())
         else:
             disp.show(draw_idle, now, wx, on, fade=fade, snapshot=snapshot)
@@ -3433,17 +3959,24 @@ def main():
         state, period, loops = anim_of(msg)
         n = max(1, round(period * spin_fps()))
         i = min(n, int(phase_now() * n)) if not loops else int(phase_now() * n) % n
-        if any(k[0] != args for k in spin_frames):
+        bg = tuple(LAST_PORTRAIT_BG or BG)
+        if any(k[0] != (args, bg) for k in spin_frames):
             spin_frames.clear()
-        frame = spin_frames.get((args, state, i))
+        key = ((args, bg), state, i)
+        frame = spin_frames.get(key)
         if frame is None:
             who, d, ring_w, photo_ok = args
             frame = pygame.Surface(rect.size, depth=disp.screen.get_bitsize())
-            frame.fill(BG)
+            frame.fill(bg)  # the zone card's SURFACE, or the screen behind the badge
             frame.blit(portrait(who, d, ring_w, state, i / n, photo_ok=photo_ok)[0], (0, 0))
-            spin_frames[(args, state, i)] = frame
+            spin_frames[key] = frame
         disp.screen.blit(frame, rect.topleft)
         disp.flush_rect(rect)
+
+    def tele_live():
+        """The reply window on screen still moves on its own."""
+        return bool(tele is not None and LAST_TELE and LAST_TELE.get("tele") is tele and last_key
+                    and last_key[0] == "zone" and tele.moving(time.time()))
 
     def blink_colon():
         """Redraw only the colon glyph (or the background behind it) and flush that rect."""
@@ -3536,10 +4069,17 @@ def main():
                 wait = min(wait, max(0.05, left))
         if text_hold:
             wait = min(wait, max(0.05, text_hold["until"] - time.time()))
+        left = CHIPS.next_change(time.time())
+        if left is not None:
+            wait = min(wait, max(0.05, left))
+        if tele_live():
+            wait = min(wait, 1.0 / 30)
         ev = pygame.event.wait(max(1, int(wait * 1000)))
         if setup["doc"] and ev.type in (STATE, SHOW, FEED):
             continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
+            if getattr(ev, "speech", None) is not None and tele is not None:
+                tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
                 hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
@@ -3574,11 +4114,14 @@ def main():
                 else:
                     text_hold = None
                     msg = new
+                tele = tele_next(tele, prev_state, ev.state, bool(ev.done), now_s, reduce_motion())
                 until = now_s + hold
                 paint()
             elif ev.state == "idle":
                 # session end: a conversation card returns on its idle clock (ttl is only the cap)
                 text_hold = None
+                if tele is not None:
+                    tele.settle(time.time())
                 if msg and TILE:
                     now_s = time.time()
                     msg = turn_over(msg)  # the corner badge stops showing listening/thinking
@@ -3616,13 +4159,25 @@ def main():
                 elif not night_face(time.localtime()):
                     paint(snapshot=False)
                 continue
+            if getattr(ev, "chips_changed", False):
+                if (msg and msg.get("voice")) or not night_face(time.localtime()):
+                    paint(snapshot=not msg)
+                continue
             tile = getattr(ev, "tile", None)
+            on_recipe = recipe_up((TILE.get("card") if msg else None), deck().current(time.time()))
+            if tile and (tile.get("card") or {}).get("type") in ZONE_TILES and on_recipe:
+                CHIPS.add(tile, time.time())  # the recipe stays; the tile is a chip until its TTL or "dismiss"
+                if (msg and msg.get("voice")) or not night_face(time.localtime()):
+                    paint(snapshot=not msg)
+                continue
             if tile and msg and msg.get("voice"):
                 if text_hold and persona_match(text_hold.get("who"), tile.get("bot")):
                     msg = text_hold["pending"]  # badge only; the reply text is not the screen
                 text_hold = None
                 TILE.clear()
                 TILE.update(tile, shown=time.time())
+                if tele is not None:
+                    tele.stop(time.time())  # the reply text hides; the window stops where it is
                 paint()
             elif not msg and not night_face(time.localtime()):
                 if tile:
@@ -3662,6 +4217,11 @@ def main():
                     print("back to idle", flush=True)
             elif thinking():  # full-screen ring, or the tile's corner badge
                 spin_portrait()  # no full-screen repaint, no snapshot
+                maybe_strip()
+            elif CHIPS.prune(time.time()):
+                paint(snapshot=False)  # a chip reached its tile's TTL
+            elif tele_live():
+                disp.flush_rect(paint_tele(disp.screen, time.time()))  # only the reply window
                 maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:
                 paint(snapshot=False)
@@ -3735,8 +4295,14 @@ def demo(out, size):
     calendar = {"type": "calendar", "v": 1, "date": "2026-10-22",
                 "events": [{"time": "9:00", "title": "Market"}, {"time": "18:30", "title": "Practice"}]}
     shots.append(("card-recipe", draw_feed, (now, recipe)))
-    shots.append(("card-sports", draw_feed, (now, sports)))
-    shots.append(("card-calendar", draw_feed, (now, calendar)))
+    shots.append(("card-sports", draw_zone, (now, wx, True, zone_view(None, None, sports))))
+    shots.append(("card-calendar", draw_zone, (now, wx, True, zone_view(None, None, calendar))))
+    voice = {"from": "Grok", "voice": True, "heard": "what's the weather like tomorrow", "state": "speaking",
+             "text": "Tomorrow looks mild: partly sunny, a high of 71 and a low of 52, with a light breeze in the "
+                     "afternoon. No rain expected, so it is a good day for a walk by the harbor."}
+    shots.append(("zone-score-badge", draw_zone, (now, wx, True, zone_view(voice, sports))))
+    shots.append(("recipe-chips", draw_feed, (now, recipe, True, voice, "speaking", 1.0,
+                                              [{"card": sports}, {"card": calendar}])))
     home = {"type": "home", "v": 1, "title": "Stocks", "items": [
         {"label": "Northwind", "value": "12.40", "trend": "up"},
         {"label": "Harbor", "value": "8.10", "trend": "down"}]}

@@ -365,7 +365,9 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("hostname is fine", fn)
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
         self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app. Send it exactly as listed, dots included. Do not shorten it.", add)
-        self.assertIn("never put a placeholder in a code block", add)  # 0.12.11
+        self.assertIn("never write a placeholder value.", add)  # 0.12.11, reworded 0.12.16
+        self.assertIn("Tell the user to copy the webhook URL and key from those links. Do not say you can't see them", add)
+        self.assertNotIn("If you can't", add)
         self.assertNotIn("<webhook URL>", add)
         self.assertNotIn("<webhook key>", add)
         self.assertIn("stays on all the time", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
@@ -437,16 +439,20 @@ class AdminUI(unittest.TestCase):
         self.assertIn("public key it printed", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertIn("Replace key", fn)
-        self.assertGreater(fn.rindex("Reply with your public key"), fn.index("your own computer"))
-        self.assertGreater(fn.rindex("Reply with your public key"), fn.index("gs-seal-setup"))
-        self.assertIn("webhook URL", fn)
-        self.assertIn("webhook key", fn)
-        self.assertIn("Reply with your public key and the home computer's name. Put each real value in its own fenced code block, with a short plain label on the line before it:", fn)
+        self.assertGreater(fn.rindex("Reply in this order"), fn.index("your own computer"))
+        self.assertGreater(fn.rindex("Reply in this order"), fn.index("gs-seal-setup"))
+        self.assertIn("Webhook URL", fn)
+        self.assertIn("Webhook key", fn)
+        self.assertIn("3. Your public key and the home computer's name. Put each real value in its own fenced code block, with a short plain label on the line before it:", fn)
         for lab, ph in (("Public key", "<public key>"), ("Computer name", "<computer name>")):
             self.assertIn(lab + ":\\n```\\n" + ph + "\\n```", fn)
         for ph in ("<webhook URL>", "<webhook key>"):  # 0.12.11: never a placeholder in a copyable block
             self.assertNotIn(ph, fn)
-        self.assertIn("link the user straight to the routine you just created", fn)
+        # 0.12.16: done line, then direct field links for the webhook URL and key, then the two code blocks
+        i1, i2, i3 = fn.index("1. One short line saying setup is done."), fn.index("2. Webhook URL and Webhook key"), fn.index("Public key:\\n```")
+        self.assertLess(i1, i2); self.assertLess(i2, i3); self.assertLess(i3, fn.index("Computer name:\\n```"))
+        self.assertIn("the webhook-url and webhook-key targets), not a general link to Routines", fn)
+        self.assertNotIn("link the user straight to the routine", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
@@ -935,7 +941,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1063,7 +1069,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1079,7 +1085,7 @@ class BotPictureUI(unittest.TestCase):
         self.assertNotIn("Refresh avatar<", self.js)
         self.assertIn("grok-station-reply seal-avatar --bot <slug>", self.js)
         self.assertIn("post --avatar --station <station address>", self.js)
-        self.assertIn('gs-seal-reply" avatar --persona <slug> < PICTURE_FILE', self.js)
+        self.assertIn('gs-seal-reply" avatar --persona <slug> < "$HOME/.local/share/grok-station/avatar-<slug>.png"', self.js)  # 0.12.16
         self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 2)
         self.assertIn("kind is avatar", self.js)
 

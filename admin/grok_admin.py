@@ -1785,6 +1785,23 @@ def same_content(b, have_rel, have_instr, station, fingerprint, pub, table=None)
     return False
 
 
+PORTRAIT_CACHE = "private, max-age=86400"
+
+
+def _stat_version(st):
+    """The portrait_version string for a stat result: mtime_ns-size in hex."""
+    return "%x-%x" % (st.st_mtime_ns, st.st_size)
+
+
+def portrait_cache(q, st):
+    """0.12.16: Cache-Control for /api/portrait. st is os.fstat of the handle whose bytes are sent, so a picture
+    replaced between the read and a later stat can't be cached under the new version. A ?v= equal to that version
+    may be cached for a day (a new picture is a new v). No v, or another one, stays no-store."""
+    v = (q or {}).get("v")
+    cur = _stat_version(st) if st is not None else ""
+    return PORTRAIT_CACHE if isinstance(v, str) and v and cur and hmac.compare_digest(v, cur) else "no-store"
+
+
 def portrait_version(slug):
     """mtime_ns of the portrait /api/portrait serves for slug, as a short string; "" when there is none."""
     if not slug_ok(slug):
@@ -1797,7 +1814,7 @@ def portrait_version(slug):
                 st = os.stat(f)
             except OSError:
                 return ""
-            return "%x-%x" % (st.st_mtime_ns, st.st_size)
+            return _stat_version(st)
     return ""
 
 
@@ -3099,13 +3116,13 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # -- plumbing
-    def send(self, code, obj=None, ctype="application/json", body=None, headers=()):
+    def send(self, code, obj=None, ctype="application/json", body=None, headers=(), cache="no-store"):
         if body is None:
             body = (json.dumps(obj if obj is not None else {}) + "\n").encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -3807,7 +3824,13 @@ class Handler(BaseHTTPRequestHandler):
                 if os.path.getsize(f) > 2_000_000:
                     continue
                 with open(f, "rb") as fh:
-                    return self.send(200, body=fh.read(), ctype=ctype)
+                    st = os.fstat(fh.fileno())
+                    if st.st_size > 2_000_000:
+                        continue
+                    body = fh.read(2_000_001)
+                if len(body) != st.st_size:  # it changed while we read it; don't let a cache keep this copy
+                    st = None
+                return self.send(200, body=body, ctype=ctype, cache=portrait_cache(q, st))
             except OSError:
                 return self.send(404, {"error": "not found"})
         return self.send(404, {"error": "not found"})

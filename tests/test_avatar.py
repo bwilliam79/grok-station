@@ -86,6 +86,9 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PENDING_DIR = os.path.join(self.tmp, "pending")
         r.REPLIES_DIR = os.path.join(self.tmp, "replies")
         r.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
+        if hasattr(r, "AVATAR_AUTO_FILE"):  # 0.12.16: the automatic picture ask is remembered on disk
+            self.addCleanup(setattr, r, "AVATAR_AUTO_FILE", r.AVATAR_AUTO_FILE)
+            r.AVATAR_AUTO_FILE = os.path.join(self.tmp, "avatar-auto.json")
         r.SECRETS_DIR = os.path.join(self.tmp, "secrets")
         os.makedirs(r.PORTRAIT_WRITE)
         os.makedirs(r.PORTRAIT_DIRS[0])
@@ -515,6 +518,53 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(asked, [("jules", "admin")] * want)
         finally:
             r.ask_avatar, r.ask_teammate = real_ask, real_teammate
+
+    async def test_first_pass_asks_for_the_picture_by_itself(self):
+        """0.12.16: a newly paired bot with no picture is asked for one after its first passing test, with no
+        Refresh press and no then_avatar; once per pairing, remembered across a restart; not when it already has a picture; reset by pairing."""
+        r = self.relay
+        asked = []
+        real_ask, real_teammate = r.ask_avatar, r.ask_teammate
+
+        async def fake_ask(slug, actor):
+            asked.append(slug)
+            return True
+
+        async def fake_teammate(http, slug, q, **kw):
+            return "hello", "ok"
+
+        async def run_test():
+            tid = "t_" + secrets.token_urlsafe(12)
+            r._runs[tid] = {"slug": "jules", "state": "waiting", "t0": 0.0, "elapsed_s": 0.0, "answered_in_s": None,
+                            "error": None, "cancel": asyncio.Event(), "hook": None, "detail": {},
+                            "then_avatar": False, "actor": "admin"}
+            await r._run_bot_test(tid)
+            self.assertEqual(r._runs[tid]["state"], "ok")
+
+        saved = os.path.join(r.PORTRAIT_WRITE, "jules.png")
+        for f in [saved] + [os.path.join(d, "jules.png") for d in r.PORTRAIT_DIRS]:
+            if os.path.exists(f):
+                os.unlink(f)  # the fixture's registry portrait counts as a picture too (Info 3)
+        r._avatar_auto.clear()
+        try:
+            r.ask_avatar, r.ask_teammate = fake_ask, fake_teammate
+            await run_test()
+            await run_test()
+            self.assertEqual(asked, ["jules"])  # once, not on every test
+            r.forget_bot_status("jules")       # a new pairing
+            await run_test()
+            self.assertEqual(asked, ["jules", "jules"])
+            r._avatar_auto.clear()
+            os.makedirs(r.PORTRAIT_WRITE, exist_ok=True)
+            with open(saved, "wb") as fh:
+                fh.write(_png())
+            await run_test()
+            self.assertEqual(asked, ["jules", "jules"])  # it already has a picture
+        finally:
+            r.ask_avatar, r.ask_teammate = real_ask, real_teammate
+            if os.path.exists(saved):
+                os.unlink(saved)
+            r._avatar_auto.clear()
 
     async def test_owner_upload_and_avatar_request(self):
         r = self.relay
