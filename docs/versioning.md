@@ -339,6 +339,14 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.13.3
+
+Change note (2026-10-29): patch release; installs over 0.13.2. The bot templates name release 0.13.3 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
+
+- **Homebridge accessory control.** When the Homebridge login works but `/api/accessories` is refused without a transport error (Homebridge's accessory control, the old insecure mode, is off), Verify stops on its own screen ("Turn on accessory control in Homebridge") instead of sending the user back to Address with "Homebridge didn't answer". Copy and layout follow Noor's gs-integrations-nav SPEC rev2 (frames 06, 06b, 07).
+- **Pending login.** The checked login is kept in admin process memory only (never on disk, never logged, never returned), keyed by a 256-bit random id and bound to the sha256 of the admin session cookie (compared in constant time), for 15 minutes, at most 10 tries and 4 entries. Try again (`POST /api/integrations/homebridge/retry`) uses the same step-up rule, home-network address check and admin-login refusal as Verify, and does not re-run Check. It is cleared on success, Cancel (`POST /api/integrations/homebridge/retry/cancel`), expiry or a different failure. An unknown or expired id returns 410 and the page goes back to Enter login with the fields kept.
+- **Sign-in timeout.** A timeout or refused connection after the address checked out is `signin_unreachable`: the page stays on Enter login with the fields kept. Address is shown again only if the next attempt's address check fails.
+
 ## 0.13.2
 
 Change note (2026-10-29): patch release; installs over 0.13.1. The bot templates name release 0.13.2 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
