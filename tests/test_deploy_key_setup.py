@@ -798,7 +798,7 @@ class DeployKeySetup(unittest.TestCase):
         text = self._install_home_text()
         syntax = subprocess.run(["sh", "-n", os.path.join(ROOT, "scripts", "install-home.sh")], capture_output=True, text=True)
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        self.assertIn("8320874267da674cd2bb79efc173b8226ba195dc", text)
+        self.assertRegex(text, r"(?m)^COMMIT=[0-9a-f]{40}$")  # the helper files' commit (0.13.7: hashes checked at it)
         for rel in ("scripts/gs-seal-setup", "scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/vendor-lock.txt"):
             self.assertIn(self.pins["files"][rel], text)
         self.assertNotIn("ln -s", text)

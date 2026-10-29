@@ -3,9 +3,10 @@
 # macOS or Linux. Not Alpine (musl).
 # The station never pushes code. You run this script yourself.
 #
-# Pins below are commit 8320874267da674cd2bb79efc173b8226ba195dc, the 0.11.7 scripts
-# (macOS and Linux). A commit cannot name itself, so the pins name the commit
-# before the pin commit. To re-pin after a release changes these files:
+# COMMIT below is the commit the helper files are fetched from, and every HASH_* is
+# sha256 of `git show $COMMIT:<path>` (a test checks this). A commit cannot name
+# itself, so COMMIT names an earlier commit with the same helper files. Point it at
+# a commit that will be on main whenever a release changes these files. To re-pin:
 #   python3 tools/gen-deploy-pins.py --update-commit <commit holding update-manifest.txt>
 # and put the new commit and hashes here.
 #
@@ -30,7 +31,7 @@
 set -eu
 umask 077
 
-COMMIT=d583affd39f9bac1d09e5a0df3be731d2f048873
+COMMIT=e00ae668a59df601f57403b91ecc35698f133785
 HASH_SETUP=15565f30203b6772d41557190b426dc973167b1c15f6b238da4e4d6ee5aeae5f
 HASH_REPLY=7307931fe50b56363bafa7489171d3e63f1103e2837d19ccdb3697a0ad518a17
 HASH_COMMON=84024b1100552fe626f1b4e767a3f450e7010c7e29fc2ae868010a93440da3c1

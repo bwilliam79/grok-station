@@ -100,14 +100,17 @@ class Pins(unittest.TestCase):
 
 
     def test_install_home_pins_every_helper_file_it_fetches(self):
-        # install-home.sh fetches these by hash; a lock regenerated without its pin breaks every new home setup.
+        # install-home.sh fetches these from GitHub at COMMIT and checks each hash, so every HASH_* must be the
+        # file at COMMIT, not the work tree (0.13.7 L1: COMMIT still named 0.13.0 under 0.13.7 hashes).
         import hashlib
+        import subprocess
         ih = open(os.path.join(ROOT, "scripts", "install-home.sh")).read()
+        commit = re.search(r"(?m)^COMMIT=([0-9a-f]{40})$", ih).group(1)
         for var, path in (("HASH_SETUP", "scripts/gs-seal-setup"), ("HASH_REPLY", "scripts/gs-seal-reply"),
                           ("HASH_COMMON", "scripts/gs_seal_common.py"), ("HASH_LOCK", "scripts/vendor-lock.txt")):
             want = re.search(r"(?m)^%s=([0-9a-f]{64})$" % var, ih).group(1)
-            got = hashlib.sha256(open(os.path.join(ROOT, path), "rb").read()).hexdigest()
-            self.assertEqual(want, got, var)
+            blob = subprocess.run(["git", "-C", ROOT, "show", "%s:%s" % (commit, path)], capture_output=True, check=True).stdout
+            self.assertEqual(want, hashlib.sha256(blob).hexdigest(), "%s at %s" % (var, commit[:12]))
 
 
     def test_helper_version_bumped_with_the_vendor_lock(self):
