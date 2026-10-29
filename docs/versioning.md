@@ -339,6 +339,16 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.13.8
+
+Change note (2026-10-29): patch release; installs over 0.13.7. The bot templates name release 0.13.8 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
+
+- **Voice-started wake-word training (Noor SPEC gs-voice-train rev1, bug from the 0.13.7 test).** The voice command used to open the tile and wait for an on-screen Start. `wake/train_flow.py` (new, copied by `install.sh` and `tools/install-files.sh`, loaded by the relay without importing the listener) plans the voice start; the session goes straight to get-ready, one spoken intro, a 0.9 s lead, an on-screen 3-2-1, then five 2.4 s clips with a 1.5 s auto-advance. Record voice gets the same countdown. One silent clip retries; a second silent clip ends a voice session. Audio inside a recording window is never sent to the command parser. Voice cancel in the gap is not offered: the capture thread stays inside `enroll()` for the whole session, so the wake listener cannot score between clips. Tests: `tests/test_gs138_voice_train.py` (fails on 0.13.7).
+- **Mic icon after a USB reset (bug).** `check_mic` treated an empty card list as a missing mic before looking at any deadline, and the listener reset the device before stopping `arecord`. The reset now publishes `reset_until` (20 s) and drops capture first; the icon stays ok until that deadline plus the 10 s reopen grace. Tests: `tests/test_gs138_mic_icon.py` (fails on 0.13.7).
+- **Password re-ask (Noor SPEC gs-reask rev1.2, Nix conditions 1-6).** `password_grace_min` accepts 0, 1-120 or the distinct value "session", validated on the server; factory reset restores 10. Session mode is bounded by the 30 min idle and 12 h absolute limits and ends on logout, password change or revoke. The password change, reset-admin, the grace setting, PII mode off and Allow bots to take action on always re-ask. Every change is logged with old and new value, time and a short session id, never the token. Tests: `tests/test_gs138_reask.py`.
+- **Bots page (Noor gs-configure-all rev3.2 header, gs-bots-row-compact rev2).** Header actions moved into a callout and a ⋯ menu; bot message line with popover/sheet, per-bot announce-once flag, row heights unchanged.
+- **Integrations sub-pages (Noor gs-integrations-nav rev2)** and **Grok status icon (Noor gs-grok-icon rev1).**
+
 ## 0.13.7
 
 Change note (2026-10-29): patch release; installs over 0.13.6. The bot templates name release 0.13.7 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
