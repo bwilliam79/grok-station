@@ -570,6 +570,43 @@ class GrokState(unittest.TestCase):
         self.assertEqual(gs.grok_state(self.NET, ok, self._p(shown="unreachable"), self.NOW)["state"], "online")
 
 
+
+class GrokHoldProblem(unittest.TestCase):
+    """Regression (0.13.2 review): one miss while a problem is shown held nothing and flickered to checking."""
+    NOW = 1_000_000.0
+    NET = {"kind": "wifi", "up": True}
+
+    def _p(self, **kw):
+        d = {"at": self.NOW, "interval": 60, "internet": True, "grok": True, "internet_fails": 0, "grok_fails": 0}
+        d.update(kw)
+        return d
+
+    def test_one_internet_miss_keeps_unreachable(self):
+        pr = self._p(internet=False, grok=None, internet_fails=1, grok_fails=2, shown="unreachable", cause="service")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": True}, pr, self.NOW), {"state": "unreachable", "cause": "service"})
+
+    def test_one_service_miss_keeps_unreachable(self):
+        pr = self._p(grok=False, grok_fails=1, shown="unreachable", cause="service")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": True}, pr, self.NOW), {"state": "unreachable", "cause": "service"})
+
+    def test_one_internet_miss_keeps_no_internet(self):
+        pr = self._p(internet=False, grok=None, internet_fails=1, shown="no-internet")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": True}, pr, self.NOW)["state"], "no-internet")
+
+    def test_service_miss_after_no_internet_is_checking(self):
+        pr = self._p(grok=False, grok_fails=1, shown="no-internet")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": True}, pr, self.NOW)["state"], "checking")
+
+    def test_unreachable_without_a_valid_cause_is_not_held(self):
+        pr = self._p(grok=False, grok_fails=1, shown="unreachable", cause="http://x")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": True}, pr, self.NOW)["state"], "checking")
+
+    def test_tick_records_cause(self):
+        probe, _pub = gs.tick_grok(self._p(grok=False, grok_fails=2), self.NET, {"ok": True}, self.NOW + 1,
+                                   lambda a, t: None, lambda u, t: 200)
+        self.assertIn("cause", probe)
+        self.assertNotIn("cause", gs.status_snapshot().get("probe", {}))
+
 class GrokProbes(unittest.TestCase):
     def test_targets_are_literals_and_a_name_is_not_resolved(self):
         import ipaddress

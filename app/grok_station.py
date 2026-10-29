@@ -1355,6 +1355,16 @@ def grok_state(net, relay, probe, now):
         return {"state": "checking", "cause": None}
 
 
+def _held_problem(probe):
+    """The problem state last shown, kept through a single miss so the icon does not flicker to checking."""
+    shown = probe.get("shown")
+    if shown == "no-internet":
+        return {"state": "no-internet", "cause": None}
+    if shown == "unreachable" and probe.get("cause") in GROK_CAUSES:
+        return {"state": "unreachable", "cause": probe.get("cause")}
+    return None
+
+
 def _grok_state(net, relay, probe, now):
     if not isinstance(net, dict) or not isinstance(net.get("up"), bool):
         raise ValueError("net")
@@ -1369,12 +1379,16 @@ def _grok_state(net, relay, probe, now):
     relay_bad = _relay_fault(relay)
     if inet == "down":
         return {"state": "no-internet", "cause": None}
-    shown_online = probe.get("shown") == "online"
+    shown = probe.get("shown")
+    shown_online = shown == "online"
+    held = _held_problem(probe)
     if inet == "pending":
         if relay_bad:
             return {"state": "unreachable", "cause": "relay"}
         if shown_online:
             return {"state": "online", "cause": None}
+        if held is not None:
+            return held
         return {"state": "checking", "cause": None}
     if inet != "up":
         return {"state": "checking", "cause": None}
@@ -1383,6 +1397,8 @@ def _grok_state(net, relay, probe, now):
             return {"state": "unreachable", "cause": "relay"}
         if shown_online:
             return {"state": "online", "cause": None}
+        if held is not None and held["state"] == "unreachable":
+            return held  # the internet is back up, so a held no-internet would be wrong
         return {"state": "checking", "cause": None}
     if svc == "none":
         if relay_bad:
@@ -1450,6 +1466,7 @@ def tick_grok(prev, net, relay, now, connect, fetch):
         probe = sample_probe(probe, net, now, connect, fetch)
     decision = grok_state(net, relay, probe, now)
     probe["shown"] = decision["state"]
+    probe["cause"] = decision.get("cause")
     probe["interval"] = grok_poll_s()
     return probe, public_grok(decision)
 
@@ -1549,7 +1566,7 @@ def _paint_grok_glyph(surf, color, px):
 
 
 def _fallback_status_icon(name, px):
-    """Teal glyph when the state is good. A bad relay is red. Other bad icons stay muted plus an amber slash.
+    """Teal glyph when the state is good. Bad icons stay muted plus an amber slash.
     The Grok mark follows the same stroke. Dim is muted at 75% (#81776B). Unknown Grok names stay muted."""
     px = max(1, int(px))
     surf = pygame.Surface((px, px), pygame.SRCALPHA)
