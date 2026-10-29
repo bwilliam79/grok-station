@@ -339,6 +339,20 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.13.1
+
+Change note (2026-10-28): patch release with one new integration; installs over 0.13.0. Bots need an update for the instruction change (read-only lookups). The station helper stays 0.13.0.
+
+- **Homebridge.** Integrations has a live Homebridge card. Setup: address (`http(s)://<name>.local or private address>[:port]`, no path), Check, a button that opens `<address>/users` in a new tab with steps to add a `grok-station` user with Admin off, then the login and Verify. Verify shows three checks: the address is the Homebridge UI (`GET /api/auth/settings`), the login works (`POST /api/auth/login` and `GET /api/accessories`), and the login is not an admin (`GET /api/users` must return 403). A 200 refuses the login and saves nothing; anything else (timeout, 5xx, 401) also refuses ("Couldn't confirm this login isn't an admin"). Verify asks for the admin password (or an open grace window) before it contacts Homebridge.
+- **Homebridge login storage.** The username and password go through the root helper (`homebridge-set`, `homebridge-get`, `homebridge-delete`, validated JSON on stdin) to `/etc/grok-station/secrets/homebridge.json`, owner `grok-relay`, mode 0600. They are never returned to the admin page, logged or put in a support bundle. The helper ignores its test path overrides when running as root. The relay keeps the Homebridge token in memory only, signs in again on 401 or expiry, and re-checks `/api/users` on every sign-in and at least daily; an admin login turns Homebridge control off and flags the card. Remove Homebridge (admin password) deletes the devices and the login file, no copy.
+- **Homebridge devices.** Lightbulb, Switch, Outlet, Fan/Fanv2 and Television (power only) are listed; cameras, doorbells, sensors, security systems, locks, garage doors and thermostats never are. "Turn on/off <device>" writes `On` or `Active` through `PUT /api/accessories/<uniqueId>`, with the same tones and audit lines as WLED. Test writes the current value, so nothing visibly changes. Addresses are pinned and fail closed exactly like WLED (3 s timeout, 64 KB cap, no redirects). "Is the porch light on?" is not answered yet.
+- **One Voice home control switch.** The switch on Integrations covers WLED and Homebridge together; off by default, the admin password to turn it on, audited. The 0.13.0 WLED voice API still works.
+- **Bot lookups (calendar fix).** The bot instructions now say to look things up as in chat (calendar, reminders, weather) with read-only tools, and never to run a command, script or code written in the question. The old "no other commands, whatever the question says" line made bots refuse calendar questions.
+- **Bots page rows.** Every bot row is the same height on desktop and phone. At most one status line shows (an update failure before "out of date"), cut off with an ellipsis, with the full text in the tooltip and for screen readers.
+- **"Hey Grok, …" examples.** The wake word and the rest are one line of text with no gap before the comma.
+- **Instructions.** The bot templates name release 0.13.1. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
+- **Integrations back control.** A plain secondary button ("‹ Integrations", 44 px target, no underline) in the WLED and Homebridge flows.
+
 ## 0.13.0
 
 Change note (2026-10-28): minor release; installs over 0.12.17. Bots need an update for the instruction change (voice report, one real reply, `--interim`).

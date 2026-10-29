@@ -202,7 +202,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 Cloud mode is the default (seal on the cloud computer, post from the home machine):
 
 ```text
-Grok Station instructions, release 0.13.0.
+Grok Station instructions, release 0.13.1.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -258,7 +258,7 @@ Which home computer: if you can run commands on more than one, pick the one that
 Home mode (gs-seal-setup once, then one reply command on the home machine):
 
 ```text
-Grok Station instructions, release 0.13.0.
+Grok Station instructions, release 0.13.1.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
