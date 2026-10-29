@@ -23,6 +23,8 @@ def load_mods():
         os.environ.setdefault("ALERT_DIR", os.path.join(tempfile.mkdtemp(), "alerts"))
     import relay
     import home
+    if b"test-token" not in relay.TOKENS:  # 0.13.0 (Nix I3): own state, whatever imported relay first
+        relay.TOKENS.append(b"test-token")
     return relay, home
 
 

@@ -262,9 +262,23 @@ class TeamTip(unittest.TestCase):
         self.assertEqual(self._html([{"slug": "rhea", "main": True}], {"rows": [{"name": "Kai"}]}), want)
 
     def test_phrase_is_a_station_phrase(self):
+        # 0.13.0 (Nix I3): import relay only with the shared test token, and undo any import and env this test
+        # made, so a later relay test never inherits a relay with no station token (WebSocket 401).
+        had = {m: sys.modules.get(m) for m in ("relay", "home")}
+        env = {k: os.environ.get(k) for k in ("RELAY_TOKEN", "XAI_API_KEY")}
+        os.environ.setdefault("RELAY_TOKEN", "test-token")
+        os.environ.setdefault("XAI_API_KEY", "test-key")
         sys.path.insert(0, os.path.join(ROOT, "relay"))
-        import relay
-        self.assertTrue(relay.import_team_request("Hey Grok, import the rest of my team."))
+        try:
+            import relay
+            self.assertTrue(relay.import_team_request("Hey Grok, import the rest of my team."))
+        finally:
+            for m, mod in had.items():
+                if mod is None:
+                    sys.modules.pop(m, None)
+            for k, v in env.items():
+                if v is None:
+                    os.environ.pop(k, None)
 
 
 class VersionOrder(unittest.TestCase):

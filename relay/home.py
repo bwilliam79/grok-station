@@ -310,7 +310,8 @@ def host_ok(host):
         ipaddress.ip_address(name)
     except ValueError:
         return _LOCAL.fullmatch(name) is not None and len(name) <= 253
-    return _target_ok(_as_ip(name), _own())
+    own = _own()
+    return bool(own) and _target_ok(_as_ip(name), own)  # 0.13.0 (Nix Info I1): no own list, refuse
 
 
 async def resolve_host(name):
@@ -336,6 +337,8 @@ async def checked_target(host):
         return None
     name, port = parts
     own = _own()
+    if not own:  # 0.13.0 (Nix Info I1): fail closed when the station's own addresses are unknown
+        return None
     if _as_ip(name) is not None:
         ips = [_as_ip(name)]
     else:

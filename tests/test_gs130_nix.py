@@ -54,7 +54,7 @@ class AdminPinned(unittest.TestCase):
         self.assertTrue(gsi.host_ok("10.0.0.5"))
 
     def test_fetch_connects_to_the_checked_address_with_a_host_header(self):
-        gsi.station_addresses = lambda: set()
+        gsi.station_addresses = lambda: {"10.0.0.8"}
         calls = []
         gsi.resolve_host = lambda h: calls.append(h) or ["10.0.0.5"]
         seen = {}
@@ -94,7 +94,7 @@ class RelayPinned(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.home.host_ok("10.0.0.8"))
 
     async def test_request_goes_to_the_checked_address(self):
-        self.home.station_addresses = lambda: set()
+        self.home.station_addresses = lambda: {"10.0.0.8"}
         self._resolve_to(["10.0.0.5"])
         self.assertEqual(await self.home.checked_target("wled-kitchen.local"),
                          ("http://10.0.0.5/json/state", "wled-kitchen.local"))
@@ -228,3 +228,69 @@ class Docs(unittest.TestCase):
         src = open(os.path.join(ROOT, "relay", "botreply.py")).read()
         self.assertIn("# An acknowledgement and nothing else", src[:src.index("_ACK_LIKE = re.compile(")][-600:])
         self.assertNotIn("stay editable after this", ga.bot_id_from_name.__doc__)
+
+
+class FailClosedNix2(unittest.IsolatedAsyncioTestCase):
+    """Nix re-review Info I1/I2: with no own-address list nothing is checked, so nothing is allowed; with no
+    LAN address the mDNS search returns nothing and binds no socket."""
+
+    async def asyncSetUp(self):
+        self.relay, self.home = thf.load_mods()
+        self.saved = (gsi.resolve_host, gsi.station_addresses, self.home.resolve_host, self.home.station_addresses,
+                      gsi._new_socket, gsi.lan_address)
+        self.flags = {k: os.environ.pop(k, None) for k in ("HOME_ALLOW_LOOPBACK_FOR_TESTS", "ADMIN_ALLOW_LOOPBACK_FOR_TESTS")}
+
+    async def asyncTearDown(self):
+        (gsi.resolve_host, gsi.station_addresses, self.home.resolve_host, self.home.station_addresses,
+         gsi._new_socket, gsi.lan_address) = self.saved
+        for k, v in self.flags.items():
+            if v is not None:
+                os.environ[k] = v
+
+    async def test_empty_own_list_refuses_everything(self):
+        for empty in (lambda: set(), lambda: []):
+            gsi.station_addresses = empty
+            gsi.resolve_host = lambda h: ["10.0.0.5"]
+            self.assertFalse(gsi.host_ok("10.0.0.5"))
+            self.assertFalse(gsi.host_ok("wled-kitchen.local"))
+            self.assertEqual(gsi.fetch("wled-kitchen.local", "/json/info"), ("refused", None))
+            self.home.station_addresses = empty
+
+            async def fake(name):
+                return ["10.0.0.5"]
+            self.home.resolve_host = fake
+            self.assertFalse(self.home.host_ok("10.0.0.5"))
+            self.assertIsNone(await self.home.checked_target("10.0.0.5"))
+            self.assertIsNone(await self.home.checked_target("wled-kitchen.local"))
+
+    async def test_own_list_includes_the_route_address(self):
+        import socket as _s
+        made = []
+
+        class Probe:
+            def __init__(self, *a):
+                made.append(self)
+
+            def connect(self, addr):
+                self.addr = addr
+
+            def getsockname(self):
+                return ("10.0.0.77", 40000)
+
+            def close(self):
+                pass
+        for mod in (gsi, self.home):
+            saved_sock, saved_gai = _s.socket, _s.getaddrinfo
+            _s.socket, _s.getaddrinfo = Probe, lambda *a, **k: (_ for _ in ()).throw(OSError("no"))
+            try:
+                got = mod.station_addresses()
+            finally:
+                _s.socket, _s.getaddrinfo = saved_sock, saved_gai
+            self.assertIn("10.0.0.77", got, mod.__name__)
+
+    async def test_no_lan_address_means_no_search_and_no_socket(self):
+        made = []
+        gsi._new_socket = lambda *a: made.append(a) or (_ for _ in ()).throw(AssertionError("socket made"))
+        gsi.lan_address = lambda: ""
+        self.assertEqual(gsi.mdns_browse(timeout=0.2), [])
+        self.assertEqual(made, [])

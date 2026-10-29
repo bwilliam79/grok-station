@@ -332,7 +332,7 @@ class Perform(unittest.IsolatedAsyncioTestCase):
 
         async def fake_resolve(name):
             return ["192.168.4.20"] if name == "wled-kitchen.local" else []
-        home.resolve_host, home.station_addresses = fake_resolve, lambda: set()
+        home.resolve_host, home.station_addresses = fake_resolve, lambda: {"10.0.0.8"}
         self.flag = os.environ.get("HOME_ALLOW_LOOPBACK_FOR_TESTS")
         os.environ.pop("HOME_ALLOW_LOOPBACK_FOR_TESTS", None)
 

@@ -287,6 +287,8 @@ def checked_addr(raw):
         ip = _ip(item)
         if ip is not None:
             own.add(ip)
+    if not own:  # 0.13.0 (Nix Info I1): fail closed; without the station's own addresses nothing is checked
+        return None
     shown = display_host(raw)
     if not shown:
         return None
@@ -617,10 +619,13 @@ def lan_address():
 
 def mdns_browse(timeout=DISCOVER_S):
     """One-shot QU query on the LAN interface. Ephemeral UDP socket, closed in finally."""
+    lan = lan_address()
+    if not lan:  # 0.13.0 (Nix Info I2): no LAN address, no search; never bind to every interface
+        return []
     sock = _new_socket(socket.AF_INET, socket.SOCK_DGRAM)
     found = []
     try:
-        sock.bind((lan_address(), 0))
+        sock.bind((lan, 0))
         sock.settimeout(0.2)
         try:
             sock.sendto(mdns_query(), MDNS_GROUP)
