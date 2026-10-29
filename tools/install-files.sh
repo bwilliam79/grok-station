@@ -10,18 +10,15 @@ install -m755 "$S/app/grok_station.py" /opt/grok-station/grok_station.py.new && 
 install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
 install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py
 if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
-  install -o grok -g grok -m644 "$S/wake/grok_wake.py" /opt/grok-station/wake/grok_wake.py.new && mv /opt/grok-station/wake/grok_wake.py.new /opt/grok-station/wake/grok_wake.py
-  install -o grok -g grok -m644 "$S/wake/gain.py" /opt/grok-station/wake/gain.py.new && mv /opt/grok-station/wake/gain.py.new /opt/grok-station/wake/gain.py
-  install -o grok -g grok -m644 "$S/wake/fewshot.py" /opt/grok-station/wake/fewshot.py.new && mv /opt/grok-station/wake/fewshot.py.new /opt/grok-station/wake/fewshot.py
-  install -o grok -g grok -m644 "$S/wake/wait_tone.py" /opt/grok-station/wake/wait_tone.py.new && mv /opt/grok-station/wake/wait_tone.py.new /opt/grok-station/wake/wait_tone.py
-  install -o grok -g grok -m644 "$S/wake/stopword.py" /opt/grok-station/wake/stopword.py.new && mv /opt/grok-station/wake/stopword.py.new /opt/grok-station/wake/stopword.py
+  # Root writes into grok-owned dirs only through safe-mkdirs --put (dir fds, O_NOFOLLOW; Nix 0.13.6 L3).
+  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" "$S/wake/stopword.py" < "$S/tools/safe-mkdirs.py"
   # Not `install -d -o grok`: root would follow a symlink grok planted and chown its target (Nix 0.13.6 M1).
   python3 -I - grok /opt/grok-station wake/models wake/models/enrolled < "$S/tools/safe-mkdirs.py"
-  install -o grok -g grok -m644 "$S/wake/models/fewshot_negatives.npz" /opt/grok-station/wake/models/fewshot_negatives.npz
+  python3 -I - --put grok /opt/grok-station wake/models "$S/wake/models/fewshot_negatives.npz" < "$S/tools/safe-mkdirs.py"
 fi
 if [ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ]; then
   python3 -I - grok /opt/grok-station wake/lines < "$S/tools/safe-mkdirs.py"
-  install -o grok -g grok -m644 "$S"/wake/lines/*.wav /opt/grok-station/wake/lines/
+  python3 -I - --put grok /opt/grok-station wake/lines "$S"/wake/lines/*.wav < "$S/tools/safe-mkdirs.py"
 fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 install -m644 "$S/admin/gs_routine.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" /opt/grok-station/admin/

@@ -71,6 +71,7 @@ class Base(unittest.TestCase):
     def _fix(self, text):
         """Run as this user: drop root-only owner flags, point the tool at the shim, run runuser as a no-op."""
         text = text.replace("-o grok -g grok", "").replace("-o root -g grok", "")
+        text = text.replace("python3 -I - --put grok ", "python3 -I - --put %s " % ME)
         text = re.sub(r"\bpython3 -I - grok\b", "python3 -I - %s" % ME, text)
         text = re.sub(r"\bpython3 -I - (--\S+ \S+ )grok\b", r"python3 -I - \g<1>%s" % ME, text)
         text = text.replace('< "$S/tools/safe-mkdirs.py"', '< "%s"' % self.shim)
@@ -166,6 +167,53 @@ class M1(Base):
         r = self._sh(self._enroll_line(V))
         self.assertNotEqual(r.returncode, 0)
         self._untouched()
+
+
+class L3(Base):
+    def test_no_root_install_owner_grok_into_wake(self):
+        for f in ("install.sh", "tools/install-files.sh"):
+            for line in _src(f).split("\n"):
+                if not line.lstrip().startswith("#") and re.search(r"\binstall\b[^\n]*-o grok[\s:]", line):
+                    self.assertNotRegex(line, r"(\$O|/opt/grok-station)/wake", (f, line))
+
+    def test_install_sh_wake_files_with_symlinked_wake(self):
+        """st_wake's file copies, with $O/wake swapped for a symlink after the dirs were checked."""
+        src = _src("install.sh")
+        body = src[src.index("st_wake() {\n"):]
+        body = body[:body.index("\n}\n")]
+        lines = [l for l in body.split("\n") if ("$O/wake" in l or '"$O" wake' in l) and ("wake/grok_wake.py" in l or "hey_grok.onnx" in l
+                                                                    or "fewshot_negatives.npz" in l)]
+        self.assertEqual(len(lines), 3, lines)
+        O = os.path.join(self.t, "opt")
+        os.mkdir(O)
+        os.symlink(self.victim, os.path.join(O, "wake"))
+        S = os.path.join(self.t, "repo")
+        shutil.copytree(os.path.join(ROOT, "wake"), os.path.join(S, "wake"),
+                        ignore=shutil.ignore_patterns("venv", "__pycache__"))
+        os.mkdir(os.path.join(S, "tools"))
+        shutil.copy(TOOL, os.path.join(S, "tools", "safe-mkdirs.py"))
+        script = 'set -eu\nDRY=0\nO="%s"\nrun() { "$@"; }\n%s\n' % (O, self._fix("\n".join(lines)))
+        r = subprocess.run(["sh", "-c", script], capture_output=True, text=True, cwd=S)
+        self.assertNotEqual(r.returncode, 0)
+        self._untouched()
+
+
+    def test_put_replaces_a_planted_file_symlink_not_its_target(self):
+        m = _load()
+        base = os.path.join(self.t, "opt")
+        os.makedirs(os.path.join(base, "wake"))
+        target = os.path.join(self.victim, "secret")
+        open(target, "w").write("keep")
+        os.symlink(target, os.path.join(base, "wake", "grok_wake.py"))
+        src = os.path.join(self.t, "grok_wake.py")
+        open(src, "w").write("new")
+        kw = {"root_uid": os.getuid()} if "root_uid" in m.put.__code__.co_varnames else {}
+        m.put(base, "wake", [src], os.getuid(), os.getgid(), **kw)
+        p = os.path.join(base, "wake", "grok_wake.py")
+        self.assertFalse(os.path.islink(p))
+        self.assertEqual(open(p).read(), "new")
+        self.assertEqual(open(target).read(), "keep")
+        self.assertEqual(sorted(os.listdir(os.path.join(base, "wake"))), ["grok_wake.py"])
 
 
 if __name__ == "__main__":

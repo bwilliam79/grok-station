@@ -7,6 +7,11 @@ component is opened with O_NOFOLLOW relative to its parent's descriptor, created
 and chmodded through that descriptor. A symlink anywhere on the way is refused and nothing past it is touched.
 
 Usage: safe-mkdirs.py [--mode 0750] USER BASE REL [REL ...]   (REL like wake/models; default mode 0755)
+       safe-mkdirs.py --put USER BASE RELDIR SRC [SRC ...]
+
+--put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
+written to a fresh temp name through the directory's descriptor, fchowned, then renamed over the final name in
+that same directory (Nix 0.13.6 L3: root never writes through a path grok could have swapped for a symlink).
 """
 import os
 import sys
@@ -58,8 +63,57 @@ def mkdirs(base, rels, uid, gid, mode=0o755):
         os.close(bfd)
 
 
+def put(base, rel_dir, srcs, uid, gid, mode=0o644):
+    base = os.path.abspath(base)
+    fd, shown = _open(base, None, base), base
+    try:
+        for p in _parts(rel_dir):
+            shown = os.path.join(shown, p)
+            nfd = _open(p, fd, shown)
+            os.close(fd)
+            fd = nfd
+        for src in srcs:
+            name = os.path.basename(src)
+            if name in ("", ".", ".."):
+                raise Refused("bad file name %r" % src)
+            tmp = ".%s.new.%d" % (name, os.getpid())
+            data = open(src, "rb").read()
+            try:
+                os.unlink(tmp, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+            out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                          0o600, dir_fd=fd)
+            try:
+                with os.fdopen(out, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fchown(f.fileno(), uid, gid)
+                    os.fchmod(f.fileno(), mode)
+                os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+            except BaseException:
+                try:
+                    os.unlink(tmp, dir_fd=fd)
+                except OSError:
+                    pass
+                raise
+    finally:
+        os.close(fd)
+
+
 def main(argv):
     import pwd
+    if argv[:1] == ["--put"]:
+        if len(argv) < 5:
+            sys.stderr.write(__doc__)
+            return 2
+        pw = pwd.getpwnam(argv[1])
+        try:
+            put(argv[2], argv[3], argv[4:], pw.pw_uid, pw.pw_gid)
+        except Refused as e:
+            sys.stderr.write("safe-mkdirs: %s\n" % e)
+            return 1
+        return 0
     mode = 0o755
     if argv[:1] == ["--mode"]:
         mode, argv = int(argv[1], 8), argv[2:]
