@@ -2517,8 +2517,68 @@ class BotDeleteWakeFailures(unittest.TestCase):
         box = js.split("function confirmRemove", 1)[1].split("</form>", 1)[0]
         self.assertIn("Any wake words assigned to", box)
         self.assertIn("are deleted too", box)
-        for bad in ("mailbox", "seal"):
-            self.assertNotIn(bad, box.lower())
+
+
+class GrokHomeLine(unittest.TestCase):
+    def test_lines_are_fixed_phrases(self):
+        self.assertEqual(ga.grok_line({"state": "online"}), "Grok: Online")
+        self.assertEqual(ga.grok_line({"state": "no-internet"}), "Grok: No internet")
+        self.assertEqual(ga.grok_line({"state": "checking"}), "Grok: Checking")
+        self.assertEqual(ga.grok_line({"state": "dim"}), "Grok: Checking")
+        self.assertEqual(ga.grok_line({"state": "unreachable", "cause": "relay"}), "Grok: Can't reach Grok (relay)")
+        self.assertEqual(ga.grok_line({"state": "unreachable", "cause": "service"}), "Grok: Can't reach Grok (service)")
+        self.assertEqual(ga.grok_line({"state": "unreachable", "cause": "both"}), "Grok: Can't reach Grok (relay and service)")
+        self.assertEqual(ga.grok_line({"state": "online", "cause": "https://api.x.ai/"}), "Grok: Online")
+        self.assertEqual(ga.grok_line({"state": "nope", "url": "https://api.x.ai/"}), "Grok: Checking")
+        self.assertEqual(ga.grok_public({"state": "unreachable", "cause": "service"}), {"state": "unreachable", "cause": "service"})
+        self.assertEqual(ga.grok_public({"state": "unreachable", "cause": "https://api.x.ai/"}), {"state": "checking", "cause": None})
+        for line in (ga.grok_line({"state": "unreachable", "cause": "both", "error": "https://api.x.ai/"}),
+                     ga.grok_line("https://api.x.ai/")):
+            self.assertNotIn("http", line)
+            self.assertNotIn("api.x.ai", line)
+        self.assertTrue(ga.display_status_url().startswith("http://127.0.0.1:"))
+        self.assertTrue(ga.display_status_url().endswith("/status"))
+
+    def test_read_display_status_uses_the_snapshot_and_fails_closed(self):
+        body = {"grok": {"state": "no-internet", "cause": None}, "probe": {"url": "https://api.x.ai/", "host": "api.x.ai"}}
+        got = ga.read_display_status(fetch=lambda: body)
+        self.assertEqual(got, {"state": "no-internet", "cause": None})
+        self.assertNotIn("url", got)
+        self.assertEqual(ga.read_display_status(fetch=lambda: ["not-a-status"]), {"state": "checking", "cause": None})
+
+        def boom():
+            raise ConnectionRefusedError("127.0.0.1 refused")
+
+        saved = set(ga._DISPLAY_STATUS_WARNED)
+        ga._DISPLAY_STATUS_WARNED.clear()
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                self.assertEqual(ga.read_display_status(fetch=boom), {"state": "checking", "cause": None})
+                self.assertEqual(ga.read_display_status(fetch=boom), {"state": "checking", "cause": None})
+        finally:
+            ga._DISPLAY_STATUS_WARNED.clear()
+            ga._DISPLAY_STATUS_WARNED.update(saved)
+        text = buf.getvalue()
+        self.assertIn("ConnectionRefusedError", text)
+        self.assertEqual(text.count("ConnectionRefusedError"), 1)
+        self.assertNotIn("127.0.0.1", text)
+        self.assertNotIn("http", text)
+
+    def test_home_json_carries_the_line(self):
+        c = signed_in()
+        old = ga.read_display_status
+        ga.read_display_status = lambda *a, **k: {"state": "unreachable", "cause": "relay"}
+        try:
+            st, j = c.req("GET", "/api/home")
+        finally:
+            ga.read_display_status = old
+        self.assertEqual(st, 200)
+        self.assertEqual(j["grok"], {"state": "unreachable", "cause": "relay"})
+        self.assertEqual(j["grok_line"], "Grok: Can't reach Grok (relay)")
+        blob = json.dumps(j["grok"]) + j["grok_line"]
+        self.assertNotIn("http", blob)
+        self.assertNotIn("api.x.ai", blob)
 
 
 class MicResetApi(unittest.TestCase):

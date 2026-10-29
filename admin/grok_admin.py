@@ -534,6 +534,65 @@ def save_mic_reset(updates):
     return cur
 
 
+_DISPLAY_STATUS_WARNED = set()
+_GROK_LINE = {
+    "online": "Grok: Online",
+    "no-internet": "Grok: No internet",
+    "checking": "Grok: Checking",
+    "dim": "Grok: Checking",
+}
+
+
+def grok_public(grok):
+    """The display /status grok object, enums only. Anything else is checking."""
+    if not isinstance(grok, dict):
+        return {"state": "checking", "cause": None}
+    state, cause = grok.get("state"), grok.get("cause")
+    if state == "unreachable" and cause in ("service", "relay", "both"):
+        return {"state": "unreachable", "cause": cause}
+    if state in ("online", "no-internet", "checking", "dim"):
+        return {"state": state, "cause": None}
+    return {"state": "checking", "cause": None}
+
+
+def grok_line(grok):
+    """Home-page line. The words are fixed; a bad value is Checking, never a URL or a host."""
+    pub = grok_public(grok)
+    if pub["state"] == "unreachable":
+        if pub["cause"] == "both":
+            return "Grok: Can't reach Grok (relay and service)"
+        return "Grok: Can't reach Grok (%s)" % pub["cause"]
+    return _GROK_LINE.get(pub["state"], "Grok: Checking")
+
+
+def display_status_url():
+    """The station display's localhost /status. Same host, no new port."""
+    raw = str(E("GROK_STATION_PORT", "8787") or "")
+    port = int(raw) if raw.isdigit() and 1 <= int(raw) <= 65535 else 8787
+    return "http://127.0.0.1:%d/status" % port
+
+
+def _fetch_display_status(timeout):
+    req = urllib.request.Request(display_status_url(), headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = json.loads(r.read(8192) or b"{}")
+    return body if isinstance(body, dict) else {}
+
+
+def read_display_status(fetch=None, timeout=1.5):
+    """Read grok state from the station display. Fail closed. The log is the exception class, once."""
+    try:
+        body = fetch() if fetch is not None else _fetch_display_status(timeout)
+    except Exception as e:
+        name = type(e).__name__
+        if name not in _DISPLAY_STATUS_WARNED:
+            _DISPLAY_STATUS_WARNED.add(name)
+            print("display status failed: %s" % name, flush=True)
+        return {"state": "checking", "cause": None}
+    grok = body.get("grok") if isinstance(body, dict) else None
+    return grok_public(grok)
+
+
 def wake(method, p, body=None, timeout=3):
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
@@ -3588,6 +3647,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_get_home(self, p, q, j):
         code, st = wake("GET", "/status")
+        grok = read_display_status()
         ok_relay, relay = helper("relay-test", timeout=15) if q.get("relay") == "1" else (None, {})
         last = None
         try:
@@ -3600,6 +3660,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return self.send(200, {"wake": st if code == 200 else None, "relay": relay if ok_relay is not None else None, "xai_key": xai_key_set(),
                                "last_heard": last, "services": services(), "network": net_summary(),
+                               "grok": grok, "grok_line": grok_line(grok),
                                "words": [w["name"] for w in wakewords() if w.get("enabled")], "as_of": int(now())})
 
     def api_get_preview(self, p, q, j):

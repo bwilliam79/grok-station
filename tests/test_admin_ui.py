@@ -702,6 +702,8 @@ class AdminUI(unittest.TestCase):
         self.assertIn('id="updatesroot"', updates)
         self.assertIn("skel(4)", home)
         self.assertIn('id="hero"', home)
+        self.assertIn('id="grokline"', home)
+        self.assertIn("Grok: Checking", home)
 
         self.assertLess(css.find(".oknote{"), css.find("/* station status:"))
         block = css.split("/* station status:", 1)[1]

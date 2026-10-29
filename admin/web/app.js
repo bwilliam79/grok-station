@@ -1987,7 +1987,8 @@ async function pageHome(el) {
     const ready = w && w.setup == null && svc["grok-station-wake"] === "active";
     const state = w.session ? ["In a conversation", "busy"] : w.enrolling ? ["Recording a wake word", "busy"] : ready ? ["Ready to talk", "ok"] : ["Voice is off", "warn"];
     $("#hero", el).innerHTML = `<div class="hero"><div class="ring ${state[1] === "warn" ? "amber" : ""}"></div><div><div class="h-dialog">${state[0]}</div>
-      <div class="help">${h.network && h.network.connected ? "Online" : "Offline"} · last heard ${h.last_heard ? ago(h.last_heard.at) + " (" + esc(PERSONA(h.last_heard.who)) + ")" : "not yet"}</div></div></div>
+      <div class="help">${h.network && h.network.connected ? "Online" : "Offline"} · last heard ${h.last_heard ? ago(h.last_heard.at) + " (" + esc(PERSONA(h.last_heard.who)) + ")" : "not yet"}</div>
+      <div class="help" id="grokline">${esc(h.grok_line || "Grok: Checking")}</div></div></div>
       <div style="margin-top:12px">${(h.words || []).map(x => `<span class="chip">${esc(WORD(x))}</span>`).join("")}</div>
       <div class="field"><label>Microphone</label>${meter(w.level_dbfs)}</div>
       <div class="inline" style="margin-top:12px"><button class="btn sm" id="ts">Test speaker</button><button class="btn sm" id="rf">Refresh</button></div>
