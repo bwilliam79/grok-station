@@ -410,6 +410,9 @@ class TrainingNotice(unittest.TestCase):
         open(token, "w").write("wake-test-value\n")
         old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
         os.environ["WAKE_CONTROL_TOKEN_FILE"] = token
+        os.chmod(token, 0o440)
+        old_policy = dict(gw.WAKE_TOKEN_POLICY)
+        gw.WAKE_TOKEN_POLICY.update(uid=os.getuid(), gid=os.getgid())
         old = (gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES)
         gw.CONTROL_PORT = port
         gw.RELAY_URL = ""
@@ -458,6 +461,7 @@ class TrainingNotice(unittest.TestCase):
                 os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
             else:
                 os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
+            gw.WAKE_TOKEN_POLICY.clear(); gw.WAKE_TOKEN_POLICY.update(old_policy)
 
 
 class _FakeDisplay:

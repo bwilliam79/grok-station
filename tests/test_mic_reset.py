@@ -271,6 +271,9 @@ class MicReset(unittest.TestCase):
         open(token, "w").write("wake-test-value\n")
         old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
         os.environ["WAKE_CONTROL_TOKEN_FILE"] = token
+        os.chmod(token, 0o440)
+        old_policy = dict(gw.WAKE_TOKEN_POLICY)
+        gw.WAKE_TOKEN_POLICY.update(uid=os.getuid(), gid=os.getgid())
         calls = []
         gw.RECOVERY = gw.MicRecovery(lambda card: calls.append(card) or None, busy=lambda: True, card=lambda: "M0",
                                      flags=lambda: {"button": True, "night": True, "drought": True},
@@ -315,6 +318,7 @@ class MicReset(unittest.TestCase):
                 os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
             else:
                 os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
+            gw.WAKE_TOKEN_POLICY.clear(); gw.WAKE_TOKEN_POLICY.update(old_policy)
 
     def test_sudo_command_and_admin_page(self):
         seen = []

@@ -26,7 +26,15 @@ def _write_token(text):
     path = os.path.join(d, "wake_control_token")
     with open(path, "w", encoding="ascii") as f:
         f.write(text)
+    os.chmod(path, 0o440)
     return path
+
+
+def _trust_test_owner():
+    """The server only trusts root:grok-wake 0440. Tests own their files, so point the policy at this user."""
+    old = dict(gw.WAKE_TOKEN_POLICY)
+    gw.WAKE_TOKEN_POLICY.update(uid=os.getuid(), gid=os.getgid())
+    return old
 
 
 class _Resp:
@@ -52,6 +60,7 @@ class TokenFile(unittest.TestCase):
     def setUp(self):
         self.old = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
         self.cached = bytes(gw._WAKE_TOKEN["raw"])
+        self.policy = _trust_test_owner()
 
     def tearDown(self):
         if self.old is None:
@@ -59,6 +68,7 @@ class TokenFile(unittest.TestCase):
         else:
             os.environ["WAKE_CONTROL_TOKEN_FILE"] = self.old
         gw._WAKE_TOKEN["raw"] = self.cached
+        gw.WAKE_TOKEN_POLICY.clear(); gw.WAKE_TOKEN_POLICY.update(self.policy)
 
     def test_strip_cache_and_reread_when_missing(self):
         missing = os.path.join(tempfile.mkdtemp(), "absent")
@@ -67,14 +77,16 @@ class TokenFile(unittest.TestCase):
         path = _write_token(TOKEN + "\n")
         os.environ["WAKE_CONTROL_TOKEN_FILE"] = path
         self.assertEqual(gw._load_wake_token(), TOKEN.encode("ascii"))
+        os.chmod(path, 0o640)
         with open(path, "w", encoding="ascii") as f:
             f.write("other-value\n")
+        os.chmod(path, 0o440)
         self.assertEqual(gw._load_wake_token(), TOKEN.encode("ascii"))  # cached once it was read
         self.assertEqual(gw._load_wake_token(force=True), b"other-value")
 
     def test_install_creates_a_group_readable_token(self):
         sh = open(os.path.join(ROOT, "install.sh")).read()
-        self.assertIn("gen $S/wake_control_token grok:grok 0440", sh)
+        self.assertIn("gen $S/wake_control_token root:grok-wake 0440", sh)
         for rel in ("admin/grok_admin.py", "relay/relay.py", "app/grok_station.py", "wake/grok_wake.py"):
             src = open(os.path.join(ROOT, rel)).read()
             self.assertIn("WAKE_CONTROL_TOKEN_FILE", src)
@@ -83,6 +95,9 @@ class TokenFile(unittest.TestCase):
 
 
 class ControlServer(unittest.TestCase):
+    def prepare(self):
+        """Hook for subclasses to break the token file before the server starts."""
+
     def setUp(self):
         import socket
         s = socket.socket()
@@ -90,6 +105,8 @@ class ControlServer(unittest.TestCase):
         self.port = s.getsockname()[1]
         s.close()
         self.path = _write_token(TOKEN + "\n")
+        self.policy = _trust_test_owner()
+        self.prepare()
         self.old_env = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
         os.environ["WAKE_CONTROL_TOKEN_FILE"] = self.path
         self.old_port = gw.CONTROL_PORT
@@ -140,6 +157,7 @@ class ControlServer(unittest.TestCase):
         gw._PERSONA_SYNC["on"] = self.sync_on
         gw.post_state = self.post
         gw._WAKE_TOKEN["raw"] = self.token
+        gw.WAKE_TOKEN_POLICY.clear(); gw.WAKE_TOKEN_POLICY.update(self.policy)
         if self.old_env is None:
             os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
         else:
@@ -209,6 +227,60 @@ class ControlServer(unittest.TestCase):
             self.assertEqual(self.syncs["n"], 1)
         self.assertNotIn(TOKEN, out.getvalue())
         self.assertNotIn(TOKEN, err.getvalue())
+
+
+class FailClosedTokenFile(ControlServer):
+    """A bad token file at startup: every route is 403, even with the right header."""
+
+    ROUTES = [("GET", "/status", None), ("POST", "/enroll", {"phrase": "hey_finn", "count": 5}),
+              ("POST", "/enroll/control", {"op": "discard"}), ("POST", "/enroll/open-tile", {"phrase": "hey_finn"}),
+              ("POST", "/personas/sync", {}), ("POST", "/mic-reset", {}), ("POST", "/late-reply", {"id": "x"})]
+
+    def prepare(self):
+        os.chmod(self.path, 0o640)  # group-writable owner bit set: not 0440
+
+    def test_every_route_rejects_a_missing_or_wrong_token(self):
+        self._all_403()
+
+    def _all_403(self):
+        for method, path, body in self.ROUTES:
+            code = self._once(method, path, body, TOKEN)[0]
+            self.assertEqual(code, 403, f"{method} {path}")
+
+    def test_bad_file(self):
+        self._all_403()
+
+
+class FailClosedMissing(FailClosedTokenFile):
+    def prepare(self):
+        os.remove(self.path)
+
+
+class FailClosedEmpty(FailClosedTokenFile):
+    def prepare(self):
+        os.chmod(self.path, 0o640)
+        open(self.path, "w").close()
+        os.chmod(self.path, 0o440)
+
+
+class FailClosedWorldReadable(FailClosedTokenFile):
+    def prepare(self):
+        os.chmod(self.path, 0o444)
+
+
+class FailClosedGroupWritable(FailClosedTokenFile):
+    def prepare(self):
+        os.chmod(self.path, 0o460)
+
+
+class FailClosedWrongOwner(FailClosedTokenFile):
+    def prepare(self):
+        gw.WAKE_TOKEN_POLICY["uid"] = os.getuid() + 1
+
+
+class FailClosedWrongGroup(FailClosedTokenFile):
+    def prepare(self):
+        gw.WAKE_TOKEN_POLICY["gid"] = os.getgid() + 1
 
 
 class Clients(unittest.TestCase):

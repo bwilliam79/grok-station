@@ -1387,6 +1387,9 @@ class WakePersonaSync(unittest.TestCase):
         open(os.path.join(token_dir, "wake_control_token"), "w").write("wake-test-value\n")
         old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
         os.environ["WAKE_CONTROL_TOKEN_FILE"] = os.path.join(token_dir, "wake_control_token")
+        os.chmod(os.path.join(token_dir, "wake_control_token"), 0o440)
+        old_policy = dict(gw.WAKE_TOKEN_POLICY)
+        gw.WAKE_TOKEN_POLICY.update(uid=os.getuid(), gid=os.getgid())
         box = {"n": 0, "release": threading.Event()}
         def fake():
             box["n"] += 1
@@ -1429,6 +1432,7 @@ class WakePersonaSync(unittest.TestCase):
                 os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
             else:
                 os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
+            gw.WAKE_TOKEN_POLICY.clear(); gw.WAKE_TOKEN_POLICY.update(old_policy)
 
     def _post(self, port):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)

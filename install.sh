@@ -135,7 +135,12 @@ st_users() {
   run install -d -o root -g root -m 0711 /etc/grok-station $S
   gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
   gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
-  gen $S/wake_control_token grok:grok 0440      # loopback wake control: group grok is admin, relay, display, wake
+  # Loopback wake control token. Group grok is not service-only (it also reads /etc/grok-station/env and data
+  # dirs), so the token gets its own group: grok (wake + display), grok-relay, and grok-admin (added in st_web).
+  sh_ 'getent group grok-wake >/dev/null || groupadd -r grok-wake'
+  run usermod -aG grok-wake grok
+  run usermod -aG grok-wake grok-relay
+  gen $S/wake_control_token root:grok-wake 0440
   # Station X25519 key (bots seal replies to it). The relay runs with ProtectSystem=strict, so /etc is read-only to
   # it and it can't create this file itself: make it here, and re-assert owner and mode on every run. A file that
   # is not exactly 32 bytes is unusable and is replaced (any pairing made with it could never have worked).
@@ -236,32 +241,7 @@ _vosk_model() {
     echo "stop word: model checksum mismatch; touch still works"
     return 0
   fi
-  if python3 - "$tmp" "$O/wake/models" "$model" "$sha" <<'PY'
-import os, sys, zipfile
-zpath, dest, model, sha = sys.argv[1:5]
-root = os.path.realpath(dest)
-os.makedirs(root, exist_ok=True)
-try:
-    z = zipfile.ZipFile(zpath)
-except Exception:
-    sys.exit(1)
-try:
-    for info in z.infolist():
-        name = info.filename.replace("\\", "/")
-        if name.startswith("/") or os.path.isabs(info.filename) or ".." in name.split("/"):
-            sys.exit(1)
-        target = os.path.realpath(os.path.join(root, name))
-        if target != root and not target.startswith(root + os.sep):
-            sys.exit(1)
-    z.extractall(root)
-finally:
-    z.close()
-model_dir = os.path.join(root, model)
-if not os.path.isdir(model_dir):
-    sys.exit(1)
-with open(os.path.join(model_dir, ".sha256"), "w") as f:
-    f.write(sha + "\n")
-PY
+  if python3 tools/vosk-unpack.py "$tmp" "$O/wake/models" "$model" "$sha"
   then
     chown -R grok:grok "$dir" || true
   else
@@ -333,6 +313,7 @@ st_web() {  # admin page (HTTPS) and services
   run install -o root -g root -m755 tools/grok-station-update /usr/local/lib/grok-station/grok-station-update
   run install -m644 systemd/grok-station-update.service /etc/systemd/system/
   run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
+  run usermod -aG grok-wake grok-admin          # wake_control_token (group grok-wake)
   run systemctl daemon-reload
   run systemctl enable grok-station.service grok-station-wake.service grok-station-relay.service grok-station-admin.service
   if [ "$MODE" = update ]; then

@@ -840,11 +840,38 @@ def _read_wake_token_file():
     return text.encode("ascii")
 
 
+# The server only trusts a token file that install.sh made: root:grok-wake 0440. Tests swap uid/gid.
+WAKE_TOKEN_POLICY = {"uid": 0, "group": "grok-wake", "gid": None, "mode": 0o440}
+_WAKE_POLICY_WARNED = False
+
+
+def _wake_token_file_ok():
+    """Owner, group and mode of the token file match WAKE_TOKEN_POLICY. Anything else fails closed."""
+    global _WAKE_POLICY_WARNED
+    try:
+        st = os.stat(_wake_token_path())
+        gid = WAKE_TOKEN_POLICY.get("gid")
+        if gid is None:
+            import grp
+            gid = grp.getgrnam(WAKE_TOKEN_POLICY["group"]).gr_gid
+        ok = (st.st_uid == WAKE_TOKEN_POLICY["uid"] and st.st_gid == gid
+              and (st.st_mode & 0o7777) == WAKE_TOKEN_POLICY["mode"])
+    except (OSError, KeyError, ImportError):
+        ok = False
+    if not ok and not _WAKE_POLICY_WARNED:
+        _WAKE_POLICY_WARNED = True
+        print("wake control: token file missing or wrong owner/mode; every route returns 403", flush=True)
+    return ok
+
+
 def _load_wake_token(force=False):
-    """Token cached at server start. A request re-reads only while that read found nothing."""
+    """Token cached at server start. A request re-reads only while that read found nothing.
+
+    A missing, empty, or wrongly owned file loads as empty, so every route is 403.
+    """
     if not force and _WAKE_TOKEN["raw"]:
         return _WAKE_TOKEN["raw"]
-    tok = _read_wake_token_file() or b""
+    tok = (_read_wake_token_file() if _wake_token_file_ok() else None) or b""
     if tok or force:
         _WAKE_TOKEN["raw"] = tok
     return _WAKE_TOKEN["raw"]
