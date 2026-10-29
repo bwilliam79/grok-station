@@ -11,7 +11,7 @@ grok-relay (primary group grok-admin) can read it and nothing else can. ADMIN_AL
 No support-bundle endpoint exists. redact_registry() is what a bundle should
 write: host becomes "redacted", names and aliases become the device id.
 """
-import ipaddress, json, os, re, secrets, socket, struct, tempfile, time, urllib.error, urllib.request
+import http.client, ipaddress, json, os, re, secrets, socket, ssl, struct, tempfile, time, urllib.error, urllib.parse, urllib.request
 
 BLINK_S = 0.4
 MDNS_GROUP = ("224.0.0.251", 5353)
@@ -67,6 +67,51 @@ def atomic_write(path, data, mode=0o640):
         pass
 
 
+def _clean_aliases(raw):
+    if not isinstance(raw, list) or any(not isinstance(a, str) for a in raw):
+        return None
+    return raw[:8]
+
+
+def _clean_wled(d):
+    ident = d.get("id")
+    if not isinstance(ident, str) or not re.fullmatch(r"w-[0-9a-f]{4}", ident):
+        return None
+    host, name = d.get("host"), d.get("name")
+    if not isinstance(host, str) or not host or not isinstance(name, str) or not name:
+        return None
+    aliases = _clean_aliases(d.get("aliases"))
+    if aliases is None:
+        return None
+    presets = d.get("presets") if isinstance(d.get("presets"), dict) else {}
+    clean_pre = {}
+    for k, v in presets.items():
+        if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool):
+            clean_pre[k] = v
+    return {
+        "id": ident, "kind": "wled", "host": host, "name": name,
+        "aliases": aliases, "type": "light", "caps": list(CAPS), "presets": clean_pre,
+    }
+
+
+def _clean_homebridge(d):
+    ident = d.get("id")
+    if not isinstance(ident, str) or not re.fullmatch(r"h-[0-9a-f]{4}", ident):
+        return None
+    uid, name, char, typ = d.get("uid"), d.get("name"), d.get("char"), d.get("type")
+    if not hb_uid_ok(uid) or not isinstance(name, str) or not name:
+        return None
+    if char not in ("On", "Active") or typ not in ("light", "switch", "outlet", "fan", "tv"):
+        return None
+    aliases = _clean_aliases(d.get("aliases"))
+    if aliases is None:
+        return None
+    return {
+        "id": ident, "kind": "homebridge", "uid": uid, "char": char, "name": name,
+        "aliases": aliases, "type": typ, "caps": ["onoff"],
+    }
+
+
 def _clean_devices(raw):
     out = []
     if not isinstance(raw, list):
@@ -74,25 +119,9 @@ def _clean_devices(raw):
     for d in raw:
         if not isinstance(d, dict):
             continue
-        ident = d.get("id")
-        if not isinstance(ident, str) or not re.fullmatch(r"w-[0-9a-f]{4}", ident):
-            continue
-        host = d.get("host")
-        name = d.get("name")
-        if not isinstance(host, str) or not host or not isinstance(name, str) or not name:
-            continue
-        aliases = d.get("aliases")
-        if not isinstance(aliases, list) or any(not isinstance(a, str) for a in aliases):
-            continue
-        presets = d.get("presets") if isinstance(d.get("presets"), dict) else {}
-        clean_pre = {}
-        for k, v in presets.items():
-            if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool):
-                clean_pre[k] = v
-        out.append({
-            "id": ident, "kind": "wled", "host": host, "name": name,
-            "aliases": aliases[:8], "type": "light", "caps": list(CAPS), "presets": clean_pre,
-        })
+        row = _clean_wled(d) or _clean_homebridge(d)
+        if row:
+            out.append(row)
     return out
 
 
@@ -113,7 +142,19 @@ def load():
             integrations["wled"] = {"enabled": True}
             if wled.get("voice") is True:  # 0.13.0 (Nix L2): voice home control is its own switch, off by default
                 integrations["wled"]["voice"] = True
-    return {"version": 1, "integrations": integrations, "devices": _clean_devices(raw.get("devices"))}
+        hb = got.get("homebridge")
+        if isinstance(hb, dict) and hb.get("enabled") is True:
+            base = hb_base_text(hb.get("base"))
+            if base:
+                integrations["homebridge"] = {"enabled": True, "base": base}
+                if hb.get("voice") is True:
+                    integrations["homebridge"]["voice"] = True
+    devices = []
+    for row in _clean_devices(raw.get("devices")):
+        if row["kind"] == "homebridge" and "homebridge" not in integrations:
+            continue
+        devices.append(row)
+    return {"version": 1, "integrations": integrations, "devices": devices}
 
 
 def save(doc):
@@ -121,9 +162,9 @@ def save(doc):
     atomic_write(integrations_path(), body, 0o640)
 
 
-def new_id(used):
+def new_id(used, prefix="w"):
     for _ in range(32):
-        ident = "w-" + secrets.token_hex(2)
+        ident = prefix + "-" + secrets.token_hex(2)
         if ident not in used:
             return ident
     raise RuntimeError("id")
@@ -145,19 +186,32 @@ def spoken_key(text):
 
 
 def redact_registry(doc):
-    """Bundle view. Hosts become 'redacted'. Spoken names and aliases become the device id."""
+    """Bundle view. Hosts, uids, and bases become 'redacted'. Spoken names and aliases become the device id."""
     src = doc if isinstance(doc, dict) else {}
     devices = []
+    integrations = {}
+    got = src.get("integrations") if isinstance(src.get("integrations"), dict) else {}
+    hb_on = isinstance(got.get("homebridge"), dict) and got["homebridge"].get("enabled") is True and hb_base_text(got["homebridge"].get("base"))
+    if (got.get("wled") or {}).get("enabled") is True:
+        integrations["wled"] = {"enabled": True}
+    if hb_on:
+        integrations["homebridge"] = {"enabled": True, "base": "redacted"}
     for d in _clean_devices(src.get("devices")):
+        if d["kind"] == "homebridge":
+            if not hb_on:
+                continue
+            devices.append({
+                "id": d["id"], "kind": "homebridge", "uid": "redacted", "char": d["char"],
+                "name": d["id"], "aliases": [d["id"] for _ in d["aliases"]],
+                "type": d["type"], "caps": ["onoff"],
+            })
+            continue
         presets = {str(v): v for v in d["presets"].values()}
         devices.append({
             "id": d["id"], "kind": "wled", "host": "redacted", "name": d["id"],
             "aliases": [d["id"] for _ in d["aliases"]], "type": "light",
             "caps": list(CAPS), "presets": presets,
         })
-    integrations = {}
-    if isinstance(src.get("integrations"), dict) and (src["integrations"].get("wled") or {}).get("enabled") is True:
-        integrations["wled"] = {"enabled": True}
     return {"version": 1, "integrations": integrations, "devices": devices}
 
 
@@ -651,6 +705,294 @@ def mdns_browse(timeout=DISCOVER_S):
         return found
     finally:
         sock.close()
+
+
+_HB_USER = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_HB_OTP = re.compile(r"^[0-9]{6,8}$")
+_HB_UID = re.compile(r"^[A-Za-z0-9._:@+-]{1,128}$")
+_HB_POWER = {
+    "Lightbulb": ("light", "On"),
+    "Switch": ("switch", "On"),
+    "Outlet": ("outlet", "On"),
+    "Fan": ("fan", "Active"),
+    "Fanv2": ("fan", "Active"),
+    "Television": ("tv", "Active"),
+}
+_HB_SKIP = {
+    "Camera", "Doorbell", "MotionSensor", "SecuritySystem", "LockMechanism",
+    "GarageDoorOpener", "Thermostat",
+}
+_HB_REDIRECTS = {301, 302, 303, 307, 308}
+
+
+def hb_uid_ok(uid):
+    return isinstance(uid, str) and _HB_UID.fullmatch(uid) is not None and ".." not in uid
+
+
+def hb_username_ok(text):
+    return isinstance(text, str) and _HB_USER.fullmatch(text) is not None
+
+
+def hb_password_ok(text):
+    """8-200 printable ASCII bytes, spaces allowed. Not stripped."""
+    if not isinstance(text, str) or not 8 <= len(text) <= 200:
+        return False
+    return all(32 <= ord(ch) <= 126 for ch in text)
+
+
+def hb_otp_ok(text):
+    return isinstance(text, str) and _HB_OTP.fullmatch(text) is not None
+
+
+def hb_write_value(value):
+    """0 or 1 for a bool or an int 0/1. Anything else is unknown: the caller must not guess."""
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, int) and value in (0, 1):
+        return value
+    return None
+
+
+def hb_otp_needed(status, obj):
+    if not isinstance(obj, dict) or isinstance(obj.get("access_token"), str):
+        return False
+    if obj.get("otpRequired") is True:
+        return True
+    msg = obj.get("message")
+    return isinstance(msg, str) and "otp" in msg.casefold() and status in (401, 412)
+
+
+def _over_path(env, default, base):
+    raw = os.environ.get(env, default)
+    if not isinstance(raw, str) or len(raw) >= 200 or not raw.startswith("/"):
+        return None
+    parts = raw.split("/")
+    if any(part == ".." for part in parts) or parts[-1] != base:
+        return None
+    return raw
+
+
+def hb_block_path():
+    return _over_path("HOMEBRIDGE_BLOCK", "/var/lib/grok-station/home-status/homebridge.json", "homebridge.json")
+
+
+def hb_block_kind():
+    path = hb_block_path()
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    kind = doc.get("blocked")
+    if kind is True or kind == "admin":
+        return "admin"
+    if kind == "signin":
+        return "signin"
+    return None
+
+
+def hb_write_block(kind):
+    if kind not in ("admin", "signin"):
+        return False
+    path = hb_block_path()
+    if not path:
+        return False
+    try:
+        atomic_write(path, (json.dumps({"blocked": kind}) + "\n").encode(), 0o640)
+    except OSError:
+        return False
+    return True
+
+
+def hb_clear_block():
+    path = hb_block_path()
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def hb_base_text(raw):
+    """Canonical http(s) base, or None. One trailing slash is allowed. No userinfo, path, query, or fragment.
+
+    This does not resolve the name and does not look at the station's own addresses. Outbound calls use checked_base.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or len(text) > 300 or any(ord(ch) < 33 or ord(ch) > 126 for ch in text):
+        return None
+    if text.endswith("/"):
+        if text.endswith("//"):
+            return None
+        text = text[:-1]
+    try:
+        parts = urllib.parse.urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or parts.username or parts.password or parts.query or parts.fragment:
+        return None
+    if parts.path not in ("",):
+        return None
+    host = parts.hostname
+    if not host or len(host) > 253:
+        return None
+    literal = _ip(host)
+    if literal is not None:
+        shown = str(literal)
+        if isinstance(literal, ipaddress.IPv6Address):
+            shown = "[" + shown + "]"
+    elif _LOCAL_NAME.fullmatch(host.lower()) is None:
+        return None
+    else:
+        shown = host.lower().rstrip(".")
+    default = 443 if parts.scheme == "https" else 80
+    if port and port != default:
+        shown += ":" + str(port)
+    return parts.scheme + "://" + shown
+
+
+def checked_base(raw):
+    """Pinned Homebridge target, or None.
+
+    Same fail-closed rules as checked_addr: every address private, link-local, or ULA; not the station's
+    own addresses; empty own-address set refuses; 127.0.0.1 only when the test flag is set. The caller
+    connects to ip and sends name as the Host header (and as SNI when the base is https).
+    """
+    stored = hb_base_text(raw)
+    if not stored:
+        return None
+    parts = urllib.parse.urlsplit(stored)
+    host, port = parts.hostname, parts.port
+    own = set()
+    for item in station_addresses() or []:
+        ip = _ip(item)
+        if ip is not None:
+            own.add(ip)
+    if not own:
+        return None
+    literal = _ip(host)
+    if literal is not None:
+        ip = literal if _addr_ok(literal, own) else None
+    else:
+        ips = [_ip(a) for a in resolve_host(host) or []]
+        ip = ips[0] if ips and all(_addr_ok(one, own) for one in ips) else None
+    if ip is None:
+        return None
+    connect = port or (443 if parts.scheme == "https" else 80)
+    shown = parts.netloc
+    return {"ip": ip, "port": connect, "host": shown, "name": host, "scheme": parts.scheme, "base": stored}
+
+
+def hb_request(base, method, path, payload=None, token=None):
+    """One pinned request. Redirects are not followed. Body cap 64 KB. Timeout 3 s.
+
+    Returns {status, json, error}. error is refused, unreachable, cert, redirect, or big. json is a
+    dict or list, or None. The token and payload are not logged.
+    """
+    if not isinstance(path, str) or not path.startswith("/") or "\\" in path or any(part == ".." for part in path.split("/")):
+        return {"status": 0, "json": None, "error": "refused"}
+    target = checked_base(base)
+    if target is None:
+        return {"status": 0, "json": None, "error": "refused"}
+    sock = None
+    raw = b""
+    status = 0
+    try:
+        sock = socket.create_connection((str(target["ip"]), target["port"]), FETCH_TIMEOUT)
+        sock.settimeout(FETCH_TIMEOUT)
+        if target["scheme"] == "https":
+            try:
+                sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target["name"])
+            except ssl.SSLError:
+                return {"status": 0, "json": None, "error": "cert"}
+        conn = http.client.HTTPConnection("pin", target["port"], timeout=FETCH_TIMEOUT)
+        conn.sock = sock
+        sock = None
+        headers = {"Accept": "application/json", "Host": target["host"], "Connection": "close"}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode()
+            headers["Content-Type"] = "application/json"
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        if status in _HB_REDIRECTS:
+            resp.read(1024)
+            conn.close()
+            return {"status": status, "json": None, "error": "redirect"}
+        raw = resp.read(MAX_BODY + 1)
+        conn.close()
+    except ssl.SSLError:
+        return {"status": 0, "json": None, "error": "cert"}
+    except (OSError, http.client.HTTPException, TimeoutError):
+        return {"status": 0, "json": None, "error": "unreachable"}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+    if len(raw) > MAX_BODY:
+        return {"status": status, "json": None, "error": "big"}
+    obj = None
+    if raw:
+        try:
+            parsed = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            obj = parsed
+    return {"status": status, "json": obj, "error": None}
+
+
+def hb_accessories(doc):
+    """Controllable accessories only. Cameras, doorbells, motion, security, locks, garage, and thermostats are dropped."""
+    rows = doc if isinstance(doc, list) else (doc.get("accessories") if isinstance(doc, dict) else None)
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        typ = item.get("type") if isinstance(item.get("type"), str) else item.get("humanType")
+        if not isinstance(typ, str) or typ in _HB_SKIP or typ not in _HB_POWER:
+            continue
+        kind, prefer = _HB_POWER[typ]
+        chars = item.get("serviceCharacteristics")
+        if not isinstance(chars, list):
+            continue
+        chosen, value = None, None
+        for want in (prefer, "On" if prefer == "Active" else "Active"):
+            for ch in chars:
+                if not isinstance(ch, dict) or ch.get("type") != want:
+                    continue
+                if ch.get("canWrite") is False:
+                    continue
+                perms = ch.get("perms")
+                if isinstance(perms, list) and "pw" not in perms:
+                    continue
+                chosen, value = want, ch.get("value")
+                break
+            if chosen:
+                break
+        if not chosen or not hb_uid_ok(item.get("uniqueId")):
+            continue
+        name = item.get("serviceName") if isinstance(item.get("serviceName"), str) else kind
+        name = " ".join(name.split())[:40] or kind
+        out.append({"uid": item["uniqueId"], "name": name, "type": kind, "char": chosen, "value": value})
+        if len(out) >= 64:
+            break
+    return out
 
 
 def join_host(item):

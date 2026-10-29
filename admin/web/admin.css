@@ -489,7 +489,18 @@ p#emptybot{margin:10px 2px 0}
 .sayline .w{color:var(--gs-teal);font-weight:600}
 .tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
 .apple{margin-top:16px;padding:12px 14px;border-radius:12px;background:var(--gs-surface);border:1px solid var(--gs-rule);color:var(--gs-muted);font-size:var(--fs-label)}
-@media (max-width:767px){.intgrid{grid-template-columns:1fr}.nmrow{grid-template-columns:1fr}}
+.intst.bad{color:var(--gs-amber);background:var(--gs-amber-bg)}
+.hbsteps{margin:8px 0 0;padding-left:1.2rem}
+.hbsteps li{margin:6px 0}
+.hbaddr{display:flex;gap:10px;align-items:flex-end}
+.hbaddr .field{flex:1;min-width:0;margin:0}
+.hchecks{list-style:none;margin:8px 0 0;padding:0}
+.hchecks li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--gs-rule)}
+.hchecks li:first-child{border-top:0}
+.hchecks .mark{width:1.2em;flex:none;font-weight:700}
+.hchecks li.ok .mark,.hchecks li.ok b{color:var(--gs-teal)}
+.hchecks li.bad .mark,.hchecks li.bad b{color:var(--gs-amber)}
+@media (max-width:767px){.intgrid{grid-template-columns:1fr}.nmrow{grid-template-columns:1fr}.hbaddr{flex-wrap:wrap}.hbaddr .btn{width:100%}}
 
 /* 0.13.0 wake word dialog: the message area keeps its height so the dialog does not jump */
 .wwmsg{min-height:6.5rem}

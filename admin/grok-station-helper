@@ -550,6 +550,101 @@ def set_hostname(h):
 XAI_KEY_FILE = "/etc/grok-station/secrets/xai_api_key"
 
 
+def _hb_creds_path():
+    """Absolute path ending in homebridge.json. No '..'. Tests set GS_HOMEBRIDGE_CREDS."""
+    raw = os.environ.get("GS_HOMEBRIDGE_CREDS", "/etc/grok-station/secrets/homebridge.json")
+    if not isinstance(raw, str) or len(raw) >= 200 or not raw.startswith("/"):
+        return None
+    parts = raw.split("/")
+    if any(part == ".." for part in parts) or parts[-1] != "homebridge.json":
+        return None
+    return raw
+
+
+def _hb_user_ok(text):
+    return isinstance(text, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,64}", text) is not None
+
+
+def _hb_pass_ok(text):
+    if not isinstance(text, str) or not 8 <= len(text) <= 200:
+        return False
+    return all(32 <= ord(ch) <= 126 for ch in text)
+
+
+def homebridge_set():
+    """stdin {"username","password"}: 0600 JSON for grok-relay. Stdout is {"ok": true} only. Does not restart the relay."""
+    path = _hb_creds_path()
+    if not path:
+        fail("bad path")
+    j = stdin_json()
+    if set(j) != {"username", "password"}:
+        fail("bad input")
+    user, pw = j.get("username"), j.get("password")
+    if not _hb_user_ok(user) or not _hb_pass_ok(pw):
+        fail("bad input")
+    import grp, pwd, tempfile
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o711, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".hb.", dir=directory)
+    try:
+        os.write(fd, json.dumps({"username": user, "password": pw}).encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    user = pw = None
+    try:
+        if os.environ.get("GS_SECRET_SKIP_CHOWN") != "1":
+            try:
+                uid = pwd.getpwnam("grok-relay").pw_uid
+                gid = grp.getgrnam("grok-admin").gr_gid
+            except KeyError:
+                fail("no owner")
+            os.chown(tmp, uid, gid)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except SystemExit:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        fail("couldn't save")
+    out({"ok": True})
+
+
+def homebridge_get():
+    """Stdout is {"username","password"} for the admin process. Never log this."""
+    path = _hb_creds_path()
+    if not path:
+        fail("bad path")
+    try:
+        doc = json.loads(open(path, encoding="utf-8").read(4096))
+    except (OSError, ValueError):
+        fail("missing")
+    if not isinstance(doc, dict) or not _hb_user_ok(doc.get("username")) or not _hb_pass_ok(doc.get("password")):
+        fail("missing")
+    out({"username": doc["username"], "password": doc["password"]})
+
+
+def homebridge_delete():
+    """Unlink the credential file. No backup, no copy."""
+    path = _hb_creds_path()
+    if not path:
+        fail("bad path")
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        fail("couldn't delete")
+    out({"ok": True})
+
+
 def xai_key_set():
     """stdin {"key"}: write the relay's xAI key (0400, grok-relay only), then restart the relay. Never echoed."""
     j = stdin_json()
@@ -649,6 +744,12 @@ def main():
         set_hostname(a[1])
     if cmd == "xai-key-set" and len(a) == 1:
         xai_key_set()
+    if cmd == "homebridge-set" and len(a) == 1:
+        homebridge_set()
+    if cmd == "homebridge-get" and len(a) == 1:
+        homebridge_get()
+    if cmd == "homebridge-delete" and len(a) == 1:
+        homebridge_delete()
     if cmd == "restart" and len(a) == 2:
         restart(a[1])
     if cmd == "reboot":

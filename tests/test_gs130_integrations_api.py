@@ -313,7 +313,10 @@ class IntegrationsAPI(unittest.TestCase):
         self.assertNotIn("presets", view["devices"][0])
         self.assertEqual(view["integrations"]["wled"]["status"], "connected")
         later = {card["id"]: card for card in view["later"]}
-        self.assertEqual(later["homebridge"]["status"], "coming_next")
+        self.assertNotIn("homebridge", later)
+        self.assertEqual(view["integrations"]["homebridge"]["status"], "not_set_up")
+        self.assertNotIn("username", json.dumps(view))
+        self.assertNotIn("password", json.dumps(view))
         self.assertEqual(later["matter"]["name"], "Matter")
         self.assertEqual(later["nest"]["name"], "Google Nest thermostat")
         self.assertEqual(later["cameras"]["name"], "Cameras (RTSP)")
@@ -544,17 +547,28 @@ class IntegrationsUI(unittest.TestCase):
         self.assertIn('["integrations", "Integrations"]', more)
         page = js.split("function spokenKey", 1)[1].split("\nfunction deployScript", 1)[0]
         for text in (
-            "Set up", "Manage", "Add lights", "Coming next", "Looking for WLED lights on your network.",
+            "Set up", "Manage", "Add lights", "Looking for WLED lights on your network.",
             "No WLED lights found.", "The station and the lights have to be on the same network.",
             "Add by address", "That address didn't answer like a WLED light.",
             "That address isn't on your home network.", "Clashes with bot ", "Used by another device",
             "Clashes with ", "Recommended, not required.", "Settings PIN", "OTA lock",
-            "Turn on Voice home control in Manage, then try it: say 'Hey Grok, turn on ", "Voice home control", "Turn on voice home control?",
+            "Turn on Voice home control, then try it: say 'Hey Grok, turn on ", "Voice home control", "Turn on voice home control?",
             "Say the light's name; 'turn off the lights' on its own isn't supported yet.",
             "Offline since ", APPLE, "Google Nest thermostat", "Cameras (RTSP)", "Matter",
             'role="checkbox"', "Blink", "wled-kitchen.local",
+            "Connect Homebridge",
+            "Grok Station uses its own Homebridge login that can control devices but can't change Homebridge settings.",
+            "Open Homebridge Users", 'rel="noopener noreferrer"', "Your Homebridge address",
+            "http://homebridge.local:8581", "Found Homebridge at this address.",
+            "Leave Admin off", "Enter that login", "Reached Homebridge", "Login works", "Not an admin",
+            "This login is an admin. Grok Station won't store an admin login.",
+            "Couldn't confirm this login isn't an admin", "Pick devices", "Fix sign-in",
+            "This login is an admin. Homebridge control is off.", "Username or password didn't work.",
+            "grok-station",
         ):
             self.assertIn(text, page, text)
+        self.assertNotIn("Coming next", page)
+        self.assertNotIn("Turn on Voice home control in Manage", page)
         self.assertIn("esc(d.name)", page)
         self.assertIn("esc(dev.name", page)
         self.assertNotIn("<select", page)

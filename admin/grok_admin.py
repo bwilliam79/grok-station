@@ -2222,6 +2222,61 @@ def audit_home(verb, device_id):
     audit("-", "home-" + verb, digest[:4])
 
 
+HB_ADMIN_MSG = ("This login is an admin. Grok Station won't store an admin login. "
+                "Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.")
+HB_UNCONFIRMED_MSG = "Couldn't confirm this login isn't an admin"
+
+
+def _voice_copy(doc, kind):
+    """True when the other integration already has Voice home control on, so the one switch stays on."""
+    other = "homebridge" if kind == "wled" else "wled"
+    block = (doc.get("integrations") or {}).get(other)
+    return isinstance(block, dict) and block.get("voice") is True
+
+
+def _voice_apply(doc, on):
+    """Turn the one voice switch on or off for every enabled integration that has devices. False if on is impossible."""
+    ready = []
+    for kind in ("wled", "homebridge"):
+        block = doc["integrations"].get(kind)
+        if isinstance(block, dict) and block.get("enabled") is True and any(d.get("kind") == kind for d in doc["devices"]):
+            ready.append(kind)
+    if on and not ready:
+        return False
+    for kind in ("wled", "homebridge"):
+        block = doc["integrations"].get(kind)
+        if not isinstance(block, dict):
+            continue
+        block = dict(block)
+        if on and kind in ready:
+            block["voice"] = True
+        else:
+            block.pop("voice", None)
+        doc["integrations"][kind] = block
+    return True
+
+
+def _hb_store(username, password):
+    ok, _out = helper("homebridge-set", stdin={"username": username, "password": password})
+    return ok
+
+
+def _hb_load():
+    """Username and password from the helper. Never put this in a response or a log line."""
+    ok, out = helper("homebridge-get")
+    if not ok or not isinstance(out, dict):
+        return None
+    user, pw = out.get("username"), out.get("password")
+    if not gsi.hb_username_ok(user) or not gsi.hb_password_ok(pw):
+        return None
+    return user, pw
+
+
+def _hb_clear():
+    ok, _out = helper("homebridge-delete")
+    return ok
+
+
 def voice_ok(v):
     return isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", v) is not None
 
@@ -4740,16 +4795,37 @@ class Handler(BaseHTTPRequestHandler):
         _audit_update("update-autocheck", "on" if on else "off")
         return self.send(200, {"ok": True, "autocheck": on})
 
-    # -- integrations (WLED only; other cards are "later")
+    # -- integrations (WLED and Homebridge; other cards are "later")
     def _integration_view(self, doc):
-        devices = [self._public_device(d) for d in doc.get("devices") or [] if d.get("kind") == "wled"]
+        rows = doc.get("devices") or []
+        wled_rows = [d for d in rows if d.get("kind") == "wled"]
+        hb_rows = [d for d in rows if d.get("kind") == "homebridge"]
+        devices = [self._public_device(d, full=True) for d in wled_rows + hb_rows]
         wled = (doc.get("integrations") or {}).get("wled", {})
         enabled = wled.get("enabled") is True
-        status = "connected" if enabled and devices else "not_set_up"
-        voice = enabled and bool(devices) and wled.get("voice") is True
-        return {"integrations": {"wled": {"enabled": enabled, "status": status, "voice": voice}}, "devices": devices,
+        status = "connected" if enabled and wled_rows else "not_set_up"
+        voice = enabled and bool(wled_rows) and wled.get("voice") is True
+        hb = (doc.get("integrations") or {}).get("homebridge") if isinstance((doc.get("integrations") or {}).get("homebridge"), dict) else {}
+        hb_enabled = hb.get("enabled") is True and isinstance(hb.get("base"), str)
+        blocked = gsi.hb_block_kind()
+        if blocked == "admin":
+            hb_status = "admin"
+        elif blocked == "signin":
+            hb_status = "signin"
+        elif hb_enabled and hb_rows:
+            hb_status = "connected"
+        elif hb_enabled:
+            hb_status = "signed_in"
+        else:
+            hb_status = "not_set_up"
+        hb_view = {"enabled": hb_enabled, "status": hb_status,
+                   "voice": hb_enabled and bool(hb_rows) and hb.get("voice") is True and blocked is None}
+        if hb_enabled and hb_status != "not_set_up":
+            hb_view["base"] = hb["base"]
+        return {"integrations": {"wled": {"enabled": enabled, "status": status, "voice": voice},
+                                 "homebridge": hb_view},
+                "devices": devices,
                 "later": [
-                    {"id": "homebridge", "name": "Homebridge", "status": "coming_next"},
                     {"id": "matter", "name": "Matter", "status": "later"},
                     {"id": "nest", "name": "Google Nest thermostat", "status": "later"},
                     {"id": "cameras", "name": "Cameras (RTSP)", "status": "later"},
@@ -4757,9 +4833,16 @@ class Handler(BaseHTTPRequestHandler):
                      "note": "Use Homebridge for these devices. Apple Home has no API outside Apple devices."},
                 ]}
 
-    def _public_device(self, dev):
-        return {"id": dev["id"], "name": dev["name"], "aliases": list(dev.get("aliases") or []),
-                "type": dev.get("type") or "light", "caps": list(dev.get("caps") or gsi.CAPS)}
+    def _public_device(self, dev, full=False):
+        caps = dev.get("caps") or (["onoff"] if dev.get("kind") == "homebridge" else gsi.CAPS)
+        out = {"id": dev["id"], "name": dev["name"], "aliases": list(dev.get("aliases") or []),
+               "type": dev.get("type") or "light", "caps": list(caps)}
+        if full:
+            out["kind"] = dev.get("kind") or "wled"
+            # uid is the accessory id, not a secret. The picker uses it to skip devices already saved.
+            if out["kind"] == "homebridge" and isinstance(dev.get("uid"), str):
+                out["uid"] = dev["uid"]
+        return out
 
     def _alias_list(self, name, aliases):
         """Cleaned aliases, or None when the list is not the strict shape."""
@@ -4805,21 +4888,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         with LOCK:
             doc = gsi.load()
-            wled = doc["integrations"].get("wled")
-            if on and not (isinstance(wled, dict) and any(d.get("kind") == "wled" for d in doc["devices"])):
+            if not _voice_apply(doc, on):
                 return self.send(400, {"error": "not_set_up"})
-            if isinstance(wled, dict):
-                wled = dict(wled)
-                if on:
-                    wled["voice"] = True
-                else:
-                    wled.pop("voice", None)
-                doc["integrations"]["wled"] = wled
-                gsi.save(doc)
+            gsi.save(doc)
         audit_home("voice-on" if on else "voice-off", "wled")
         return self.send(200, self._integration_view(gsi.load()))
 
     def api_get_integrations(self, p, q, j):
+        if p == "/api/integrations/homebridge/accessories":
+            return self._hb_accessories()
         if p != "/api/integrations":
             return self.send(404, {"error": "not found"})
         return self.send(200, self._integration_view(gsi.load()))
@@ -4833,13 +4910,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._wled_blink(j)
         if p == "/api/integrations/wled/devices":
             return self._wled_save(j)
+        if p == "/api/integrations/homebridge/check-address":
+            return self._hb_check(j)
+        if p == "/api/integrations/homebridge/verify":
+            return self._hb_verify(j)
+        if p == "/api/integrations/homebridge/devices":
+            return self._hb_save(j)
         m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})/test", p)
         if m:
             return self._wled_test(m.group(1), j)
+        m = re.fullmatch(r"/api/integrations/devices/(h-[0-9a-f]{4})/test", p)
+        if m:
+            return self._hb_test(m.group(1), j)
         return self.send(404, {"error": "not found"})
 
     def api_patch_integrations(self, p, q, j):
-        m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})", p)
+        m = re.fullmatch(r"/api/integrations/devices/((?:w|h)-[0-9a-f]{4})", p)
         if not m:
             return self.send(404, {"error": "not found"})
         return self._wled_patch(m.group(1), j)
@@ -4847,7 +4933,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_delete_integrations(self, p, q, j):
         if p == "/api/integrations/wled":
             return self._wled_delete_all(j)
-        m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})", p)
+        if p == "/api/integrations/homebridge":
+            return self._hb_delete_all(j)
+        m = re.fullmatch(r"/api/integrations/devices/((?:w|h)-[0-9a-f]{4})", p)
         if m:
             return self._wled_delete(m.group(1), j)
         return self.send(404, {"error": "not found"})
@@ -4953,8 +5041,10 @@ class Handler(BaseHTTPRequestHandler):
                        "presets": presets.get(fields["host"]) or {}}
                 doc["devices"].append(dev)
                 saved.append(dev)
-            wled = doc["integrations"].get("wled") or {}
-            doc["integrations"]["wled"] = dict(wled, enabled=True)  # keeps "voice" as it was; never turns it on
+            wled = dict(doc["integrations"].get("wled") or {}, enabled=True)  # keeps "voice"; never turns it on
+            if wled.get("voice") is not True and _voice_copy(doc, "wled"):
+                wled["voice"] = True
+            doc["integrations"]["wled"] = wled
             gsi.save(doc)
         for dev in saved:
             audit_home("save", dev["id"])
@@ -5033,6 +5123,276 @@ class Handler(BaseHTTPRequestHandler):
         for ident in gone:
             audit_home("remove", ident)
         audit_home("remove-wled", "wled")
+        return self.send(200, {"ok": True})
+
+    def _hb_checks(self, reach, login, admin):
+        return [{"id": "reach", "ok": bool(reach)}, {"id": "login", "ok": bool(login)}, {"id": "admin", "ok": bool(admin)}]
+
+    def _hb_fail(self, code, error, message, checks):
+        return self.send(code, {"error": error, "message": message, "checks": checks})
+
+    def _hb_session(self, base, username, password, otp=None):
+        """(token or None, error or None, checks). Nothing is saved. Token stays in this return value only."""
+        settings = gsi.hb_request(base, "GET", "/api/auth/settings")
+        reach = settings["error"] is None and settings["status"] == 200 and isinstance(settings["json"], dict)
+        checks = self._hb_checks(reach, False, False)
+        if not reach:
+            err = settings["error"] or "not_homebridge"
+            if err in ("redirect", "big") or (settings["error"] is None and not isinstance(settings["json"], dict)):
+                err = "not_homebridge"
+            if err not in ("refused", "unreachable", "cert", "not_homebridge"):
+                err = "unreachable"
+            messages = {
+                "refused": "That address isn't on your home network.",
+                "cert": "The certificate didn't check out.",
+                "not_homebridge": "That address isn't the Homebridge UI. Homebridge usually uses port 8581.",
+            }
+            return None, err, checks, messages.get(err, "Homebridge didn't answer.")
+        payload = {"username": username, "password": password}
+        if otp:
+            payload["otp"] = otp
+        login = gsi.hb_request(base, "POST", "/api/auth/login", payload)
+        obj = login["json"] if isinstance(login["json"], dict) else {}
+        if gsi.hb_otp_needed(login["status"], obj) and not otp:
+            return None, "otp_required", checks, "This login has 2-step sign-in on. Enter the code, or use a login without 2-step."
+        token = obj.get("access_token") if isinstance(obj.get("access_token"), str) and obj.get("access_token") else ""
+        if login["status"] != 201 or not token:
+            if login["status"] in (400, 401, 403):
+                return None, "bad_login", checks, "Username or password didn't work."
+            err = login["error"] if login["error"] in ("cert", "refused", "unreachable") else "unreachable"
+            return None, err, checks, "Homebridge didn't answer."
+        acc = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        if not (acc["error"] is None and acc["status"] == 200 and isinstance(acc["json"], (dict, list))):
+            return None, "unreachable", checks, "Homebridge didn't answer."
+        checks[1]["ok"] = True
+        users = gsi.hb_request(base, "GET", "/api/users", token=token)
+        if users["status"] == 200:
+            return None, "admin", checks, HB_ADMIN_MSG
+        if users["status"] != 403:
+            return None, "unconfirmed", checks, HB_UNCONFIRMED_MSG
+        checks[2]["ok"] = True
+        return token, None, checks, ""
+
+    def _hb_check(self, j):
+        if not isinstance(j, dict) or set(j) != {"base"} or not isinstance(j.get("base"), str):
+            return self.send(400, {"error": "bad_request"})
+        target = gsi.checked_base(j["base"])
+        if target is None:
+            return self.send(400, {"error": "refused", "message": "That address isn't on your home network."})
+        got = gsi.hb_request(target["base"], "GET", "/api/auth/settings")
+        if got["error"] == "cert":
+            return self.send(400, {"error": "cert", "message": "The certificate didn't check out."})
+        if got["error"] == "unreachable" or got["status"] == 0:
+            return self.send(400, {"error": "unreachable", "message": "Homebridge didn't answer."})
+        if got["error"] in ("redirect", "big") or got["status"] != 200 or not isinstance(got["json"], dict):
+            return self.send(400, {"error": "not_homebridge",
+                                   "message": "That address isn't the Homebridge UI. Homebridge usually uses port 8581."})
+        return self.send(200, {"ok": True, "base": target["base"], "users": target["base"] + "/users"})
+
+    def _hb_verify(self, j):
+        if not isinstance(j, dict) or not {"base", "username", "password"} <= set(j) <= {"base", "username", "password", "otp", "stepup"}:
+            return self.send(400, {"error": "bad_request"})
+        if not isinstance(j.get("base"), str) or not gsi.hb_username_ok(j.get("username")) or not gsi.hb_password_ok(j.get("password")):
+            return self.send(400, {"error": "bad_request"})
+        if "otp" in j and not gsi.hb_otp_ok(j.get("otp")):
+            return self.send(400, {"error": "bad_request"})
+        if "stepup" in j and not isinstance(j.get("stepup"), str):
+            return self.send(400, {"error": "bad_request"})
+        target = gsi.checked_base(j["base"])
+        if target is None:
+            checks = self._hb_checks(False, False, False)
+            return self._hb_fail(400, "refused", "That address isn't on your home network.", checks)
+        token, err, checks, message = self._hb_session(target["base"], j["username"], j["password"], j.get("otp"))
+        token = None  # the login is checked; the relay logs in itself. Do not keep it.
+        if err:
+            code = 403 if err in ("admin", "unconfirmed") else (401 if err in ("bad_login", "otp_required") else 400)
+            return self._hb_fail(code, err, message, checks)
+        step = {"password": j["stepup"]} if "stepup" in j else {}
+        if not self.need_password(step):
+            return
+        if not _hb_store(j["username"], j["password"]):
+            return self.send(500, {"error": "Couldn't save that."})
+        gsi.hb_clear_block()
+        with LOCK:
+            doc = gsi.load()
+            old = doc["integrations"].get("homebridge")
+            block = {"enabled": True, "base": target["base"]}
+            if (isinstance(old, dict) and old.get("voice") is True) or _voice_copy(doc, "homebridge"):
+                block["voice"] = True
+            doc["integrations"]["homebridge"] = block
+            gsi.save(doc)
+        audit_home("homebridge-verify", "homebridge")
+        return self.send(200, {"ok": True, "base": target["base"], "checks": checks})
+
+    def _hb_open(self):
+        """(base, username, password) or an error response already sent."""
+        if gsi.hb_block_kind() == "admin":
+            return self.send(403, {"error": "admin", "message": HB_ADMIN_MSG})
+        doc = gsi.load()
+        hb = doc["integrations"].get("homebridge") if isinstance(doc["integrations"].get("homebridge"), dict) else None
+        base = hb.get("base") if hb else None
+        creds = _hb_load()
+        if not base or not creds:
+            return self.send(400, {"error": "not_set_up"})
+        token, err, _checks, message = self._hb_session(base, creds[0], creds[1])
+        if err == "admin":
+            gsi.hb_write_block("admin")
+            return self.send(403, {"error": "admin", "message": HB_ADMIN_MSG})
+        if err == "unconfirmed":
+            return self.send(403, {"error": "unconfirmed", "message": message})
+        if err == "bad_login":
+            gsi.hb_write_block("signin")
+            return self.send(401, {"error": "signin", "message": "Homebridge sign-in stopped working."})
+        if err or not token:
+            return self.send(502, {"error": err or "unreachable", "message": message or "Homebridge didn't answer."})
+        return base, token
+
+    def _hb_accessories(self):
+        opened = self._hb_open()
+        if not isinstance(opened, tuple):
+            return opened
+        base, token = opened
+        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        token = None
+        if got["error"] or got["status"] != 200:
+            return self.send(502, {"error": "unreachable", "message": "Homebridge didn't answer."})
+        rows = []
+        for row in gsi.hb_accessories(got["json"]):
+            rows.append({"uid": row["uid"], "name": row["name"], "type": row["type"], "char": row["char"]})
+        return self.send(200, {"accessories": rows})
+
+    def _hb_save(self, body):
+        pw = {}
+        if not isinstance(body, dict) or not {"devices"} <= set(body) <= {"devices", "password"}:
+            return self.send(400, {"error": "bad_request"})
+        if "password" in body:
+            if not isinstance(body["password"], str):
+                return self.send(400, {"error": "bad_request"})
+            pw = {"password": body["password"]}
+        items = body["devices"]
+        if not isinstance(items, list) or not items or len(items) > 32:
+            return self.send(400, {"error": "bad_request"})
+        parsed = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict) or set(item) != {"uid", "name", "aliases"} or not gsi.hb_uid_ok(item.get("uid")):
+                return self.send(400, {"error": "bad_request"})
+            if item["uid"] in seen:
+                return self.send(400, {"error": "bad_request"})
+            seen.add(item["uid"])
+            name = clean_name(item.get("name"))
+            if not name or not gsi.spoken_key(name):
+                return self.send(400, {"error": "bad_request"})
+            aliases = self._alias_list(name, item.get("aliases"))
+            if aliases is None:
+                return self.send(400, {"error": "bad_request"})
+            parsed.append({"uid": item["uid"], "name": name, "aliases": aliases})
+        extra = []
+        for fields in parsed:
+            for label in [fields["name"], *fields["aliases"]]:
+                hit = name_clash(label, extra=extra)
+                if hit:
+                    code = 400 if hit.get("error") == "bad_name" else 409
+                    return self.send(code, hit)
+            extra.append(fields)
+        if not self.need_password(pw):
+            return
+        opened = self._hb_open()
+        if not isinstance(opened, tuple):
+            return opened
+        base, token = opened
+        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        token = None
+        if got["error"] or got["status"] != 200:
+            return self.send(502, {"error": "unreachable"})
+        live = {row["uid"]: row for row in gsi.hb_accessories(got["json"])}
+        for fields in parsed:
+            row = live.get(fields["uid"])
+            if not row:
+                return self.send(400, {"error": "bad_request"})
+            fields["char"] = row["char"]
+            fields["type"] = row["type"]
+        with LOCK:
+            doc = gsi.load()
+            hb = doc["integrations"].get("homebridge")
+            if not isinstance(hb, dict) or not hb.get("base"):
+                return self.send(400, {"error": "not_set_up"})
+            have = {d.get("uid") for d in doc["devices"] if d.get("kind") == "homebridge"}
+            if any(fields["uid"] in have for fields in parsed):
+                return self.send(400, {"error": "bad_request"})
+            if sum(1 for d in doc["devices"] if d.get("kind") == "homebridge") + len(parsed) > 32:
+                return self.send(400, {"error": "bad_request"})
+            fresh = []
+            for fields in parsed:
+                for label in [fields["name"], *fields["aliases"]]:
+                    hit = name_clash(label, extra=fresh)
+                    if hit:
+                        code = 400 if hit.get("error") == "bad_name" else 409
+                        return self.send(code, hit)
+                fresh.append(fields)
+            used = {d["id"] for d in doc["devices"]}
+            saved = []
+            for fields in parsed:
+                ident = gsi.new_id(used, "h")
+                used.add(ident)
+                dev = {"id": ident, "kind": "homebridge", "uid": fields["uid"], "char": fields["char"],
+                       "name": fields["name"], "aliases": fields["aliases"], "type": fields["type"], "caps": ["onoff"]}
+                doc["devices"].append(dev)
+                saved.append(dev)
+            block = {"enabled": True, "base": hb["base"]}
+            if hb.get("voice") is True or _voice_copy(doc, "homebridge"):
+                block["voice"] = True
+            doc["integrations"]["homebridge"] = block
+            gsi.save(doc)
+        for dev in saved:
+            audit_home("save", dev["id"])
+        return self.send(200, {"devices": [self._public_device(d) for d in saved]})
+
+    def _hb_test(self, ident, j):
+        if j != {}:
+            return self.send(400, {"error": "bad_request"})
+        dev = next((d for d in gsi.load()["devices"] if d["id"] == ident and d.get("kind") == "homebridge"), None)
+        if dev is None:
+            return self.send(404, {"error": "not found"})
+        opened = self._hb_open()
+        if not isinstance(opened, tuple):
+            return opened
+        base, token = opened
+        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        if got["error"] or got["status"] != 200:
+            token = None
+            return self.send(502, {"error": "unreachable"})
+        row = next((r for r in gsi.hb_accessories(got["json"]) if r["uid"] == dev["uid"]), None)
+        write = gsi.hb_write_value(row["value"]) if row else None
+        if row is None or write is None or row["char"] != dev.get("char"):
+            token = None
+            return self.send(502, {"error": "unreachable"})
+        path = "/api/accessories/" + urllib.parse.quote(dev["uid"], safe="")
+        put = gsi.hb_request(base, "PUT", path, {"characteristicType": dev["char"], "value": write}, token=token)
+        token = None
+        if put["error"] or not 200 <= put["status"] < 300:
+            return self.send(502, {"error": "unreachable"})
+        return self.send(200, {"ok": True})
+
+    def _hb_delete_all(self, j):
+        if not isinstance(j, dict) or not set(j) <= {"password"}:
+            return self.send(400, {"error": "bad_request"})
+        if "password" in j and not isinstance(j.get("password"), str):
+            return self.send(400, {"error": "bad_request"})
+        if not self.need_password(j):
+            return
+        if not _hb_clear():
+            return self.send(500, {"error": "Couldn't remove the saved login."})
+        gsi.hb_clear_block()
+        with LOCK:
+            doc = gsi.load()
+            gone = [d["id"] for d in doc["devices"] if d.get("kind") == "homebridge"]
+            doc["devices"] = [d for d in doc["devices"] if d.get("kind") != "homebridge"]
+            doc["integrations"].pop("homebridge", None)
+            gsi.save(doc)
+        for ident in gone:
+            audit_home("remove", ident)
+        audit_home("remove-homebridge", "homebridge")
         return self.send(200, {"ok": True})
 
 

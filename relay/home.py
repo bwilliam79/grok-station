@@ -7,9 +7,10 @@ HOME_ALLOW_LOOPBACK_FOR_TESTS=1 allows a loopback host (127.0.0.1 or ::1),
 including a port ("127.0.0.1:PORT"). Tests only. Leave it unset on a Pi:
 loopback is refused, and a public address is refused either way.
 """
-import asyncio, ipaddress, json, os, re, socket, time
+import asyncio, base64, ipaddress, json, os, re, socket, time, urllib.parse
 
 import aiohttp
+import aiohttp.resolver
 
 DEFAULT_PATH = "/var/lib/grok-station/integrations/integrations.json"
 _READ_MAX = 256 * 1024
@@ -132,6 +133,32 @@ def _device(row):
     }
 
 
+def _hb_device(row):
+    """One Homebridge device, or None. Power only: On or Active."""
+    if not isinstance(row, dict) or row.get("kind") != "homebridge":
+        return None
+    ident, uid, name = row.get("id"), row.get("uid"), row.get("name")
+    char, typ = row.get("char"), row.get("type")
+    if not all(isinstance(v, str) and v.strip() for v in (ident, uid, name)):
+        return None
+    if not re.fullmatch(r"h-[0-9a-f]{4}", ident.strip()):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9._:@+-]{1,128}", uid) or ".." in uid:
+        return None
+    if char not in ("On", "Active") or typ not in ("light", "switch", "outlet", "fan", "tv"):
+        return None
+    aliases = []
+    raw_aliases = row.get("aliases")
+    if isinstance(raw_aliases, list):
+        for alias in raw_aliases:
+            if isinstance(alias, str) and alias.strip() and alias.strip() not in aliases:
+                aliases.append(alias.strip())
+    return {
+        "id": ident.strip(), "kind": "homebridge", "uid": uid, "char": char,
+        "name": name.strip(), "aliases": aliases, "type": typ, "caps": ["onoff"],
+    }
+
+
 def _parse(raw):
     try:
         data = json.loads(raw.decode("utf-8"))
@@ -144,17 +171,31 @@ def _parse(raw):
         integrations = {}
     wled = integrations.get("wled")
     enabled = isinstance(wled, dict) and wled.get("enabled") is True
+    hb = integrations.get("homebridge")
+    hb_base = _hb_stored(hb.get("base")) if isinstance(hb, dict) and hb.get("enabled") is True else None
     devices = []
-    if enabled:
-        for row in data.get("devices") or []:
+    for row in data.get("devices") or []:
+        if enabled:
             dev = _device(row)
             if dev:
                 devices.append(dev)
+                continue
+        if hb_base:
+            dev = _hb_device(row)
+            if dev:
+                devices.append(dev)
     out = _empty()
+    out["integrations"] = {}
     if enabled:
-        out["integrations"] = {"wled": {"enabled": True}}
+        out["integrations"]["wled"] = {"enabled": True}
         if wled.get("voice") is True:  # 0.13.0 (Nix L2): voice home control, off unless turned on in the admin
             out["integrations"]["wled"]["voice"] = True
+    if hb_base:
+        out["integrations"]["homebridge"] = {"enabled": True, "base": hb_base}
+        if hb.get("voice") is True:
+            out["integrations"]["homebridge"]["voice"] = True
+    if not out["integrations"]:
+        out["integrations"] = {}
     out["devices"] = devices
     return out
 
@@ -164,8 +205,8 @@ def load_registry(path=None):
 
     Cached per path. A changed mtime reloads. A missing file, a file over
     256 KB, or JSON that is not version 1 yields an empty registry. Devices
-    whose kind is not "wled", and every device while WLED is not enabled,
-    are left out.
+    A device is kept only while its integration is enabled. Homebridge rows need a
+    stored base. Anything else is left out.
     """
     if path is None:
         path = os.environ.get("HOME_REGISTRY") or DEFAULT_PATH
@@ -396,24 +437,49 @@ def _wled_on(registry):
     return isinstance(wled, dict) and wled.get("enabled") is True
 
 
-def voice_on(registry):
-    """True only when the admin turned on Voice home control (0.13.0, Nix L2). Saving a device does not."""
-    if not _wled_on(registry):
+def _hb_on(registry):
+    if not isinstance(registry, dict):
         return False
-    return registry["integrations"]["wled"].get("voice") is True
+    integrations = registry.get("integrations")
+    if not isinstance(integrations, dict):
+        return False
+    hb = integrations.get("homebridge")
+    return isinstance(hb, dict) and hb.get("enabled") is True and isinstance(hb.get("base"), str)
+
+
+def voice_on(registry):
+    """True only when the admin turned on Voice home control (0.13.0, Nix L2). Saving a device does not.
+
+    One switch covers WLED and Homebridge: on if either enabled integration has voice set.
+    """
+    if not isinstance(registry, dict):
+        return False
+    integrations = registry.get("integrations")
+    if not isinstance(integrations, dict):
+        return False
+    for kind in ("wled", "homebridge"):
+        block = integrations.get(kind)
+        if isinstance(block, dict) and block.get("enabled") is True and block.get("voice") is True:
+            if kind == "wled" and not _wled_on(registry):
+                continue
+            if kind == "homebridge" and not _hb_on(registry):
+                continue
+            return True
+    return False
 
 
 VOICE_OFF_SAY = "Voice home control is off. Turn it on in the admin under Integrations."
 
 
 def _usable(registry):
-    if not _wled_on(registry):
-        return []
     out = []
     for row in registry.get("devices") or []:
-        dev = row if isinstance(row, dict) and row.get("kind") == "wled" else None
-        if dev and isinstance(dev.get("host"), str) and isinstance(dev.get("name"), str) and isinstance(dev.get("id"), str):
-            out.append(dev)
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("id"), str):
+            continue
+        if row.get("kind") == "wled" and _wled_on(registry) and isinstance(row.get("host"), str):
+            out.append(row)
+        elif row.get("kind") == "homebridge" and _hb_on(registry) and row.get("char") in ("On", "Active"):
+            out.append(row)
     return out
 
 
@@ -448,7 +514,10 @@ def _caps(dev):
 
 
 def _intent(dev, action, **extra):
-    out = {"id": dev.get("id"), "kind": "wled", "host": dev.get("host"), "action": action}
+    if dev.get("kind") == "homebridge":
+        out = {"id": dev.get("id"), "kind": "homebridge", "uid": dev.get("uid"), "char": dev.get("char"), "action": action}
+    else:
+        out = {"id": dev.get("id"), "kind": "wled", "host": dev.get("host"), "action": action}
     out.update(extra)
     return out
 
@@ -587,10 +656,13 @@ def _mark(device_id, ok):
         _offline[device_id] = time.time()
 
 
-def _log(logger, action, ok):
+def _log(logger, action, ok, kind="wled"):
     if action not in _ACTIONS:
         action = "command"
-    line = "home wled %s %s" % (action, "ok" if ok else "fail")
+    if kind == "homebridge":
+        line = "home homebridge %s %s" % (action, "ok" if ok else "fail")
+    else:
+        line = "home wled %s %s" % (action, "ok" if ok else "fail")
     if logger is None:
         return line
     try:
@@ -672,25 +744,329 @@ async def _perform(http, intent):
     return False
 
 
-async def run_intent(http, intent, logger=None):
-    """Run one WLED intent. True when the device accepted it.
+_HB_MEM = {"base": "", "token": "", "got": 0.0, "exp": 0, "users": 0.0}
+_HB_DAY = 86400
+_HB_MAX_AGE = 8 * 3600
 
-    logger, when set, is called with one line: "home wled <action> ok|fail".
-    The line has no device name, host, or value. An unreachable device is
-    remembered in memory (offline_since); nothing is written to disk.
+
+def _hb_stored(raw):
+    """Canonical base or None. Shape only: http(s)://<.local or IP>[:port], one optional trailing slash."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or len(text) > 300 or any(ord(ch) < 33 or ord(ch) > 126 for ch in text):
+        return None
+    if text.endswith("/"):
+        if text.endswith("//"):
+            return None
+        text = text[:-1]
+    try:
+        parts = urllib.parse.urlsplit(text)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or parts.username or parts.password or parts.query or parts.fragment:
+        return None
+    if parts.path:
+        return None
+    host = parts.hostname
+    if not host or len(host) > 253:
+        return None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        shown = ("[%s]" % ip.compressed) if ip.version == 6 else str(ip)
+    elif _LOCAL.fullmatch(host) is None:
+        return None
+    else:
+        shown = host.lower().rstrip(".")
+    default = 443 if parts.scheme == "https" else 80
+    if port and port != default:
+        shown += ":" + str(port)
+    return parts.scheme + "://" + shown
+
+
+def _hb_creds():
+    """(username, password) from the 0600 file the helper wrote, or None. Not logged."""
+    raw = os.environ.get("GS_HOMEBRIDGE_CREDS", "/etc/grok-station/secrets/homebridge.json")
+    if not isinstance(raw, str) or len(raw) >= 200 or not raw.startswith("/") or raw.split("/")[-1] != "homebridge.json":
+        return None
+    if any(part == ".." for part in raw.split("/")):
+        return None
+    try:
+        doc = json.loads(open(raw, encoding="utf-8").read(4096))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    user, pw = doc.get("username"), doc.get("password")
+    if not isinstance(user, str) or not isinstance(pw, str) or not user or not pw:
+        return None
+    return user, pw
+
+
+def _hb_block_path():
+    raw = os.environ.get("HOMEBRIDGE_BLOCK", "/var/lib/grok-station/home-status/homebridge.json")
+    if not isinstance(raw, str) or len(raw) >= 200 or not raw.startswith("/") or raw.split("/")[-1] != "homebridge.json":
+        return None
+    if any(part == ".." for part in raw.split("/")):
+        return None
+    return raw
+
+
+def _hb_blocked():
+    path = _hb_block_path()
+    if not path:
+        return None
+    try:
+        doc = json.loads(open(path, encoding="utf-8").read(1024))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    kind = doc.get("blocked")
+    if kind is True or kind == "admin":
+        return "admin"
+    if kind == "signin":
+        return "signin"
+    return None
+
+
+def _hb_write_block(kind):
+    path = _hb_block_path()
+    if not path or kind not in ("admin", "signin"):
+        return
+    directory = os.path.dirname(path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"blocked": kind}) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(path + ".tmp")
+        except OSError:
+            pass
+
+
+def _hb_mem_clear():
+    _HB_MEM.update(base="", token="", got=0.0, exp=0, users=0.0)
+
+
+def _jwt_exp(token):
+    try:
+        part = str(token).split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (IndexError, ValueError, TypeError):
+        return 0
+    exp = data.get("exp") if isinstance(data, dict) else None
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return 0
+    return int(exp)
+
+
+def _token_fresh(now):
+    if not _HB_MEM.get("token"):
+        return False
+    if now - float(_HB_MEM.get("got") or 0) > _HB_MAX_AGE:
+        return False
+    exp = int(_HB_MEM.get("exp") or 0)
+    if exp and exp <= now + 30:
+        return False
+    return True
+
+
+class _PinResolver(aiohttp.resolver.AbstractResolver):
+    """Always the pinned address, so HTTPS SNI and the certificate use the name in the URL."""
+
+    def __init__(self, ip):
+        self._ip = str(ip)
+
+    async def resolve(self, host, port=0, family=socket.AF_INET):
+        fam = socket.AF_INET6 if ":" in self._ip else socket.AF_INET
+        return [{"hostname": host, "host": self._ip, "port": port, "family": fam,
+                 "proto": 0, "flags": int(socket.AI_NUMERICHOST)}]
+
+    async def close(self):
+        return None
+
+
+async def _checked_hb(base):
+    """Pinned target for a stored base, or None. Re-checked on every command."""
+    stored = _hb_stored(base)
+    if not stored:
+        return None
+    parts = urllib.parse.urlsplit(stored)
+    host, port = parts.hostname, parts.port
+    own = _own()
+    if not own:
+        return None
+    literal = _as_ip(host)
+    if literal is not None:
+        ips = [literal]
+    else:
+        if _LOCAL.fullmatch(host) is None:
+            return None
+        ips = [_as_ip(a) for a in await resolve_host(host)]
+        if not ips:
+            return None
+    if not all(_target_ok(ip, own) for ip in ips):
+        return None
+    connect = port or (443 if parts.scheme == "https" else 80)
+    return {"ip": ips[0], "port": connect, "host": parts.netloc, "name": host, "scheme": parts.scheme, "base": stored}
+
+
+def _hb_url(target, path):
+    ip = target["ip"]
+    loc = "[%s]" % ip.compressed if ip.version == 6 else str(ip)
+    return "%s://%s:%d%s" % (target["scheme"], loc, target["port"], path)
+
+
+async def _hb_exchange(http, target, method, path, body=None, token=None):
+    """(status, json or None). Redirects are not followed. 3 s, 64 KB."""
+    headers = {"Accept": "application/json", "Host": target["host"]}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    url = _hb_url(target, path)
+    session = http
+    own = None
+    try:
+        if target["scheme"] == "https":
+            connector = aiohttp.TCPConnector(resolver=_PinResolver(target["ip"]), ssl=True)
+            own = aiohttp.ClientSession(connector=connector)
+            session = own
+            url = "%s://%s:%d%s" % (target["scheme"], target["name"], target["port"], path)
+        kw = {"allow_redirects": False, "timeout": _TIMEOUT, "max_redirects": 0, "headers": headers}
+        if body is not None:
+            kw["json"] = body
+        async with session.request(method, url, **kw) as resp:
+            if resp.status in (301, 302, 303, 307, 308):
+                await resp.content.read(1024)
+                return resp.status, None
+            data = await resp.content.read(_BODY_MAX + 1)
+            if len(data) > _BODY_MAX:
+                return resp.status, None
+            try:
+                parsed = json.loads(data.decode("utf-8", "replace")) if data else None
+            except ValueError:
+                parsed = None
+            if not isinstance(parsed, (dict, list)):
+                parsed = None
+            return resp.status, parsed
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError):
+        return 0, None
+    finally:
+        if own is not None:
+            await own.close()
+
+
+async def _hb_login(http, target, creds):
+    """A bearer token, or 'admin' / 'signin' / ''. Does not write a sign-in flag on a timeout."""
+    status, obj = await _hb_exchange(http, target, "POST", "/api/auth/login",
+                                     {"username": creds[0], "password": creds[1]})
+    token = obj.get("access_token") if isinstance(obj, dict) else None
+    if status != 201 or not isinstance(token, str) or not token:
+        if status == 401:
+            return "signin"
+        return ""
+    users, _body = await _hb_exchange(http, target, "GET", "/api/users", token=token)
+    now = time.time()
+    if users == 200:
+        _hb_mem_clear()
+        _hb_write_block("admin")
+        return "admin"
+    if users != 403:
+        _hb_mem_clear()
+        return ""
+    _HB_MEM.update(base=target["base"], token=token, got=now, exp=_jwt_exp(token), users=now)
+    return token
+
+
+async def _hb_token(http, target, creds, force=False):
+    now = time.time()
+    fresh = (not force and _HB_MEM.get("base") == target["base"] and _token_fresh(now)
+             and now - float(_HB_MEM.get("users") or 0) <= _HB_DAY)
+    if fresh:
+        return _HB_MEM["token"]
+    got = await _hb_login(http, target, creds)
+    if got in ("admin", "signin", ""):
+        if got == "signin":
+            _hb_write_block("signin")
+            _hb_mem_clear()
+        return ""
+    return got
+
+
+async def _hb_put(http, target, dev, value, token):
+    path = "/api/accessories/" + urllib.parse.quote(dev["uid"], safe="")
+    status, _obj = await _hb_exchange(http, target, "PUT", path,
+                                      {"characteristicType": dev["char"], "value": value}, token=token)
+    if status == 401:
+        return "unauthorized"
+    return 200 <= status < 300
+
+
+async def _perform_hb(http, intent):
+    """PUT the On/Active value. The base is read from the registry again, not from the intent."""
+    if _hb_blocked():
+        return False
+    if not isinstance(intent, dict) or intent.get("action") not in ("on", "off"):
+        return False
+    reg = load_registry()
+    dev = next((d for d in reg.get("devices") or []
+                if d.get("id") == intent.get("id") and d.get("kind") == "homebridge"), None)
+    if not dev or dev.get("char") not in ("On", "Active"):
+        return False
+    base = ((reg.get("integrations") or {}).get("homebridge") or {}).get("base")
+    target = await _checked_hb(base)
+    creds = _hb_creds()
+    if target is None or not creds:
+        return False
+    token = await _hb_token(http, target, creds)
+    if not token:
+        return False
+    value = 1 if intent.get("action") == "on" else 0
+    put = await _hb_put(http, target, dev, value, token)
+    if put == "unauthorized":
+        _hb_mem_clear()
+        token = await _hb_token(http, target, creds, force=True)
+        if not token:
+            return False
+        put = await _hb_put(http, target, dev, value, token)
+    return put is True
+
+
+async def run_intent(http, intent, logger=None):
+    """Run one home intent. True when the device accepted it.
+
+    logger, when set, is called with one line: "home wled <action> ok|fail"
+    or "home homebridge <action> ok|fail". The line has no device name, host,
+    id, or value. An unreachable device is remembered in memory (offline_since).
     """
     action = "command"
     device_id = None
+    kind = "wled"
     if isinstance(intent, dict) and intent.get("action") in _ACTIONS:
         action = intent["action"]
         if isinstance(intent.get("id"), str):
             device_id = intent["id"]
+        if intent.get("kind") == "homebridge":
+            kind = "homebridge"
     ok = False
     try:
-        if action in _ACTIONS:
-            ok = await _perform(http, intent)
+        if action in _ACTIONS and isinstance(intent, dict):
+            if kind == "homebridge":
+                ok = await _perform_hb(http, intent)
+            else:
+                ok = await _perform(http, intent)
     except Exception:
         ok = False
     _mark(device_id, ok)
-    _log(logger, action, ok)
+    _log(logger, action, ok, kind)
     return ok

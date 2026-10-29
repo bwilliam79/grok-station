@@ -4440,6 +4440,10 @@ async function pageIntegrations(el) {
   let bots = [];
   let savedNames = [];
   let serverClash = "";
+  let hbBase = "";
+  let hbUser = "";
+  let hbPass = "";
+  let hbOtp = "";
   const stepper = n => `<p class="stepper" aria-label="${STEPS.join(" · ")}">${STEPS.map((t, i) => {
     const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
@@ -4500,27 +4504,47 @@ async function pageIntegrations(el) {
     $("#wledhost", d).focus();
   }
 
+  function wledOnly(list) { return (list || []).filter(d => !d || d.kind !== "homebridge"); }
+  function hbOnly(list) { return (list || []).filter(d => d && d.kind === "homebridge"); }
+
   async function list() {
     const r = await api("GET", "/api/integrations");
     const data = r.ok && r.data ? r.data : {integrations: {}, devices: [], later: []};
     const wled = (data.integrations && data.integrations.wled) || {};
+    const hb = (data.integrations && data.integrations.homebridge) || {};
     const devices = Array.isArray(data.devices) ? data.devices : [];
-    const ready = wled.enabled && devices.length;
+    const lights = wledOnly(devices);
+    const hbDevices = hbOnly(devices);
+    const ready = wled.enabled && lights.length;
     const later = Array.isArray(data.later) ? data.later : [];
-    const home = later.find(c => c.id === "homebridge") || {name: "Homebridge", status: "coming_next"};
     const rest = later.filter(c => c.id !== "homebridge" && c.id !== "apple_home");
     const laterName = {matter: "Matter", nest: "Google Nest thermostat", cameras: "Cameras (RTSP)"};
     const apple = later.find(c => c.id === "apple_home");
     const appleText = (apple && apple.note) || "Use Homebridge for these devices. Apple Home has no API outside Apple devices.";
+    const voiceOn = wled.voice === true || hb.voice === true;
+    const anyDev = lights.length + hbDevices.length > 0;
+    const hbStatus = hb.status || "not_set_up";
+    const hbLabel = hbStatus === "connected" ? "Connected" : hbStatus === "signed_in" ? "Signed in" : hbStatus === "admin" ? "Needs attention" : hbStatus === "signin" ? "Fix sign-in" : "Not set up";
+    const hbClass = hbStatus === "connected" || hbStatus === "signed_in" ? "ok" : (hbStatus === "admin" || hbStatus === "signin") ? "bad" : "none";
+    const hbSub = hbStatus === "admin" ? "This login is an admin. Homebridge control is off."
+      : hbStatus === "signin" ? "Homebridge sign-in stopped working."
+      : hbDevices.length ? esc(String(hbDevices.length)) + (hbDevices.length === 1 ? " device" : " devices")
+      : "Lights, switches, plugs and TVs you already have in Homebridge.";
+    const hbBtn = hbStatus === "not_set_up" ? `<button class="btn p" id="hbsetup" type="button">Set up</button>`
+      : hbStatus === "signin" ? `<button class="btn" id="hbfix" type="button">Fix sign-in</button><button class="btn d" id="hbremove" type="button">Remove</button>`
+      : (hbStatus === "connected" || hbStatus === "signed_in") ? `<button class="btn" id="hbmanage" type="button">Manage</button>`
+      : `<button class="btn d" id="hbremove" type="button">Remove</button>`;
     el.innerHTML = `<p class="lead">Control lights on your home network by voice. Everything runs here on the station; nothing goes to the cloud.</p>
+      ${anyDev ? `<div class="row"><button type="button" class="tog${voiceOn ? " on" : ""}" role="switch" id="hvoice" aria-checked="${voiceOn ? "true" : "false"}" aria-label="Voice home control"></button><div><div class="lbl">Voice home control</div><div class="help">Lets anyone who says the wake word turn these devices on or off. Off until you turn it on.</div></div></div><div id="wvoicee"></div>` : ""}
       <div class="intgrid">
         <div class="card intcard"><div class="ih"><div><h2>WLED</h2>
           <span class="intst ${ready ? "ok" : "none"}">${ready ? "Connected" : "Not set up"}</span></div></div>
-          <p class="sub">${ready ? esc(String(devices.length)) + (devices.length === 1 ? " light" : " lights") + (wled.voice ? " · Voice control on" : " · Voice control off") : "LED strips that speak WLED."}</p>
+          <p class="sub">${ready ? esc(String(lights.length)) + (lights.length === 1 ? " light" : " lights") + (wled.voice ? " · Voice control on" : " · Voice control off") : "LED strips that speak WLED."}</p>
           <div class="acts2">${ready ? `<button class="btn" id="wmanage" type="button">Manage</button><button class="btn p" id="wsetup" type="button">Add lights</button>` : `<button class="btn p" id="wsetup" type="button">Set up</button>`}</div></div>
-        <div class="card intcard"><div class="ih"><div><h2>${esc(home.name || "Homebridge")}</h2>
-          <span class="intst later">Coming next</span></div></div>
-          <p class="sub">Lights, switches, plugs and TVs you already have in Homebridge.</p></div>
+        <div class="card intcard"><div class="ih"><div><h2>Homebridge</h2>
+          <span class="intst ${hbClass}">${esc(hbLabel)}</span></div></div>
+          <p class="sub">${hbStatus === "admin" || hbStatus === "signin" ? esc(hbSub) : hbSub}</p>
+          <div class="acts2">${hbBtn}</div></div>
       </div>
       <div class="seclab" style="margin-top:22px">Later</div>
       <div class="intgrid">${rest.map(c => `<div class="card intcard later"><h2>${esc(c.name || laterName[c.id] || "")}</h2><span class="intst later">Later</span>
@@ -4529,18 +4553,8 @@ async function pageIntegrations(el) {
     const setup = $("#wsetup", el);
     if (setup) setup.onclick = () => finding();
     const manage = $("#wmanage", el);
-    if (manage) manage.onclick = () => manageView(devices, wled.voice === true);
-  }
-
-  function manageView(devices, voiceOn) {
-    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>WLED</h2>
-      <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No lights saved."}</p>
-      ${devices.length ? `<div class="row"><button type="button" class="tog${voiceOn ? " on" : ""}" role="switch" id="wvoice" aria-checked="${voiceOn ? "true" : "false"}" aria-label="Voice home control"></button><div><div class="lbl">Voice home control</div><div class="help">Lets anyone who says the wake word turn these lights on, off, or change them. Off until you turn it on.</div></div></div><div id="wvoicee"></div>` : ""}
-      <div id="mrows"></div>
-      <div class="field inline" style="margin-top:16px"><button class="btn p" id="madd" type="button">Add lights</button>
-        <button class="btn d" id="mrm" type="button">Remove WLED</button></div></div>`;
-    back(list);
-    const vt = $("#wvoice", el);
+    if (manage) manage.onclick = () => manageView(lights);
+    const vt = $("#hvoice", el);
     if (vt) vt.onclick = () => {
       const on = vt.getAttribute("aria-checked") !== "true";
       const send = async pw => {
@@ -4553,8 +4567,25 @@ async function pageIntegrations(el) {
         return r;
       };
       if (!on) send("");
-      else withPassword("Turn on voice home control?", "Enter the admin password. Anyone who says the wake word can then control these lights.", "Turn on", send);
+      else withPassword("Turn on voice home control?", "Enter the admin password. Anyone who says the wake word can then control these devices.", "Turn on", send);
     };
+    const hbGo = $("#hbsetup", el);
+    if (hbGo) hbGo.onclick = () => hbIntro();
+    const hbMan = $("#hbmanage", el);
+    if (hbMan) hbMan.onclick = () => hbManage(hbDevices, hb.base || "");
+    const hbFix = $("#hbfix", el);
+    if (hbFix) hbFix.onclick = () => { hbBase = hb.base || ""; hbBase ? hbEnter(hbBase, {fix: true}) : hbAddress(); };
+    const hbRm = $("#hbremove", el);
+    if (hbRm) hbRm.onclick = () => removeHomebridge();
+  }
+
+  function manageView(devices) {
+    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>WLED</h2>
+      <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No lights saved."}</p>
+      <div id="mrows"></div>
+      <div class="field inline" style="margin-top:16px"><button class="btn p" id="madd" type="button">Add lights</button>
+        <button class="btn d" id="mrm" type="button">Remove WLED</button></div></div>`;
+    back(list);
     const box = $("#mrows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
@@ -4572,8 +4603,7 @@ async function pageIntegrations(el) {
         const r = await api("DELETE", "/api/integrations/devices/" + encodeURIComponent(d.id), {});
         if (r.ok) {
           const again = await api("GET", "/api/integrations");
-          const w = (again.data && again.data.integrations && again.data.integrations.wled) || {};
-          manageView((again.data && again.data.devices) || [], w.voice === true);
+          manageView(wledOnly((again.data && again.data.devices) || []));
         }
       };
     });
@@ -4755,7 +4785,7 @@ async function pageIntegrations(el) {
   }
   function done(devices) {
     el.innerHTML = `<div class="card wcard">${head(5, "All set")}
-      <p class="sub">Turn on Voice home control in Manage, then try it: say 'Hey Grok, turn on ${esc((devices[0] && devices[0].name) || "Kitchen Strip")}'.</p>
+      <p class="sub">Turn on Voice home control, then try it: say 'Hey Grok, turn on ${esc((devices[0] && devices[0].name) || "Kitchen Strip")}'.</p>
       <div id="drows"></div>
       <p class="help">Say the light's name; 'turn off the lights' on its own isn't supported yet.</p>
       <div class="field inline" style="margin-top:16px"><span class="right"><button class="btn p" id="finish" type="button">Done</button></span></div></div>`;
@@ -4776,6 +4806,413 @@ async function pageIntegrations(el) {
       };
     });
     $("#finish", el).onclick = () => list();
+  }
+
+  const HB_STEPS = ["Address", "Create login", "Enter login", "Verify", "Pick", "Name", "Done"];
+  const HB_CHECK_LABEL = {reach: "Reached Homebridge", login: "Login works", admin: "Not an admin"};
+  const HB_TYPE = {light: "Light", switch: "Switch", outlet: "Outlet", fan: "Fan", tv: "TV"};
+  const hbStepper = n => `<p class="stepper" aria-label="${HB_STEPS.join(" · ")}">${HB_STEPS.map((t, i) => {
+    const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
+    return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
+  }).join('<span class="sep"> · </span>')}</p>`;
+  const hbHead = (n, title) => `<a href="#integrations" id="iback">‹ Integrations</a>${hbStepper(n)}<h2>${esc(title)}</h2>`;
+  function hbChecks(checks, pending) {
+    const byId = {};
+    (checks || []).forEach(c => { if (c && c.id) byId[c.id] = !!c.ok; });
+    return `<ul class="hchecks">${["reach", "login", "admin"].map(id => {
+      const ok = byId[id];
+      const cls = pending ? "wait" : ok ? "ok" : "bad";
+      const mark = pending ? "·" : ok ? "✓" : "×";
+      return `<li class="${cls}" data-check="${id}"><span class="mark" aria-hidden="true">${mark}</span><b>${esc(HB_CHECK_LABEL[id])}</b></li>`;
+    }).join("")}</ul>`;
+  }
+  function usersHref(base) {
+    return /^https?:\/\/[^/?#]+$/.test(base) ? base + "/users" : "";
+  }
+  function hbIntro() {
+    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a>${hbStepper(0)}
+      <h2>Connect Homebridge</h2>
+      <p class="lead">Grok Station uses its own Homebridge login that can control devices but can't change Homebridge settings. Setup takes about 3 minutes.</p>
+      <ol class="hbsteps"><li>Tell us where Homebridge is.</li>
+        <li>Make a login for Grok Station in Homebridge (Admin off).</li>
+        <li>Enter it here, and we check it.</li>
+        <li>Pick the devices to control by voice.</li></ol>
+      <div class="tip2">You'll need your Homebridge admin login for one step. Grok Station never sees or stores it.</div>
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
+        <span class="right"><button class="btn p" id="hbstart" type="button">Start</button></span></div></div>`;
+    back(list);
+    $("#hbcancel", el).onclick = () => list();
+    $("#hbstart", el).onclick = () => hbAddress();
+  }
+  function hbAddress(prefill, message) {
+    const shown = prefill != null ? prefill : (hbBase || "");
+    el.innerHTML = `<div class="card wcard">${hbHead(1, "Your Homebridge address")}
+      <p class="sub">The address you open to see Homebridge in a browser. Add the port if yours uses one.</p>
+      <div class="hbaddr"><div class="field"><label for="hbbase">Homebridge address</label>
+        <input class="inp" id="hbbase" autocomplete="off" value="${esc(shown)}"></div>
+        <button class="btn" id="hbcheck" type="button">Check</button></div>
+      <p class="help" id="hbok" hidden>✓ Found Homebridge at this address.</p>
+      <div id="hberr"></div>
+      <p class="help">Example: http://homebridge.local:8581</p>
+      <div class="field inline" style="margin-top:8px"><button class="btn g" id="hbback" type="button">Back</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button" disabled>Next</button></span></div></div>`;
+    back(hbIntro);
+    $("#hbback", el).onclick = () => hbIntro();
+    if (message) errBox($("#hberr", el), message);
+    let checked = "";
+    const sync = () => {
+      const same = $("#hbbase", el).value.trim() === checked && checked;
+      $("#hbok", el).hidden = !same;
+      $("#hbnext", el).disabled = !same;
+    };
+    $("#hbbase", el).addEventListener("input", sync);
+    $("#hbcheck", el).onclick = async () => {
+      const raw = $("#hbbase", el).value.trim();
+      busyBtn($("#hbcheck", el), true);
+      const r = await api("POST", "/api/integrations/homebridge/check-address", {base: raw});
+      busyBtn($("#hbcheck", el), false, "Check");
+      if (!r.ok) {
+        checked = "";
+        sync();
+        const msg = (r.data && r.data.message) || "Homebridge didn't answer.";
+        return errBox($("#hberr", el), msg);
+      }
+      hbBase = (r.data && r.data.base) || raw;
+      checked = raw;
+      $("#hbbase", el).value = hbBase;
+      checked = hbBase;
+      errBox($("#hberr", el), "");
+      sync();
+    };
+    $("#hbnext", el).onclick = () => hbCreate(hbBase);
+    $("#hbbase", el).focus();
+  }
+  function hbCreate(base) {
+    const href = usersHref(base);
+    el.innerHTML = `<div class="card wcard">${hbHead(2, "Create a login for Grok Station")}
+      <p class="sub">Homebridge's Add User is a pop-up on its Users page, so we can only take you to that page. You'll need your admin login there.</p>
+      <div class="field inline">${href ? `<a class="btn p" id="hbusers" href="${esc(href)}" target="_blank" rel="noopener noreferrer">Open Homebridge Users</a>` : ""}
+        <span class="help">Opens the Users page in a new tab.</span></div>
+      <ol class="hbsteps"><li>Sign in as your Homebridge admin.</li>
+        <li>Click Add User.</li>
+        <li>Username grok-station and a strong password.</li>
+        <li>Leave Admin off, then Add.</li></ol>
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbback" type="button">Back</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button">I made it</button></span></div></div>`;
+    back(() => hbAddress(base));
+    $("#hbback", el).onclick = () => hbAddress(base);
+    $("#hbnext", el).onclick = () => hbEnter(base);
+  }
+  function hbEnter(base, opts) {
+    opts = opts || {};
+    const fixing = !!opts.fix;
+    el.innerHTML = `<div class="card wcard">${hbHead(3, "Enter that login")}
+      <p class="sub">${fixing ? "Homebridge sign-in stopped working. Enter the login again. It's stored only on this station." : "The grok-station login you just made. It's stored only on this station."}</p>
+      <form id="hbform" autocomplete="off">
+        <div class="field"><label for="hbuser">Username</label><input class="inp" id="hbuser" autocomplete="off" maxlength="64" value="${esc(hbUser || "grok-station")}"></div>
+        <div class="field"><label for="hbpass">Password</label>
+          <div class="hbaddr"><input class="inp" id="hbpass" type="password" autocomplete="new-password" maxlength="200">
+            <button class="btn" id="hbshow" type="button">Show</button></div></div>
+        ${opts.otp ? `<div class="field"><label for="hbotp">Code</label><input class="inp" id="hbotp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" value="${esc(hbOtp)}"></div>
+          <p class="help">This login has 2-step sign-in on. Enter the code.</p>` : ""}
+        <div id="hberr"></div>
+        <div class="field inline"><button class="btn g" id="hbback" type="button">Back</button>
+          <span class="right"><button class="btn p" id="hbverify" type="submit">Verify</button></span></div>
+      </form></div>`;
+    back(() => fixing ? list() : hbCreate(base));
+    $("#hbback", el).onclick = () => fixing ? list() : hbCreate(base);
+    const pass = $("#hbpass", el);
+    if (hbPass) pass.value = hbPass;
+    $("#hbshow", el).onclick = () => {
+      const show = pass.type === "password";
+      pass.type = show ? "text" : "password";
+      $("#hbshow", el).textContent = show ? "Hide" : "Show";
+    };
+    if (opts.message) errBox($("#hberr", el), opts.message);
+    $("#hbform", el).onsubmit = ev => { ev.preventDefault(); hbVerify(base, !!opts.otp); };
+  }
+  function hbVerifyBody(base, stepup) {
+    const body = {base: base, username: hbUser, password: hbPass};
+    if (hbOtp) body.otp = hbOtp;
+    if (stepup) body.stepup = stepup;
+    return body;
+  }
+  function hbApply(r) {
+    const data = (r && r.data) || {};
+    const err = data.error;
+    if (err === "admin") return hbStopped(data.message || "This login is an admin. Grok Station won't store an admin login. Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.", data.checks, "Back to Create a login", () => hbCreate(hbBase));
+    if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase));
+    if (err === "otp_required") return hbEnter(hbBase, {otp: true, message: data.message || "This login has 2-step sign-in on. Enter the code."});
+    if (err === "bad_login") return hbEnter(hbBase, {message: data.message || "Username or password didn't work."});
+    const msg = data.message || "Homebridge didn't answer.";
+    if (err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable") return hbAddress(hbBase, msg);
+    return hbEnter(hbBase, {message: msg});
+  }
+  async function hbPost(base, stepup) {
+    return api("POST", "/api/integrations/homebridge/verify", hbVerifyBody(base, stepup));
+  }
+  function hbChecking() {
+    el.innerHTML = `<div class="card wcard">${hbHead(4, "Checking the login")}
+      <p class="sub">This takes a few seconds.</p>
+      ${hbChecks([], true)}
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
+        <span class="right"><button class="btn p" type="button" disabled>Next</button></span></div></div>`;
+    back(list);
+    $("#hbcancel", el).onclick = () => list();
+  }
+  function hbPassed(checks) {
+    el.innerHTML = `<div class="card wcard">${hbHead(4, "Checking the login")}
+      <p class="sub">All three checks passed. Nothing is an admin login.</p>
+      ${hbChecks(checks, false)}
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
+    back(list);
+    $("#hbcancel", el).onclick = () => list();
+    $("#hbnext", el).onclick = () => hbLoadPick();
+  }
+  function hbStopped(message, checks, label, again) {
+    const admin = message.indexOf("is an admin") >= 0;
+    el.innerHTML = `<div class="card wcard">${hbHead(4, admin ? "We can't use this login" : "We couldn't finish the check")}
+      ${hbChecks(checks, false)}
+      <div class="banner warn" role="alert" id="hbstop"><span class="pill warn"><i></i>Needs attention</span> ${esc(message)}</div>
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel setup</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button">${esc(label)}</button></span></div></div>`;
+    back(list);
+    $("#hbcancel", el).onclick = () => list();
+    $("#hbnext", el).onclick = again;
+  }
+  async function hbVerify(base, wantOtp) {
+    hbUser = ($("#hbuser", el).value || "").trim();
+    hbPass = $("#hbpass", el).value;
+    hbOtp = wantOtp && $("#hbotp", el) ? $("#hbotp", el).value.trim() : hbOtp;
+    if (!hbUser || hbPass.length < 8) {
+      return errBox($("#hberr", el), "Username or password didn't work.");
+    }
+    const finish = async r => {
+      if (r && r.ok) {
+        hbPass = "";
+        hbOtp = "";
+        await refreshStepup();
+        hbPassed((r.data && r.data.checks) || []);
+        return {ok: true};
+      }
+      if (r && r.status === 403 && r.data && r.data.error === PASSWORD_BAD) return r;
+      hbApply(r);
+      return {ok: true};
+    };
+    const ask = () => askPassword("Check this login?", "Enter the admin password. The Homebridge login is saved on this station only after the checks pass.", "Verify", async pw => {
+      hbChecking();
+      return finish(await hbPost(base, pw));
+    }, () => hbEnter(base, {otp: !!hbOtp}));
+    hbChecking();
+    const first = await hbPost(base, "");
+    if (first && first.status === 403 && first.data && first.data.error === PASSWORD_BAD) return ask();
+    return finish(first);
+  }
+  async function hbLoadPick(backTo) {
+    const r = await api("GET", "/api/integrations/homebridge/accessories");
+    if (!r.ok) {
+      const msg = (r.data && r.data.message) || "Homebridge didn't answer.";
+      if (r.data && r.data.error === "admin") return hbStopped(r.data.message || msg, [], "Back", list);
+      return hbAddress(hbBase, msg);
+    }
+    const rows = (r.data && r.data.accessories) || [];
+    const saved = await api("GET", "/api/integrations");
+    const have = {};
+    hbOnly((saved.data && saved.data.devices) || []).forEach(d => { if (d.uid) have[d.uid] = true; });
+    hbPick(rows.filter(row => row && row.uid && !have[row.uid] && HB_TYPE[row.type]), backTo || (() => hbEnter(hbBase)));
+  }
+  function hbPick(rows, backFn) {
+    const groups = [
+      ["Lights", ["light"]],
+      ["Switches and outlets", ["switch", "outlet"]],
+      ["Fans", ["fan"]],
+      ["TVs", ["tv"]]
+    ];
+    const onPick = {};
+    rows.forEach(row => { onPick[row.uid] = row.type === "light" || row.type === "switch" || row.type === "outlet"; });
+    el.innerHTML = `<div class="card wcard">${hbHead(5, "Pick devices")}
+      <p class="sub">Choose what Grok can turn on and off. Cameras, doorbells, locks, garage doors and thermostats are not listed.</p>
+      <div id="hprows"></div>
+      <div class="field inline" style="margin-top:8px"><button class="btn g" id="hbback" type="button">Back</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
+    back(backFn);
+    $("#hbback", el).onclick = backFn;
+    const box = $("#hprows", el);
+    const paint = () => {
+      const n = rows.filter(row => onPick[row.uid]).length;
+      const btn = $("#hbnext", el);
+      if (btn) { btn.disabled = n === 0; btn.textContent = n ? "Next · " + n + " picked" : "Next"; }
+    };
+    groups.forEach(([title, types]) => {
+      const group = rows.filter(row => types.indexOf(row.type) >= 0);
+      if (!group.length) return;
+      const lab = document.createElement("p");
+      lab.className = "seclab";
+      lab.textContent = title + " · " + group.length;
+      box.appendChild(lab);
+      group.forEach(row => {
+        const line = document.createElement("div");
+        line.className = "drow";
+        const picked = !!onPick[row.uid];
+        line.innerHTML = `<button type="button" class="cbx${picked ? " on" : ""}" role="checkbox" aria-checked="${picked ? "true" : "false"}" aria-label="${esc(row.name || "Device")}"><i></i></button>
+          <div class="dm"><b>${esc(row.name || "Device")}</b><div class="help">${esc(HB_TYPE[row.type] || "")}</div></div>`;
+        box.appendChild(line);
+        const boxBtn = line.querySelector(".cbx");
+        boxBtn.onclick = () => {
+          onPick[row.uid] = !onPick[row.uid];
+          boxBtn.classList.toggle("on", onPick[row.uid]);
+          boxBtn.setAttribute("aria-checked", onPick[row.uid] ? "true" : "false");
+          paint();
+        };
+      });
+    });
+    paint();
+    $("#hbnext", el).onclick = () => hbNames(rows.filter(row => onPick[row.uid]), () => hbPick(rows, backFn));
+  }
+  async function hbNames(rows, backFn) {
+    if (!rows.length) return hbPick(rows, backFn);
+    await loadNames();
+    let hbClash = "";
+    el.innerHTML = `<div class="card wcard">${hbHead(6, "Name them")}
+      <p class="sub">This is the name you say. Aliases are optional, separated by commas.</p>
+      <div id="hnrows"></div>
+      <div id="hnerr"></div>
+      <div class="field inline" style="margin-top:8px"><button class="btn g" id="hbback" type="button">Back</button>
+        <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
+    back(backFn);
+    $("#hbback", el).onclick = backFn;
+    const box = $("#hnrows", el);
+    rows.forEach((row, i) => {
+      const block = document.createElement("div");
+      block.className = "nmrow";
+      block.innerHTML = `<div class="field"><label for="hn${i}">Name</label><input class="inp" id="hn${i}" maxlength="40" value="${esc(row._name != null ? row._name : (row.name || ""))}"></div>
+        <div class="field"><label for="ha${i}">Aliases</label><input class="inp" id="ha${i}" maxlength="80" value="${esc(row._aliases != null ? row._aliases : "")}"></div>
+        <div class="ferr" data-err hidden></div>`;
+      box.appendChild(block);
+    });
+    const sync = () => {
+      const values = rows.map((_, i) => $("#hn" + i, el).value);
+      const aliases = rows.map((_, i) => $("#ha" + i, el).value.split(",").map(s => s.trim()).filter(Boolean));
+      let blocked = false;
+      rows.forEach((row, i) => {
+        row._name = values[i];
+        row._aliases = $("#ha" + i, el).value;
+        const others = [];
+        rows.forEach((_, j) => { if (j !== i) { others.push(values[j]); aliases[j].forEach(a => others.push(a)); } });
+        let msg = rowClash(values[i], others);
+        aliases[i].forEach(a => { const am = rowClash(a, others); if (am) msg = msg || am; });
+        if (hbClash && (spokenKey(values[i]) === spokenKey(hbClash.name || "") || aliases[i].some(a => spokenKey(a) === spokenKey(hbClash.name || "")))) {
+          msg = clashPhrase(hbClash.with, hbClash.name) + ". Pick another name so Grok knows which you mean.";
+        }
+        const blocks = box.querySelectorAll(".nmrow");
+        const err = blocks[i] ? blocks[i].querySelector("[data-err]") : null;
+        if (err) { err.hidden = !msg; err.textContent = msg || ""; }
+        if (msg) blocked = true;
+      });
+      const next = $("#hbnext", el);
+      if (next) next.disabled = blocked || values.some(v => !v.trim());
+    };
+    box.querySelectorAll("input").forEach(inp => inp.addEventListener("input", () => { hbClash = ""; sync(); }));
+    sync();
+    $("#hbnext", el).onclick = () => {
+      const body = rows.map(row => ({
+        uid: row.uid,
+        name: (row._name != null ? row._name : row.name || "").trim(),
+        aliases: String(row._aliases || "").split(",").map(s => s.trim()).filter(Boolean),
+      }));
+      const send = async pw => {
+        busyBtn($("#hbnext", el), true);
+        const r = await api("POST", "/api/integrations/homebridge/devices", pw ? {devices: body, password: pw} : {devices: body});
+        busyBtn($("#hbnext", el), false, "Next");
+        if (r.ok) {
+          if (pw) await refreshStepup();
+          hbDone(r.data && r.data.devices || []);
+          return r;
+        }
+        if (r.status === 403 || r.status === 429) return r;
+        if (r.data && r.data.error === "clash") {
+          hbClash = r.data;
+          sync();
+          return {ok: true};
+        }
+        errBox($("#hnerr", el), (r.data && r.data.message) || "Couldn't save these devices.");
+        return {ok: true};
+      };
+      const ask = () => askPassword("Save these devices?", "Enter the admin password to add devices to the station.", "Save", send);
+      if (stepupOpen()) send("").then(r => { if (r && r.status === 403) ask(); });
+      else ask();
+    };
+  }
+  function hbDone(devices) {
+    const sample = (devices[0] && devices[0].name) || "Porch Light";
+    el.innerHTML = `<div class="card wcard">${hbHead(7, "All set")}
+      <p class="sub">Turn on Voice home control, then try it: say 'Hey Grok, turn on ${esc(sample)}'.</p>
+      <div id="hdrows"></div>
+      <p class="help">Test writes the current value, so nothing changes. Say the device's name; 'turn off the lights' on its own isn't supported yet.</p>
+      <div class="field inline" style="margin-top:16px"><span class="right"><button class="btn p" id="hbfinish" type="button">Done</button></span></div></div>`;
+    back(list);
+    const box = $("#hdrows", el);
+    devices.forEach(d => {
+      const row = document.createElement("div");
+      row.className = "drow";
+      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b>
+        <div class="sayline"><span class="w">Hey Grok</span><span>, turn on ${esc(d.name)}</span></div>
+        <div class="help" data-st></div></div><button class="btn sm" type="button" data-test>Test</button>`;
+      box.appendChild(row);
+      row.querySelector("[data-test]").onclick = async () => {
+        const note = row.querySelector("[data-st]");
+        note.textContent = "Checking…";
+        const r = await api("POST", "/api/integrations/devices/" + encodeURIComponent(d.id) + "/test", {});
+        note.textContent = r.ok ? "It worked" : "Offline since " + clockNow();
+      };
+    });
+    $("#hbfinish", el).onclick = () => list();
+  }
+  function hbManage(devices, base) {
+    hbBase = base || hbBase;
+    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>Homebridge</h2>
+      <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No devices saved."}</p>
+      <div id="hmrows"></div>
+      <div class="field inline" style="margin-top:16px"><button class="btn p" id="hmadd" type="button">Add devices</button>
+        <button class="btn d" id="hmrm" type="button">Remove Homebridge</button></div></div>`;
+    back(list);
+    const box = $("#hmrows", el);
+    devices.forEach(d => {
+      const row = document.createElement("div");
+      row.className = "drow";
+      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b><div class="help">${(d.aliases || []).map(esc).join(", ")}</div><div class="help" data-st></div></div>
+        <button class="btn sm" type="button" data-test>Test</button><button class="btn sm" type="button" data-rm>Remove</button>`;
+      box.appendChild(row);
+      row.querySelector("[data-test]").onclick = async () => {
+        const note = row.querySelector("[data-st]");
+        note.textContent = "Checking…";
+        const r = await api("POST", "/api/integrations/devices/" + encodeURIComponent(d.id) + "/test", {});
+        note.textContent = r.ok ? "It worked" : "Offline since " + clockNow();
+      };
+      row.querySelector("[data-rm]").onclick = async () => {
+        const r = await api("DELETE", "/api/integrations/devices/" + encodeURIComponent(d.id), {});
+        if (!r.ok) return;
+        const again = await api("GET", "/api/integrations");
+        const data = again.data || {};
+        hbManage(hbOnly(data.devices || []), (data.integrations && data.integrations.homebridge && data.integrations.homebridge.base) || hbBase);
+      };
+    });
+    $("#hmadd", el).onclick = () => hbLoadPick(() => hbManage(devices, hbBase));
+    $("#hmrm", el).onclick = () => removeHomebridge();
+  }
+  function removeHomebridge() {
+    askPassword("Remove Homebridge?", "This removes Homebridge, its devices, and the saved login. No copy is kept.", "Remove", async pw => {
+      const r = await api("DELETE", "/api/integrations/homebridge", {password: pw});
+      if (r.ok) {
+        hbBase = "";
+        hbUser = "";
+        hbPass = "";
+        hbOtp = "";
+        list();
+      }
+      return r;
+    });
   }
   await list();
 }
