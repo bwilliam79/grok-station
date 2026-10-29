@@ -211,6 +211,9 @@ class IntegrationsAPI(unittest.TestCase):
         ga.relay_call = lambda *args, **kwargs: None
         os.environ["ADMIN_ALLOW_LOOPBACK_FOR_TESTS"] = "1"
         os.environ["ADMIN_INTEGRATIONS"] = os.path.join(ga.STATE_DIR, "integrations.json")
+        # Own state: whichever test imported grok_admin first may have left PERSONAS at a system path.
+        self._ga_personas = ga.PERSONAS
+        ga.PERSONAS = os.path.join(ga.STATE_DIR, "personas-gs130.json")
         self.personas = ga.PERSONAS
         self._persona_existed = os.path.exists(self.personas)
         self._persona_body = open(self.personas).read() if self._persona_existed else None
@@ -221,6 +224,7 @@ class IntegrationsAPI(unittest.TestCase):
         os.environ["ADMIN_INTEGRATIONS"] = os.path.join(ga.STATE_DIR, "integrations.json")
 
     def tearDown(self):
+        ga.PERSONAS = self._ga_personas
         gsi.BLINK_S = self._blink
         gsi.mdns_browse = self._mdns
         gsi.resolve_host = self._resolve
