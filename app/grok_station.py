@@ -3797,6 +3797,7 @@ ENROLL_STAGES = {
     # stage: (ring, label, label color, meter) ; copy is built in enroll_copy()
     "prompt": ("idle", "Ready", MUTED, None),
     "ready": ("enroll_ready", "Get ready", SPEAKING, None),
+    "count": ("idle", "Get ready", SPEAKING, None),
     "recording": ("listening", "Recording", LISTENING, "live"),
     "loud": ("idle", "Too loud", TEXT, "full"),
     "quiet": ("idle", "Try again", TEXT, "flat"),
@@ -3849,15 +3850,18 @@ def enroll_copy(phrase, i, n, stage, extra):
             f"{n} clips · about {max(1, round(n * 6 / 60))} min", 0.0
     if stage == "ready":
         return "Get ready…", f"Say {q} right after the chime.", MUTED, clip, bar
+    if stage == "count":
+        digit = extra if extra in ("1", "2", "3") else "3"
+        return digit, "Recording in 3…", MUTED, f"{i} of {n}" if n else None, bar
     if stage == "recording":
-        return f"Say {q}", "Speak now", LISTENING, clip, bar
+        return f"Listening… {i} of {n}", "Speak after the chime.", LISTENING, f"{i} of {n}" if n else None, bar
     if stage == "loud":
         return "Too loud", f"Step back a little or speak softer. Clip {i} will retry.", MUTED, clip, bar
     if stage == "quiet":
-        return "Didn’t hear it", f"Say {q} right after the chime. Clip {i} will retry.", MUTED, clip, bar
+        return "Try again", "I didn't hear it. Again after the chime.", MUTED, f"{i} of {n}" if n else clip, bar
     if stage == "saved":
-        nxt = f"Clip {min(i + 1, n)} of {n}"
-        return "Got it", f"Clip {i} saved. Next one in a moment.", MUTED, nxt, i / n if n else None
+        sub = "Next" if extra == "next" and i < n else ""
+        return f"{i} of {n} saved", sub, MUTED, f"{i} of {n}" if n else None, i / n if n else None
     if stage == "uploaded":
         return f"All {n} clips saved", "Uploaded for training. You can use the station as usual.", MUTED, "Uploaded ✓", 1.0
     if stage == "queued":
@@ -3921,7 +3925,7 @@ _ENROLL_WX = _EnrollWeather()
 
 # Portrait ring while training. "none" lets the tile draw a solid or dashed ring in the fixed 548 px box.
 ENROLL_RING = {
-    "prompt": "none", "loud": "none", "quiet": "none", "failed": "none", "error": "none", "custom": "none",
+    "prompt": "none", "count": "none", "loud": "none", "quiet": "none", "failed": "none", "error": "none", "custom": "none",
     "ready": "enroll_ready", "recording": "listening", "saved": "enroll_saved",
     "uploaded": "success", "passed": "success", "queued": "thinking",
 }
@@ -4023,8 +4027,8 @@ def _enroll_actions(stage):
     """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn (never, 0.13.7)."""
     if stage == "prompt":
         return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
-    if stage in ("ready", "recording", "quiet", "loud", "saved"):
-        return [("stop", "Stop", False, False)], False
+    if stage in ("ready", "count", "recording", "quiet", "loud", "saved"):
+        return [("stop", "Cancel", False, False)], False
     if stage == "passed":
         return [("done", "Done", True, False)], False
     if stage == "failed":
@@ -4113,7 +4117,7 @@ def _draw_actions(surf, L, tile, slot, col_w, stage):
     actions, _hint = _enroll_actions(stage)
     px = max(12, zpx(L, 52))
     f = font("display", px)
-    bh = min(slot.h, max(24, zpx(L, 104)))
+    bh = min(slot.h, max(44, zpx(L, 104)))
     by = slot.y + max(0, (slot.h - bh) // 2)
     pad = zpx(L, 52)
     gap = zpx(L, 20)

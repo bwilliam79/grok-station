@@ -1514,6 +1514,12 @@ function trapTab(sheet) {
     nodes[ev.shiftKey ? (i <= 0 ? nodes.length - 1 : i - 1) : (i + 1) % nodes.length].focus();
   });
 }
+function trainLiveLine(index, total, saved) {
+  const i = Math.max(1, Number(index) || 1);
+  const n = Math.max(1, Number(total) || 5);
+  if (saved) return i + " of " + n + " saved";
+  return "Listening… " + i + " of " + n;
+}
 function openSetWake(bot, el, d, opts) {
   opts = opts || {};
   const sheet = document.createElement("div");
@@ -1718,8 +1724,11 @@ function openSetWake(bot, el, d, opts) {
     const grid = progress ? clipSquares(kept, true, rejected) : clipSquares(0, false, false);
     const first = topup ? `<div class="help">Already kept</div>${clipSquares(5, false, false)}<div class="help">5 more</div>` : "";
     const title = topup ? "Train more: say “" + label + "”" : "Say “" + label + "”";
+    const savedNow = !!(recent && recent[0] && recent[0].ok);
+    const live = trainLiveLine(savedNow ? recent[0].n : index, 5, savedNow);
     body.innerHTML = `<h2 class="h-dialog" id="wwt">${esc(title)}</h2>
       <p>${esc(lead)}</p>
+      <div class="sr" aria-live="polite">${esc(live)}</div>
       ${first}${grid}
       ${levelMeter(level)}
       ${barHTML(progress ? (kept / 5) * 100 : 0, false)}
@@ -1740,6 +1749,7 @@ function openSetWake(bot, el, d, opts) {
       action: "Stop and discard",
       go: async () => {
         await api("POST", "/api/enroll/control", {op: "discard"});
+        toast("Stopped. Nothing new was saved.");
         await finish();
         return {ok: true};
       }

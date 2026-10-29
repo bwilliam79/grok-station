@@ -34,7 +34,15 @@ step, and scored on the same embedding stream as Hey Grok.
 """
 import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
+import train_flow
 import wait_tone
+
+voice_train_plan = train_flow.voice_train_plan
+train_steps = train_flow.train_steps
+silent_clip = train_flow.silent_clip
+command_during = train_flow.command_during
+mic_stopped_line = train_flow.mic_stopped_line
+CANCEL_SAY = train_flow.CANCEL_SAY
 
 E = os.environ.get
 MODEL = E("WAKE_MODEL", "/opt/grok-station/wake/models/hey_grok.onnx")  # the built-in word; used if the config is unreadable
@@ -817,7 +825,26 @@ def parse_enroll(j):
         return None
     if count != ENROLL_COUNT:
         return {"error": "count"}
-    return {"phrase": phrase, "persona": persona, "count": count, "topup": bool(j.get("topup"))}
+    voice = j.get("voice") is True
+    topup = bool(j.get("topup"))
+    if voice and phrase_trained(phrase):
+        topup = True
+    out = {"phrase": phrase, "persona": persona, "count": count, "topup": topup}
+    if voice:
+        out["voice"] = True
+    return out
+
+
+def phrase_trained(phrase):
+    """True when this phrase already has a wake word (live map or the enrolled file)."""
+    if not isinstance(phrase, str) or not phrase:
+        return False
+    if phrase in WORDS:
+        return True
+    for w in _enrolled_doc().get("words") or []:
+        if isinstance(w, dict) and w.get("name") == phrase:
+            return True
+    return False
 
 
 def _wake_token_path():
@@ -1751,18 +1778,24 @@ def enroll(req, read16, play):
         ENROLL_STATE["timed_out"] = False
         ENROLL_STATE["pause_until"] = None
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
+    voice = req.get("voice") is True
+    label = train_flow.wake_speak_label(phrase, persona)
     ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time(),
                              "persona": persona, "stage": "recording", "message": "Say it on the station.",
                              "index": 0, "kept": 0, "phase": "prompt", "topup": bool(prior), "recent": []}
     print(f"enroll start {phrase} x{n} session {ses}{f' (top-up of {prior})' if prior else ''}", flush=True)
-    sent, i, tries = 0, 1, 0
+    sent, i, tries, silent = 0, 1, 0, 0
     try:
-        show(1, "prompt")
-        room = np.vstack([read16() for _ in range(int(3 / 0.08))]).ravel()  # room noise: a negative for calibration
-        try:
-            _write_wav(os.path.join(d, "noise.wav"), room.astype("<i2").tobytes())
-        except OSError:
-            pass
+        # A voice start is already past the prompt. A tap still shows it, then the same 3-2-1.
+        if voice:
+            show(1, "ready")
+        else:
+            show(1, "prompt")
+            room = np.vstack([read16() for _ in range(int(3 / 0.08))]).ravel()  # room noise: a negative for calibration
+            try:
+                _write_wav(os.path.join(d, "noise.wav"), room.astype("<i2").tobytes())
+            except OSError:
+                pass
         while i <= n:
             if ENROLL_STATE.get("discard"):
                 break
@@ -1772,12 +1805,40 @@ def enroll(req, read16, play):
             show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
                 read16()
+                command_during("lead", None)
+            if i == 1:
+                for num in (3, 2, 1):
+                    if ENROLL_STATE.get("discard"):
+                        break
+                    show(i, "count", str(num))
+                    command_during("count", None)
+                    for _ in range(int(1.0 / 0.08)):
+                        read16()
+            if ENROLL_STATE.get("discard"):
+                break
             show(i, "recording")
+            command_during("recording", None)  # this window's samples stay in the clip
             raw = capture_enroll_clip(read16, play)
             clipped = is_clipped(raw)  # judged on the mic signal before software gain
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
-            if clip is None or clipped:
+            if voice and clip is None and not clipped:
+                # Voice session: one silent clip retries, the next silent clip stops.
+                # A tap keeps the older retry cap below.
+                silent += 1
+                decision = silent_clip(silent, label)
+                print(f"enroll clip {i} rejected (quiet)", flush=True)
+                show(i, "quiet")
+                _note_clip(i, sent, "quiet", "quiet", bool(prior), n)
+                if decision["action"] == "stop":
+                    ENROLL_STATE["silent_stop"] = decision["say"]
+                    break
+                for _ in range(int(RETRY_S / 0.08)):
+                    read16()
+                    command_during("gap", None)
+                continue
+            if clipped or clip is None:
+                silent = 0
                 tries += 1
                 why = "loud" if clipped else "quiet"
                 print(f"enroll clip {i} rejected ({'clipped' if clipped else 'quiet'})", flush=True)
@@ -1785,22 +1846,35 @@ def enroll(req, read16, play):
                 _note_clip(i, sent, why, why, bool(prior), n)
                 for _ in range(int(RETRY_S / 0.08)):
                     read16()
+                    command_during("gap", None)
                 if tries >= 3 * n:
                     break
                 continue
+            silent = 0
             path = os.path.join(d, f"{i - 1:02d}.wav")
             _write_wav(path, clip.astype("<i2").tobytes())
             sent += 1
             _note_clip(i, sent, "saved", "", bool(prior), n)
             if i < n:
-                show(i, "saved")
-                for _ in range(int(0.6 / 0.08)):
+                show(i, "saved", "next")
+                for _ in range(int(1.0 / 0.08)):
                     read16()
+                    command_during("gap", None)
+                show(i, "saved")
+                for _ in range(int((RETRY_S - 1.0) / 0.08)):
+                    read16()
+                    command_during("gap", None)
             i += 1
+        if ENROLL_STATE.get("silent_stop"):
+            msg = ENROLL_STATE.pop("silent_stop")
+            shutil.rmtree(d, ignore_errors=True)
+            enroll_stage("failed", msg, phrase, ses)
+            post_state("notice", text=msg)
+            return
         if ENROLL_STATE.get("discard"):
             timed_out = bool(ENROLL_STATE.pop("timed_out", False))
             shutil.rmtree(d, ignore_errors=True)
-            enroll_stage("cancelled", "Stopped.", phrase, ses)
+            enroll_stage("cancelled", CANCEL_SAY, phrase, ses)
             if timed_out:
                 post_state("idle")  # the pause cap already logged its one line
             else:
@@ -1835,8 +1909,8 @@ def enroll(req, read16, play):
         # Capture ended or a read failed (mic unplugged): never leave the word saying "recording".
         # A partial session is not resumable from a crash here, so it does not stay on disk.
         print(f"enroll stopped: microphone {type(e).__name__}", flush=True)
-        if (ENROLL_STATE.get("last") or {}).get("stage") == "recording":
-            enroll_stage("failed", "The microphone stopped while recording. Press Record voice to try again.", phrase, ses)
+        if (ENROLL_STATE.get("last") or {}).get("stage") in ("recording", "ready", "count"):
+            enroll_stage("failed", mic_stopped_line(label), phrase, ses)
         shutil.rmtree(d, ignore_errors=True)
         post_state("idle")  # take the display out of enroll mode
         raise

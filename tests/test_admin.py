@@ -928,8 +928,9 @@ class WakePhraseAndStatus(unittest.TestCase):
         prev = {"hey_kitchen": {"state": "recording", "message": "Say it on the station.", "updated_at": 100}}
         got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": last}, set(), 200)
         self.assertEqual(got["hey_kitchen"]["state"], "failed")
-        self.assertEqual(got["hey_kitchen"]["message"], ga.ENROLL_MIC_STOPPED)
-        self.assertEqual(ga.ENROLL_MIC_STOPPED, "The microphone stopped while recording. Press Record voice to try again.")
+        self.assertEqual(got["hey_kitchen"]["message"], ga.enroll_mic_stopped("hey_kitchen"))
+        self.assertEqual(ga.enroll_mic_stopped("hey_kitchen"),
+                         "The microphone stopped while recording. Say 'Hey Grok, train my wake word for Kitchen' or press Record voice to try again.")
         # just started: the listener hasn't picked it up yet, so it stays recording
         got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": last}, set(), 105)
         self.assertEqual(got["hey_kitchen"]["state"], "recording")
@@ -945,7 +946,8 @@ class WakePhraseAndStatus(unittest.TestCase):
                 "hey_up": {"state": "uploading", "message": "Sending the clips.", "updated_at": 100},
                 "hey_tr": {"state": "training", "message": "Training.", "updated_at": 100}}
         got = ga.derive_enroll_status(prev, {"enrolling": False, "last_enroll": None}, set(), 150)
-        self.assertEqual((got["hey_kitchen"]["state"], got["hey_kitchen"]["message"]), ("failed", ga.ENROLL_MIC_STOPPED))
+        self.assertEqual((got["hey_kitchen"]["state"], got["hey_kitchen"]["message"]),
+                         ("failed", ga.enroll_mic_stopped("hey_kitchen")))
         self.assertEqual(got["hey_up"]["state"], "uploading")
         self.assertEqual(got["hey_tr"]["state"], "training")
 

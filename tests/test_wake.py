@@ -331,7 +331,9 @@ class EnrollFlow(unittest.TestCase):
         self.assertEqual((gw.LEAD_S, gw.CLIP_S, gw.RETRY_S), (0.9, 2.4, 1.5))
         posted, uploads = self.run_enroll(loud_at=(2,))
         self.assertEqual(posted[0], "prompt")
-        self.assertEqual(posted[1:4], ["ready", "recording", "saved"])
+        self.assertEqual(posted[1], "ready")
+        self.assertEqual(posted[2:5], ["count", "count", "count"])
+        self.assertEqual(posted[5:7], ["recording", "saved"])
         self.assertIn("loud", posted)
         self.assertEqual(uploads, [])  # single device: clips stay on this Pi, nothing is uploaded
 
@@ -364,7 +366,7 @@ class EnrollMicStops(unittest.TestCase):
             (gw.post_state, gw.ENROLL_DIR, gw.time.sleep, gw.subprocess.Popen) = old
         last = gw.ENROLL_STATE["last"]
         self.assertEqual(last["stage"], "failed")
-        self.assertEqual(last["message"], "The microphone stopped while recording. Press Record voice to try again.")
+        self.assertEqual(last["message"], gw.mic_stopped_line("Zed"))
         self.assertFalse(gw.ENROLL_STATE["busy"])
         self.assertEqual(posted[-1], "idle")  # the display leaves enroll mode
 

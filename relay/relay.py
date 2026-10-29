@@ -1603,10 +1603,10 @@ def _train_target(spoken, bots):
 def train_wake_request(text, bots):
     """Match "Hey Grok, train my wake word for <bot>". None when the sentence is not that request.
 
-    Same cleanup as connect_request. A match is {slug, name, phrase}. phrase is hey_<slug> when
-    that id is legal, and None for Grok so hey_grok is never sent. An unknown name is
-    {slug: "", name: "", phrase: None}: the sentence still must not reach the model, and nothing
-    is recorded.
+    Same cleanup as connect_request. A match is {slug, name, phrase, spoken}. phrase is hey_<slug>
+    when that id is legal, and None for Grok so hey_grok is never sent. An unknown name is
+    {slug: "", name: "", phrase: None, spoken: <Name>}: the sentence still must not reach the model,
+    and nothing is recorded.
     """
     raw = " ".join(str(text or "").split())
     if not raw:
@@ -1621,15 +1621,99 @@ def train_wake_request(text, bots):
     spoken = m.group(1).strip()
     if spoken.endswith(" please"):
         spoken = spoken[: -len(" please")].strip()
+    spoken_name = " ".join((w[:1].upper() + w[1:]) for w in spoken.split())
     if not spoken:
-        return {"slug": "", "name": "", "phrase": None}
+        return {"slug": "", "name": "", "phrase": None, "spoken": ""}
     bots = [b for b in (bots or []) if isinstance(b, dict)]
     target = _train_target(spoken, bots)
     if not target or target.get("missing_main") or not str(target.get("slug") or ""):
-        return {"slug": "", "name": "", "phrase": None}
+        return {"slug": "", "name": "", "phrase": None, "spoken": spoken_name}
     slug = str(target.get("slug") or "")
     name = " ".join(str(target.get("name") or "").split()) or slug
-    return {"slug": slug, "name": name, "phrase": _phrase_for_slug(slug)}
+    return {"slug": slug, "name": name, "phrase": _phrase_for_slug(slug), "spoken": spoken_name}
+
+
+_TRAIN_FLOW = None
+
+
+def _train_flow():
+    """wake/train_flow.py. Loaded once. The relay does not import the wake listener."""
+    global _TRAIN_FLOW
+    if _TRAIN_FLOW is not None:
+        return _TRAIN_FLOW
+    import importlib.util
+    path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wake", "train_flow.py"))
+    spec = importlib.util.spec_from_file_location("gs_train_flow", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _TRAIN_FLOW = mod
+    return mod
+
+
+def wake_phrase_ready(phrase, opener=None):
+    """True when the listener's status already lists this phrase. A miss is not trained."""
+    if not isinstance(phrase, str) or not phrase:
+        return False
+    try:
+        port = int(E("WAKE_CONTROL_PORT", "8789"))
+    except (TypeError, ValueError):
+        port = 8789
+    if port < 1 or port > 65535:
+        port = 8789
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/status" % port, headers=_wake_control_headers())
+    if opener is None:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=3) as resp:
+            doc = json.loads(resp.read(65536).decode() or "{}")
+    except Exception:
+        return False
+    words = doc.get("words") if isinstance(doc, dict) else None
+    return isinstance(words, dict) and phrase in words
+
+
+def post_wake_enroll(body, post=None, opener=None):
+    """Queue recording on the loopback wake control port. Does not open the prompt tile.
+
+    Allow-list: phrase, persona, count, topup, voice. hey_grok is never sent.
+    Proxies are off. Timeout is 3 s. 503 on any failure. The phrase is not logged.
+    """
+    if not isinstance(body, dict) or set(body) - {"phrase", "persona", "count", "topup", "voice"}:
+        return 400
+    phrase, persona = body.get("phrase"), body.get("persona")
+    if not isinstance(phrase, str) or not phrase.strip() or phrase == "hey_grok":
+        return 400
+    if not isinstance(persona, str) or not persona.strip() or persona == "grok" and phrase == "hey_grok":
+        return 400
+    if body.get("count") != 5 or body.get("voice") is not True or not isinstance(body.get("topup"), bool):
+        return 400
+    allow = {"phrase": phrase, "persona": " ".join(persona.split()), "count": 5,
+             "topup": body["topup"], "voice": True}
+    if post is not None:
+        try:
+            return int(post(allow))
+        except Exception:
+            return 503
+    try:
+        port = int(E("WAKE_CONTROL_PORT", "8789"))
+    except (TypeError, ValueError):
+        port = 8789
+    if port < 1 or port > 65535:
+        port = 8789
+    data = json.dumps(allow).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/enroll" % port, data=data,
+        headers=_wake_control_headers({"Content-Type": "application/json"}))
+    if opener is None:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=3) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+    except Exception:
+        return 503
 
 
 def open_train_tile(hit, post=None):
@@ -2582,14 +2666,20 @@ async def session(req):
                                 await cancel_response()
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"
-                        # "Train my wake word for <bot>" opens the prompt tile. It does not record,
-                        # and it does not reach the model. "stop" above still ends a normal session.
+                        # "Train my wake word for <bot>" speaks the intro and queues recording.
+                        # It does not reach the model. "stop" above still ends a normal session.
+                        # Words inside the later recording window are not commands: enroll owns the mic.
                         train = train_wake_request(heard, connect_bots(roster, list_source_slug()))
                         if train is not None:
                             st["buf"] = []
                             if st.get("responding") or st.get("xai_active"):
                                 await cancel_response()
-                            open_train_tile(train)  # no slug: nothing posted. 503 still ends the turn.
+                            plan = _train_flow().voice_train_plan(train, wake_phrase_ready(train.get("phrase")))
+                            if isinstance(plan, dict) and str(plan.get("say") or "").strip():
+                                voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                                await play_fixed(plan["say"], voice, TTS_SHORT_S)
+                            if isinstance(plan, dict) and plan.get("begin") and plan.get("enroll"):
+                                post_wake_enroll(plan["enroll"])
                             log("train wake")  # no phrase, no name
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"

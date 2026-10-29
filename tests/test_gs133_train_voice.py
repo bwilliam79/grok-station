@@ -71,7 +71,7 @@ class TrainPhrase(unittest.TestCase):
         ):
             self.assertIsNone(relay.train_wake_request(said, _BOTS), said)
         missing = relay.train_wake_request("train my wake word for Nova", _BOTS)
-        self.assertEqual(missing, {"slug": "", "name": "", "phrase": None})
+        self.assertEqual(missing, {"slug": "", "name": "", "phrase": None, "spoken": "Nova"})
         no_main = relay.train_wake_request(
             "train my wake word for the main bot",
             [{"slug": "juniper", "name": "Juniper", "aliases": []}])
@@ -180,9 +180,11 @@ class TrainPhrase(unittest.TestCase):
         self.assertLess(i_train, i_recipe)
         self.assertLess(i_recipe, i_heard)
         block = src[i_train:src.find('return "user ended"', i_train)]
-        self.assertIn("open_train_tile(train)", block)
+        self.assertIn("voice_train_plan(", block)
+        self.assertIn("play_fixed(plan", block)
+        self.assertIn("post_wake_enroll(", block)
+        self.assertNotIn("open_train_tile(train)", block)
         self.assertIn('{"type": "done", "local": True}', block)
-        self.assertNotIn("play_fixed", block)
         self.assertNotIn("hey_", block)
 
 

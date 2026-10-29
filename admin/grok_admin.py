@@ -1715,7 +1715,12 @@ def map_train_state(state, log="", scores=None):
 
 ENROLL_STALE_S = 180
 ENROLL_START_GRACE_S = 20  # a just-started recording row before the listener reports busy
-ENROLL_MIC_STOPPED = "The microphone stopped while recording. Press Record voice to try again."
+def enroll_mic_stopped(phrase):
+    """Mic died mid-recording. Names the bot so the spoken retry command is the real one."""
+    raw = phrase[4:] if isinstance(phrase, str) and phrase.startswith("hey_") else str(phrase or "")
+    label = " ".join((w[:1].upper() + w[1:]) for w in raw.replace("-", " ").replace("_", " ").split()) or "the bot"
+    return ("The microphone stopped while recording. "
+            "Say 'Hey Grok, train my wake word for %s' or press Record voice to try again." % label)
 HELPER_V = re.compile(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}")
 ENROLL_STALLED = "The station stopped before this wake word was finished. Press Record voice to try again, or delete it."
 
@@ -1769,7 +1774,7 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
                 now_ts - int(entry.get("updated_at") or 0) >= ENROLL_START_GRACE_S
             if isinstance(wake_status, dict) and not queued and stuck:
                 # The listener answers and isn't recording: the capture died mid-recording (mic unplugged).
-                state, new_msg = "failed", ENROLL_MIC_STOPPED
+                state, new_msg = "failed", enroll_mic_stopped(phrase)
             else:
                 state, new_msg = "recording", msg or "Say it on the station."
         elif stage == "failed":
@@ -1817,7 +1822,7 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
         for name, row in list(out.items()):
             if row.get("state") == "recording" and now_ts - int(row.get("updated_at") or 0) >= ENROLL_START_GRACE_S:
                 print(f"enroll {name}: listener not recording; marked failed", flush=True)
-                out[name] = _status_row(name, "failed", ENROLL_MIC_STOPPED, now_ts, out)
+                out[name] = _status_row(name, "failed", enroll_mic_stopped(name), now_ts, out)
     if isinstance(wake_status, dict) and not busy:
         # The listener answers and isn't recording or building, yet a word still says it is: the listener restarted
         # (or an older listener never reports an end). Fail it with a plain message instead of waiting forever.

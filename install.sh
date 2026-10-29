@@ -282,7 +282,7 @@ st_wake() {
     requests "websockets>=17"
   run $WV/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/train_flow.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
   run python3 -I - --put grok "$O" wake/models wake/models/hey_grok.onnx < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).
