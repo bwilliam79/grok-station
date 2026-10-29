@@ -532,7 +532,32 @@ p#emptybot{margin:10px 2px 0}
 .nmrow:first-child{border-top:0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
 .wake{color:var(--gs-teal);font-weight:600}
-button#iback{height:auto;min-height:44px;text-decoration:none}
+a.iback{display:inline-flex;align-items:center;font:500 13px/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:24px;margin:0 0 6px}
+a.iback:hover{color:var(--gs-text);text-decoration:underline}
+a.iback:focus-visible{outline:3px solid rgba(63,211,182,.30);outline-offset:2px;color:var(--gs-text)}
+.mhead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+.mhead h2{margin:0}
+.mhead .tcount{font-size:13px;color:var(--gs-muted)}
+.mhead .btn{margin-left:auto}
+.dacts{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
+.rdiv{width:1px;align-self:stretch;background:var(--gs-rule-2);margin:8px 0}
+.btn.sm.q{background:transparent;border-color:transparent;color:var(--gs-muted)}
+.btn.sm.q:hover,.btn.sm.q:active{color:var(--gs-amber)}
+.dnote.ok{color:var(--gs-teal)}
+.dnote.bad{color:var(--gs-amber)}
+.danger{display:flex;align-items:center;gap:16px;margin-top:24px;border:1px solid #5A4416;border-radius:16px;padding:18px 22px}
+.danger h3{margin:0;color:var(--gs-amber);font:600 var(--fs-body) var(--disp)}
+.danger p{margin:4px 0 0;color:var(--gs-muted);font-size:var(--fs-help)}
+.danger .btn{margin-left:auto;flex:none}
+@media (max-width:767px){
+  a.iback{font-size:15px;min-height:44px;min-width:88px}
+  .mhead{flex-wrap:wrap}
+  .mhead .btn{width:100%;min-height:48px;margin-left:0}
+  .rdiv{display:none}
+  .drow .btn.sm{min-height:44px;height:44px}
+  .danger{flex-wrap:wrap;margin-top:16px}
+  .danger .btn{width:100%;min-height:48px;margin-left:0}
+}
 .tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
 .intst.bad{color:var(--gs-amber);background:var(--gs-amber-bg)}
 .hbinfo{display:flex;gap:10px;align-items:flex-start;background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:12px;max-width:560px;font-size:var(--fs-label);color:var(--gs-muted)}

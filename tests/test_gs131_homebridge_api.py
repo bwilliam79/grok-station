@@ -1117,7 +1117,7 @@ class HomebridgeAPI(unittest.TestCase):
         signin = "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."
         self.assertIn(signin, apply)
         for text in (
-            "‹ Homebridge",
+            'backLink("Homebridge")',
             "Turn on accessory control in Homebridge",
             "Signed in to Homebridge, but it won't share its accessories with the station until accessory control (insecure mode) is on.",
             "Open Homebridge in your browser.",
@@ -1131,7 +1131,6 @@ class HomebridgeAPI(unittest.TestCase):
             'id="hbretry"',
             'id="hberr"',
             'class="card wcard"',
-            'class="btn g back"',
             'class="help"',
             "hbStepperWarn(4)",
             "hbAttn(",
@@ -1190,7 +1189,7 @@ class HomebridgeAPI(unittest.TestCase):
         src = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
         screen = _fn(src, "hbTooLarge")
         for text in (
-            "‹ Homebridge",
+            'backLink("Homebridge")',
             "hbStepperWarn(4)",
             "<h2>Homebridge has too many accessories to share</h2>",
             "Grok Station signed in to Homebridge, but its accessory list is bigger than the station can take.",

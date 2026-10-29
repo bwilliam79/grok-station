@@ -2664,14 +2664,14 @@ function avatar(slug, name, lg, ring) {
   if (!ring) return inner;
   return `<span class="tipwrap avtip">${inner}<span class="tip" role="tooltip" id="${tipId}">${esc(ring.word)}</span></span>`;
 }
-function askPassword(title, text, label, send, onCancel) {
+function askPassword(title, text, label, send, onCancel, danger) {
   const d = document.createElement("div");
   d.className = "sheet";
   d.innerHTML = `<form class="card" role="dialog" autocomplete="off" style="width:min(400px,100%)">
     <h2>${esc(title)}</h2><p class="sub">${esc(text)}</p>
     <div class="field"><label for="pwv">Admin password</label><input class="inp" type="password" id="pwv" autocomplete="current-password" required></div>
     <div id="pwe"></div>
-    <div class="field inline"><button class="btn p" id="pwgo">${esc(label)}</button><button class="btn g" type="button" id="pwno">Cancel</button></div></form>`;
+    <div class="field inline"><button class="btn ${danger ? "d" : "p"}" id="pwgo">${esc(label)}</button><button class="btn g" type="button" id="pwno">Cancel</button></div></form>`;
   document.body.appendChild(d);
   const close = () => d.remove();
   $("#pwno", d).onclick = () => { close(); if (onCancel) onCancel(); };
@@ -5129,6 +5129,39 @@ function voiceAddChips(aliases, text) {
   return out;
 }
 
+// Manage-page count. 0 is the empty line, not "0 lights saved".
+function savedCount(n, one, many) {
+  n = Number(n) || 0;
+  if (!n) return "No " + many + " saved yet.";
+  return n + " " + (n === 1 ? one : many) + " saved";
+}
+// Danger-section and password-sheet copy. 0 and 1 are not "all 0 lights" / "all 1 light".
+function integrationRemoveCopy(kind, n) {
+  const home = kind === "homebridge";
+  const name = home ? "Homebridge" : "WLED";
+  const one = home ? "device" : "light";
+  const many = one + "s";
+  n = Number(n) || 0;
+  const action = "Remove " + name;
+  if (n <= 0) {
+    return {body: "Removes " + name + " from the station.", title: "Remove " + name + "?", sheet: "Enter the admin password to confirm.", action: action};
+  }
+  if (n === 1) {
+    return {
+      body: "Removes " + name + " and its " + one + " from the station. Voice commands for it stop working.",
+      title: "Remove " + name + " and 1 " + one + "?",
+      sheet: "Voice commands for this " + one + " stop working. Enter the admin password to confirm.",
+      action: action
+    };
+  }
+  return {
+    body: "Removes " + name + " and all " + n + " " + many + " from the station. Voice commands for them stop working.",
+    title: "Remove " + name + " and " + n + " " + many + "?",
+    sheet: "Voice commands for these " + many + " stop working. Enter the admin password to confirm.",
+    action: action
+  };
+}
+
 async function pageIntegrations(el) {
   const STEPS = ["Find", "Pick", "Name", "Protect", "Done"];
   let found = [];
@@ -5149,7 +5182,43 @@ async function pageIntegrations(el) {
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
   }).join('<span class="sep"> · </span>')}</p>`;
   const back = fn => { const a = $("#iback", el); if (a) a.onclick = ev => { ev.preventDefault(); fn(); }; };
-  const head = (n, title) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${stepper(n)}<h2>${title}</h2>`;
+  const backLink = label => `<a href="#" class="iback" id="iback">‹ ${esc(label || "Integrations")}</a>`;
+  let wledBackLabel = "Integrations";
+  let hbBackLabel = "Integrations";
+  const head = (n, title) => `${backLink(wledBackLabel)}${stepper(n)}<h2>${title}</h2>`;
+  const integrationDanger = (title, body, btn, id) => `<section class="danger"><div class="dm"><h3>${esc(title)}</h3><p>${esc(body)}</p></div><button class="btn dg" id="${id}" type="button">${esc(btn)}</button></section>`;
+  function removeSavedSheet(name, noun, go) {
+    const thing = noun === "device" ? "device" : "light";
+    const d = document.createElement("div");
+    d.className = "sheet";
+    d.innerHTML = `<div class="card" role="dialog" aria-modal="true" aria-label="Remove ${esc(thing)}" style="width:min(440px,100%)"><h2>Remove ${esc(name)}?</h2>
+      <p class="sub">The station stops controlling ${esc(name)}. The ${thing} itself isn't changed, and you can add it again later.</p>
+      <div id="rme"></div>
+      <div class="acts"><button class="btn d" type="button" id="rmgo">Remove ${thing}</button><button class="btn g" type="button" id="rmno">Cancel</button></div></div>`;
+    document.body.appendChild(d);
+    const close = () => d.remove();
+    bindSheet(d, close);
+    const no = $("#rmno", d);
+    if (no) { no.onclick = close; if (no.focus) no.focus(); }
+    const yes = $("#rmgo", d);
+    if (yes) yes.onclick = async () => {
+      busyBtn(yes, true, "Removing…");
+      const r = await go();
+      if (r && r.ok) close();
+      else { busyBtn(yes, false, "Remove " + thing); errBox($("#rme", d), "Couldn't remove. Try again."); }
+    };
+  }
+  async function reloadWledManage() {
+    const again = await api("GET", "/api/integrations");
+    manageView(wledOnly((again.data && again.data.devices) || []));
+  }
+  async function reloadHbManage() {
+    const again = await api("GET", "/api/integrations");
+    const data = (again && again.data) || {};
+    const hb = (data.integrations && data.integrations.homebridge) || {};
+    hbManage(hbOnly(data.devices || []), hb.base || hbBase);
+  }
+  const wledParent = () => (wledBackLabel === "WLED" ? reloadWledManage : null);
 
   async function loadNames() {
     namesOk = false;
@@ -5226,6 +5295,8 @@ async function pageIntegrations(el) {
 
   async function list() {
     hbPass = "";  // never keep a typed Homebridge password once the flow is left
+    wledBackLabel = "Integrations";
+    hbBackLabel = "Integrations";
     const r = await api("GET", "/api/integrations");
     const data = r.ok && r.data ? r.data : {integrations: {}, devices: [], later: []};
     const wled = (data.integrations && data.integrations.wled) || {};
@@ -5296,45 +5367,51 @@ async function pageIntegrations(el) {
   }
 
   function manageView(devices) {
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button><h2>WLED</h2>
-      <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No lights saved."}</p>
-      <div id="mrows"></div>
-      <div class="field inline" style="margin-top:16px"><button class="btn p" id="madd" type="button">Add lights</button>
-        <button class="btn d" id="mrm" type="button">Remove WLED</button></div></div>`;
+    wledBackLabel = "Integrations";
+    const n = devices.length;
+    const copy = integrationRemoveCopy("wled", n);
+    el.innerHTML = `<div class="card wcard">${backLink("Integrations")}
+      <div class="mhead"><h2>WLED</h2><span class="tcount">${esc(savedCount(n, "light", "lights"))}</span>
+        <button class="btn p" id="madd" type="button">Add lights</button></div>
+      <div id="mrows"></div></div>
+      ${integrationDanger("Remove WLED", copy.body, "Remove WLED…", "mrm")}`;
     back(list);
     const box = $("#mrows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
       row.className = "drow";
-      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b><div class="help">${(d.aliases || []).map(esc).join(", ")}</div><div class="help" data-st></div></div>
-        <button class="btn sm" type="button" data-test>Test</button><button class="btn sm" type="button" data-rm>Remove</button>`;
+      const aliases = (d.aliases || []).filter(Boolean);
+      const say = aliases.length ? `<div class="help">Say: ${aliases.map(esc).join(", ")}</div>` : "";
+      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b>${say}<div class="help dnote" data-st></div></div>
+        <div class="dacts"><button class="btn sm" type="button" data-test>Test</button><span class="rdiv" aria-hidden="true"></span><button class="btn sm q" type="button" data-rm>Remove</button></div>`;
       box.appendChild(row);
       row.querySelector("[data-test]").onclick = async () => {
         const note = row.querySelector("[data-st]");
+        note.className = "help dnote";
         note.textContent = "Blinking…";
         const r = await api("POST", "/api/integrations/devices/" + encodeURIComponent(d.id) + "/test", {});
-        note.textContent = r.ok ? "It worked" : "Offline since " + clockNow();
+        note.className = "help dnote " + (r.ok ? "ok" : "bad");
+        note.textContent = r.ok ? "✓ Blinked" : "⚠ Didn't respond. Check it's on.";
       };
-      row.querySelector("[data-rm]").onclick = async () => {
+      row.querySelector("[data-rm]").onclick = () => removeSavedSheet(d.name || "this light", "light", async () => {
         const r = await api("DELETE", "/api/integrations/devices/" + encodeURIComponent(d.id), {});
-        if (r.ok) {
-          const again = await api("GET", "/api/integrations");
-          manageView(wledOnly((again.data && again.data.devices) || []));
-        }
-      };
+        if (r.ok) await reloadWledManage();
+        return r;
+      });
     });
-    $("#madd", el).onclick = () => finding();
-    $("#mrm", el).onclick = () => askPassword("Remove WLED?", "This removes WLED and its lights from the station.", "Remove", async pw => {
+    $("#madd", el).onclick = () => finding(true);
+    $("#mrm", el).onclick = () => askPassword(copy.title, copy.sheet, copy.action, async pw => {
       const r = await api("DELETE", "/api/integrations/wled", {password: pw});
       if (r.ok) list();
       return r;
-    });
+    }, null, true);
   }
 
-  async function finding() {
+  async function finding(fromManage) {
+    wledBackLabel = fromManage ? "WLED" : "Integrations";
     el.innerHTML = `<div class="card wcard">${head(1, "Finding WLED lights")}
       <p class="lead"><span class="spin" aria-hidden="true"></span> Looking for WLED lights on your network.</p></div>`;
-    back(list);
+    back(wledParent() || list);
     const r = await api("POST", "/api/integrations/wled/discover", {});
     found = r.ok && r.data && Array.isArray(r.data.devices) ? r.data.devices : [];
     on = found.map(() => true);
@@ -5347,8 +5424,8 @@ async function pageIntegrations(el) {
       <div class="tip2">The station and the lights have to be on the same network.</div>
       <div class="field inline" style="margin-top:16px"><button class="btn" id="again" type="button">Search again</button>
         <button class="btn g" id="byaddr" type="button">Add by address</button></div></div>`;
-    back(list);
-    $("#again", el).onclick = () => finding();
+    back(wledParent() || list);
+    $("#again", el).onclick = () => finding(wledBackLabel === "WLED");
     $("#byaddr", el).onclick = () => addByAddress(info => { found = [info]; on = [true]; pick(); });
   }
   function pick() {
@@ -5358,7 +5435,7 @@ async function pageIntegrations(el) {
       <p class="help" style="margin-top:10px">Missing one? <button class="tipadd" id="byaddr" type="button">Add by address</button></p>
       <div class="field inline" style="margin-top:8px"><button class="btn g" id="again" type="button">Search again</button>
         <span class="right"><button class="btn p" id="next" type="button">Next</button></span></div></div>`;
-    back(() => finding());
+    back(wledParent() || (() => finding(false)));
     const box = $("#prows", el);
     const paint = () => {
       const n = on.filter(Boolean).length;
@@ -5389,7 +5466,7 @@ async function pageIntegrations(el) {
       };
     });
     paint();
-    $("#again", el).onclick = () => finding();
+    $("#again", el).onclick = () => finding(wledBackLabel === "WLED");
     $("#byaddr", el).onclick = () => addByAddress(info => {
       found.push(info);
       on.push(true);
@@ -5407,7 +5484,7 @@ async function pageIntegrations(el) {
       <p class="help" id="nlong" hidden>Pick another name so Grok knows which you mean.</p>
       <div class="field inline" style="margin-top:8px"><button class="btn g" id="back2" type="button">Back</button>
         <span class="right"><button class="btn p" id="next" type="button">Next</button></span></div></div>`;
-    back(pick);
+    back(wledParent() || pick);
     $("#back2", el).onclick = () => pick();
     const box = $("#nrows", el);
     rows.forEach((dev, i) => {
@@ -5466,7 +5543,7 @@ async function pageIntegrations(el) {
       <div id="perr"></div>
       <div class="field inline" style="margin-top:16px"><button class="btn g" id="back2" type="button">Back</button>
         <span class="right"><button class="btn p" id="next" type="button">Next</button></span></div></div>`;
-    back(() => names());
+    back(wledParent() || (() => names()));
     $("#back2", el).onclick = () => names();
     $("#next", el).onclick = async () => {
       const body = rows.map(dev => ({
@@ -5505,7 +5582,7 @@ async function pageIntegrations(el) {
       <div id="drows"></div>
       <p class="help">Say the light's name; 'turn off the lights' on its own isn't supported yet.</p>
       <div class="field inline" style="margin-top:16px"><span class="right"><button class="btn p" id="finish" type="button">Done</button></span></div></div>`;
-    back(list);
+    back(wledParent() || list);
     const box = $("#drows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
@@ -5536,7 +5613,7 @@ async function pageIntegrations(el) {
       return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
     }).join('<span class="sep"> · </span>')}</p>`;
   };
-  const hbHead = (n, title, noName) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(n, noName)}<h2>${esc(title)}</h2>`;
+  const hbHead = (n, title, noName) => `${backLink(hbBackLabel)}${hbStepper(n, noName)}<h2>${esc(title)}</h2>`;
   function hbChecks(checks, pending) {
     const byId = {};
     (checks || []).forEach(c => { if (c && c.id) byId[c.id] = !!c.ok; });
@@ -5592,7 +5669,8 @@ async function pageIntegrations(el) {
     return /^https?:\/\/[^/?#]+$/.test(base) ? base + "/users" : "";
   }
   function hbIntro() {
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(0)}
+    hbBackLabel = "Integrations";
+    el.innerHTML = `<div class="card wcard">${backLink("Integrations")}${hbStepper(0)}
       <h2>Connect Homebridge</h2>
       <p class="lead">Grok Station uses its own Homebridge login that can control devices but can't change Homebridge settings. Setup takes about 3 minutes.</p>
       <ol class="hbsteps"><li>Tell us where Homebridge is.</li>
@@ -5725,7 +5803,7 @@ async function pageIntegrations(el) {
     }).join('<span class="sep"> · </span>')}</p>`;
   }
   function hbInsecure(pending, again) {
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepperWarn(4)}<h2>Turn on accessory control in Homebridge</h2>
+    el.innerHTML = `<div class="card wcard">${backLink("Homebridge")}${hbStepperWarn(4)}<h2>Turn on accessory control in Homebridge</h2>
       <p class="sub">Signed in to Homebridge, but it won't share its accessories with the station until accessory control (insecure mode) is on.</p>
       <ol class="hbsteps"><li>Open Homebridge in your browser.</li>
         <li>Go to <b>Settings</b>, then <b>Startup &amp; Environment</b>.</li>
@@ -5747,7 +5825,7 @@ async function pageIntegrations(el) {
   }
   // Noor SPEC rev3 frames 08 and 08b: accessory list over the station's limit. Same layout and pending login as 06.
   function hbTooLarge(pending, again) {
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepperWarn(4)}<h2>Homebridge has too many accessories to share</h2>
+    el.innerHTML = `<div class="card wcard">${backLink("Homebridge")}${hbStepperWarn(4)}<h2>Homebridge has too many accessories to share</h2>
       <p class="sub">Grok Station signed in to Homebridge, but its accessory list is bigger than the station can take.</p>
       <ol class="hbsteps"><li>Open Homebridge in your browser.</li>
         <li>Turn off plugins or <b>child bridges</b> you don't use, or set a plugin to leave out accessories you don't need.</li>
@@ -6190,7 +6268,7 @@ async function pageIntegrations(el) {
       <div id="hdrows"></div>
       <p class="help">Test writes the current value, so nothing changes. Say the device's name; 'turn off the lights' on its own isn't supported yet.</p>
       <div class="field inline" style="margin-top:16px"><span class="right"><button class="btn p" id="hbfinish" type="button">Done</button></span></div></div>`;
-    back(list);
+    back(hbBackLabel === "Homebridge" ? reloadHbManage : list);
     const box = $("#hdrows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
@@ -6210,35 +6288,52 @@ async function pageIntegrations(el) {
   }
   function hbManage(devices, base) {
     hbBase = base || hbBase;
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button><h2>Homebridge</h2>
-      <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No devices saved."}</p>
-      <div id="hmrows"></div>
-      <div class="field inline" style="margin-top:16px"><button class="btn p" id="hmadd" type="button">Add devices</button>
-        <button class="btn d" id="hmrm" type="button">Remove Homebridge</button></div></div>`;
+    hbBackLabel = "Integrations";
+    const n = devices.length;
+    const copy = integrationRemoveCopy("homebridge", n);
+    el.innerHTML = `<div class="card wcard">${backLink("Integrations")}
+      <div class="mhead"><h2>Homebridge</h2><span class="tcount">${esc(savedCount(n, "device", "devices"))}</span>
+        <button class="btn p" id="hmadd" type="button">Add devices</button></div>
+      <div id="hmrows"></div></div>
+      ${integrationDanger("Remove Homebridge", copy.body, "Remove Homebridge…", "hmrm")}`;
     back(list);
     const box = $("#hmrows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
       row.className = "drow";
-      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b><div class="help">${(d.aliases || []).map(esc).join(", ")}</div><div class="help" data-st></div></div>
-        <button class="btn sm" type="button" data-test>Test</button><button class="btn sm" type="button" data-rm>Remove</button>`;
+      const aliases = (d.aliases || []).filter(Boolean);
+      const say = aliases.length ? `<div class="help">Say: ${aliases.map(esc).join(", ")}</div>` : "";
+      row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b>${say}<div class="help dnote" data-st></div></div>
+        <div class="dacts"><button class="btn sm" type="button" data-test>Test</button><span class="rdiv" aria-hidden="true"></span><button class="btn sm q" type="button" data-rm>Remove</button></div>`;
       box.appendChild(row);
       row.querySelector("[data-test]").onclick = async () => {
         const note = row.querySelector("[data-st]");
+        note.className = "help dnote";
         note.textContent = "Checking…";
         const r = await api("POST", "/api/integrations/devices/" + encodeURIComponent(d.id) + "/test", {});
-        note.textContent = r.ok ? "It worked" : "Offline since " + clockNow();
+        note.className = "help dnote " + (r.ok ? "ok" : "bad");
+        note.textContent = r.ok ? "✓ Responded" : "⚠ Didn't respond. Check it's on.";
       };
-      row.querySelector("[data-rm]").onclick = async () => {
+      row.querySelector("[data-rm]").onclick = () => removeSavedSheet(d.name || "this device", "device", async () => {
         const r = await api("DELETE", "/api/integrations/devices/" + encodeURIComponent(d.id), {});
-        if (!r.ok) return;
-        const again = await api("GET", "/api/integrations");
-        const data = again.data || {};
-        hbManage(hbOnly(data.devices || []), (data.integrations && data.integrations.homebridge && data.integrations.homebridge.base) || hbBase);
-      };
+        if (r.ok) await reloadHbManage();
+        return r;
+      });
     });
-    $("#hmadd", el).onclick = () => hbLoadPick(() => hbManage(devices, hbBase));
-    $("#hmrm", el).onclick = () => removeHomebridge();
+    $("#hmadd", el).onclick = () => {
+      hbBackLabel = "Homebridge";
+      hbLoadPick(() => hbManage(devices, hbBase));
+    };
+    $("#hmrm", el).onclick = () => askPassword(copy.title, copy.sheet, copy.action, async pw => {
+      const r = await api("DELETE", "/api/integrations/homebridge", {password: pw});
+      if (r.ok) {
+        hbBase = "";
+        hbUser = "";
+        hbPass = "";
+        list();
+      }
+      return r;
+    }, null, true);
   }
   function removeHomebridge() {
     askPassword("Remove Homebridge?", "This removes Homebridge, its devices, and the saved login. No copy is kept.", "Remove", async pw => {

@@ -1,13 +1,13 @@
-"""0.13.1: 'Hey Grok, ...' is one inline text run, and Integrations back is a button.
+"""0.13.1: 'Hey Grok, ...' is one inline text run.
 
 The wake word and the rest of the example were separate flex items, so a gap
 appeared before the comma. The comma sits in the source immediately after the
 wake span's closing tag. The span is inline text: no flex, no gap, no padding,
 no margin-right.
 
-The add-flow back control is the same secondary button other admin sub-views
-use (class "btn g back"), not an underlined accent link. It is at least 44px
-tall and has no underline.
+0.13.8: the Integrations sub-page back control is a quiet text link (a.iback),
+not a boxed button. It is muted, underlined only on hover, 24px tall on
+desktop and 44px on a phone.
 """
 import json, os, re, shutil, subprocess, unittest
 
@@ -86,28 +86,27 @@ class VoiceExamples(unittest.TestCase):
 
 
 class IntegrationsBack(unittest.TestCase):
-    def test_back_control_is_the_secondary_button(self):
+    def test_back_control_is_a_quiet_link(self):
         js = _src(JS_PATH)
         page = js[js.index("async function pageIntegrations"):]
-        self.assertNotRegex(page, r"<a\b[^>]*\bid=\"iback\"")
-        buttons = re.findall(
-            r'<button type="button" class="btn g back" id="iback">([^<]*)</button>', page)
-        self.assertGreaterEqual(len(buttons), 4, buttons)  # WLED add + manage, Homebridge add + manage
-        for label in buttons:
-            self.assertIn("‹", label)
-            # Insecure-mode stop goes back to Homebridge. Every other control says Integrations.
-            self.assertTrue("Integrations" in label or label == "‹ Homebridge", label)
-        # Both flows use that control, not a private underlined link.
-        self.assertIn("WLED", page)
-        self.assertIn("Homebridge", page)
-        self.assertGreaterEqual(page.count('id="iback"'), len(buttons))
+        self.assertNotIn('class="btn g back" id="iback"', page)
+        self.assertNotRegex(page, r"<button\b[^>]*\bid=\"iback\"")
+        self.assertIn('const backLink = label => `<a href="#" class="iback" id="iback">‹ ${esc(label || "Integrations")}</a>`;', page)
+        self.assertIn('backLink("Homebridge")', page)
+        self.assertIn('backLink(wledBackLabel)', page)
+        self.assertIn('backLink(hbBackLabel)', page)
         css = re.sub(r"\s+", "", _src(CSS_PATH))
-        rule = re.search(r"button#iback\{([^}]*)\}", css)
-        self.assertIsNotNone(rule, "missing button#iback rule")
+        rule = re.search(r"a\.iback\{([^}]*)\}", css)
+        self.assertIsNotNone(rule, "missing a.iback rule")
         body = rule.group(1)
-        self.assertIn("min-height:44px", body)
+        self.assertIn("min-height:24px", body)
         self.assertIn("text-decoration:none", body)
-        self.assertNotIn("underline", body.replace("text-decoration:none", ""))
+        self.assertIn("color:var(--gs-muted)", body)
+        hover = re.search(r"a\.iback:hover\{([^}]*)\}", css)
+        self.assertIsNotNone(hover, "missing a.iback:hover rule")
+        self.assertIn("text-decoration:underline", hover.group(1))
+        phone = css.split("@media(max-width:767px)", 1)[-1]
+        self.assertIn("a.iback{font-size:15px;min-height:44px;min-width:88px}", phone)
 
 
 if __name__ == "__main__":
