@@ -59,6 +59,7 @@ class FakeHomebridge:
         self.acc_status = 200
         self.login_delay = 0  # seconds; the login route only, so Check can pass and sign-in can time out
         self.acc_delay = 0  # seconds; the accessories route only
+        self.acc_trickle = 0  # seconds between small body chunks on the accessories route (0 = off)
         self.delay = 5
         self.otp_code = "123456"
         self.token_exp = None
@@ -151,6 +152,15 @@ class FakeHomebridge:
                                       "error": "Bad Request", "statusCode": 400}, status=400)
         if self.acc_status != 200:
             return web.json_response({"error": "no"}, status=self.acc_status)
+        if self.acc_trickle:
+            body = json.dumps(self.accessories).encode()
+            resp = web.StreamResponse(status=200, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+            await resp.prepare(request)
+            for i in range(0, len(body), 64):
+                await resp.write(body[i:i + 64])
+                await asyncio.sleep(self.acc_trickle)
+            await resp.write_eof()
+            return resp
         if self.wrap:
             return web.json_response({"accessories": self.accessories})
         return web.json_response(self.accessories)
@@ -182,6 +192,7 @@ class FakeHomebridge:
         self.acc_status = 200
         self.login_delay = 0
         self.acc_delay = 0
+        self.acc_trickle = 0
         self.delay = 5
         self.token_exp = None
         self.login_ok_left = None

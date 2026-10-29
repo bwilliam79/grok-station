@@ -1015,6 +1015,25 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertNotIn("pending", body)
         self._no_homebridge_saved()
 
+    def test_gs134_trickled_list_hits_overall_deadline(self):
+        """Each chunk arrives well inside the per-read timeout, but the whole list takes past the budget."""
+        self._grace_off()
+        gsi.HB_ACC_TIMEOUT = 0.5
+        HB.accessories = bulky_accessories(1024)  # far under 2 MB
+        HB.acc_trickle = 0.05  # about 1.5 s for the whole body
+        status, body = self._verify()
+        self.assertEqual(body.get("error"), "signin_unreachable", body)
+        self.assertNotIn("pending", body)
+        self._no_homebridge_saved()
+
+    def test_gs134_saved_login_trickled_list_is_unreachable(self):
+        status, body = self._verify()
+        self.assertEqual(status, 200, body)
+        gsi.HB_ACC_TIMEOUT = 0.5
+        HB.acc_trickle = 0.05
+        status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
+        self.assertEqual((status, body.get("error")), (502, "unreachable"), body)
+
     def test_gs134_other_accessory_status_is_not_insecure(self):
         self._grace_off()
         for code in (401, 500):

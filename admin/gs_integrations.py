@@ -20,7 +20,7 @@ FETCH_TIMEOUT = 3
 # 0.13.4: config-ui-x returns every HAP service and characteristic for /api/accessories. A home with a few dozen
 # plugs, light strips and cameras is well past 64 KB. 2 MB is about 30x a large real list and still bounded memory.
 HB_ACC_MAX_BODY = 2 * 1024 * 1024
-HB_ACC_TIMEOUT = 10  # a 2 MB list from a small Homebridge host can take more than 3 s
+HB_ACC_TIMEOUT = 10  # whole-call budget (connect plus read); a 2 MB list from a small host can take more than 3 s
 DISCOVER_S = 4.0
 CAPS = ["onoff", "bri", "color", "preset"]
 _META = ipaddress.ip_address("169.254.169.254")
@@ -890,9 +890,11 @@ def checked_base(raw):
     return {"ip": ip, "port": connect, "host": shown, "name": host, "scheme": parts.scheme, "base": stored}
 
 
-def hb_request(base, method, path, payload=None, token=None, max_body=None, timeout=None):
+def hb_request(base, method, path, payload=None, token=None, max_body=None, timeout=None, budget=None):
     """One pinned request. Redirects are not followed. Body cap 64 KB and timeout 3 s unless the caller
-    passes a larger bounded cap (only the accessory list does, see hb_get_accessories).
+    passes a larger bounded cap (only the accessory list does, see hb_get_accessories). With `budget`, one
+    overall deadline of that many seconds covers connect plus read, not a per-socket-step timeout, so a
+    server that trickles bytes can't hold the call open (same pattern as _fetch_display_status).
 
     Returns {status, json, error}. error is refused, unreachable, cert, redirect, or big. json is a
     dict or list, or None. The token and payload are not logged.
@@ -907,6 +909,7 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
     sock = None
     raw = b""
     status = 0
+    deadline = time.monotonic() + budget if budget is not None else None
     try:
         sock = socket.create_connection((str(target["ip"]), target["port"]), timeout)
         sock.settimeout(timeout)
@@ -932,7 +935,25 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
             resp.read(1024)
             conn.close()
             return {"status": status, "json": None, "error": "redirect"}
-        raw = resp.read(max_body + 1)
+        if deadline is not None and deadline - time.monotonic() <= 0:
+            raise TimeoutError("homebridge header deadline")  # slow headers count against the same budget
+        if deadline is None:
+            raw = resp.read(max_body + 1)
+        else:
+            while len(raw) <= max_body:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError("homebridge read deadline")
+                fp = getattr(resp, "fp", None)
+                if fp is None:  # http.client closes the body once Content-Length is read
+                    break
+                live = getattr(getattr(fp, "raw", None), "_sock", None)
+                if live is not None:
+                    live.settimeout(left)
+                chunk = resp.read1(max_body + 1 - len(raw))
+                if not chunk:
+                    break
+                raw += chunk
         conn.close()
     except ssl.SSLError:
         return {"status": 0, "json": None, "error": "cert"}
@@ -959,7 +980,8 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
 
 def hb_get_accessories(base, token):
     """GET /api/accessories with the larger accessory-list cap and timeout. Same pin, no redirects."""
-    return hb_request(base, "GET", "/api/accessories", token=token, max_body=HB_ACC_MAX_BODY, timeout=HB_ACC_TIMEOUT)
+    return hb_request(base, "GET", "/api/accessories", token=token, max_body=HB_ACC_MAX_BODY,
+                      timeout=HB_ACC_TIMEOUT, budget=HB_ACC_TIMEOUT)
 
 
 def hb_insecure_off(got):
