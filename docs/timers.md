@@ -20,7 +20,7 @@ A timer that has reached zero stays in the list as ringing, even if a conversati
 
 On the idle screen, up to four timers are countdown rings (soonest first). The rest are chips along the bottom. The ring is teal and shrinks with the time left.
 
-When one is done, that timer takes the screen: a full amber ring, a two-line headline ("Pasta is done"), and the hint "Say stop to dismiss". Every other timer is a chip. The amber ring pulses about once a second. These screens do not use red. Red on the station is only the microphone-off state and a stock that went down.
+When one is done, that timer takes the screen: a full amber ring, a two-line headline ("Pasta is done"), and the hint Say “stop” to dismiss in the shared voice-hint style (muted connective words, the spoken word in the text colour). Every other timer is a chip. The amber ring pulses about once a second. These screens do not use red. Red on the station is only the microphone-off state and a stock that went down.
 
 During a conversation the timers stay a chip strip at the bottom, so the reply stays visible. The night clock hides them. The digits follow a monotonic clock taken when the list arrives, so a wall-clock step does not jump them.
 

@@ -26,7 +26,7 @@ grok-station is a voice station you keep at home. It runs on a Raspberry Pi, lis
 
 ### Screens
 
-The station draws straight to the Pi's screen, in landscape. Sizes from 800x480 to 3840x2160 fill the whole screen, and the layout scales to fit. Bigger screens get a centered 3840x2160 picture with black borders. Smaller ones still work, but things may not fit. The automated tests check layouts at 800x480, 1024x600, 1280x720, 1280x800, 1920x1080, 2560x1706 and 3840x2160. Not every size has been tried on a real screen. Portrait (rotated) screens are untested. Touch isn't used, so a touchscreen works as a plain screen. Details are in [docs/display.md](docs/display.md).
+The station draws straight to the Pi's screen, in landscape. Sizes from 800x480 to 3840x2160 fill the whole screen, and the layout scales to fit. Bigger screens get a centered 3840x2160 picture with black borders. Smaller ones still work, but things may not fit. The automated tests check layouts at 800x480, 1024x600, 1280x720, 1280x800, 1920x1080, 2560x1706 and 3840x2160. Not every size has been tried on a real screen. Portrait (rotated) screens are untested. Touch isn't used, so a touchscreen works as a plain screen. Small status icons in the top-right corner show the network, whether Grok can be reached, the microphone, and an update arrow only while a newer version is cached. The admin home has a Grok line: Online, No internet, Can't reach Grok, or Checking. Details are in [docs/display.md](docs/display.md).
 
 ## Put it on the Pi
 

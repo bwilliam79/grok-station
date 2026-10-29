@@ -182,7 +182,7 @@ Rules:
 ## 8. Component patterns
 
 ### 8.1 Station display
-- **Top bar:** muted label at the left (for example "Wake word setup · Finn") and the 96 px clock at the right. Status icons (network, relay, mic) sit in that corner. An update arrow (`update-available`, same teal stroke as the other good icons) is drawn only while the cached check finds a newer version. It has no gray form and makes no sound.
+- **Top bar:** muted label at the left (for example "Wake word setup · Finn") and the 96 px clock at the right. Status icons (network, Grok, mic) sit in that corner. The Grok icon replaced the relay icon and uses the same 24 px stroke grid: teal when online, amber with a slash when there is no internet, amber with an exclamation badge when the relay or the Grok service is unreachable, muted with an arrow while checking, and muted at 75% when the network is down. An update arrow (`update-available`, same teal stroke as the other good icons) is drawn only while the cached check finds a newer version. It has no gray form and makes no sound.
 - **Status line:** one line at 107 px in the ring color, directly under the headline or sub-line. Never pinned to the screen bottom, and never full-width.
 - **Progress:** a "Clip N of M" line, then a 1360 × 32 bar with radius 16, a surface-2 track and a teal fill of (N−1)/M. When everything is complete, the bar fills and the label becomes "Uploaded ✓".
 - **Level meter:** 7 rounded bars, each 22 px wide with 16 px gaps and up to 120 px tall, refreshed at about 15 fps.

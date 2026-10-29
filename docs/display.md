@@ -8,6 +8,28 @@ How the station screen handles different sizes, taken from the code.
 - At startup it reads the size and color depth from `/sys/class/graphics/fb0` (`virtual_size`, `bits_per_pixel`, `stride`). Whatever mode the Pi's firmware or KMS picked is the size it uses. grok-station doesn't set a resolution: `tools/boot-config.py` only adds quiet-boot options to `cmdline.txt` (and refuses to touch one with no `root=` option or with more than one non-empty line, since the Pi reads only the first line and there is no backup). A failure before the file is renamed into place leaves `cmdline.txt` untouched; a failure after it (syncing the folder) means the change is in place, so it still prints `reboot` (install.sh sets its reboot flag) and then exits nonzero and leaves `config.txt` alone.
 - The layout is designed at 1920x1080 and scaled by the limiting side (`min(h/1080, w/1920)`). Screens taller than 16:9 get the extra height placed relative to the real edges. Icons are never smaller than 28 px.
 
+## Status icons
+
+The top-right cluster, right to left, is the network, Grok, the microphone, and an update arrow only while a newer version is cached. Each icon is `status_icon_px`: 44 px at 1080p times the layout scale, and at least 28 px. On a 2560×1706 panel that is 59 px, with an 11 px gap.
+
+The Grok icon takes the old relay slot. There is no separate relay icon.
+
+| State | What you see | When |
+|---|---|---|
+| Online | teal speech bubble | network up, internet probe ok, Grok service answered, relay not in fault |
+| No internet | amber bubble with a slash | network up, internet probe failed |
+| Can't reach Grok | amber bubble with an exclamation badge | Grok service failed, or the relay is in fault (a paired bot whose health check failed). The admin home says relay, service, or both |
+| Checking | muted bubble with a small arrow | no result yet, or the last result is older than three probe intervals |
+| Dim | muted bubble at 75%, no badge | the network itself is down. The network icon carries that fault |
+
+The microphone icon is only the voice listener. It does not move the Grok icon, so one fault shows on one icon. A state change is drawn on the next frame. Nothing spins or flashes.
+
+Internet and the Grok service are checked every 60 seconds while the icon is online (never under 30; `GROK_STATION_GROK_POLL`) and on every status poll (12 seconds) while it is checking or in a problem state. The network and the loopback relay health check stay on the status poll. A probe failure changes the icon only after two failures in a row. The first success goes back to online. Anything missing, stale, or unreadable stays on Checking, never teal.
+
+The station's localhost `/status` adds `grok` with `state` and `cause` only. No URL, host, address, or token. The admin home reads that snapshot on the same host and shows Grok: Online, No internet, Can't reach Grok (relay, service, or relay and service), or Checking.
+
+Voice hints on a recipe step, a ringing timer, and the calendar footer are one style: body text at L(36), which is 48 px on the 2560×1706 panel. "Say" and the connective words are muted. A spoken phrase is in the text colour, inside curly quotes. On the calendar, "Next:" is muted and the event is text colour, not quoted.
+
 ## Supported range
 
 `MIN_SIZE, MAX_SIZE = (800, 480), (3840, 2160)` in `app/grok_station.py`:
