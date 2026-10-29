@@ -1,9 +1,7 @@
-"""0.13.1: a bot row shows at most one status line, and every row is the same height.
+"""A bot row shows at most one status message (0.13.1), now as the replies line (0.13.8 rev2).
 
-'Helper out of date: use Update' and 'Update failed: ...' used to stack as two extra lines, so that
-row grew taller than the others. Failure wins over out of date. The line is one nowrap ellipsis;
-the full text is in title and in a visually hidden element named by aria-describedby. A row with
-no message still has the empty status element, so the structure (and the height) does not change.
+'Helper out of date' and 'Update failed' must not stack. Failure wins. The message is one button
+on the replies line, not a reserved empty row under it. A row with nothing to say has no button.
 """
 import json, os, re, shutil, subprocess, unittest
 
@@ -27,8 +25,8 @@ def _fn(src, name):
 
 
 def _render(src, bot, view):
-    """The row status the Bots page paints, from the page's own functions."""
-    names = ("helperBehind", "rowUpdating", "rowFailLine", "finishNotes", "botStatusSlot")
+    """The one status line the Bots page paints, from the page's own functions."""
+    names = ("helperBehind", "rowUpdating", "rowFailLine", "finishNotes", "botMessageLineHTML")
     parts = [_fn(src, name) for name in names]
     prog = "\n".join([
         "const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')"
@@ -42,7 +40,9 @@ def _render(src, bot, view):
         "  return null;",
         "}",
         *parts,
-        "process.stdout.write(botStatusSlot(%s));" % json.dumps(bot),
+        "const bot = %s;" % json.dumps(bot),
+        "const note = finishNotes(bot);",
+        "process.stdout.write(JSON.stringify({note: note, html: botMessageLineHTML(note, true, bot.slug)}));",
     ])
     out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
     if out.returncode != 0:
@@ -68,41 +68,38 @@ class BotRowStatus(unittest.TestCase):
     def test_both_messages_are_one_line_with_the_failure(self):
         bot = {"slug": "max", "key_mode": "home", "paired": True,
                "helper": {"out_of_date": True, "state": "old"}}
-        html = _render(self.src, bot, self._view("needs", "The bot refused the update."))
-        self.assertEqual(html.count("data-bst"), 1, html)
-        self.assertEqual(html.count('class="need"') + html.count("class='need'"), 0, html)
-        self.assertNotIn(OLD, html.split('class="sr"', 1)[0].split("title=", 1)[0])
-        self.assertIn('title="%s"' % FAIL, html)
-        self.assertIn('aria-describedby="bst-max"', html)
-        self.assertIn('id="bst-max">%s</span>' % FAIL, html)
-        self.assertIn('class="sr"', html)
-        self.assertEqual(html.count(FAIL), 3)  # title, the visible line, and the hidden copy
+        got = json.loads(_render(self.src, bot, self._view("needs", "The bot refused the update.")))
+        html = got["html"]
+        self.assertEqual(got["note"], FAIL)
+        self.assertEqual(html.count("<button"), 1, html)
         self.assertNotIn(OLD, html)
+        self.assertIn('aria-label="%s, show details"' % FAIL, html)
+        self.assertIn('class="tx">%s</span>' % FAIL, html)
+        self.assertIn('role="alert">%s</span>' % FAIL, html)
+        self.assertNotIn("data-bst", html)
 
-    def test_empty_row_has_the_same_status_structure(self):
+    def test_empty_row_has_no_message_button(self):
         bot = {"slug": "max", "key_mode": "home", "paired": True, "helper": {"out_of_date": False}}
         both = {"slug": "max", "key_mode": "home", "paired": True,
                 "helper": {"out_of_date": True, "state": "old"}}
-        empty = _render(self.src, bot, self._view("done", ""))
-        full = _render(self.src, both, self._view("needs", "The bot refused the update."))
-        self.assertEqual(_tags(empty), _tags(full), (empty, full))
-        self.assertEqual(empty.count("data-bst"), 1, empty)
-        self.assertIn('aria-describedby="bst-max"', empty)
-        self.assertIn('id="bst-max">', empty)
-        self.assertNotIn(FAIL, empty)
-        self.assertNotIn(OLD, empty)
+        empty = json.loads(_render(self.src, bot, self._view("done", "")))
+        full = json.loads(_render(self.src, both, self._view("needs", "The bot refused the update.")))
+        self.assertEqual(empty["note"], "")
+        self.assertEqual(empty["html"], "")
+        self.assertNotEqual(_tags(empty["html"]), _tags(full["html"]))
+        self.assertNotIn(FAIL, empty["html"])
+        self.assertNotIn(OLD, empty["html"])
+        self.assertIn(FAIL, full["html"])
 
-    def test_paint_reserves_a_slot_on_every_row_and_css_fixes_the_height(self):
+    def test_paint_uses_one_line_and_the_row_is_not_a_fixed_height(self):
         paint = _fn(self.src, "paintBots")
-        self.assertIn("botStatusSlot(", paint)
-        self.assertGreaterEqual(paint.count("botStatusSlot("), 3)  # Grok, each bot, each pending
-        css = self.css
-        self.assertIn(".bst{height:18px;line-height:18px;", css.replace(" ", ""))
-        self.assertIn("white-space:nowrap", css)
-        self.assertIn("text-overflow:ellipsis", css)
-        # Desktop: a top-level rule (column 0). Phone: indented inside the max-width:767px block.
-        self.assertRegex(css, r"(?m)^\.botrow\{height:104px[;}]")
-        self.assertRegex(css, r"(?m)^  \.botrow\{height:112px;")
+        self.assertIn("finishNotes(b)", paint)
+        self.assertIn("botRowL2HTML(", paint)
+        self.assertNotIn("botStatusSlot(", paint)
+        css = self.css.replace(" ", "")
+        self.assertIn(".bmsg.tx{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}", css)
+        self.assertNotIn(".botrow{height:104px", css)
+        self.assertNotIn(".botrow{height:112px", css)
 
 
 if __name__ == "__main__":

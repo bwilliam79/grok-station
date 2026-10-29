@@ -334,11 +334,30 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .ico{display:inline-flex;flex:none}
 .ico.faint{color:var(--gs-faint)}
 .ico.teal{color:var(--gs-teal)}
-/* 0.13.1: desktop bot rows have one fixed height; the phone query overrides it */
-.botrow{height:104px}
+/* Message replaces the replies line. 16+24+2+20+16 = 78; a later row's border adds the 79th px. */
+.botrow{height:auto;min-height:76px;padding:16px 0;align-items:center}
+.botrow>div:nth-child(2){align-self:center;min-width:0}
+.botrow .help{line-height:20px;margin-top:2px}
+.botrow .tog{position:relative}
+.botrow .tog::before{content:"";position:absolute;inset:-5px -2px}
+.botrow .lbl{height:24px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.botrow .lbl .pill{line-height:18px;vertical-align:1px}
+.botrow .l2{position:relative;height:20px;margin-top:2px;min-width:0}
+.botrow .l2 .help{margin-top:0;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.botrow.hasmsg .l2 .help{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.botrow .ww{position:relative;z-index:2}
+.bmsg{display:flex;align-items:center;gap:6px;width:100%;height:20px;margin:0;padding:0;border:0;background:none;color:var(--gs-amber);font:500 var(--fs-help)/20px var(--body);text-align:left;cursor:pointer;position:relative;border-radius:4px}
+.bmsg::before{content:"";position:absolute;inset:-2px -4px}
+.bmsg .gl{flex:none}
+.bmsg .tx{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.bmsg:hover .tx{text-decoration:underline;text-underline-offset:2px}
+.bmsg:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
+.pop{position:absolute;z-index:5;width:360px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:16px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+.pop h3{display:flex;gap:8px;color:var(--gs-amber);font:600 var(--fs-label) var(--body);margin-bottom:6px}
+.pop p{font-size:var(--fs-label);color:var(--gs-text);line-height:1.45}
+.pop .ctx{color:var(--gs-muted);font-size:var(--fs-help);margin-top:8px}
+.pop .acts{margin-top:14px}
 .need{color:var(--gs-amber);font-size:var(--fs-help);display:flex;align-items:center;gap:6px;margin-top:4px}
-.bst{height:18px;line-height:18px;display:block;min-width:0;overflow:hidden;color:var(--gs-amber);font-size:var(--fs-help)}
-.bst .bstx{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 a.need{text-decoration:none}
 a.need:hover{text-decoration:underline}
 .mainpill{margin-left:8px}
@@ -387,7 +406,15 @@ a.need:hover{text-decoration:underline}
   .body.bots{padding:16px 16px 96px;max-width:none}
   .phonebar{height:72px}
   .phonebar button{min-height:72px;height:72px;padding:8px 0 18px}
-  .botrow{height:112px;grid-template-columns:44px minmax(0,1fr) auto;min-height:0;row-gap:8px}
+  .botrow{height:auto;grid-template-columns:44px minmax(0,1fr) auto;min-height:0;padding:16px 0;row-gap:4px;align-items:start}
+  .botrow .cfg{align-self:center;min-height:44px;min-width:44px;justify-content:center}
+  .botrow .ww{min-height:28px}
+  .botrow .tog::before{inset:-11px -2px}
+  .bmsg::before{inset:-12px -4px}
+  .pop{position:fixed;left:0;right:0;bottom:0;width:auto;border-radius:18px 18px 0 0;padding:12px 20px 34px;z-index:5}
+  .pop::before{content:"";display:block;width:36px;height:4px;border-radius:4px;background:var(--gs-rule-2);margin:0 auto 14px}
+  .pop .acts .btn{width:100%;min-height:48px}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4}
   .botrow .ww{grid-column:2;grid-row:2}
   .botrow .cfg{grid-column:3;grid-row:1}
   .botrow .cfg .btn{display:none}

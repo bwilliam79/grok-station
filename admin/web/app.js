@@ -3163,13 +3163,120 @@ function finishNotes(b) {
   if (row && row.state && row.state !== "done") return "Update available for this bot";
   return "";
 }
-function botStatusSlot(b, text) {
-  // One reserved line on every row. Empty text still emits the element, so height does not change.
-  const msg = arguments.length > 1 ? (text || "") : (finishNotes(b) || "");
-  const slug = b && b.slug ? String(b.slug) : "";
-  const id = "bst-" + slug;
-  const alert = msg.indexOf("Update failed:") === 0 ? ' role="alert"' : "";
-  return `<span class="bst" data-bst="1"${alert}><span class="bstx" title="${esc(msg)}" aria-describedby="${esc(id)}">${esc(msg)}</span><span class="sr" id="${esc(id)}">${esc(msg)}</span></span>`;
+function botMessageLead(message) {
+  const text = String(message == null ? "" : message);
+  const cut = text.indexOf(":");
+  if (cut < 0) return "Needs attention";
+  const lead = text.slice(0, cut).trim();
+  return lead ? lead : "Needs attention";
+}
+// said is slug -> the message already spoken. A repaint of the same text does not speak again.
+// Clearing the message forgets it, so the next time it appears it is spoken once.
+function botMessageAnnounce(said, slug, message) {
+  const msg = String(message || "");
+  const key = String(slug || "");
+  const prev = said && typeof said === "object" ? said : {};
+  const next = {};
+  for (const k in prev) if (Object.prototype.hasOwnProperty.call(prev, k)) next[k] = prev[k];
+  if (!msg) {
+    delete next[key];
+    return {announce: false, said: next};
+  }
+  if (next[key] === msg) return {announce: false, said: next};
+  next[key] = msg;
+  return {announce: true, said: next};
+}
+function botMessageLineHTML(message, announce, slug) {
+  const msg = String(message || "");
+  if (!msg) return "";
+  const live = announce ? `<span class="sr" role="alert">${esc(msg)}</span>` : "";
+  return `<button class="bmsg" type="button" data-bmsg="${esc(slug || "")}" aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(msg)}, show details"><span class="gl" aria-hidden="true">⚠&#xFE0E;</span><span class="tx">${esc(msg)}</span></button>${live}`;
+}
+function botRowL2HTML(replies, title, message, announce, extra, slug) {
+  const msg = String(message || "");
+  const off = msg ? "" : (extra || "");
+  return `<div class="l2"><div class="help" title="${esc(title || "")}">${esc(replies || "")}</div>${off}${botMessageLineHTML(msg, announce, slug)}</div>`;
+}
+function botMessageDetail(name, replies, message) {
+  const who = String(name || "Bot");
+  const from = String(replies || "Replies from: not set");
+  return {title: botMessageLead(message), body: String(message || ""), context: who + " · " + from};
+}
+function botMessagePopHTML(detail, phone) {
+  const d = detail || {title: "Needs attention", body: "", context: ""};
+  const modal = phone ? "true" : "false";
+  return `<div class="pop" role="dialog" aria-modal="${modal}" aria-labelledby="bmsgtitle"><h3 id="bmsgtitle"><span class="gl" aria-hidden="true">⚠&#xFE0E;</span><span>${esc(d.title)}</span></h3><p>${esc(d.body)}</p><p class="ctx">${esc(d.context)}</p><div class="acts"><button class="btn" type="button" id="bmsgx">Close</button></div></div>`;
+}
+function botRowTapOpensConfigure(target, phone) {
+  if (!phone) return false;
+  if (target && target.closest && target.closest("button, a, .tog, .bmsg")) return false;
+  return true;
+}
+let botMessageCloser = null;
+function closeBotMessage() {
+  const close = botMessageCloser;
+  botMessageCloser = null;
+  if (close) close();
+}
+function openBotMessage(btn, el) {
+  if (!btn) return;
+  closeBotMessage();
+  const row = btn.closest ? btn.closest(".botrow") : null;
+  const slug = (btn.getAttribute && btn.getAttribute("data-bmsg")) || (row ? row.getAttribute("data-slug") : "") || "";
+  const bot = ((el && el._bots) || []).filter(b => b && b.slug === slug)[0] || {};
+  const tx = btn.querySelector ? btn.querySelector(".tx") : null;
+  const message = tx ? tx.textContent : "";
+  const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+  const detail = botMessageDetail(bot.name || "", repliesFrom(bot), message);
+  const wrap = document.createElement("div");
+  wrap.id = "bmsgpop";
+  wrap.innerHTML = (phone ? `<div class="scrim" data-bmsg-scrim="1"></div>` : "") + botMessagePopHTML(detail, phone);
+  document.body.appendChild(wrap);
+  btn.setAttribute("aria-expanded", "true");
+  const pop = wrap.querySelector(".pop");
+  const info = row && row.children ? row.children[1] : null;
+  if (!phone && pop && (info || btn).getBoundingClientRect) {
+    const box = (info || btn).getBoundingClientRect();
+    const x = window.scrollX || window.pageXOffset || 0;
+    const y = window.scrollY || window.pageYOffset || 0;
+    pop.style.left = (box.left + x) + "px";
+    pop.style.top = (box.bottom + y) + "px";
+  }
+  const back = () => {
+    if (btn.isConnected && btn.focus) return btn.focus();
+    const live = slug ? document.querySelector('.bmsg[data-bmsg="' + String(slug).replace(/[^a-z0-9-]/gi, "") + '"]') : null;
+    if (live && live.focus) live.focus();
+  };
+  const close = () => {
+    if (botMessageCloser === close) botMessageCloser = null;
+    document.removeEventListener("click", onDoc);
+    btn.setAttribute("aria-expanded", "false");
+    if (wrap.parentNode) wrap.remove();
+    back();
+  };
+  const onDoc = ev => {
+    if (!wrap.isConnected) { document.removeEventListener("click", onDoc); return; }
+    if (pop && pop.contains(ev.target)) return;
+    if (btn.contains && btn.contains(ev.target)) return;
+    close();
+  };
+  wrap.addEventListener("keydown", ev => {
+    if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
+    if (!phone || ev.key !== "Tab" || !pop) return;
+    const nodes = pop.querySelectorAll("button, [href], input, select, textarea");
+    const list = Array.prototype.filter.call(nodes, n => !n.disabled);
+    if (!list.length) return;
+    const first = list[0], last = list[list.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  });
+  const scrim = wrap.querySelector("[data-bmsg-scrim]");
+  if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
+  const x = $("#bmsgx", wrap);
+  if (x) x.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
+  if (!phone) document.addEventListener("click", onDoc);
+  botMessageCloser = close;
+  if (x && x.focus) x.focus();
 }
 function paintBots(el, bots) {
   bots = mainFirst(bots || []);
@@ -3179,8 +3286,9 @@ function paintBots(el, bots) {
   const pending = pendingTeammates(el);
   const list = $("#blist", el);
   if (!list) return;
+  if (!el._msgSaid) el._msgSaid = {};
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
-    <div><div class="lbl">Grok</div><div class="help">Built in, always on</div>${botStatusSlot({slug: "grok"}, "")}</div>
+    <div><div class="lbl">Grok</div>${botRowL2HTML("Built in, always on", "", "", false, "", "grok")}</div>
     <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase">“Hey Grok”</span></div>
     <div class="cfg"><span class="lock" aria-hidden="true">${ICO_LOCK}</span></div></div>`;
   const rowsHTML = hey + bots.map(b => {
@@ -3196,15 +3304,16 @@ function paintBots(el, bots) {
     const gate = botCanTrain(b, el._botTrain);
     const trainOff = st !== "training" && st !== "weak" && !(word && word.has_model) && gate.can && !gate.on;
     const tip = trainOff ? trainOfflineTip() : [check || ring.word, warn].filter(Boolean).join(" · ");
-    return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
+    const note = finishNotes(b);
+    const heard = botMessageAnnounce(el._msgSaid, b.slug, note);
+    el._msgSaid = heard.said;
+    return `<div class="botrow${note ? " hasmsg" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
-        <div class="help" title="${esc((b && b.reply_host) || "")}">${esc(repliesFrom(b))}</div>
-        ${trainOff ? trainOfflineSub() : ""}
-        ${botStatusSlot(b, finishNotes(b))}</div>
+        ${botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug)}</div>
       ${wakeControlHTML(b, word, st, true, el._botTrain)}
       <div class="cfg">${updateRowBtnHTML(b)}<button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
   }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
-      <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div>${botStatusSlot({slug: row.key}, "")}</div>
+      <div><div class="lbl">${esc(row.name)}</div>${botRowL2HTML("Not set up", "", "", false, "", row.key)}</div>
       <div class="ww none"></div>
       <div class="cfg"><button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>
         <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>`).join("");
@@ -3242,11 +3351,15 @@ function paintBots(el, bots) {
     attn($("#vere", el), "");
     refreshBots(el);
   });
+  list.querySelectorAll(".bmsg").forEach(btn => btn.onclick = ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    openBotMessage(btn, el);
+  });
   list.querySelectorAll(".botrow").forEach(row => row.onclick = ev => {
     if (row.getAttribute("data-fixed") || row.getAttribute("data-pending")) return;
-    const t = ev.target;
-    if (t && t.closest && t.closest("button, a, .tog")) return;
-    if (!window.matchMedia || !window.matchMedia("(max-width: 767px)").matches) return;
+    const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+    if (!botRowTapOpensConfigure(ev.target, phone)) return;
     openBot(bots.filter(x => x.slug === row.getAttribute("data-slug"))[0], el);
   });
   paintUnused(el);
