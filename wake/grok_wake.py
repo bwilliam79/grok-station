@@ -897,19 +897,26 @@ def control_server():
                     body = json.loads(self.rfile.read(n) or b"{}")
                 except (ValueError, TypeError):
                     return self._r(400, {"error": "bad json"})
-                if not isinstance(body, dict) or body.get("op") not in ("pause", "resume", "discard"):
-                    return self._r(400, {"error": "bad op"})
-                if not ENROLL_STATE["busy"]:
-                    return self._r(409, {"error": "Nothing is recording."})
-                op = body["op"]
-                if op == "pause":
-                    ENROLL_STATE["pause"] = True
-                elif op == "resume":
-                    ENROLL_STATE["pause"] = False
-                else:
-                    ENROLL_STATE["discard"] = True
-                    ENROLL_STATE["pause"] = False
-                return self._r(200, {"ok": True, "op": op})
+                code, obj = enroll_control(body)
+                return self._r(code, obj)
+            if self.path == "/enroll/heard":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except (ValueError, TypeError):
+                    return self._r(400, {"error": "bad json"})
+                if not isinstance(body, dict) or set(body) != {"text"} or not isinstance(body.get("text"), str):
+                    return self._r(400, {"error": "bad json"})
+                # The words are not logged. "stop" discards; anything else is ignored.
+                return self._r(200, {"ok": True, "command": note_training_speech(body["text"])})
+            if self.path == "/enroll/open-tile":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except (ValueError, TypeError):
+                    return self._r(400, {"error": "bad json"})
+                code, obj = open_enroll_tile(body)
+                return self._r(code, obj)
             if self.path == "/late-reply":
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
@@ -1301,7 +1308,263 @@ def _note_clip(i, kept, phase, why, topup, n):
 def _enroll_hold():
     """Pause between clips. Discard clears the pause so this returns."""
     while ENROLL_STATE.get("pause") and not ENROLL_STATE.get("discard"):
+        _poll_training_speech()
+        if ENROLL_STATE.get("discard"):
+            break
         time.sleep(0.2)
+
+
+_TRAIN_LOCK = threading.Lock()
+
+
+def training_command(text):
+    """The only voice command during training. "stop" discards; anything else is ignored.
+
+    Optional leading "hey grok". Case, extra space, and trailing punctuation do not matter.
+    """
+    t = str(text or "").casefold()
+    for src, dst in (("\u201c", ""), ("\u201d", ""), ("\u2018", "'"), ("\u2019", "'")):
+        t = t.replace(src, dst)
+    t = " ".join(t.split()).strip(" .,!?;:\"'")
+    t = re.sub(r"^hey grok[, ]+", "", t).strip(" .,!?;:\"'")
+    return "discard" if t == "stop" else None
+
+
+def note_training_speech(text):
+    """Apply one transcript. "stop" while recording discards; "stop" on the prompt tile closes it.
+
+    Unrecognized speech does nothing. Returns "discard", "prompt", or None. Does not log the words.
+    """
+    if training_command(text) != "discard":
+        return None
+    clear_prompt = False
+    with _TRAIN_LOCK:
+        if ENROLL_STATE.get("busy"):
+            ENROLL_STATE["discard"] = True
+            ENROLL_STATE["pause"] = False
+            return "discard"
+        if ENROLL_STATE.get("prompt"):
+            ENROLL_STATE["prompt"] = None
+            clear_prompt = True
+    if clear_prompt:
+        post_state("idle")
+        return "prompt"
+    return None
+
+
+def _poll_training_speech():
+    """A transcript left in heard_text takes the same path as /enroll/control discard."""
+    text = ENROLL_STATE.get("heard_text") or ""
+    if not text:
+        return None
+    ENROLL_STATE["heard_text"] = ""
+    return note_training_speech(text)
+
+
+def _umask_077():
+    """Process umask 077 for one file create, then the previous mask. umask is process-wide."""
+
+    class _U:
+        def __enter__(self):
+            self.prev = os.umask(0o077)
+            return self
+
+        def __exit__(self, *exc):
+            os.umask(self.prev)
+
+    return _U()
+
+
+def _mkdir_0700(path):
+    with _umask_077():
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    if not os.path.islink(path):
+        os.chmod(path, 0o700)
+
+
+def _write_wav(path, pcm):
+    """One clip, mode 0600. The mode is set on create, not left to a loose umask."""
+    data = pcm if isinstance(pcm, (bytes, bytearray)) else bytes(pcm)
+    with _umask_077():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        raw = os.fdopen(fd, "wb")
+        fd = None
+        with raw:
+            with wave.open(raw, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(data)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if not os.path.islink(path):
+        os.chmod(path, 0o600)
+
+
+def _write_json_0600(path, body):
+    with _umask_077():
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        raw = os.fdopen(fd, "w")
+        fd = None
+        with raw:
+            json.dump(body, raw)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    if not os.path.islink(path):
+        os.chmod(path, 0o600)
+
+
+def _session_kept(sdir):
+    """A finished session: session.json plus enough clips. Partials are not kept."""
+    meta = os.path.join(sdir, "session.json")
+    if os.path.islink(meta) or not os.path.isfile(meta):
+        return False
+    try:
+        doc = json.load(open(meta))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(doc, dict):
+        return False
+    try:
+        names = [n for n in os.listdir(sdir)
+                 if re.fullmatch(r"\d{2}\.wav", n) and os.path.isfile(os.path.join(sdir, n)) and not os.path.islink(os.path.join(sdir, n))]
+    except OSError:
+        return False
+    need = 5 if doc.get("prior") else ENROLL_COUNT
+    return len(names) >= need
+
+
+def sweep_stale_sessions(root=None):
+    """At listener start, drop session dirs that never reached a full set of clips.
+
+    A complete session stays so a later top-up can use it. Nothing is logged by phrase.
+    """
+    import shutil
+    root = root or ENROLL_DIR
+    try:
+        root_real = os.path.realpath(root)
+    except OSError:
+        return []
+    active = None
+    if ENROLL_STATE.get("busy"):
+        last = ENROLL_STATE.get("last") or {}
+        phrase, ses = last.get("phrase"), last.get("session")
+        if isinstance(phrase, str) and isinstance(ses, str):
+            active = os.path.realpath(os.path.join(root, phrase, ses))
+    removed = []
+    try:
+        phrases = sorted(os.listdir(root))
+    except OSError:
+        return removed
+    for phrase in phrases:
+        pdir = os.path.join(root, phrase)
+        if os.path.islink(pdir) or not os.path.isdir(pdir):
+            continue
+        try:
+            if os.path.dirname(os.path.realpath(pdir)) != root_real:
+                continue
+            sessions = sorted(os.listdir(pdir))
+        except OSError:
+            continue
+        parent_real = os.path.realpath(pdir)
+        for ses in sessions:
+            if not re.fullmatch(r"\d{8}-\d{6}", ses):
+                continue
+            sdir = os.path.join(pdir, ses)
+            if os.path.islink(sdir) or not os.path.isdir(sdir):
+                continue
+            try:
+                real = os.path.realpath(sdir)
+            except OSError:
+                continue
+            if os.path.dirname(real) != parent_real:
+                continue
+            if active and real == active:
+                continue
+            if _session_kept(sdir):
+                continue
+            shutil.rmtree(sdir, ignore_errors=True)
+            removed.append(ses)
+    if removed:
+        print(f"enroll: removed {len(removed)} unfinished sessions", flush=True)
+    return removed
+
+
+def _enroll_prompt_text(phrase, persona, name):
+    """The quoted line the prompt tile shows. A phrase wins; otherwise Hey plus the label."""
+    if isinstance(phrase, str) and phrase and wake_name_ok(phrase):
+        words = phrase.replace("_", " ").title()
+        return f"“{words}”"
+    label = name if isinstance(name, str) and name.strip() else (persona if isinstance(persona, str) else "")
+    label = " ".join(str(label).split())[:40]
+    if not label:
+        return None
+    if not label.casefold().startswith("hey "):
+        label = "Hey " + label[:1].upper() + label[1:]
+    return f"“{label}”"
+
+
+def open_enroll_tile(j):
+    """Show the station tile at the prompt stage. Does not record and does not create a session dir.
+
+    Body allow-list: persona, phrase, name. Busy enrollment is 409. The phrase is not logged.
+    """
+    if not isinstance(j, dict) or set(j) - {"persona", "phrase", "name"}:
+        return 400, {"error": "bad json"}
+    phrase, persona, name = j.get("phrase"), j.get("persona"), j.get("name")
+    if phrase is not None and not isinstance(phrase, str):
+        return 400, {"error": "bad json"}
+    if persona is not None and not isinstance(persona, str):
+        return 400, {"error": "bad json"}
+    if name is not None and not isinstance(name, str):
+        return 400, {"error": "bad json"}
+    if not phrase and not persona:
+        return 400, {"error": "bad json"}
+    if phrase and not wake_name_ok(phrase):
+        return 400, {"error": "unknown phrase"}
+    if persona and not persona_ok(persona):
+        return 400, {"error": "bad persona"}
+    say = _enroll_prompt_text(phrase, persona, name)
+    if not say:
+        return 400, {"error": "bad json"}
+    who = persona if persona and persona_ok(persona) else "grok"
+    with _TRAIN_LOCK:
+        if ENROLL_STATE.get("busy"):
+            return 409, {"error": "enrollment in progress"}
+        ENROLL_STATE["prompt"] = {"phrase": phrase or "", "persona": who, "text": say}
+    post_state("enroll", text=say, who=who, heard=f"1/{ENROLL_COUNT}|prompt|")
+    return 200, {"ok": True}
+
+
+def enroll_control(body):
+    """pause, resume, or discard. Extra keys are rejected. Discard of the prompt tile does not need a recording."""
+    if not isinstance(body, dict) or set(body) != {"op"} or body.get("op") not in ("pause", "resume", "discard"):
+        return 400, {"error": "bad op"}
+    op = body["op"]
+    with _TRAIN_LOCK:
+        if not ENROLL_STATE.get("busy"):
+            if op == "discard" and ENROLL_STATE.get("prompt"):
+                ENROLL_STATE["prompt"] = None
+                post = True
+            else:
+                return 409, {"error": "Nothing is recording."}
+        elif op == "pause":
+            ENROLL_STATE["pause"] = True
+            post = False
+        elif op == "resume":
+            ENROLL_STATE["pause"] = False
+            post = False
+        else:
+            ENROLL_STATE["discard"] = True
+            ENROLL_STATE["pause"] = False
+            post = False
+    if post:
+        post_state("idle")
+    return 200, {"ok": True, "op": op}
 
 
 def chime_length_samples(path=None, rate=16000):
@@ -1367,10 +1630,14 @@ def enroll(req, read16, play):
     prior = last_session(phrase) if req.get("topup") else None
     ses = time.strftime("%Y%m%d-%H%M%S")
     d = os.path.join(ENROLL_DIR, phrase, ses)
-    os.makedirs(d, exist_ok=True)
-    ENROLL_STATE["busy"] = True
-    ENROLL_STATE["pause"] = False
-    ENROLL_STATE["discard"] = False
+    _mkdir_0700(os.path.join(ENROLL_DIR, phrase))
+    _mkdir_0700(d)
+    with _TRAIN_LOCK:
+        ENROLL_STATE["prompt"] = None
+        ENROLL_STATE["busy"] = True
+        ENROLL_STATE["pause"] = False
+        ENROLL_STATE["discard"] = False
+        ENROLL_STATE["heard_text"] = ""
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
     ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time(),
                              "persona": persona, "stage": "recording", "message": "Say it on the station.",
@@ -1381,14 +1648,15 @@ def enroll(req, read16, play):
         show(1, "prompt")
         room = np.vstack([read16() for _ in range(int(3 / 0.08))]).ravel()  # room noise: a negative for calibration
         try:
-            with wave.open(os.path.join(d, "noise.wav"), "wb") as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(room.astype("<i2").tobytes())
+            _write_wav(os.path.join(d, "noise.wav"), room.astype("<i2").tobytes())
         except OSError:
             pass
         while i <= n:
+            _poll_training_speech()
             if ENROLL_STATE.get("discard"):
                 break
             _enroll_hold()
+            _poll_training_speech()
             if ENROLL_STATE.get("discard"):
                 break
             show(i, "ready")
@@ -1411,8 +1679,7 @@ def enroll(req, read16, play):
                     break
                 continue
             path = os.path.join(d, f"{i - 1:02d}.wav")
-            with wave.open(path, "wb") as w:
-                w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(clip.astype("<i2").tobytes())
+            _write_wav(path, clip.astype("<i2").tobytes())
             sent += 1
             _note_clip(i, sent, "saved", "", bool(prior), n)
             if i < n:
@@ -1429,8 +1696,7 @@ def enroll(req, read16, play):
         ok = sent >= (5 if prior else ENROLL_COUNT)
         body = {"phrase": phrase, "persona": persona, "count": sent, **({"prior": prior} if prior else {})}
         try:
-            with open(os.path.join(d, "session.json"), "w") as f:
-                json.dump(body, f)
+            _write_json_0600(os.path.join(d, "session.json"), body)
         except OSError as e:
             print(f"enroll save failed: {type(e).__name__}", flush=True)
             ok = False
@@ -1454,9 +1720,12 @@ def enroll(req, read16, play):
         time.sleep(6)
     except Exception as e:
         # Capture ended or a read failed (mic unplugged): never leave the word saying "recording".
+        # A partial session is not resumable from a crash here, so it does not stay on disk.
         print(f"enroll {phrase} stopped: microphone {type(e).__name__}", flush=True)
         if (ENROLL_STATE.get("last") or {}).get("stage") == "recording":
             enroll_stage("failed", "The microphone stopped while recording. Press Record voice to try again.", phrase, ses)
+        import shutil
+        shutil.rmtree(d, ignore_errors=True)
         post_state("idle")  # take the display out of enroll mode
         raise
     finally:
@@ -2832,6 +3101,7 @@ def main():
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
     stale_build()
+    sweep_stale_sessions()
     threading.Thread(target=control_server, daemon=True).start()
     threading.Thread(target=_mic_poll, daemon=True).start()
     wait_tone.TONE.start(lambda: LIVE.get("play"))
