@@ -52,6 +52,42 @@ def sample_accessories():
     ]
 
 
+class SlowHeaderServer:
+    """Raw TCP server that sends a status line and headers one byte at a time. 127.0.0.1, ephemeral port."""
+    BLOB = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Pad: aaaaaaaa\r\n\r\n[]"
+
+    def __init__(self, gap=0.05):
+        import socket as _s
+        self.gap = gap
+        self.srv = _s.socket()
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(8)
+        self.port = self.srv.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._one, args=(conn,), daemon=True).start()
+
+    def _one(self, conn):
+        try:
+            conn.recv(65536)
+            for i in range(len(self.BLOB)):
+                conn.sendall(self.BLOB[i:i + 1])
+                time.sleep(self.gap)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    def close(self):
+        self.srv.close()
+
+
 class FakeHomebridge:
     def __init__(self):
         self.mode = "ok"  # ok, admin, users500, users401, otp, badlogin, redirect, plain, missing, slow, big

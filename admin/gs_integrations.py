@@ -11,12 +11,15 @@ grok-relay (primary group grok-admin) can read it and nothing else can. ADMIN_AL
 No support-bundle endpoint exists. redact_registry() is what a bundle should
 write: host becomes "redacted", names and aliases become the device id.
 """
-import http.client, ipaddress, json, os, re, secrets, socket, ssl, struct, tempfile, time, urllib.error, urllib.parse, urllib.request
+import http.client, ipaddress, json, os, re, secrets, socket, ssl, struct, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 BLINK_S = 0.4
 MDNS_GROUP = ("224.0.0.251", 5353)
 MAX_BODY = 64 * 1024
 FETCH_TIMEOUT = 3
+# 0.13.4: whole-call budget for every other Homebridge call (connect, TLS, request, headers, 64 KB body). 5 s leaves
+# room for one slow 3 s step plus the rest, and still bounds a server that trickles its status line or headers.
+HB_BUDGET = 5
 # 0.13.4: config-ui-x returns every HAP service and characteristic for /api/accessories. A home with a few dozen
 # plugs, light strips and cameras is well past 64 KB. 2 MB is about 30x a large real list and still bounded memory.
 HB_ACC_MAX_BODY = 2 * 1024 * 1024
@@ -890,11 +893,25 @@ def checked_base(raw):
     return {"ip": ip, "port": connect, "host": shown, "name": host, "scheme": parts.scheme, "base": stored}
 
 
+def _hb_left(deadline):
+    return max(0.01, deadline - time.monotonic())
+
+
+def _hb_abort(live, fired):
+    """Watchdog for hb_request: mark the call as cut and shut the socket so any blocked read returns."""
+    fired.set()
+    try:
+        live[0].shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
 def hb_request(base, method, path, payload=None, token=None, max_body=None, timeout=None, budget=None):
     """One pinned request. Redirects are not followed. Body cap 64 KB and timeout 3 s unless the caller
-    passes a larger bounded cap (only the accessory list does, see hb_get_accessories). With `budget`, one
-    overall deadline of that many seconds covers connect plus read, not a per-socket-step timeout, so a
-    server that trickles bytes can't hold the call open (same pattern as _fetch_display_status).
+    passes a larger bounded cap (only the accessory list does, see hb_get_accessories). Every call has one
+    overall deadline (`budget`, default HB_BUDGET) covering connect, TLS, request, headers and body. Each step's
+    socket timeout is capped by the time left, and a watchdog timer shuts the socket down at the deadline, so a
+    server that trickles its status line, headers or body can't hold the call open. A cut call is unreachable.
 
     Returns {status, json, error}. error is refused, unreachable, cert, redirect, or big. json is a
     dict or list, or None. The token and payload are not logged.
@@ -909,13 +926,22 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
     sock = None
     raw = b""
     status = 0
-    deadline = time.monotonic() + budget if budget is not None else None
+    deadline = time.monotonic() + (HB_BUDGET if budget is None else budget)
+    fired = threading.Event()
+    watchdog = None
     try:
-        sock = socket.create_connection((str(target["ip"]), target["port"]), timeout)
-        sock.settimeout(timeout)
+        sock = socket.create_connection((str(target["ip"]), target["port"]), min(timeout, _hb_left(deadline)))
+        # Watchdog: per-byte socket timeouts reset on every byte, so a trickled status line or header block could
+        # hold the call. At the deadline, shut the socket down; any read then ends and the call fails closed.
+        live = [sock]  # wrap_socket detaches the plain socket, so the watchdog follows the current one
+        watchdog = threading.Timer(_hb_left(deadline), _hb_abort, (live, fired))
+        watchdog.daemon = True
+        watchdog.start()
+        sock.settimeout(min(timeout, _hb_left(deadline)))
         if target["scheme"] == "https":
             try:
                 sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target["name"])
+                live[0] = sock
             except ssl.SSLError:
                 return {"status": 0, "json": None, "error": "cert"}
         conn = http.client.HTTPConnection("pin", target["port"], timeout=timeout)
@@ -928,16 +954,18 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
             headers["Content-Type"] = "application/json"
         if token:
             headers["Authorization"] = "Bearer " + token
+        conn.sock.settimeout(min(timeout, _hb_left(deadline)))
         conn.request(method, path, body=data, headers=headers)
+        conn.sock.settimeout(min(timeout, _hb_left(deadline)))
         resp = conn.getresponse()
         status = resp.status
         if status in _HB_REDIRECTS:
             resp.read(1024)
             conn.close()
             return {"status": status, "json": None, "error": "redirect"}
-        if deadline is not None and deadline - time.monotonic() <= 0:
+        if deadline - time.monotonic() <= 0:
             raise TimeoutError("homebridge header deadline")  # slow headers count against the same budget
-        if deadline is None:
+        if budget is None:
             raw = resp.read(max_body + 1)
         else:
             while len(raw) <= max_body:
@@ -960,11 +988,15 @@ def hb_request(base, method, path, payload=None, token=None, max_body=None, time
     except (OSError, http.client.HTTPException, TimeoutError):
         return {"status": 0, "json": None, "error": "unreachable"}
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         if sock is not None:
             try:
                 sock.close()
             except OSError:
                 pass
+    if fired.is_set():  # the watchdog cut the call; a partial body is never parsed
+        return {"status": 0, "json": None, "error": "unreachable"}
     if len(raw) > max_body:
         return {"status": status, "json": None, "error": "big"}
     obj = None

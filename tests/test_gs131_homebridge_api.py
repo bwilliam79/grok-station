@@ -21,7 +21,8 @@ if "grok_admin" not in sys.modules:
 
 import grok_admin as ga  # noqa: E402
 import gs_integrations as gsi  # noqa: E402
-from fakes.fake_homebridge import FakeHomebridge, bulky_accessories  # noqa: E402
+import time  # noqa: E402
+from fakes.fake_homebridge import FakeHomebridge, SlowHeaderServer, bulky_accessories  # noqa: E402
 
 GOOD = "kitchen table lamp 42"
 SECRET = "hb-secret-pass"
@@ -136,6 +137,8 @@ class HomebridgeAPI(unittest.TestCase):
         self._timeout = gsi.FETCH_TIMEOUT
         self._acc_cap = getattr(gsi, "HB_ACC_MAX_BODY", None)
         self._acc_timeout = getattr(gsi, "HB_ACC_TIMEOUT", None)
+        self._budget = getattr(gsi, "HB_BUDGET", None)
+        self._hb_request = gsi.hb_request
         self._helper = ga.helper
         self._personas = ga.PERSONAS
         gsi.station_addresses = lambda: ["10.0.0.8"]
@@ -164,6 +167,8 @@ class HomebridgeAPI(unittest.TestCase):
         gsi.FETCH_TIMEOUT = self._timeout
         gsi.HB_ACC_MAX_BODY = self._acc_cap
         gsi.HB_ACC_TIMEOUT = self._acc_timeout
+        gsi.HB_BUDGET = self._budget
+        gsi.hb_request = self._hb_request
         gsi.checked_base = self._checked
         ga.Handler._hb_check = self._hb_check
         ga.HB_PENDING_TTL = self._pending_ttl
@@ -1033,6 +1038,57 @@ class HomebridgeAPI(unittest.TestCase):
         HB.acc_trickle = 0.05
         status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
         self.assertEqual((status, body.get("error")), (502, "unreachable"), body)
+
+    def _slow_headers_for_accessories(self):
+        slow = SlowHeaderServer(gap=0.05)  # about 70 header bytes, about 3.5 s in all
+        self.addCleanup(slow.close)
+        real = self._hb_request
+
+        def routed(base, method, path, *args, **kw):
+            if path == "/api/accessories":
+                base = "http://127.0.0.1:%d" % slow.port
+            return real(base, method, path, *args, **kw)
+        gsi.hb_request = routed
+        return slow
+
+    def test_gs134_watchdog_cuts_trickled_headers(self):
+        slow = SlowHeaderServer(gap=0.05)
+        self.addCleanup(slow.close)
+        start = time.monotonic()
+        got = gsi.hb_request("http://127.0.0.1:%d" % slow.port, "GET", "/api/accessories", budget=0.5)
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertEqual((got["error"], got["json"]), ("unreachable", None), got)
+
+    def test_gs134_verify_trickled_headers_is_signin_unreachable(self):
+        self._grace_off()
+        gsi.HB_ACC_TIMEOUT = 0.5
+        self._slow_headers_for_accessories()
+        start = time.monotonic()
+        status, body = self._verify()
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual(body.get("error"), "signin_unreachable", body)
+        self.assertNotIn("pending", body)
+        self.assertEqual(len(ga.HB_PENDING), 0)
+        self._no_homebridge_saved()
+
+    def test_gs134_saved_login_trickled_headers_is_unreachable(self):
+        status, body = self._verify()
+        self.assertEqual(status, 200, body)
+        gsi.HB_ACC_TIMEOUT = 0.5
+        self._slow_headers_for_accessories()
+        start = time.monotonic()
+        status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
+        self.assertLess(time.monotonic() - start, 1.5)
+        self.assertEqual((status, body.get("error")), (502, "unreachable"), body)
+
+    def test_gs134_short_path_watchdog_cuts_trickled_headers(self):
+        gsi.HB_BUDGET = 0.5
+        slow = SlowHeaderServer(gap=0.05)
+        self.addCleanup(slow.close)
+        start = time.monotonic()
+        status, body = self.c.req("POST", "/api/integrations/homebridge/check-address", {"base": "http://127.0.0.1:%d" % slow.port})
+        self.assertLess(time.monotonic() - start, 1.0)
+        self.assertEqual(body.get("error"), "unreachable", body)
 
     def test_gs134_other_accessory_status_is_not_insecure(self):
         self._grace_off()
