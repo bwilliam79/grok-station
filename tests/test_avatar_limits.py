@@ -6,7 +6,11 @@ from aiohttp.test_utils import TestClient, TestServer
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 sys.path.insert(0, os.path.join(ROOT, "relay"))
-import grok_admin as ga
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# test_admin sets the admin environment (temp state dir, fake helper) before grok_admin is first imported. Importing
+# grok_admin here first fixed its paths at /var/lib/grok-station for every later test file in the same run.
+import test_admin  # noqa: E402
+ga = test_admin.ga
 
 
 class _Fake:
