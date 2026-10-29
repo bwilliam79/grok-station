@@ -232,6 +232,10 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         for f in ("handoff.json",):
             try: os.remove(os.path.join(TMP, f))
             except OSError: pass
+        # relay._limits was built from whichever file imported relay first (its HANDOFF_STATE, maybe a used one):
+        # give these round trips a fresh, empty limits file and put the old object back afterwards.
+        self.addCleanup(setattr, relay, "_limits", relay._limits)
+        relay._limits = handoff.Limits(os.path.join(TMP, "handoff.json"), relay.today)
         self.calls, self.mode, self.auths, self.paths, self.pendings = [], "reply", [], [], []
 
         async def hook(req):

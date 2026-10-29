@@ -51,6 +51,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         r.locked.clear()
         r._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), r.today)
         r._runs.clear()
+        r._run_tasks.clear()  # Test tasks another test file left on its own (closed) loop; this loop can't await them
         r._test_last.clear()
         r.TEST_COOLDOWN_S = 0  # these tests run several Tests back to back; the cooldown has its own test
         self.lines = []
@@ -84,10 +85,12 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         r = getattr(self, "relay", None)
         if r is not None:
-            for t in list(r._run_tasks):
+            mine = [t for t in list(r._run_tasks) if t.get_loop() is asyncio.get_running_loop()]
+            for t in mine:
                 t.cancel()
-            if r._run_tasks:
-                await asyncio.gather(*list(r._run_tasks), return_exceptions=True)
+            if mine:
+                await asyncio.gather(*mine, return_exceptions=True)
+            r._run_tasks.clear()
             r._runs.clear()
         if getattr(self, "client", None) is not None:
             await self.client.close()
