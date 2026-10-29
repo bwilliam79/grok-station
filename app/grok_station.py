@@ -428,8 +428,9 @@ def hexc(s):
 
 
 # Palette (Noor's "Hearth" spec). Listening/thinking colors kept for the future voice states.
-BG, SURFACE, SURFACE2, RULE = hexc("0D0B09"), hexc("17130F"), hexc("211B16"), hexc("2E2620")
+BG, SURFACE, SURFACE2, SURFACE3, RULE = hexc("0D0B09"), hexc("17130F"), hexc("211B16"), hexc("2A231C"), hexc("2E2620")
 TEXT, MUTED, FAINT = hexc("F5EFE6"), hexc("A89B8C"), hexc("6F655A")
+FIELD_EDGE = hexc("806F60")  # empty training-progress square, 3 px edge on SURFACE3
 LISTENING, THINKING, SPEAKING, AMBER = hexc("3FD3B6"), hexc("A99CFF"), hexc("FFE6BF"), hexc("F5C04A")
 RED = hexc("FF5A52")  # mic off, and a stock-down arrow. Problems use text on a quiet ring
 GREEN = hexc("4ADE80")  # stock up only
@@ -2063,6 +2064,11 @@ def ring_success(c, cx, cy, r, ring_w, glow, t):
     pygame.draw.circle(c, LISTENING, (cx, cy), r + ring_w / 2, int(ring_w))
 
 
+def ring_none(c, cx, cy, r, ring_w, glow, t):
+    """No portrait ring. The training tile draws its own solid or dashed ring in the fixed box."""
+    return
+
+
 def ring_ready(c, cx, cy, r, ring_w, glow, t):
     """Get ready: warm arc on a rule track that fills clockwise from 12 o'clock as t goes 0 -> 1 (the 0.9 s pause)."""
     rr = r + ring_w / 2
@@ -2087,12 +2093,15 @@ def ring_saved(c, cx, cy, r, ring_w, glow, t):
 
 # Voice states register a painter here; "error" and "notice" reuse the quiet idle ring.
 RINGS = {"speaking": ring_speaking, "idle": ring_idle, "listening": ring_listening, "thinking": ring_thinking, "error": ring_idle, "notice": ring_idle,
-         "success": ring_success, "enroll_ready": ring_ready, "enroll_saved": ring_saved}
+         "success": ring_success, "enroll_ready": ring_ready, "enroll_saved": ring_saved, "none": ring_none}
 
 _photo_cache = {}  # (path, mtime, svg, svg_mtime, d, k, initial, photo_ok, kind) -> circle-cropped surface
 _MARK_CACHE = {}
 _MARK_PX = (64, 128, 256, 512, 1024)  # assets/brand/mark-<px>.png, rendered from mark.svg by tools/render_brand.py
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
+LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = None    # training tile and its fixed avatar box
+LAST_ENROLL_BUTTONS = []                        # (id, rect) in screen px, for enroll_hit
+LAST_ENROLL_STAGE = None
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
 LAST_CLOCK_RECT = LAST_DATE_RECT = LAST_WEATHER_RECT = LAST_OFFLINE_RECT = None
@@ -2951,8 +2960,11 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
     home_band=False leaves out the home cards: the bottom zone is in use."""
     global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT
+    global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_BUTTONS, LAST_ENROLL_STAGE
     LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
     LAST_WEATHER_RECT = LAST_OFFLINE_RECT = LAST_DATE_RECT = LAST_CLOCK_RECT = None
+    LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = LAST_ENROLL_STAGE = None
+    LAST_ENROLL_BUTTONS = []
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
@@ -3629,6 +3641,8 @@ def chip_text(card):
         live = card.get("status") == "live"
         main = f"{card['home'].get('abbr') or card['home']['name']} {card['home_score']} – {card['away_score']} {card['away'].get('abbr') or card['away']['name']}"
         return ("LIVE" if live else str(card.get("status", "")).upper()), live, card.get("league", ""), main
+    if card.get("type") == "recipe":
+        return "", False, "", card.get("title") or "Recipe"
     ev = (card.get("events") or [{}])[0]
     main = f"Next {ev.get('time', '')} · {ev.get('title', '')}" if ev else "Nothing on this day"
     return "", False, "", main
@@ -3804,13 +3818,327 @@ def enroll_copy(phrase, i, n, stage, extra):
         when = "training now, about 10 min" if k <= 1 else f"{ordinal(k)} in line, about {10 * k} min"
         return "Training queued", f"{q} is {when}. We’ll show the result here.", MUTED, None, None
     if stage == "passed":
-        return f"{q} is ready", "Try it now.", MUTED, None, None
+        shown = n or 5
+        return f"{q} is ready", "Try it now.", MUTED, f"All {shown} clips saved ✓", 1.0
     if stage == "failed":
+        ratio = re.fullmatch(r"(\d+)/(\d+)", extra or "")
         more = int(extra) if extra.isdigit() else 5
-        return f"Needs {more} more clips", f"A short top-up will make {q} more reliable.", MUTED, None, None
+        sub = f"A short top-up will make {q} more reliable. It stays off until then."
+        status = f"{ratio.group(1)} of {ratio.group(2)} test clips woke it" if ratio else None
+        return f"Needs {more} more clips", sub, MUTED, status, None
     if stage == "error":
         return "Enrollment stopped", "Nothing was lost. Try again later.", MUTED, None, None
     return f"Say {q}" if phrase else "Wake word setup", extra, MUTED, clip if n else None, bar
+
+
+def state_hold(state, done, heard=""):
+    """Seconds a voice state stays up.
+
+    A finished reply (done) keeps REPLY_HOLD. Passed, uploaded and error enrollment screens hold 10 s.
+    Every other enrollment stage keeps the 30 s cap in VOICE_HOLDS.
+    """
+    if done:
+        return REPLY_HOLD
+    if state == "enroll":
+        stage = enroll_parse({"heard": heard})[2]
+        return 10 if stage in ("passed", "uploaded", "error") else VOICE_HOLDS["enroll"]
+    return VOICE_HOLDS[state]
+
+
+def park_tile_for_enroll(tile, now):
+    """A tile already on screen when training starts becomes a top-bar chip. Training keeps the bottom zone."""
+    card = tile.get("card") if isinstance(tile, dict) else None
+    if not isinstance(card, dict):
+        return False
+    CHIPS.add({"bot": tile.get("bot"), "id": tile.get("id"), "card": card,
+               "expires": tile.get("expires") or (float(now) + SCORE_HOLD)}, float(now))
+    tile.clear()
+    return True
+
+
+def zpx(L, design_px):
+    """Pixels at the 2560×1706 design, scaled the same way Layout scales 1920×1080 spec units."""
+    return int(round(float(design_px) * L.s / (2560 / 1920)))
+
+
+class _EnrollWeather:
+    """Clock and date with no weather fetch. paint() passes the live Weather when it has one."""
+
+    data = None
+
+    def offline(self):
+        return False
+
+
+_ENROLL_WX = _EnrollWeather()
+
+# Portrait ring while training. "none" lets the tile draw a solid or dashed ring in the fixed 548 px box.
+ENROLL_RING = {
+    "prompt": "none", "loud": "none", "quiet": "none", "failed": "none", "error": "none", "custom": "none",
+    "ready": "enroll_ready", "recording": "listening", "saved": "enroll_saved",
+    "uploaded": "success", "passed": "success", "queued": "thinking",
+}
+_DASH_RING = {"quiet": MUTED, "loud": MUTED, "failed": AMBER}
+_SOLID_RING = {"prompt": MUTED, "error": MUTED, "custom": MUTED}
+_ENROLL_SQUARES = 5
+
+
+def enroll_tile_rect(L):
+    """Bottom-zone training tile. Inner offsets stay tile-relative when timers push it up."""
+    x, y, w, h = zpx(L, 128), zpx(L, 800), zpx(L, 2304), zpx(L, 794)
+    if x + w > L.w - zpx(L, 16):
+        x, w = L.m, max(1, L.w - 2 * L.m)
+    cap = L.h - L(40)
+    if TIMER_CHIPS:
+        cap = min(cap, content_limit(L))
+    if y + h > cap:
+        y = max(0, cap - h)
+    return pygame.Rect(int(x), int(y), int(w), int(h))
+
+
+def _fit_px_step(kind, text, width, start, floor, step):
+    """Largest size from start down to floor, in `step` px, whose single line fits width."""
+    px = max(int(floor), int(start))
+    step = max(1, int(step))
+    floor = max(8, int(floor))
+    while px > floor and font(kind, px).size(text)[0] > width:
+        px = max(floor, px - step)
+    return px
+
+
+def _ellipsize_quoted(f, text, width):
+    """Shrink the quoted wake phrase, then the whole line, so a headline stays one line."""
+    if f.size(text)[0] <= width:
+        return text
+    m = re.search(r"([“\"'])(.+?)([”\"'])", text)
+    if not m:
+        return ellipsize(f, text, width)
+    pre, phrase, post = text[:m.start(2)], m.group(2), text[m.end(2):]
+    if f.size(pre + "…" + post)[0] > width:
+        return ellipsize(f, text, width)
+    lo, hi, best = 0, len(phrase), pre + "…" + post
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        cand = pre + phrase[:mid].rstrip() + "…" + post
+        if f.size(cand)[0] <= width:
+            best, lo = cand, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _fit_wrapped(kind, text, width, height, start, floor, step, max_lines, lh):
+    """Top-anchored lines. Shrink by `step` px, then clamp to max_lines with an ellipsis."""
+    px = max(int(floor), int(start))
+    step = max(1, int(step))
+    floor = max(8, int(floor))
+    while True:
+        f = font(kind, px)
+        lines = wrap(f, text, width) if text else []
+        line_h = max(1, int(round(px * lh)))
+        fits = len(lines) <= max_lines and all(f.size(ln)[0] <= width for ln in lines)
+        if fits or px <= floor:
+            if not fits:
+                lines = (lines or [""])[:max_lines]
+                lines[-1] = ellipsize(f, lines[-1], width)
+            return f, lines, line_h
+        px = max(floor, px - step)
+
+
+def _dashed_ring(surf, cx, cy, outer, width, color, dash, gap):
+    """Butt-capped dashes along the ring centerline: `dash` on, `gap` off, stroke `width`.
+
+    Round dots would swallow a 6 px gap under a 14 px stroke, so each dash is a short
+    radial rectangle (SVG stroke-linecap butt).
+    """
+    radius = outer - width / 2.0
+    if radius < 2 or width < 1 or dash < 1:
+        return
+    circ = 2 * math.pi * radius
+    period = max(1.0, float(dash) + float(gap))
+    dist = 0.0
+    hw = width / 2.0
+    while dist < circ - 0.25:
+        dash_len = min(float(dash), circ - dist)
+        mid = dist + dash_len / 2.0
+        ang = -math.pi / 2 + mid / radius
+        rx, ry = math.cos(ang), math.sin(ang)
+        tx, ty = -ry, rx
+        px, py = cx + radius * rx, cy + radius * ry
+        hl = dash_len / 2.0
+        pts = [(px + s * hl * tx + rs * hw * rx, py + s * hl * ty + rs * hw * ry)
+               for s, rs in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        pygame.draw.polygon(surf, color, pts)
+        dist += period
+
+
+def _enroll_actions(stage):
+    """(id, label, primary, text_only) for the action row. Mid-training also draws Say "stop"."""
+    if stage == "prompt":
+        return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
+    if stage in ("ready", "recording", "quiet", "loud", "saved"):
+        return [("stop", "Stop", False, False)], True
+    if stage == "passed":
+        return [("done", "Done", True, False)], False
+    if stage == "failed":
+        return [("more", "Record 5 more", True, False), ("dismiss", "Not now", False, True)], False
+    return [("close", "Close", False, False)], False
+
+
+def _square_kinds(stage, i):
+    """Five squares. The heard count can still say "of 10"; the row is always five."""
+    kinds = ["empty"] * _ENROLL_SQUARES
+    if stage in ("queued", "prompt", "error", "custom"):
+        return kinds
+    if stage in ("passed", "uploaded"):
+        return ["kept"] * _ENROLL_SQUARES
+    if stage == "saved":
+        for k in range(min(_ENROLL_SQUARES, max(0, int(i)))):
+            kinds[k] = "kept"
+        return kinds
+    cur = max(1, min(_ENROLL_SQUARES, int(i) or 1))
+    for k in range(cur - 1):
+        kinds[k] = "kept"
+    if stage in ("quiet", "loud", "failed"):
+        kinds[cur - 1] = "bad"
+    elif stage == "recording":
+        kinds[cur - 1] = "now"
+    return kinds
+
+
+def _progress_mark(surf, rect, kind):
+    cx, cy = rect.center
+    if kind == "kept":
+        u = rect.w * 0.22
+        pts = [(cx - u, cy), (cx - u * 0.15, cy + u * 0.7), (cx + u * 1.05, cy - u * 0.85)]
+        pygame.draw.lines(surf, BG, False, pts, max(2, rect.w // 10))
+    elif kind == "now":
+        pygame.draw.circle(surf, BG, (cx, cy), max(2, rect.w // 8))
+    elif kind == "bad":
+        pygame.draw.line(surf, BG, (cx, int(rect.top + rect.h * 0.22)), (cx, int(cy + rect.h * 0.05)), max(2, rect.w // 10))
+        pygame.draw.circle(surf, BG, (cx, int(rect.bottom - rect.h * 0.28)), max(2, rect.w // 12))
+
+
+def _draw_progress(surf, L, slot, col_w, stage, i, status):
+    if stage == "queued":
+        return  # the slot stays reserved and empty
+    sq = max(8, zpx(L, 56))
+    gap = max(2, zpx(L, 16))
+    kinds = _square_kinds(stage, i)
+    sq_w = len(kinds) * sq + (len(kinds) - 1) * gap
+    room = max(zpx(L, 80), col_w - sq_w - zpx(L, 24))
+    x = slot.x
+    if status:
+        px = zpx(L, 64)
+        f = font("display", px)
+        check = status.endswith(" ✓")
+        stext = status[:-2] if check else status
+        if f.size(stext)[0] > room:
+            stext = ellipsize(f, stext, room)
+        img = f.render(stext, True, TEXT)
+        y = slot.y + max(0, (slot.h - img.get_height()) // 2)
+        surf.blit(img, (slot.x, y))
+        x = slot.x + img.get_width() + zpx(L, 16)
+        if check:
+            u = max(6, zpx(L, 28))
+            cy = y + img.get_height() // 2
+            pts = [(x, cy), (x + int(u * 0.38), cy + int(u * 0.38)), (x + u, cy - int(u * 0.5))]
+            pygame.draw.lines(surf, LISTENING, False, pts, max(2, zpx(L, 6)))
+            x += u + zpx(L, 16)
+    rad = min(sq // 2, max(2, zpx(L, 14)))
+    edge = max(1, zpx(L, 3))
+    top = slot.y + max(0, (slot.h - sq) // 2)
+    fills = {"kept": LISTENING, "now": SPEAKING, "bad": AMBER}
+    for kind in kinds:
+        rect = pygame.Rect(x, top, sq, sq)
+        if kind == "empty":
+            pygame.draw.rect(surf, SURFACE3, rect, border_radius=rad)
+            pygame.draw.rect(surf, FIELD_EDGE, rect, edge, border_radius=rad)
+        else:
+            pygame.draw.rect(surf, fills[kind], rect, border_radius=rad)
+            _progress_mark(surf, rect, kind)
+        x += sq + gap
+
+
+def _draw_actions(surf, L, tile, slot, col_w, stage):
+    """Buttons in the action slot. Returns nothing; hit rects land in LAST_ENROLL_BUTTONS."""
+    global LAST_ENROLL_BUTTONS
+    actions, hint = _enroll_actions(stage)
+    px = max(12, zpx(L, 52))
+    f = font("display", px)
+    bh = min(slot.h, max(24, zpx(L, 104)))
+    by = slot.y + max(0, (slot.h - bh) // 2)
+    pad = zpx(L, 52)
+    gap = zpx(L, 20)
+    rad = min(bh // 2, max(4, zpx(L, 24)))
+    x = slot.x
+    buttons = []
+    for bid, label, primary, text_only in actions:
+        tw = f.size(label)[0]
+        bw = tw + (zpx(L, 24) if text_only else 2 * pad)
+        if x + bw > slot.x + col_w and buttons:
+            bw = max(zpx(L, 48), slot.x + col_w - x)
+        rect = pygame.Rect(x, by, max(1, bw), bh)
+        if stage == "prompt" and bid == "start":
+            fr = rect.inflate(zpx(L, 24), zpx(L, 24))
+            pygame.draw.rect(surf, LISTENING, fr, max(1, zpx(L, 6)), border_radius=rad + zpx(L, 6))
+        if primary:
+            pygame.draw.rect(surf, SPEAKING, rect, border_radius=rad)
+            color = BG
+        elif text_only:
+            color = TEXT
+        else:
+            pygame.draw.rect(surf, SURFACE2, rect, border_radius=rad)
+            pygame.draw.rect(surf, RULE, rect, max(1, zpx(L, 3)), border_radius=rad)
+            color = TEXT
+        img = f.render(label, True, color)
+        surf.blit(img, (rect.x + (rect.w - img.get_width()) // 2, rect.y + (rect.h - img.get_height()) // 2))
+        buttons.append((bid, pygame.Rect(rect)))
+        x = rect.right + gap
+    LAST_ENROLL_BUTTONS = buttons
+    if not hint:
+        return
+    hint_px = L(36)  # 0.13.2 voice-hint size: 36 spec px, 48 px on the 2560 panel
+    segs = (("Say ", "muted"), ("stop", "phrase"))
+    max_w = max(1, slot.x + col_w - x)
+    hf = font("body", hint_px)
+    hy = by + max(0, (bh - hf.get_height()) // 2)
+    if hf.size(voice_hint_plain(segs))[0] <= max_w:
+        draw_voice_hint(surf, segs, x, hy, px=hint_px, max_w=max_w)
+    else:
+        draw_voice_hint(surf, (("Say", "muted"),), x, hy, px=hint_px, max_w=max_w)
+        draw_voice_hint(surf, (("stop", "phrase"),), x, hy + hf.get_height(), px=hint_px, max_w=max_w)
+
+
+def _draw_enroll_chips(surf, L):
+    """Tiles that arrived during training, as the rev2 top-bar chips. Newest nearest the right edge."""
+    global LAST_CHIP_RECTS
+    chips = CHIPS.visible(time.time())
+    LAST_CHIP_RECTS = []
+    if not chips:
+        return
+    right = zpx(L, 2432)
+    if right > L.w - zpx(L, 16):
+        right = L.w - L.m
+    h = L(62)
+    cy = zpx(L, 120) + h // 2
+    for chip in reversed(list(chips)[-ChipTray.MAX:]):
+        card = chip.get("card")
+        if not isinstance(card, dict):
+            continue
+        r = draw_tile_chip(surf, L, card, right, cy)
+        LAST_CHIP_RECTS.insert(0, r)
+        right = r.left - L(12)
+
+
+def enroll_hit(x, y):
+    """Tap target. On the prompt stage the whole tile starts, except Not now. None outside the tile."""
+    for bid, rect in LAST_ENROLL_BUTTONS:
+        if rect.collidepoint(x, y):
+            return bid
+    if LAST_ENROLL_STAGE == "prompt" and LAST_ENROLL_RECT and LAST_ENROLL_RECT.collidepoint(x, y):
+        return "start"
+    return None
 
 
 def draw_meter(surf, L, cx, cy, kind):
@@ -3824,66 +4152,78 @@ def draw_meter(surf, L, cx, cy, kind):
         pygame.draw.rect(surf, color, (x0 + k * (bw + gap), cy - bh // 2, bw, bh), border_radius=bw // 2)
 
 
-def draw_enroll(surf, L, now, msg, t=1.0):
-    """Enrollment screens 01-10 (docs/design.md, mockups): avatar with the stage ring at the left, headline, sub-line,
-    "Clip N of M" status and progress bar at the right; muted "Wake word setup · <name>" top bar. The persona's
-    portrait, or the Echo mark on a surface-2 circle for a wake word without a persona."""
-    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
-    surf.fill(BG)
-    draw_topbar_clock(surf, L, now)
+def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
+    """Training tile in the bottom zone. The avatar box does not move between stages.
+
+    The ring is the only state cue: solid, or dashed (8 on / 6 off) for a quiet/loud retry and for failed.
+    No top-right state word. Persona portrait, or the Echo mark on surface-2 when there is no persona.
+    """
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG
+    global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_STAGE
     i, n, stage, extra = enroll_parse(msg)
     prompt = msg.get("text") or ""
     m = re.search(r"[“\"](.+?)[”\"]", prompt)
     phrase = m.group(1) if m else prompt
     who = msg.get("from") or VOICE_NAME
-    top = f"Wake word setup · {who if who != VOICE_NAME else (phrase or who)}"
-    ft = font("body", L(54))
-    text_at(surf, "body", L(54), top if ft.size(top)[0] <= L.w // 2 else ellipsize(ft, top, L.w // 2), MUTED,
-            (L.m, L(34) + L(72) // 2), "midleft")
-    ring, label, lcolor, meter = ENROLL_STAGES.get(stage, ("idle", "", MUTED, None))
-    d, ring_w = L(500), max(4, L(14))
-    left = L(160)
-    x = left + d + L(140)
-    width = L.w - L.m - x
-    top_row = L(34) + L(72)
-    col_h = d + L(110) + L(40) + (L(60) + L(45) if meter else 0)  # avatar, state label, level meter
-    photo_top = top_row + max(L(30), (L.h - top_row - L(60) - col_h) // 2)
-    img, pad = portrait(who, d, ring_w, ring, t, photo_ok=True)
-    origin = (left - pad, photo_top - pad)
+    draw_idle(surf, L, now, wx or _ENROLL_WX, home_band=False)
+    tile = enroll_tile_rect(L)
+    LAST_ENROLL_RECT = tile
+    LAST_ENROLL_STAGE = stage
+    border = max(1, zpx(L, 3))
+    rad = max(4, zpx(L, 37))
+    pygame.draw.rect(surf, SURFACE, tile, border_radius=rad)
+    pygame.draw.rect(surf, RULE, tile, border, border_radius=rad)
+    prev = surf.get_clip()
+    surf.set_clip(tile)
+    ring_w = max(2, zpx(L, 14))
+    av = pygame.Rect(tile.x + border + zpx(L, 72), tile.y + border + zpx(L, 123), zpx(L, 548), zpx(L, 548))
+    if av.w > tile.w - 2 * border:
+        av.w = av.h = max(16, tile.w - 2 * border)
+    LAST_ENROLL_AVATAR = pygame.Rect(av)
+    d = max(8, av.w - 2 * ring_w)
+    img, pad = portrait(who, d, ring_w, ENROLL_RING.get(stage, "none"), t, photo_ok=True)
+    origin = (av.x + (av.w - d) // 2 - pad, av.y + (av.h - d) // 2 - pad)
     surf.blit(img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, True)
-    acx = left + d // 2
-    if label:
-        lr = text_at(surf, "display", L(64), label, lcolor, (acx, photo_top + d + L(110)), "center")
-        if meter:
-            draw_meter(surf, L, acx, lr.bottom + L(60), meter)
-    head, sub, scolor, status, bar = enroll_copy(phrase, i, n, stage, extra)
-    fh, hl, hstep = fit_text("display", head, width, L(240), L(120), L(64), lh=1.02, max_lines=2)
-    fs, sl, sstep = fit_text("body", sub, width, L(170), L(68), L(40), lh=1.18, max_lines=2) if sub else (None, [], 0)
-    st_h = L(80) + L(30) if status else 0
-    bar_h = L(24) + L(28) if bar is not None else 0
-    block = hstep * len(hl) + (L(16) + sstep * len(sl) if sl else 0) + (L(28) + st_h if status else 0) + bar_h
-    y = max(top_row + L(40), photo_top + d // 2 - block // 2)
-    y = draw_lines(surf, fh, hl, hstep, TEXT, x, y)
-    if sl:
-        y = draw_lines(surf, fs, sl, sstep, scolor, x, y + L(16))
-    if status:
-        fst = font("display", L(80))
-        check = status.endswith(" ✓")  # Inter has no check glyph: draw it
-        stext = status[:-2] if check else status
-        stext = stext if fst.size(stext)[0] <= width - L(80) else ellipsize(fst, stext, width - L(80))
-        r = text_at(surf, "display", L(80), stext, LISTENING, (x, y + L(28)), "topleft")
-        if check:
-            u, cy = L(40), r.centery
-            pts = [(r.right + L(22), cy), (r.right + L(22) + u * 0.38, cy + u * 0.38), (r.right + L(22) + u, cy - u * 0.5)]
-            pygame.draw.lines(surf, LISTENING, False, pts, max(2, L(8)))
-        y = r.bottom + L(30)
-    if bar is not None:
-        track = pygame.Rect(x, y, width, L(24))
-        pygame.draw.rect(surf, SURFACE2, track, border_radius=L(12))
-        if bar > 0:
-            pygame.draw.rect(surf, LISTENING, (x, y, max(L(24), int(width * min(1.0, bar))), L(24)), border_radius=L(12))
+    LAST_PORTRAIT_BG = SURFACE
+    if stage in _DASH_RING:
+        _dashed_ring(surf, av.centerx, av.centery, av.w / 2.0, ring_w, _DASH_RING[stage], zpx(L, 8), zpx(L, 6))
+    elif stage in _SOLID_RING:
+        pygame.draw.circle(surf, _SOLID_RING[stage], av.center, int(av.w / 2), ring_w)
+    col_x = tile.x + zpx(L, 720)
+    col_w = max(40, tile.right - zpx(L, 80) - col_x)
+    eye = f"Wake word setup · {who if who != VOICE_NAME else (phrase or who)}"
+    eye_slot = pygame.Rect(col_x, tile.y + zpx(L, 61), col_w, max(1, zpx(L, 60)))
+    surf.set_clip(eye_slot.clip(tile))
+    ef = font("body", zpx(L, 44))
+    surf.blit(ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
+    head, sub, scolor, status, _bar = enroll_copy(phrase, i, n, stage, extra)
+    head_slot = pygame.Rect(col_x, tile.y + zpx(L, 170), col_w, max(1, zpx(L, 131)))
+    surf.set_clip(head_slot.clip(tile))
+    hf = font("display", _fit_px_step("display", head, col_w, zpx(L, 128), zpx(L, 96), zpx(L, 8)))
+    shown = _ellipsize_quoted(hf, head, col_w)
+    surf.blit(hf.render(shown, True, TEXT), head_slot.topleft)
+    sub_slot = pygame.Rect(col_x, tile.y + zpx(L, 321), col_w, max(1, zpx(L, 170)))
+    surf.set_clip(sub_slot.clip(tile))
+    if sub:
+        sf, lines, step = _fit_wrapped("body", sub, col_w, sub_slot.h, zpx(L, 72), zpx(L, 60), zpx(L, 4), 2, 1.18)
+        y = sub_slot.y
+        for ln in lines:
+            if y >= sub_slot.bottom:
+                break
+            surf.blit(sf.render(ln, True, scolor), (col_x, y))
+            y += step
+    prog = pygame.Rect(col_x, tile.y + zpx(L, 521), col_w, max(1, zpx(L, 88)))
+    surf.set_clip(prog.clip(tile))
+    _draw_progress(surf, L, prog, col_w, stage, i, status)
+    act = pygame.Rect(col_x, tile.y + zpx(L, 641), col_w, max(1, zpx(L, 104)))
+    # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
+    surf.set_clip(tile)
+    _draw_actions(surf, L, tile, act, col_w, stage)
+    surf.set_clip(prev)
+    _draw_enroll_chips(surf, L)
+    draw_timer_strip(surf, L)
 
 
 T1_VERBS = {"add": "add to", "remove": "remove from", "remember": "remember", "undo": "undo"}
@@ -4431,9 +4771,11 @@ def main():
             if page and page["card"]["type"] in TILE_TYPES:
                 view_card = page["card"]
         tile_card = TILE.get("card") if msg else None
-        if CHIPS and not ((tile_card or view_card or {}).get("type") == "recipe"):
+        enroll_up = isinstance(msg, dict) and msg.get("state") == "enroll"
+        if CHIPS and not enroll_up and not ((tile_card or view_card or {}).get("type") == "recipe"):
             # The recipe ended (closed, expired, or the session moved on): the newest chip with TTL left
             # takes the bottom zone. With no session the deck already holds that card.
+            # Training keeps the zone, so chips stay chips until it ends.
             chip = CHIPS.handoff(t_now)
             if chip and msg and not TILE and deck().get(chip["bot"], chip["id"]):
                 TILE.update({"bot": chip["bot"], "id": chip["id"], "card": chip["card"]}, shown=t_now)
@@ -4442,7 +4784,10 @@ def main():
             view_card = tile_card
         view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
         ph = phase_now() if thinking() else 1.0
-        if view == "session":
+        if view == "session" and isinstance(msg, dict) and msg.get("state") == "enroll":
+            disp.show(draw_enroll, now, msg, ph, wx, fade=fade, snapshot=snapshot)
+            key = ("session", now.tm_min)
+        elif view == "session":
             if thinking():
                 disp.show(draw_session, now, msg, msg["state"], ph, fade=fade, snapshot=snapshot)
             else:
@@ -4610,7 +4955,7 @@ def main():
                 tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
-                hold = REPLY_HOLD if ev.done else VOICE_HOLDS[ev.state]
+                hold = state_hold(ev.state, bool(ev.done), getattr(ev, "heard", "") or "")
                 new = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 kept = merge_card(msg.get("card") if msg else None, getattr(ev, "has_card", False), getattr(ev, "card", None), bool(ev.done))
                 if kept:
@@ -4624,7 +4969,9 @@ def main():
                     anim_started = None
                 prev_state = msg.get("state") if msg else None
                 now_s = time.time()
-                if TILE and tile_step(TILE, prev_state, ev.state, now_s, SCORE_HOLD) == "clear":
+                if ev.state == "enroll" and TILE:
+                    park_tile_for_enroll(TILE, now_s)  # training takes the zone; the tile becomes a chip
+                elif TILE and tile_step(TILE, prev_state, ev.state, now_s, SCORE_HOLD) == "clear":
                     deck().clear(TILE.get("bot"), TILE.get("id"))
                     TILE.clear()  # back to the full-screen status as the response starts
                 had = msg is not None
@@ -4693,6 +5040,11 @@ def main():
                 continue
             tile = getattr(ev, "tile", None)
             on_recipe = recipe_up((TILE.get("card") if msg else None), deck().current(time.time()))
+            enroll_up = isinstance(msg, dict) and msg.get("state") == "enroll"
+            if tile and enroll_up and (tile.get("card") or {}).get("type") in TILE_TYPES:
+                CHIPS.add(tile, time.time())  # training keeps the zone; the arrival is a chip
+                paint(snapshot=False)
+                continue
             if tile and (tile.get("card") or {}).get("type") in ZONE_TILES and on_recipe:
                 CHIPS.add(tile, time.time())  # the recipe stays; the tile is a chip until its TTL or "dismiss"
                 if (msg and msg.get("voice")) or not night_face(time.localtime()):
@@ -4801,12 +5153,12 @@ def demo(out, size):
         shots.append((f"listening-pulse-{i}", draw_session, (now, listen, "listening", phase)))
     for k, (stage, i, extra, t) in enumerate((("prompt", 1, "", 1), ("ready", 3, "", 0.6), ("recording", 3, "", 0.5),
                                                ("loud", 3, "", 1), ("quiet", 3, "", 1), ("saved", 3, "", 0.5),
-                                               ("uploaded", 10, "", 1), ("queued", 0, "2", 0.3), ("passed", 0, "", 1),
-                                               ("failed", 0, "10", 1)), 1):
-        em = {"from": "Finn", "voice": True, "state": "enroll", "text": "“Hey Finn”", "heard": f"{i}/10|{stage}|{extra}"}
+                                               ("uploaded", 5, "", 1), ("queued", 0, "2", 0.3), ("passed", 0, "", 1),
+                                               ("failed", 0, "5", 1)), 1):
+        em = {"from": "Finn", "voice": True, "state": "enroll", "text": "“Hey Finn”", "heard": f"{i}/5|{stage}|{extra}"}
         shots.append((f"enroll-{k:02d}-{stage}", draw_session, (now, em, "enroll", t)))
     shots.append(("enroll-no-persona", draw_session, (now, {"from": "Grok", "voice": True, "state": "enroll",
-                                                             "text": "“Hey Nova”", "heard": "1/10|prompt|"}, "enroll", 1)))
+                                                             "text": "“Hey Nova”", "heard": "1/5|prompt|"}, "enroll", 1)))
     sd = {"mode": "setup", "code": "K7P4QX", "host": "grok-station.local", "url": "https://grok-station.local"}
     shots.append(("setup-needed", draw_setup, (now, sd)))
     shots.append(("setup-reset", draw_setup, (now, dict(sd, mode="reset", code="R4M9TW"))))

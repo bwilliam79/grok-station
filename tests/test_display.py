@@ -186,7 +186,13 @@ class FooterFit(unittest.TestCase):
             surf = pygame.Surface(size)
             for st in LONG_STATUS:
                 gs.draw_enroll(surf, L, time.localtime(), {"text": "Say “Hey Hank”", "heard": f"25/25|{st}"})
-                self.check_margins(surf, L)
+                tile = gs.LAST_ENROLL_RECT
+                self.assertIsNotNone(tile)
+                self.assertGreaterEqual(tile.left, L.m - 1)
+                self.assertLessEqual(tile.right, L.w - L.m + 1)
+                self.assertLessEqual(tile.bottom, surf.get_height() - L(40) + 1)
+                self.assertIsNone(ink_box(surf, (0, surf.get_height() - L(40), surf.get_width(), L(40)), gs.BG),
+                                  "ink in the bottom safe area")
                 f, lines, _ = gs.fit_text("body", st, L.w - 2 * L.m, L(150), L(60), L(36), lh=1.05, max_lines=2)
                 self.assertLessEqual(len(lines), 2)
                 self.assertTrue(all(f.size(l)[0] <= L.w - 2 * L.m for l in lines))
@@ -260,9 +266,14 @@ def enroll_msg(stage, i, extra, who="Finn", phrase="Hey Finn"):
 
 class EnrollScreens(unittest.TestCase):
     def margins_clear(self, surf, L):
+        """The idle clock may use the side margins above the tile. The tile itself stays inside them,
+        and the bottom safe band stays empty."""
         w, h = surf.get_size()
-        for x0, x1 in ((0, L.m - 2), (w - L.m + 2, w)):
-            self.assertIsNone(ink_box(surf, (x0, L(140), x1 - x0, h - L(140) - 2), gs.BG))
+        tile = gs.LAST_ENROLL_RECT
+        self.assertIsNotNone(tile)
+        self.assertGreaterEqual(tile.left, L.m - 1, "tile crosses the left margin")
+        self.assertLessEqual(tile.right, w - L.m + 1, "tile crosses the right margin")
+        self.assertLessEqual(tile.bottom, h - L(40) + 1, "tile crosses the bottom safe area")
         self.assertIsNone(ink_box(surf, (0, h - L(40), w, L(40)), gs.BG), "ink in the bottom safe area")
 
     def test_all_stages_all_sizes(self):
