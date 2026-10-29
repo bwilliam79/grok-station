@@ -1496,8 +1496,50 @@ def _training_read(read16):
     return wrapped
 
 
+PROMPT_TTL_S = 120   # prompt tile with nothing recorded closes on its own (Nix 0.13.5 L2)
+PAUSE_MAX_S = 600    # a pause between clips longer than this discards the session
+_mono = time.monotonic
+
+
+def _training_expire():
+    """Bounded listening window. An expired prompt closes; an over-cap pause takes the discard path.
+
+    One log line each, with no words and no phrase.
+    """
+    now = _mono()
+    closed = False
+    with _TRAIN_LOCK:
+        if ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy"):
+            until = ENROLL_STATE.get("prompt_until")
+            if until is None or now >= until:
+                ENROLL_STATE["prompt"] = None
+                ENROLL_STATE["prompt_until"] = None
+                closed = True
+        if ENROLL_STATE.get("busy") and ENROLL_STATE.get("pause"):
+            until = ENROLL_STATE.get("pause_until")
+            if until is None or now >= until:
+                ENROLL_STATE["discard"] = True
+                ENROLL_STATE["pause"] = False
+                ENROLL_STATE["pause_until"] = None
+                ENROLL_STATE["timed_out"] = True
+                print("enroll pause timed out; discarding", flush=True)
+    if closed:
+        print("enroll prompt timed out", flush=True)
+        post_state("idle")
+
+
+def _feed_prompt_audio(pcm):
+    """Listener loop: feed the recogniser only while the prompt tile is up and inside its TTL."""
+    if not (ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy")):
+        return
+    _training_expire()
+    if ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy"):
+        _feed_training_audio(pcm)
+
+
 def _training_holding():
     """Paused between clips, or the prompt tile is up and nothing is recording yet."""
+    _training_expire()
     if ENROLL_STATE.get("discard"):
         return False
     if ENROLL_STATE.get("pause"):
@@ -1702,6 +1744,7 @@ def open_enroll_tile(j):
         if ENROLL_STATE.get("busy"):
             return 409, {"error": "enrollment in progress"}
         ENROLL_STATE["prompt"] = {"phrase": phrase or "", "persona": who, "text": say}
+        ENROLL_STATE["prompt_until"] = _mono() + PROMPT_TTL_S
     _reset_stop_recogniser()
     post_state("enroll", text=say, who=who, heard=f"1/{ENROLL_COUNT}|prompt|")
     return 200, {"ok": True}
@@ -1720,6 +1763,8 @@ def enroll_control(body):
             else:
                 return 409, {"error": "Nothing is recording."}
         elif op == "pause":
+            if not ENROLL_STATE.get("pause"):
+                ENROLL_STATE["pause_until"] = _mono() + PAUSE_MAX_S
             ENROLL_STATE["pause"] = True
             post = False
         elif op == "resume":
@@ -1805,6 +1850,8 @@ def enroll(req, read16, play):
         ENROLL_STATE["pause"] = False
         ENROLL_STATE["discard"] = False
         ENROLL_STATE["heard_text"] = ""
+        ENROLL_STATE["timed_out"] = False
+        ENROLL_STATE["pause_until"] = None
     _reset_stop_recogniser()
     read16 = _training_read(read16)
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
@@ -1857,9 +1904,13 @@ def enroll(req, read16, play):
                     read16()
             i += 1
         if ENROLL_STATE.get("discard"):
+            timed_out = bool(ENROLL_STATE.pop("timed_out", False))
             shutil.rmtree(d, ignore_errors=True)
             enroll_stage("cancelled", "Stopped.", phrase, ses)
-            print(f"enroll discarded {phrase} session {ses}", flush=True)
+            if timed_out:
+                post_state("idle")  # the pause cap already logged its one line
+            else:
+                print(f"enroll discarded {phrase} session {ses}", flush=True)
             return
         ok = sent >= (5 if prior else ENROLL_COUNT)
         body = {"phrase": phrase, "persona": persona, "count": sent, **({"prior": prior} if prior else {})}
@@ -3351,8 +3402,7 @@ def main():
             x = np.convolve(xx, _K, "valid")[::DECIM]
         pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
         # The prompt tile is up while this loop still owns the mic. Recording uses enroll's own read.
-        if ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy"):
-            _feed_training_audio(pcm)
+        _feed_prompt_audio(pcm)
         sc = scores(model, pcm)
         s = max(sc.values(), default=0.0)
         hit = det.feed(sc)
