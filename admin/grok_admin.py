@@ -2225,6 +2225,9 @@ def audit_home(verb, device_id):
 HB_ADMIN_MSG = ("This login is an admin. Grok Station won't store an admin login. "
                 "Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.")
 HB_UNCONFIRMED_MSG = "Couldn't confirm this login isn't an admin"
+# 0.13.1: the relay signs in again on its own and cannot type a code, so a 2-step login is refused at Verify.
+HB_TWO_STEP_MSG = ("This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, "
+                   "so make the grok-station user without 2-step and try again.")
 
 
 def _voice_copy(doc, kind):
@@ -5131,7 +5134,7 @@ class Handler(BaseHTTPRequestHandler):
     def _hb_fail(self, code, error, message, checks):
         return self.send(code, {"error": error, "message": message, "checks": checks})
 
-    def _hb_session(self, base, username, password, otp=None):
+    def _hb_session(self, base, username, password):
         """(token or None, error or None, checks). Nothing is saved. Token stays in this return value only."""
         settings = gsi.hb_request(base, "GET", "/api/auth/settings")
         reach = settings["error"] is None and settings["status"] == 200 and isinstance(settings["json"], dict)
@@ -5149,12 +5152,10 @@ class Handler(BaseHTTPRequestHandler):
             }
             return None, err, checks, messages.get(err, "Homebridge didn't answer.")
         payload = {"username": username, "password": password}
-        if otp:
-            payload["otp"] = otp
         login = gsi.hb_request(base, "POST", "/api/auth/login", payload)
         obj = login["json"] if isinstance(login["json"], dict) else {}
-        if gsi.hb_otp_needed(login["status"], obj) and not otp:
-            return None, "otp_required", checks, "This login has 2-step sign-in on. Enter the code, or use a login without 2-step."
+        if gsi.hb_otp_needed(login["status"], obj):
+            return None, "two_step", checks, HB_TWO_STEP_MSG
         token = obj.get("access_token") if isinstance(obj.get("access_token"), str) and obj.get("access_token") else ""
         if login["status"] != 201 or not token:
             if login["status"] in (400, 401, 403):
@@ -5190,11 +5191,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True, "base": target["base"], "users": target["base"] + "/users"})
 
     def _hb_verify(self, j):
-        if not isinstance(j, dict) or not {"base", "username", "password"} <= set(j) <= {"base", "username", "password", "otp", "stepup"}:
+        if not isinstance(j, dict) or not {"base", "username", "password"} <= set(j) <= {"base", "username", "password", "stepup"}:
             return self.send(400, {"error": "bad_request"})
         if not isinstance(j.get("base"), str) or not gsi.hb_username_ok(j.get("username")) or not gsi.hb_password_ok(j.get("password")):
-            return self.send(400, {"error": "bad_request"})
-        if "otp" in j and not gsi.hb_otp_ok(j.get("otp")):
             return self.send(400, {"error": "bad_request"})
         if "stepup" in j and not isinstance(j.get("stepup"), str):
             return self.send(400, {"error": "bad_request"})
@@ -5206,10 +5205,10 @@ class Handler(BaseHTTPRequestHandler):
         if target is None:
             checks = self._hb_checks(False, False, False)
             return self._hb_fail(400, "refused", "That address isn't on your home network.", checks)
-        token, err, checks, message = self._hb_session(target["base"], j["username"], j["password"], j.get("otp"))
+        token, err, checks, message = self._hb_session(target["base"], j["username"], j["password"])
         token = None  # the login is checked; the relay logs in itself. Do not keep it.
         if err:
-            code = 403 if err in ("admin", "unconfirmed") else (401 if err in ("bad_login", "otp_required") else 400)
+            code = 403 if err in ("admin", "unconfirmed") else (401 if err == "bad_login" else 400)
             return self._hb_fail(code, err, message, checks)
         if not _hb_store(j["username"], j["password"]):
             return self.send(500, {"error": "Couldn't save that."})

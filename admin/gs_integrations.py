@@ -708,7 +708,6 @@ def mdns_browse(timeout=DISCOVER_S):
 
 
 _HB_USER = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-_HB_OTP = re.compile(r"^[0-9]{6,8}$")
 _HB_UID = re.compile(r"^[A-Za-z0-9._:@+-]{1,128}$")
 _HB_POWER = {
     "Lightbulb": ("light", "On"),
@@ -738,10 +737,6 @@ def hb_password_ok(text):
     if not isinstance(text, str) or not 8 <= len(text) <= 200:
         return False
     return all(32 <= ord(ch) <= 126 for ch in text)
-
-
-def hb_otp_ok(text):
-    return isinstance(text, str) and _HB_OTP.fullmatch(text) is not None
 
 
 def hb_write_value(value):

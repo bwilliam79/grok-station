@@ -4444,7 +4444,6 @@ async function pageIntegrations(el) {
   let hbBase = "";
   let hbUser = "";
   let hbPass = "";
-  let hbOtp = "";
   const stepper = n => `<p class="stepper" aria-label="${STEPS.join(" · ")}">${STEPS.map((t, i) => {
     const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
@@ -4914,8 +4913,6 @@ async function pageIntegrations(el) {
         <div class="field"><label for="hbpass">Password</label>
           <div class="hbaddr"><input class="inp" id="hbpass" type="password" autocomplete="new-password" maxlength="200">
             <button class="btn" id="hbshow" type="button">Show</button></div></div>
-        ${opts.otp ? `<div class="field"><label for="hbotp">Code</label><input class="inp" id="hbotp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" value="${esc(hbOtp)}"></div>
-          <p class="help">This login has 2-step sign-in on. Enter the code.</p>` : ""}
         <div id="hberr"></div>
         <div class="field inline"><button class="btn g" id="hbback" type="button">Back</button>
           <span class="right"><button class="btn p" id="hbverify" type="submit">Verify</button></span></div>
@@ -4930,20 +4927,19 @@ async function pageIntegrations(el) {
       $("#hbshow", el).textContent = show ? "Hide" : "Show";
     };
     if (opts.message) errBox($("#hberr", el), opts.message);
-    $("#hbform", el).onsubmit = ev => { ev.preventDefault(); hbVerify(base, !!opts.otp); };
+    $("#hbform", el).onsubmit = ev => { ev.preventDefault(); hbVerify(base); };
   }
   function hbVerifyBody(base, stepup) {
     const body = {base: base, username: hbUser, password: hbPass};
-    if (hbOtp) body.otp = hbOtp;
     if (stepup) body.stepup = stepup;
     return body;
   }
   function hbApply(r) {
     const data = (r && r.data) || {};
     const err = data.error;
-    if (err === "admin") return hbStopped(data.message || "This login is an admin. Grok Station won't store an admin login. Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.", data.checks, "Back to Create a login", () => hbCreate(hbBase));
-    if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase));
-    if (err === "otp_required") return hbEnter(hbBase, {otp: true, message: data.message || "This login has 2-step sign-in on. Enter the code."});
+    if (err === "admin") return hbStopped(data.message || "This login is an admin. Grok Station won't store an admin login. Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.", data.checks, "Back to Create a login", () => hbCreate(hbBase), "We can't use this login");
+    if (err === "two_step") return hbStopped(data.message || "This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, so make the grok-station user without 2-step and try again.", data.checks, "Back to Create a login", () => hbCreate(hbBase), "We can't use this login");
+    if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase), "We couldn't finish the check");
     if (err === "bad_login") return hbEnter(hbBase, {message: data.message || "Username or password didn't work."});
     const msg = data.message || "Homebridge didn't answer.";
     if (err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable") return hbAddress(hbBase, msg);
@@ -4971,9 +4967,8 @@ async function pageIntegrations(el) {
     $("#hbcancel", el).onclick = () => list();
     $("#hbnext", el).onclick = () => hbLoadPick();
   }
-  function hbStopped(message, checks, label, again) {
-    const admin = message.indexOf("is an admin") >= 0;
-    el.innerHTML = `<div class="card wcard">${hbHead(4, admin ? "We can't use this login" : "We couldn't finish the check")}
+  function hbStopped(message, checks, label, again, title) {
+    el.innerHTML = `<div class="card wcard">${hbHead(4, esc(title))}
       ${hbChecks(checks, false)}
       <div class="banner warn" role="alert" id="hbstop"><span class="pill warn"><i></i>Needs attention</span> ${esc(message)}</div>
       <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel setup</button>
@@ -4982,17 +4977,15 @@ async function pageIntegrations(el) {
     $("#hbcancel", el).onclick = () => list();
     $("#hbnext", el).onclick = again;
   }
-  async function hbVerify(base, wantOtp) {
+  async function hbVerify(base) {
     hbUser = ($("#hbuser", el).value || "").trim();
     hbPass = $("#hbpass", el).value;
-    hbOtp = wantOtp && $("#hbotp", el) ? $("#hbotp", el).value.trim() : hbOtp;
     if (!hbUser || hbPass.length < 8) {
       return errBox($("#hberr", el), "Username or password didn't work.");
     }
     const finish = async r => {
       if (r && r.ok) {
         hbPass = "";
-        hbOtp = "";
         await refreshStepup();
         hbPassed((r.data && r.data.checks) || []);
         return {ok: true};
@@ -5004,7 +4997,7 @@ async function pageIntegrations(el) {
     const ask = () => askPassword("Check this login?", "Enter the admin password. The Homebridge login is saved on this station only after the checks pass.", "Verify", async pw => {
       hbChecking();
       return finish(await hbPost(base, pw));
-    }, () => hbEnter(base, {otp: !!hbOtp}));
+    }, () => hbEnter(base));
     hbChecking();
     const first = await hbPost(base, "");
     if (first && first.status === 403 && first.data && first.data.error === PASSWORD_BAD) return ask();
@@ -5209,7 +5202,6 @@ async function pageIntegrations(el) {
         hbBase = "";
         hbUser = "";
         hbPass = "";
-        hbOtp = "";
         list();
       }
       return r;

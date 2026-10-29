@@ -409,20 +409,25 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertFalse(os.path.exists(self.creds))
         self.assertFalse(os.path.exists(self.block))
 
-    def test_otp_is_asked_then_not_stored(self):
+    def test_two_step_login_is_refused_and_nothing_saved(self):
+        """A login that needs a 2-step code is refused at Verify. No code field, nothing stored (0.13.1)."""
         self._grace_off()
         HB.mode = "otp"
         status, body = self._verify()
-        self.assertEqual((status, body["error"]), (401, "otp_required"), body)
+        self.assertEqual((status, body["error"]), (400, "two_step"), body)
+        self.assertEqual(body["message"], ga.HB_TWO_STEP_MSG)
         self.assertFalse(os.path.exists(self.creds))
-        self.assertIn("2-step", body["message"])
+        self.assertFalse(any(cmd == "homebridge-set" for cmd, _ in self.calls))
+        # The API takes no code at all: an otp field is a bad request, and nothing is sent to Homebridge.
+        HB.requests = []
         status, body = self._verify(otp="123456")
-        self.assertEqual(status, 200, body)
-        stored = json.load(open(self.creds, encoding="utf-8"))
-        self.assertNotIn("otp", stored)
-        self.assertNotIn("123456", json.dumps(stored))
-        login = next(r for r in HB.requests if r["path"] == "/api/auth/login" and isinstance(r["body"], dict) and r["body"].get("otp"))
-        self.assertEqual(login["body"]["otp"], "123456")
+        self.assertEqual((status, body["error"]), (400, "bad_request"), body)
+        self.assertEqual(HB.requests, [])
+        self.assertFalse(os.path.exists(self.creds))
+        js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        self.assertNotIn("hbotp", js)
+        self.assertNotIn("otp_required", js)
+        self.assertNotIn("body.otp", js)
 
     def test_bad_login_and_not_homebridge(self):
         self._grace_off()
