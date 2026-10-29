@@ -6,6 +6,7 @@
 turning personal-info blocking off still ask. No browser for the page; the copy
 helpers run under node. The API tests use the shared admin server.
 """
+import hashlib
 import io
 import json
 import os
@@ -143,7 +144,7 @@ class SessionGrace(unittest.TestCase):
         self.assertIn("time=%d" % int(CLOCK[0]), line)
         self.assertNotIn(GOOD, line)
         self.assertNotIn(self.c.jar.get("gs_session", "missing-cookie"), line)
-        self.assertNotIn(ta.hashlib.sha256(self.c.jar["gs_session"].encode()).hexdigest(), line)
+        self.assertNotIn(hashlib.sha256(self.c.jar["gs_session"].encode()).hexdigest(), line)
         # Idle expiry ends it. No limit grew.
         CLOCK[0] = rec["seen"] + ga.IDLE_TTL + 1
         st, state = self.c.req("GET", "/api/state")

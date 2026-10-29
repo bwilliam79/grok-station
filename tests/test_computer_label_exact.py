@@ -53,7 +53,9 @@ class DisplayOnly(unittest.TestCase):
                          ["alpha", "iPhone Air", "beta-desktop"])
 
     def test_screen_keeps_full_name_in_hover_and_edit_field(self):
-        self.assertIn('title="${esc((b && b.reply_host) || "")}"', JS)
+        # 0.13.8: the row's second line is built by botRowL2HTML, which still puts the full name in the hover title.
+        self.assertIn('<div class="help" title="${esc(title || "")}">', JS)
+        self.assertIn('botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "",', JS)
         self.assertIn('id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(host)}"', JS)
 
     def test_instructions_ask_for_the_exact_label(self):
