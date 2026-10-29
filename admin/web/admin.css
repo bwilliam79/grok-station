@@ -493,7 +493,6 @@ p#emptybot{margin:10px 2px 0}
 .wake{color:var(--gs-teal);font-weight:600}
 button#iback{height:auto;min-height:44px;text-decoration:none}
 .tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
-.apple{margin-top:16px;padding:12px 14px;border-radius:12px;background:var(--gs-surface);border:1px solid var(--gs-rule);color:var(--gs-muted);font-size:var(--fs-label)}
 .intst.bad{color:var(--gs-amber);background:var(--gs-amber-bg)}
 .hbinfo{display:flex;gap:10px;align-items:flex-start;background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:12px;max-width:560px;font-size:var(--fs-label);color:var(--gs-muted)}
 .hbinfo .ii{flex:none;width:20px;height:20px;border-radius:999px;border:1.5px solid var(--gs-muted);color:var(--gs-muted);display:grid;place-items:center;font-size:var(--fs-caps);font-weight:600;margin-top:1px}

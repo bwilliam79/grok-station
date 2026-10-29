@@ -4521,8 +4521,6 @@ async function pageIntegrations(el) {
     const later = Array.isArray(data.later) ? data.later : [];
     const rest = later.filter(c => c.id !== "homebridge" && c.id !== "apple_home");
     const laterName = {matter: "Matter", nest: "Google Nest thermostat", cameras: "Cameras (RTSP)"};
-    const apple = later.find(c => c.id === "apple_home");
-    const appleText = (apple && apple.note) || "Use Homebridge for these devices. Apple Home has no API outside Apple devices.";
     const voiceOn = wled.voice === true || hb.voice === true;
     const anyDev = lights.length + hbDevices.length > 0;
     const hbStatus = hb.status || "not_set_up";
@@ -4550,8 +4548,7 @@ async function pageIntegrations(el) {
       </div>
       <div class="seclab" style="margin-top:22px">Later</div>
       <div class="intgrid">${rest.map(c => `<div class="card intcard later"><h2>${esc(c.name || laterName[c.id] || "")}</h2><span class="intst later">Later</span>
-        <p class="sub">${esc(c.id === "matter" ? "Lights and plugs that speak Matter." : c.id === "nest" ? "Temperature by voice." : c.id === "cameras" ? "Show a camera on the station screen." : "")}</p></div>`).join("")}</div>
-      <p class="apple">${esc(appleText)}</p>`;
+        <p class="sub">${esc(c.id === "matter" ? "Lights and plugs that speak Matter." : c.id === "nest" ? "Temperature by voice." : c.id === "cameras" ? "Show a camera on the station screen." : "")}</p></div>`).join("")}</div>`;
     const setup = $("#wsetup", el);
     if (setup) setup.onclick = () => finding();
     const manage = $("#wmanage", el);

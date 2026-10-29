@@ -554,7 +554,7 @@ class IntegrationsUI(unittest.TestCase):
             "Clashes with ", "Recommended, not required.", "Settings PIN", "OTA lock",
             "Turn on Voice home control, then try it: say 'Hey Grok, turn on ", "Voice home control", "Turn on voice home control?",
             "Say the light's name; 'turn off the lights' on its own isn't supported yet.",
-            "Offline since ", APPLE, "Google Nest thermostat", "Cameras (RTSP)", "Matter",
+            "Offline since ", "Google Nest thermostat", "Cameras (RTSP)", "Matter",
             'role="checkbox"', "Blink", "wled-kitchen.local",
             "Connect Homebridge",
             "Grok Station uses its own Homebridge login that can control devices but can't change Homebridge settings.",
@@ -568,6 +568,10 @@ class IntegrationsUI(unittest.TestCase):
         ):
             self.assertIn(text, page, text)
         self.assertNotIn("Coming next", page)
+        # 0.13.4: the owner asked to remove the Apple Home note (Noor SPEC-apple-note-removal).
+        self.assertNotIn(APPLE, js)
+        self.assertNotIn('class="apple"', js)
+        self.assertNotIn(".apple{", open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read())
         self.assertNotIn("Turn on Voice home control in Manage", page)
         self.assertIn("esc(d.name)", page)
         self.assertIn("esc(dev.name", page)
