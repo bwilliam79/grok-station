@@ -715,7 +715,7 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertNotIn(body.get("error"), ("unreachable", "refused", "not_homebridge", "cert"), body)
         self.assertEqual(body.get("error"), "accessories", body)
         self.assertEqual(body.get("message"), ga.HB_ACCESSORIES_MSG)
-        self.assertEqual(body["message"], "Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.")
+        self.assertEqual(body["message"], "Signed in to Homebridge, but it won't share its accessories with the station until accessory control (insecure mode) is on.")
         self.assertTrue(body["checks"][0]["ok"])
         self.assertIsInstance(body.get("pending"), str)
         self.assertGreaterEqual(len(body["pending"]), 20)
@@ -957,11 +957,11 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertIn(signin, apply)
         for text in (
             "‹ Homebridge",
-            "Turn on insecure mode in Homebridge",
-            "Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.",
+            "Turn on accessory control in Homebridge",
+            "Signed in to Homebridge, but it won't share its accessories with the station until accessory control (insecure mode) is on.",
             "Open Homebridge in your browser.",
-            "Go to Settings, then Homebridge Settings.",
-            "Turn on Insecure mode.",
+            "Go to <b>Settings</b>, then <b>Startup &amp; Environment</b>.",
+            "Turn on <b>Enable UI Accessory Control</b>.",
             "Restart Homebridge.",
             "Your login is saved. You won't need to enter it again.",
             "Still can't list accessories. Make sure Homebridge finished restarting, then try again.",
@@ -972,11 +972,16 @@ class HomebridgeAPI(unittest.TestCase):
             'class="card wcard"',
             'class="btn g back"',
             'class="help"',
-            "hbStepper(4)",
+            "hbStepperWarn(4)",
+            "hbAttn(",
             "/api/integrations/homebridge/retry/cancel",
         ):
             self.assertIn(text, screen, text)
         self.assertLess(screen.index('id="hberr"'), screen.index('id="hbretry"'))
+        # Noor rev2 focus rules: Try again on arrival, the error box when it shows.
+        self.assertIn('$("#hbretry", el).focus()', screen)
+        self.assertIn("shown.focus()", _fn(src, "hbAttn"))
+        self.assertIn('tabindex="-1"', _fn(src, "hbAttn"))
         self.assertIn("/api/integrations/homebridge/retry", retry)
         self.assertNotIn("retry/cancel", retry)
         self.assertIn('askPassword("Check this login?", "Enter the admin password. The Homebridge login is saved on this station only after the checks pass.", "Verify"', retry)
@@ -993,7 +998,7 @@ class HomebridgeAPI(unittest.TestCase):
             apply,
             "function run(data) { calls.length = 0; hbApply({ok: false, data: data}); return calls.slice(); }",
             "process.stdout.write(JSON.stringify({",
-            "  accessories: run({error: 'accessories', pending: 'pid-1', message: 'Signed in to Homebridge, but it won\\'t share its accessories with the station until insecure mode is on.'}),",
+            "  accessories: run({error: 'accessories', pending: 'pid-1', message: 'Signed in to Homebridge, but it won\\'t share its accessories with the station until accessory control (insecure mode) is on.'}),",
             "  signinEmpty: run({error: 'signin_unreachable', message: ''}),",
             "  signin: run({error: 'signin_unreachable', message: %s})," % json.dumps(signin),
             "  unreachable: run({error: 'unreachable', message: 'Homebridge didn\\'t answer.'}),",
@@ -1007,8 +1012,8 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr or out.stdout)
         got = json.loads(out.stdout)
         self.assertEqual(got["accessories"], [["hbInsecure", "pid-1", False]])
-        self.assertEqual(got["signinEmpty"], [["hbEnter", "http://hb.local:8581", {"message": signin}]])
-        self.assertEqual(got["signin"], [["hbEnter", "http://hb.local:8581", {"message": signin}]])
+        self.assertEqual(got["signinEmpty"], [["hbEnter", "http://hb.local:8581", {"attn": True, "message": signin}]])
+        self.assertEqual(got["signin"], [["hbEnter", "http://hb.local:8581", {"attn": True, "message": signin}]])
         self.assertEqual(got["unreachable"][0][0], "hbAddress")
         self.assertEqual(got["cert"][0][0], "hbAddress")
         self.assertEqual(got["refused"][0][0], "hbAddress")

@@ -2305,7 +2305,7 @@ HB_ADMIN_MSG = ("This login is an admin. Grok Station won't store an admin login
 HB_UNCONFIRMED_MSG = "Couldn't confirm this login isn't an admin"
 # 0.13.1: the relay signs in again on its own and cannot type a code, so a 2-step login is refused at Verify.
 HB_ACCESSORIES_MSG = ("Signed in to Homebridge, but it won't share its accessories "
-                      "with the station until insecure mode is on.")
+                      "with the station until accessory control (insecure mode) is on.")
 HB_SIGNIN_UNREACHABLE_MSG = ("Homebridge stopped answering while signing in. "
                              "The address checked out, so make sure Homebridge is running, then sign in again.")
 HB_TWO_STEP_MSG = ("This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, "

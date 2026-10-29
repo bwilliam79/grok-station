@@ -4935,7 +4935,7 @@ async function pageIntegrations(el) {
       pass.type = show ? "text" : "password";
       $("#hbshow", el).textContent = show ? "Hide" : "Show";
     };
-    if (opts.message) errBox($("#hberr", el), opts.message);
+    if (opts.message) (opts.attn ? hbAttn : errBox)($("#hberr", el), opts.message);
     $("#hbform", el).onsubmit = ev => { ev.preventDefault(); hbVerify(base); };
   }
   function hbVerifyBody(base, stepup) {
@@ -4951,23 +4951,34 @@ async function pageIntegrations(el) {
     if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase), "We couldn't finish the check");
     if (err === "bad_login") return hbEnter(hbBase, {message: data.message || "Username or password didn't work."});
     if (err === "accessories") return hbInsecure(data.pending);
-    if (err === "signin_unreachable") return hbEnter(hbBase, {message: data.message || "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."});
+    if (err === "signin_unreachable") return hbEnter(hbBase, {attn: true, message: data.message || "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."});
     const msg = data.message || "Homebridge didn't answer.";
     if (err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable") return hbAddress(hbBase, msg);
     return hbEnter(hbBase, {message: msg});
   }
+  // Noor SPEC rev2 (gs-integrations-nav) frames 06, 06b and 07: icon, "Needs attention" heading, sentence.
+  function hbAttn(box, msg) {
+    box.innerHTML = msg ? `<div class="hbattn" role="alert" tabindex="-1"><span class="ico" aria-hidden="true">!</span><div><b>Needs attention</b><span>${esc(msg)}</span></div></div>` : "";
+    const shown = $(".hbattn", box);
+    if (shown) shown.focus();
+  }
+  function hbStepperWarn(n) {
+    return `<p class="stepper" aria-label="${HB_STEPS.join(" · ")}">${HB_STEPS.map((t, i) => {
+      if (i + 1 === n) return `<span class="warn" aria-current="step"><span aria-hidden="true">⚠ </span>${t}</span>`;
+      return i + 1 < n ? `<span class="done">${t}</span>` : `<span>${t}</span>`;
+    }).join('<span class="sep"> · </span>')}</p>`;
+  }
   function hbInsecure(pending, again) {
-    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepper(4)}<h2>Turn on insecure mode in Homebridge</h2>
-      <p class="sub">Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.</p>
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepperWarn(4)}<h2>Turn on accessory control in Homebridge</h2>
+      <p class="sub">Signed in to Homebridge, but it won't share its accessories with the station until accessory control (insecure mode) is on.</p>
       <ol class="hbsteps"><li>Open Homebridge in your browser.</li>
-        <li>Go to Settings, then Homebridge Settings.</li>
-        <li>Turn on Insecure mode.</li>
+        <li>Go to <b>Settings</b>, then <b>Startup &amp; Environment</b>.</li>
+        <li>Turn on <b>Enable UI Accessory Control</b>.</li>
         <li>Restart Homebridge.</li></ol>
-      <p class="help">Your login is saved. You won't need to enter it again.</p>
+      <p class="help"><span aria-hidden="true">✓ </span>Your login is saved. You won't need to enter it again.</p>
       <div id="hberr"></div>
-      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
-        <span class="right"><button class="btn p" id="hbretry" type="button">Try again</button></span></div></div>`;
-    if (again) errBox($("#hberr", el), "Still can't list accessories. Make sure Homebridge finished restarting, then try again.");
+      <div class="field inline" style="margin-top:16px"><button class="btn p" id="hbretry" type="button">Try again</button>
+        <button class="btn g" id="hbcancel" type="button">Cancel</button></div></div>`;
     const leave = () => {
       api("POST", "/api/integrations/homebridge/retry/cancel", {pending: pending});
       list();
@@ -4975,6 +4986,8 @@ async function pageIntegrations(el) {
     back(leave);
     $("#hbcancel", el).onclick = leave;
     $("#hbretry", el).onclick = () => hbRetry(pending);
+    if (again) hbAttn($("#hberr", el), "Still can't list accessories. Make sure Homebridge finished restarting, then try again.");
+    else $("#hbretry", el).focus();
   }
   async function hbRetry(pending) {
     const post = stepup => {
