@@ -171,7 +171,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "d
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None}  # capture: open input device
+LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None}  # capture: open input device; reopen_by: backoff deadline
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
@@ -835,7 +835,7 @@ def control_server():
             if self.path != "/status":
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "audio_at": LIVE.get("audio_at"), "session": LIVE["session"],
-                                 "capture": LIVE["capture"],
+                                 "capture": LIVE["capture"], "reopen_by": LIVE.get("reopen_by"),
                                  "enrolling": ENROLL_STATE["busy"], "enroll_queued": not ENROLL_Q.empty(), "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
                                  "mic_reset": mic_reset_flags(),
@@ -2627,6 +2627,7 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
                     break
             sleep(5)
             continue
+        LIVE["reopen_by"] = None
         if on_open:
             on_open(cap, None)
         proc = spawn(cap)
@@ -2653,7 +2654,11 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
         delay = reopen_delay(reason, now(), last_watch, gap=gap)
         if reason in ("stall", "silence"):
             last_watch = now()
-        sleep(delay)
+        LIVE["reopen_by"] = now() + delay  # tells the display this gap is a planned wait, not a dead mic
+        try:
+            sleep(delay)
+        finally:
+            LIVE["reopen_by"] = None
     return reasons
 
 

@@ -1015,7 +1015,8 @@ def speakerphone_present(cards_text, match="emeet"):
 def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
     """fetch() -> wake /status JSON or None. ok when the speakerphone is present and capture is alive.
     Uses audio_at (any frame read, any mode) when the listener sends it, else level_at (older listeners).
-    A brief reopen (no capture device, audio within stale_s + grace_s) stays ok."""
+    A brief reopen (no capture device, audio within grace_s) stays ok, and so does a planned reopen wait:
+    while the listener reports reopen_by, ok holds until reopen_by + grace_s. Older listeners omit it."""
     if not speakerphone_present(cards_text, match):
         return {"ok": False, "detail": "speakerphone missing"}
     try:
@@ -1039,6 +1040,13 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
         alive_at = None
     if "capture" in payload and not payload.get("capture"):  # listener up but no input device open
         if payload.get("audio_at") and alive_at and now - alive_at <= grace:
+            return {"ok": True, "detail": "ok"}
+        try:
+            reopen_by = float(payload.get("reopen_by") or 0)
+        except (TypeError, ValueError):
+            reopen_by = 0.0
+        # Bound the deadline so a bad value cannot hold the icon ok forever (backoff never exceeds ~30 s).
+        if reopen_by and now <= reopen_by + grace and reopen_by - now <= window + grace:
             return {"ok": True, "detail": "ok"}
         return {"ok": False, "detail": "no capture device"}
     if alive_at is None:
