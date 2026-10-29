@@ -16,9 +16,9 @@ When Display dimming is on, brightness follows a light sensor, a clock schedule,
 Off leaves the backlight alone. A missing backlight file is a black overlay on a copy of the frame.
 `grok_station.py --demo OUTDIR [WxH]` renders every screen to PNGs (no fb, no network).
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
-Small status icons (network, relay, mic, and an update arrow only while a newer version is cached) sit in the top-right corner. A daemon thread polls them; --demo does not.
+Small status icons (network, Grok, mic, and an update arrow only while a newer version is cached) sit in the top-right corner. The Grok icon takes the old relay slot and covers relay health and the Grok service. A daemon thread polls them; --demo does not.
 """
-import hashlib, hmac, ipaddress, json, math, os, re, sys, threading, time, unicodedata, urllib.parse, urllib.request
+import hashlib, hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -670,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
         self._reply(200, result)
 
     def _status(self):
-        """Localhost-only snapshot of the status icons. No relay URL, host, or address."""
+        """Localhost-only snapshot of the status icons. Enums only: no URL, host, address, or token."""
         if not _localhost_client(self.client_address[0]):
             return self._reply(403, {"error": "localhost only"})
         self._reply(200, status_snapshot())
@@ -762,29 +762,58 @@ def feed_due(last_key, ident):
     return last_key[-1] != ident
 
 
-# ---------------------------------------------------------------- status (network, relay, mic)
+# ---------------------------------------------------------------- status (network, grok, mic)
 # Polled off the UI thread. Every check takes its inputs as arguments so tests need no hardware.
+# The Grok icon folds in the old relay icon: one fault, one icon. The mic stays the voice listener.
 _STATUS_LOCK = threading.Lock()
 STATUS = {
     "net": {"kind": "none", "up": False},
     "relay": {"ok": None, "detail": ""},
     "mic": {"ok": None, "detail": ""},
     "update": False,
+    "grok": {"state": "checking", "cause": None},
+    "probe": {},
     "at": 0,
 }
 _STATUS_ICON_CACHE = {}
+GROK_STATES = ("online", "no-internet", "unreachable", "checking", "dim")
+GROK_CAUSES = ("service", "relay", "both")
+
+
+def public_grok(grok):
+    """Enums only. Anything else is checking, never a URL, host, or error string."""
+    if not isinstance(grok, dict):
+        return {"state": "checking", "cause": None}
+    state = grok.get("state")
+    cause = grok.get("cause")
+    if state not in GROK_STATES:
+        return {"state": "checking", "cause": None}
+    if state != "unreachable" or cause not in GROK_CAUSES:
+        return {"state": state if state != "unreachable" else "checking", "cause": None}
+    return {"state": "unreachable", "cause": cause}
 
 
 def status_snapshot():
+    """What /status returns. The probe record (and relay miss count) stay inside the process."""
     with _STATUS_LOCK:
         st = STATUS
-        return {"net": dict(st["net"]), "relay": dict(st["relay"]), "mic": dict(st["mic"]),
-                "update": bool(st.get("update")), "at": st["at"]}
+        net = st.get("net") if isinstance(st.get("net"), dict) else {}
+        relay = st.get("relay") if isinstance(st.get("relay"), dict) else {}
+        mic = st.get("mic") if isinstance(st.get("mic"), dict) else {}
+        detail = relay.get("detail")
+        return {"net": {"kind": net.get("kind"), "up": net.get("up")},
+                "relay": {"ok": relay.get("ok"), "detail": detail if isinstance(detail, str) else ""},
+                "mic": {"ok": mic.get("ok"), "detail": mic.get("detail") if isinstance(mic.get("detail"), str) else ""},
+                "update": bool(st.get("update")), "grok": public_grok(st.get("grok")), "at": st.get("at", 0)}
 
 
 def _status_visible(st):
-    return (st["net"].get("kind"), bool(st["net"].get("up")), st["relay"].get("ok"), st["relay"].get("detail"),
-            st["mic"].get("ok"), st["mic"].get("detail"), bool(st.get("update")))
+    net = st.get("net") if isinstance(st.get("net"), dict) else {}
+    relay = st.get("relay") if isinstance(st.get("relay"), dict) else {}
+    mic = st.get("mic") if isinstance(st.get("mic"), dict) else {}
+    grok = public_grok(st.get("grok"))
+    return (net.get("kind"), bool(net.get("up")), relay.get("ok"), relay.get("detail"),
+            mic.get("ok"), mic.get("detail"), bool(st.get("update")), grok.get("state"), grok.get("cause"))
 
 
 def store_status(nxt):
@@ -906,7 +935,7 @@ def relay_icon(body):
         return {"ok": None, "detail": ""}
     bots = body.get("bots")
     if bots is None and "key" not in body:
-        _warn_once("relay: /health returned no details (token unreadable or unauthorized); relay icon shows unpaired")
+        _warn_once("relay: /health returned no details (token unreadable or unauthorized); not a relay fault")
     if not isinstance(bots, dict) or bots.get("paired") is not True:
         return {"ok": None, "detail": ""}
     if bots.get("ok") is False:
@@ -914,24 +943,41 @@ def relay_icon(body):
     return {"ok": True, "detail": "ok"}  # paired always shows; green unless the last request failed
 
 
+def _miss_count(previous):
+    """Consecutive fetch misses. A bool is not a count (bool is a subclass of int)."""
+    raw = previous.get("misses") if isinstance(previous, dict) else 0
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return raw if raw > 0 else 0
+
+
 def check_relay(fetch, previous=None):
-    """fetch() -> health JSON or None. A failed poll keeps the previous icon instead of inventing an outage."""
+    """fetch() -> health JSON or None.
+
+    One failed poll keeps the previous value. After 3 consecutive failures, a paired bot
+    (previous ok is true or false) counts as a relay fault. Unpaired stays unpaired.
+    A success drops the miss count. The token is never logged.
+    """
     try:
         body = fetch()
     except Exception:
         body = None
-    if not isinstance(body, dict):
-        if isinstance(previous, dict) and previous.get("ok") is not None:
-            return {"ok": previous.get("ok"), "detail": previous.get("detail") or ""}
-        return {"ok": None, "detail": ""}
-    return relay_icon(body)
+    if isinstance(body, dict):
+        return relay_icon(body)
+    prev = previous if isinstance(previous, dict) else {}
+    misses = _miss_count(prev) + 1
+    if prev.get("ok") is not None and misses >= 3:
+        return {"ok": False, "detail": "down", "misses": misses}
+    if prev.get("ok") is not None:
+        return {"ok": prev.get("ok"), "detail": prev.get("detail") or "", "misses": misses}
+    return {"ok": None, "detail": "", "misses": misses}
 
 
 def fetch_relay_health(timeout=2):
     """GET loopback /health with the local bearer. None on any failure. The token is not logged."""
     token = relay_token()
     if not token:
-        _warn_once("relay: no local token readable by the display; relay icon shows unpaired")
+        _warn_once("relay: no local token readable by the display; not a relay fault")
         return None
     req = urllib.request.Request(relay_health_url(), headers={"Authorization": "Bearer " + token})
     try:
@@ -943,7 +989,9 @@ def fetch_relay_health(timeout=2):
 
 
 def read_relay():
-    return check_relay(fetch_relay_health, status_snapshot().get("relay"))
+    with _STATUS_LOCK:
+        prev = dict(STATUS.get("relay") or {})
+    return check_relay(fetch_relay_health, prev)
 
 
 def speakerphone_present(cards_text, match="emeet"):
@@ -1091,9 +1139,332 @@ def read_update_available(cache_path=None, version_path=None):
     return update_available(cache, installed)
 
 
-def collect_status(now=None):
+def grok_poll_s(raw=None):
+    """Healthy probe interval. GROK_STATION_GROK_POLL, default 60 s, never under 30 s."""
+    if raw is None:
+        raw = E("GROK_STATION_GROK_POLL", "60")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 60.0
+    return 30.0 if v < 30 else v
+
+
+def grok_probe_every(shown, healthy=None, fast=None):
+    """60 s (min 30) while online. Every status poll while checking or in a problem state."""
+    healthy = grok_poll_s() if healthy is None else healthy
+    fast = status_poll_s() if fast is None else fast
+    return healthy if shown == "online" else fast
+
+
+def _num(value):
+    """A real number, or None. Bool is not a number here."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def parse_net_probe(text):
+    """'1.1.1.1:443' -> (ip, port). An IP literal only, so the connect does no DNS."""
+    raw = str(text or "").strip()
+    if raw.count(":") != 1:
+        return None
+    host, port_s = raw.split(":", 1)
+    if not port_s.isdigit():
+        return None
+    port = int(port_s)
+    if not 1 <= port <= 65535:
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    return host, port
+
+
+def net_probe_targets(raw=None):
+    """Primary from GROK_STATION_NET_PROBE (default 1.1.1.1:443), then 8.8.8.8:443."""
+    if raw is None:
+        raw = str(E("GROK_STATION_NET_PROBE", "") or "").strip()
+    primary = parse_net_probe(raw) if raw else ("1.1.1.1", 443)
+    if primary is None:
+        primary = ("1.1.1.1", 443)
+    fallback = ("8.8.8.8", 443)
+    return [primary] if primary == fallback else [primary, fallback]
+
+
+def probe_internet(connect, timeout=2.0, targets=None):
+    """TCP connect only. No bytes, no TLS, no DNS. True if any target accepts."""
+    if not callable(connect):
+        raise TypeError("connect")
+    last = None
+    for host, port in (targets if targets is not None else net_probe_targets()):
+        try:
+            ipaddress.ip_address(str(host))
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        try:
+            sock = connect((str(host), port), timeout)
+        except Exception as e:
+            last = e
+            continue
+        close = getattr(sock, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return True
+    if last is not None:
+        _warn_once("internet probe failed: %s" % type(last).__name__)
+    return False
+
+
+def https_probe_url(raw):
+    """An https URL with a host and no userinfo, or None. Nothing else is fetched."""
+    text = str(raw or "").strip()
+    parts = urllib.parse.urlsplit(text)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        return None
+    return text
+
+
+def grok_probe_url():
+    raw = str(E("GROK_STATION_GROK_PROBE_URL", "") or "").strip()
+    return https_probe_url(raw or "https://api.x.ai/")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is already an HTTP response. Do not follow it, and do not read the Location."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect", headers, fp)
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+def fetch_grok_https(url, timeout):
+    """Unauthenticated GET. No Authorization header. Reads at most 1 KB. Returns the status."""
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(url, method="GET", headers={"Accept": "*/*", "User-Agent": "grok-station"})
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            r.read(1024)
+            return int(getattr(r, "status", 200))
+    except urllib.error.HTTPError as e:
+        try:
+            e.read(1024)
+        except Exception:
+            pass
+        code = int(e.code)
+        try:
+            e.close()
+        except Exception:
+            pass
+        return code
+
+
+def probe_grok(fetch, timeout=3, url=None):
+    """True when the service returns any HTTP status below 500. 5xx, DNS, TLS, and timeouts are down.
+
+    fetch(url, timeout) -> status. A non-https URL is not fetched.
+    """
+    if not callable(fetch):
+        raise TypeError("fetch")
+    target = grok_probe_url() if url is None else https_probe_url(url)
+    if not target:
+        return False
+    try:
+        status = fetch(target, timeout)
+    except Exception as e:
+        _warn_once("grok probe failed: %s" % type(e).__name__)
+        return False
+    if isinstance(status, bool) or not isinstance(status, int):
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            return False
+    return 100 <= status < 500
+
+
+def _probe_count(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("fails")
+    if value < 0:
+        raise ValueError("fails")
+    return value
+
+
+def _sample(probe, key):
+    """up, down (2 failures), pending (1 failure), none, or bad."""
+    val = probe.get(key)
+    if val is True:
+        return "up"
+    if val is None:
+        return "none"
+    if val is not False:
+        return "bad"
+    fails = _probe_count(probe.get(key + "_fails", 0))
+    if fails >= 2:
+        return "down"
+    if fails == 1:
+        return "pending"
+    return "bad"
+
+
+def _relay_fault(relay):
+    if relay is None:
+        return False
+    if not isinstance(relay, dict):
+        raise ValueError("relay")
+    ok = relay.get("ok")
+    if ok is None:
+        return False
+    if isinstance(ok, bool):
+        return not ok
+    raise ValueError("relay")
+
+
+def _probe_fresh(probe, now):
+    """False when there is no result yet, or the result is older than 3x the probe interval."""
+    if not isinstance(probe, dict):
+        return False
+    at = _num(probe.get("at"))
+    if at is None:
+        return False
+    interval = probe.get("interval", 60)
+    interval = _num(interval)
+    if interval is None or interval <= 0:
+        raise ValueError("interval")
+    now_n = _num(now)
+    if now_n is None:
+        raise ValueError("now")
+    return (now_n - at) <= 3 * interval
+
+
+def grok_state(net, relay, probe, now):
+    """Pure. net down -> dim. No fresh positive probe -> never online.
+
+    A probe failure becomes no-internet or unreachable only after 2 consecutive failures.
+    One success recovers at once. Unknown, unparsable, stale, or raised input is checking.
+    """
+    try:
+        return _grok_state(net, relay, probe, now)
+    except Exception:
+        return {"state": "checking", "cause": None}
+
+
+def _grok_state(net, relay, probe, now):
+    if not isinstance(net, dict) or not isinstance(net.get("up"), bool):
+        raise ValueError("net")
+    if net.get("up") is False:
+        return {"state": "dim", "cause": None}
+    if not _probe_fresh(probe, now):
+        return {"state": "checking", "cause": None}
+    inet = _sample(probe, "internet")
+    svc = _sample(probe, "grok")
+    if inet == "bad" or svc == "bad":
+        return {"state": "checking", "cause": None}
+    relay_bad = _relay_fault(relay)
+    if inet == "down":
+        return {"state": "no-internet", "cause": None}
+    shown_online = probe.get("shown") == "online"
+    if inet == "pending":
+        if relay_bad:
+            return {"state": "unreachable", "cause": "relay"}
+        if shown_online:
+            return {"state": "online", "cause": None}
+        return {"state": "checking", "cause": None}
+    if inet != "up":
+        return {"state": "checking", "cause": None}
+    if svc == "pending":
+        if relay_bad:
+            return {"state": "unreachable", "cause": "relay"}
+        if shown_online:
+            return {"state": "online", "cause": None}
+        return {"state": "checking", "cause": None}
+    if svc == "none":
+        if relay_bad:
+            return {"state": "unreachable", "cause": "relay"}
+        return {"state": "checking", "cause": None}
+    svc_bad = svc == "down"
+    if svc_bad or relay_bad:
+        if svc_bad and relay_bad:
+            cause = "both"
+        elif svc_bad:
+            cause = "service"
+        else:
+            cause = "relay"
+        return {"state": "unreachable", "cause": cause}
+    if svc == "up":
+        return {"state": "online", "cause": None}
+    return {"state": "checking", "cause": None}
+
+
+def probe_due(probe, now, healthy=None, fast=None):
+    if not isinstance(probe, dict):
+        return True
+    at = _num(probe.get("at"))
+    if at is None:
+        return True
+    every = grok_probe_every(probe.get("shown"), healthy, fast)
+    now_n = _num(now)
+    if now_n is None:
+        return True
+    return now_n - at >= every
+
+
+def sample_probe(prev, net, now, connect, fetch, timeout_net=2, timeout_grok=3):
+    """One internet probe, then the Grok probe only when the network and the internet are up.
+
+    A down network does not record a failure (the network icon already carries that).
+    connect and fetch are injected; this function opens nothing itself.
+    """
+    prev = dict(prev) if isinstance(prev, dict) else {}
+    prev["interval"] = grok_poll_s()
+    if not (isinstance(net, dict) and net.get("up") is True):
+        return prev
+    try:
+        inet_fails = _probe_count(prev.get("internet_fails", 0))
+        grok_fails = _probe_count(prev.get("grok_fails", 0))
+    except ValueError:
+        inet_fails, grok_fails = 0, 0
+    internet = bool(probe_internet(connect, timeout_net))
+    if internet:
+        inet_fails = 0
+        grok = bool(probe_grok(fetch, timeout_grok))
+        grok_fails = 0 if grok else grok_fails + 1
+    else:
+        inet_fails += 1
+        grok = None
+    prev.update({"at": now, "internet": internet, "grok": grok,
+                 "internet_fails": inet_fails, "grok_fails": grok_fails})
+    return prev
+
+
+def tick_grok(prev, net, relay, now, connect, fetch):
+    """Probe when due, then decide. `shown` is what the icon last committed to, for the debounce hold."""
+    probe = dict(prev) if isinstance(prev, dict) else {}
+    if probe_due(probe, now):
+        probe = sample_probe(probe, net, now, connect, fetch)
+    decision = grok_state(net, relay, probe, now)
+    probe["shown"] = decision["state"]
+    probe["interval"] = grok_poll_s()
+    return probe, public_grok(decision)
+
+
+def collect_status(now=None, connect=None, fetch_grok=None):
     now = time.time() if now is None else now
-    return {"net": read_net(), "relay": read_relay(), "mic": read_mic(now), "update": read_update_available(), "at": now}
+    with _STATUS_LOCK:
+        prev_probe = dict(STATUS.get("probe") or {})
+    net = read_net()
+    relay = read_relay()
+    connect = socket.create_connection if connect is None else connect
+    fetch_grok = fetch_grok_https if fetch_grok is None else fetch_grok
+    probe, grok = tick_grok(prev_probe, net, relay, now, connect, fetch_grok)
+    return {"net": net, "relay": relay, "mic": read_mic(now), "update": read_update_available(),
+            "grok": grok, "probe": probe, "at": now}
 
 
 def status_loop():
@@ -1104,7 +1475,7 @@ def status_loop():
             if store_status(collect_status(now=started)):
                 pygame.event.post(pygame.event.Event(STATUS_EV))
         except Exception as e:
-            print(f"status poll failed: {type(e).__name__}", flush=True)
+            _warn_once("status poll failed: %s" % type(e).__name__)
         delay = status_poll_s() - (time.time() - started)
         if delay > 0:
             time.sleep(delay)
@@ -1117,14 +1488,26 @@ def net_icon_name(net):
     return "wifi-connected" if up else "wifi-disconnected"
 
 
+_GROK_ICONS = {
+    "online": "grok-online",
+    "no-internet": "grok-no-internet",
+    "unreachable": "grok-unreachable",
+    "checking": "grok-checking",
+    "dim": "grok-dim",
+}
+
+
+def grok_icon_name(grok):
+    """Fail closed: an unknown state draws the checking icon, never the teal one."""
+    state = grok.get("state") if isinstance(grok, dict) else None
+    return _GROK_ICONS.get(state, "grok-checking")
+
+
 def status_icon_names(st):
-    """Right to left: network, relay (always shown; dim broken link until a bot is paired), mic (hidden until the first reading), update (only while a newer version is cached)."""
+    """Right to left: network, Grok (the old relay slot), mic (hidden until the first reading), update (only while a newer version is cached)."""
+    st = st or {}
     names = [net_icon_name(st.get("net") or {})]
-    relay = st.get("relay") or {}
-    if relay.get("ok") is None:
-        names.append("relay-unpaired")
-    else:
-        names.append("relay-connected" if relay.get("ok") else "relay-disconnected")
+    names.append(grok_icon_name(st.get("grok")))
     mic = st.get("mic") or {}
     if mic.get("ok") is not None:
         names.append("mic-ok" if mic.get("ok") else "mic-problem")
@@ -1138,8 +1521,36 @@ def status_icon_px(scale):
     return max(28, int(round(44 * scale)))
 
 
+def _paint_grok_glyph(surf, color, px):
+    """Speech-bubble outline and a wave, stroke only, so it weighs the same as the neighbouring icons."""
+    sw = max(1, px // 10)
+    pad = max(1, px // 8)
+    body = pygame.Rect(pad, pad, max(2, int(px * 0.62)), max(2, int(px * 0.52)))
+    rad = max(1, min(body.w, body.h) // 4)
+    thick = max(1, min(sw, body.w // 2, body.h // 2))
+    pygame.draw.rect(surf, color, body, thick, border_radius=rad)
+    tail = [
+        (body.left + body.w // 3, body.bottom - 1),
+        (body.left + thick, min(px - 1, body.bottom + max(2, px // 7))),
+        (body.left + body.w // 2, body.bottom - 1),
+    ]
+    if tail[1][1] > tail[0][1]:
+        pygame.draw.lines(surf, color, False, tail, thick)
+    x0 = body.left + thick * 2
+    x1 = body.right - thick * 2
+    if x1 > x0 + 2:
+        pts = []
+        steps = 8
+        amp = max(1, body.h // 6)
+        for i in range(steps + 1):
+            t = i / steps
+            pts.append((x0 + (x1 - x0) * t, body.centery + math.sin(t * math.pi * 2) * amp))
+        pygame.draw.lines(surf, color, False, pts, thick)
+
+
 def _fallback_status_icon(name, px):
-    """Teal glyph when the state is good. A bad relay is red. Other bad icons stay muted plus an amber slash."""
+    """Teal glyph when the state is good. A bad relay is red. Other bad icons stay muted plus an amber slash.
+    The Grok mark follows the same stroke. Dim is muted at 75% (#81776B). Unknown Grok names stay muted."""
     px = max(1, int(px))
     surf = pygame.Surface((px, px), pygame.SRCALPHA)
     bad = name.endswith("disconnected") or name.endswith("problem")
@@ -1183,6 +1594,32 @@ def _fallback_status_icon(name, px):
         pygame.draw.line(surf, color, (cx, top), (cx, bot - sw), sw)
         pygame.draw.line(surf, color, (pad, px // 2), (cx, bot), sw)
         pygame.draw.line(surf, color, (px - pad, px // 2), (cx, bot), sw)
+    elif name.startswith("grok"):
+        if name == "grok-dim":
+            color = hexc("81776B")
+        elif name == "grok-online":
+            color = LISTENING
+        elif name in ("grok-no-internet", "grok-unreachable"):
+            color = AMBER
+        else:
+            color = MUTED
+        _paint_grok_glyph(surf, color, px)
+        if name == "grok-no-internet" and px >= 4:
+            a, b = (pad, pad), (px - pad - 1, px - pad - 1)
+            pygame.draw.line(surf, hexc("0D0B09"), a, b, sw + 2)
+            pygame.draw.line(surf, AMBER, a, b, sw)
+        elif name == "grok-unreachable" and px >= 8:
+            r = max(3, px // 6)
+            cx, cy = px - pad - r + 1, px - pad - r + 1
+            pygame.draw.circle(surf, AMBER, (cx, cy), r)
+            pygame.draw.line(surf, BG, (cx, cy - r // 2), (cx, cy + max(1, r // 6)), max(1, sw // 2))
+            pygame.draw.circle(surf, BG, (cx, cy + r // 2), max(1, sw // 4))
+        elif name == "grok-checking" and px >= 8:
+            r = max(3, px // 6)
+            cx, cy = px - pad - r + 1, px - pad - r + 1
+            rect = pygame.Rect(cx - r, cy - r, r * 2, r * 2)
+            pygame.draw.arc(surf, MUTED, rect, math.radians(40), math.radians(320), max(1, sw // 2))
+        return surf
     else:
         w, h = max(2, px // 3), max(2, px // 2)
         body = pygame.Rect((px - w) // 2, pad, w, h)
@@ -1982,7 +2419,40 @@ def timer_title(label):
     return " ".join(parts)[:24] or "Timer"
 
 
-TIMER_HINT = "Say \u201cstop\u201d to dismiss"
+def _curly(text):
+    inner = str(text or "").strip()
+    if len(inner) >= 2 and inner[0] in "\u201c\"" and inner[-1] in "\u201d\"":
+        inner = inner[1:-1]
+    return "\u201c" + inner + "\u201d"
+
+
+def hint_spans(segments):
+    """(text, color) for one voice hint. phrase is TEXT in curly quotes; text is TEXT; anything else is MUTED."""
+    spans = []
+    for seg in segments or ():
+        if not isinstance(seg, (tuple, list)) or len(seg) < 2:
+            continue
+        raw, role = seg[0], seg[1]
+        text = "" if raw is None else str(raw)
+        if role == "phrase":
+            spans.append((_curly(text), TEXT))
+        elif role == "text":
+            spans.append((text, TEXT))
+        else:
+            spans.append((text, MUTED))
+    return spans
+
+
+def voice_hint_plain(segments):
+    return "".join(text for text, _color in hint_spans(segments))
+
+
+TIMER_HINT_SEGMENTS = (("Say ", "muted"), ("stop", "phrase"), (" to dismiss", "muted"))
+TIMER_HINT = voice_hint_plain(TIMER_HINT_SEGMENTS)
+RECIPE_HINT_SEGMENTS = (
+    ("Say ", "muted"), ("next step", "phrase"), ("  ·  ", "muted"),
+    ("previous step", "phrase"), ("  ·  ", "muted"), ("close recipe", "phrase"),
+)
 RING_SLOTS = 4  # s05: up to four rings; the rest are chips. A ringing timer is the only ring (s06).
 
 
@@ -2311,8 +2781,7 @@ def draw_timers(surf, L, now, epoch=None):
         head = payload["headline"] or ""
         f, lines, step = fit_text("display", head, tw, max(L(80), avail_h // 3), max(14, L(120)), 14, max_lines=2)
         ty = draw_lines(surf, f, lines, step, AMBER, tx, max(content_top, ty), align="left", width=tw)
-        hint = font("body", max(14, L(40))).render(payload["hint"] or "", True, MUTED)
-        surf.blit(hint, (tx, ty + gap))
+        draw_voice_hint(surf, TIMER_HINT_SEGMENTS, tx, ty + gap, px=L(36), max_w=tw)
     else:
         n = len(payload["rings"])
         if n:
@@ -2519,6 +2988,39 @@ def draw_offline_badge(surf, L, clock_base):
     LAST_OFFLINE_RECT = rect.union(tr)
 
 
+def draw_voice_hint(surf, segments, x, y, px=36, max_w=None):
+    """One station voice-hint style. Body font at px (callers pass L(36)).
+
+    segments are (text, role): muted stays MUTED, phrase is TEXT inside curly quotes,
+    text is TEXT with no quotes. Returns the row rect. A state change is not animated.
+    """
+    px = max(8, int(px))
+    f = font("body", px)
+    spans = [(t, c) for t, c in hint_spans(segments) if t]
+    if not spans:
+        return pygame.Rect(int(x), int(y), 0, f.get_height())
+    if max_w is not None:
+        widths = [f.size(t)[0] for t, _c in spans]
+        total = sum(widths)
+        limit = int(max_w)
+        if total > limit and spans:
+            idx = len(spans) - 1
+            for i in range(len(spans) - 1, -1, -1):
+                if spans[i][1] == TEXT:
+                    idx = i
+                    break
+            room = max(1, widths[idx] - (total - limit))
+            spans[idx] = (ellipsize(f, spans[idx][0], room), spans[idx][1])
+    cx, top = int(x), int(y)
+    rects = []
+    for text, color in spans:
+        img = f.render(text, True, color)
+        surf.blit(img, (cx, top))
+        rects.append(pygame.Rect(cx, top, img.get_width(), img.get_height()))
+        cx += img.get_width()
+    return rects[0].unionall(rects[1:]) if len(rects) > 1 else rects[0]
+
+
 def _line(surf, kind, px, text, color, width):
     f = font(kind, px)
     shown = text if f.size(text)[0] <= width else ellipsize(f, text, width)
@@ -2721,7 +3223,7 @@ def draw_recipe(surf, L, card):
     fill = max(track.h, int(track.w * step_n / total))
     pygame.draw.rect(surf, LISTENING, (track.left, track.top, min(fill, track.w), track.h), border_radius=L(6))
     sy = track.bottom + L(36)
-    hint_px = L(42)
+    hint_px = L(36)
     hint_h = font("body", hint_px).get_height() + L(36)
     body_px = L(92)
     while body_px > L(36) and font("display", body_px).get_height() * 2 > max(1, stp.bottom - hint_h - sy):
@@ -2736,8 +3238,8 @@ def draw_recipe(surf, L, card):
         img = f.render(line if f.size(line)[0] <= col else ellipsize(f, line, col), True, TEXT)
         surf.blit(img, (sx, sy))
         sy += img.get_height() + L(8)
-    hint = _line(surf, "body", hint_px, "Say “next step”", MUTED, col)
-    surf.blit(hint, (sx, stp.bottom - L(36) - hint.get_height()))
+    draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, sx, stp.bottom - L(36) - font("body", hint_px).get_height(),
+                    px=hint_px, max_w=col)
 
 
 def _card_chrome(surf, L, rect):
@@ -2847,13 +3349,14 @@ def draw_calendar(surf, L, card, rect):
         surf.blit(name, (bar.right + L(28), row.centery - name.get_height() // 2))
         y += row_h
     if shown:
-        summary = f"Next: {shown[0]['title']} · {shown[0]['time']}"
+        segments = [("Next:", "muted"), (" %s · %s" % (shown[0]["title"], shown[0]["time"]), "text")]
         if extra > 0:
-            summary += f" · and {extra} more"
+            segments.append((" · and %d more" % extra, "muted"))
     else:
-        summary = "Nothing on this day"
-    foot = _line(surf, "body", L(36), summary, MUTED, rect.w - L(72))
-    surf.blit(foot, (rect.left + L(48), rect.bottom - L(24) - foot.get_height()))
+        segments = [("Nothing on this day", "muted")]
+    hint_px = L(36)
+    draw_voice_hint(surf, segments, rect.left + L(48), rect.bottom - L(24) - font("body", hint_px).get_height(),
+                    px=hint_px, max_w=max(1, rect.w - L(72)))
 
 
 RING_COLOR = {"listening": LISTENING, "thinking": THINKING, "speaking": SPEAKING}

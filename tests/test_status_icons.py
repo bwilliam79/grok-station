@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Status-icon checks: pure parsers, fallback glyphs, and top-right placement. No network or hardware."""
-import json, os, sys, tempfile, time, unittest
+import io, json, os, sys, tempfile, time, unittest
+from contextlib import redirect_stderr
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -104,21 +105,27 @@ class RelayParse(unittest.TestCase):
         self.assertEqual(calls, ["health"])
         self.assertEqual(st, {"ok": False, "detail": "down"})
         self.assertNotIn("relay", st["detail"])
-        self.assertEqual(gs.check_relay(lambda: None), {"ok": None, "detail": ""})
+        self.assertEqual(gs.check_relay(lambda: None), {"ok": None, "detail": "", "misses": 1})
         kept = gs.check_relay(lambda: None, {"ok": True, "detail": "ok"})
-        self.assertEqual(kept, {"ok": True, "detail": "ok"})
-        names = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "relay": st, "mic": {}})
-        self.assertIn("relay-disconnected", names)
-        self.assertNotIn("relay-connected", names)
-        green = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(idle), "mic": {}})
-        self.assertIn("relay-connected", green)
-        unpaired = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(bare), "mic": {}})
-        self.assertEqual([n for n in unpaired if n.startswith("relay")], ["relay-unpaired"])
+        self.assertEqual(kept["ok"], True)
+        self.assertEqual(kept["detail"], "ok")
+        self.assertEqual(kept["misses"], 1)
+        self.assertNotIn("misses", gs.check_relay(lambda: idle))
+        names = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "relay": st,
+                                       "grok": {"state": "unreachable", "cause": "relay"}, "mic": {}})
+        self.assertIn("grok-unreachable", names)
+        self.assertFalse(any(n.startswith("relay-") for n in names))
+        green = gs.status_icon_names({"net": {}, "relay": gs.relay_icon(idle),
+                                       "grok": {"state": "online", "cause": None}, "mic": {}})
+        self.assertIn("grok-online", green)
+        self.assertFalse(any(n.startswith("relay-") for n in green))
         boot = gs.status_icon_names({"net": {}, "relay": gs.check_relay(lambda: None), "mic": {}})
-        self.assertIn("relay-unpaired", boot)  # station just came up, no relay answer yet
+        self.assertIn("grok-checking", boot)
+        self.assertFalse(any(n.startswith("relay-") for n in boot))
         with open(gs.__file__) as fh:
             src = fh.read()
-        self.assertNotIn("create_connection", src)
+        relay_fn = src.split("def fetch_relay_health", 1)[1].split("\ndef read_relay", 1)[0]
+        self.assertNotIn("create_connection", relay_fn)
         self.assertNotIn("parse_relay_target", src)
         self.assertIn("127.0.0.1", gs.relay_health_url())
         self.assertNotIn("example", gs.relay_health_url())
@@ -216,7 +223,7 @@ class IconDraw(unittest.TestCase):
         self.assertGreaterEqual(miny, region.top)
         self.assertLess(maxx, region.right)
         self.assertLess(maxy, region.bottom)
-        # an unpaired relay is still drawn (dim), so the row keeps its width
+        # the Grok icon is always drawn, so a relay value does not change the row width
         unpaired = dict(st, relay={"ok": None, "detail": ""})
         surf2 = pygame.Surface((w, h))
         surf2.fill(gs.BG)
@@ -273,10 +280,12 @@ class UpdateIcon(unittest.TestCase):
             self.assertTrue(gs.read_update_available(cache, ver))
         names = gs.status_icon_names({"net": {}, "relay": {}, "mic": {}})
         self.assertNotIn("update-available", names)
-        self.assertEqual(gs.status_icon_names({"net": {}, "relay": {}, "mic": {}, "update": False})[-1][:6], "relay-")
-        shown = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "relay": {"ok": True}, "mic": {"ok": True}, "update": True})
+        self.assertEqual(gs.status_icon_names({"net": {}, "relay": {}, "mic": {}, "update": False})[-1], "grok-checking")
+        shown = gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "grok": {"state": "online", "cause": None},
+                                       "mic": {"ok": True}, "update": True})
         self.assertEqual(shown[-1], "update-available")
-        self.assertEqual(shown[:3], ["wifi-connected", "relay-connected", "mic-ok"])
+        self.assertEqual(shown[:3], ["wifi-connected", "grok-online", "mic-ok"])
+        self.assertFalse(any(n.startswith("relay-") for n in shown))
 
     def test_icon_matches_the_set_and_makes_no_sound(self):
         svg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -318,26 +327,35 @@ class RelayIconPairedTests(__import__("unittest").TestCase):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
         self.g = importlib.import_module("grok_station")
 
-    def test_paired_no_history_green(self):
-        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "key": True, "bots": {"paired": True, "ok": True}})}
-        self.assertIn("relay-connected", self.g.status_icon_names(st))
+    def test_paired_no_history_is_ok_and_not_its_own_icon(self):
+        icon = self.g.relay_icon({"ok": True, "key": True, "bots": {"paired": True, "ok": True}})
+        self.assertEqual(icon, {"ok": True, "detail": "ok"})
+        names = self.g.status_icon_names({"net": {}, "relay": icon, "grok": {"state": "online", "cause": None}})
+        self.assertIn("grok-online", names)
+        self.assertFalse(any(n.startswith("relay-") for n in names))
 
     def test_paired_unknown_ok_still_green(self):
         self.assertEqual(self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": None}})["ok"], True)
 
-    def test_paired_timeout_red(self):
-        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": False}})}
-        self.assertIn("relay-disconnected", self.g.status_icon_names(st))
-
-    def test_zero_paired_shows_unpaired(self):
-        st = {"net": {}, "relay": self.g.relay_icon({"ok": True, "bots": {"paired": False, "ok": None}})}
-        names = self.g.status_icon_names(st)
-        self.assertIn("relay-unpaired", names)
-        self.assertNotIn("relay-connected", names)
+    def test_paired_timeout_is_a_relay_fault_on_the_grok_icon(self):
+        icon = self.g.relay_icon({"ok": True, "bots": {"paired": True, "ok": False}})
+        self.assertEqual(icon["ok"], False)
+        names = self.g.status_icon_names({"net": {}, "relay": icon, "grok": {"state": "unreachable", "cause": "relay"}})
+        self.assertIn("grok-unreachable", names)
         self.assertNotIn("relay-disconnected", names)
 
-    def test_empty_status_shows_unpaired(self):
-        self.assertIn("relay-unpaired", self.g.status_icon_names({}))
+    def test_zero_paired_is_not_a_cluster_icon(self):
+        icon = self.g.relay_icon({"ok": True, "bots": {"paired": False, "ok": None}})
+        self.assertIsNone(icon["ok"])
+        names = self.g.status_icon_names({"net": {}, "relay": icon})
+        self.assertIn("grok-checking", names)
+        self.assertFalse(any(n.startswith("relay-") for n in names))
+
+    def test_empty_status_shows_checking_not_a_relay_icon(self):
+        names = self.g.status_icon_names({})
+        self.assertEqual(names[0][:5], "wifi-")
+        self.assertIn("grok-checking", names)
+        self.assertFalse(any(n.startswith("relay-") for n in names))
 
     def test_unpaired_icon_is_dim_not_red(self):
         import os
@@ -348,6 +366,601 @@ class RelayIconPairedTests(__import__("unittest").TestCase):
         empty = os.path.join(os.path.dirname(os.path.abspath(__file__)), "no-such-dir")
         self.assertIsNotNone(self.g.load_status_icon("relay-unpaired", 22, directory=empty))
 
-    def test_failed_poll_keeps_paired_state(self):
+    def test_failed_poll_keeps_paired_state_then_faults(self):
         prev = {"ok": True, "detail": "ok"}
-        self.assertEqual(self.g.check_relay(lambda: None, prev)["ok"], True)
+        one = self.g.check_relay(lambda: None, prev)
+        self.assertEqual(one["ok"], True)
+        self.assertEqual(one["misses"], 1)
+        two = self.g.check_relay(lambda: None, one)
+        self.assertEqual(two["ok"], True)
+        self.assertEqual(two["misses"], 2)
+        three = self.g.check_relay(lambda: None, two)
+        self.assertEqual(three["ok"], False)
+        self.assertEqual(three["detail"], "down")
+        self.assertGreaterEqual(three["misses"], 3)
+        again = self.g.check_relay(lambda: {"bots": {"paired": True, "ok": True}}, three)
+        self.assertEqual(again, {"ok": True, "detail": "ok"})
+        self.assertNotIn("misses", again)
+        # a bool is not a count, so it does not skip ahead to a fault
+        skipped = self.g.check_relay(lambda: None, {"ok": True, "detail": "ok", "misses": True})
+        self.assertEqual(skipped["ok"], True)
+        self.assertEqual(skipped["misses"], 1)
+        unpaired = {"ok": None, "detail": "", "misses": 9}
+        still = self.g.check_relay(lambda: None, unpaired)
+        self.assertIsNone(still["ok"])
+        self.assertGreaterEqual(still["misses"], 9)
+        down = self.g.check_relay(lambda: None, {"ok": False, "detail": "down"})
+        self.assertEqual(down["ok"], False)
+        self.assertEqual(down["misses"], 1)
+
+
+def _closed_sock():
+    class Sock:
+        def close(self):
+            pass
+    return Sock()
+
+
+def _rgb(surf, pred):
+    for y in range(surf.get_height()):
+        for x in range(surf.get_width()):
+            c = surf.get_at((x, y))
+            if c.a >= 200 and pred(c):
+                return True
+    return False
+
+
+class GrokIcons(unittest.TestCase):
+    def test_panel_size_and_cluster_order(self):
+        L = gs.Layout(2560, 1706)
+        self.assertEqual(gs.status_icon_px(L.s), 59)
+        self.assertEqual(max(1, int(round(8 * L.s))), 11)
+        self.assertEqual(L(36), 48)
+        self.assertEqual(gs.status_icon_px(1), 44)
+        self.assertEqual(gs.status_icon_px(0.5), 28)
+        names = gs.status_icon_names({
+            "net": {"kind": "ethernet", "up": False},
+            "grok": {"state": "dim", "cause": None},
+            "mic": {"ok": False, "detail": "wake listener down"},
+            "update": True,
+        })
+        self.assertEqual(names, ["ethernet-disconnected", "grok-dim", "mic-problem", "update-available"])
+        self.assertFalse(any(n.startswith("relay-") for n in names))
+        # the voice listener stays on the mic icon; it does not move the Grok icon
+        quiet = gs.status_icon_names({
+            "net": {"kind": "wifi", "up": True},
+            "grok": {"state": "online", "cause": None},
+            "mic": {"ok": False},
+        })
+        self.assertEqual(quiet, ["wifi-connected", "grok-online", "mic-problem"])
+        self.assertEqual(gs.grok_icon_name({"state": "teal"}), "grok-checking")
+        self.assertEqual(gs.grok_icon_name(None), "grok-checking")
+        self.assertEqual(gs.status_icon_names({"net": {"kind": "wifi", "up": True}, "mic": {}})[1], "grok-checking")
+
+    def test_svg_shapes_and_fallback_pixels(self):
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "status")
+
+        def svg(name):
+            return open(os.path.join(root, name + ".svg")).read()
+
+        online, slash, bang, checking, dim = (svg(n) for n in (
+            "grok-online", "grok-no-internet", "grok-unreachable", "grok-checking", "grok-dim"))
+        for text in (online, slash, bang, checking, dim):
+            self.assertIn('viewBox="0 0 24 24"', text)
+            self.assertIn('stroke-width="2"', text)
+            self.assertIn('stroke-linecap="round"', text)
+            self.assertIn('stroke-linejoin="round"', text)
+            self.assertNotIn("<animate", text)
+            self.assertNotIn("<text", text)
+        self.assertIn('stroke="#3FD3B6"', online)
+        self.assertIn('stroke="#F5C04A"', slash)
+        self.assertIn('stroke="#0D0B09"', slash)
+        self.assertIn('stroke-width="5"', slash)
+        self.assertIn('fill="#F5C04A"', bang)
+        self.assertIn('stroke="#0D0B09"', bang)
+        self.assertIn('stroke="#A89B8C"', checking)
+        self.assertNotIn('opacity="0.75"', checking)
+        self.assertIn('opacity="0.75"', dim)
+        self.assertIn('stroke="#A89B8C"', dim)
+        self.assertNotIn("#3FD3B6", dim)
+        self.assertNotIn("#F5C04A", dim)
+        self.assertEqual(len({online, slash, bang, checking, dim}), 5)
+        loaded = gs.load_status_icon("grok-online", 48)
+        self.assertTrue(_rgb(loaded, lambda c: c.g > 160 and c.b > 140 and c.r < 120))
+        self.assertTrue(_rgb(gs.load_status_icon("grok-no-internet", 48), lambda c: c.r > 220 and 150 < c.g < 220 and c.b < 110))
+        self.assertTrue(_rgb(gs.load_status_icon("grok-unreachable", 48), lambda c: c.r > 220 and 150 < c.g < 220 and c.b < 110))
+        with tempfile.TemporaryDirectory() as empty:
+            dim_fb = gs.load_status_icon("grok-dim", 36, directory=empty)
+            on_fb = gs.load_status_icon("grok-online", 36, directory=empty)
+            slash_fb = gs.load_status_icon("grok-no-internet", 36, directory=empty)
+            bang_fb = gs.load_status_icon("grok-unreachable", 36, directory=empty)
+            chk_fb = gs.load_status_icon("grok-checking", 36, directory=empty)
+            unknown = gs.load_status_icon("grok-nope", 36, directory=empty)
+        dim_c, teal, amber, bg, muted = (0x81, 0x77, 0x6B), (0x3F, 0xD3, 0xB6), (0xF5, 0xC0, 0x4A), (0x0D, 0x0B, 0x09), (0xA8, 0x9B, 0x8C)
+        exact = lambda surf, rgb: _rgb(surf, lambda c: (c.r, c.g, c.b) == rgb)
+        self.assertTrue(exact(dim_fb, dim_c))
+        self.assertTrue(exact(on_fb, teal))
+        self.assertTrue(exact(slash_fb, amber))
+        self.assertTrue(exact(slash_fb, bg))
+        self.assertTrue(exact(bang_fb, amber))
+        self.assertTrue(exact(bang_fb, bg))
+        self.assertTrue(exact(chk_fb, muted))
+        self.assertFalse(exact(unknown, teal))
+
+
+class GrokState(unittest.TestCase):
+    NOW = 1_000_000.0
+    NET = {"kind": "wifi", "up": True}
+
+    def _p(self, at=None, internet=True, grok=True, inet_fails=0, grok_fails=0, shown=None, interval=60):
+        p = {"at": self.NOW if at is None else at, "interval": interval, "internet": internet, "grok": grok,
+             "internet_fails": inet_fails, "grok_fails": grok_fails}
+        if shown is not None:
+            p["shown"] = shown
+        return p
+
+    def test_every_state(self):
+        ok = {"ok": True, "detail": "ok"}
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(), self.NOW), {"state": "online", "cause": None})
+        self.assertEqual(gs.grok_state(self.NET, {"ok": None}, self._p(), self.NOW), {"state": "online", "cause": None})
+        self.assertEqual(gs.grok_state({"up": False}, {"ok": False}, self._p(internet=False, inet_fails=4), self.NOW),
+                         {"state": "dim", "cause": None})
+        self.assertEqual(gs.grok_state(self.NET, ok, {}, self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(internet=False, grok=None, inet_fails=2), self.NOW)["state"],
+                         "no-internet")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(grok=False, grok_fails=2), self.NOW),
+                         {"state": "unreachable", "cause": "service"})
+        self.assertEqual(gs.grok_state(self.NET, {"ok": False}, self._p(), self.NOW),
+                         {"state": "unreachable", "cause": "relay"})
+        self.assertEqual(gs.grok_state(self.NET, {"ok": False}, self._p(grok=False, grok_fails=2), self.NOW),
+                         {"state": "unreachable", "cause": "both"})
+        # internet down wins over a relay fault
+        self.assertEqual(gs.grok_state(self.NET, {"ok": False}, self._p(internet=False, grok=None, inet_fails=2), self.NOW)["state"],
+                         "no-internet")
+
+    def test_stale_unknown_and_raised_are_checking(self):
+        ok = {"ok": True}
+        fresh = self.NOW - 180
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(at=fresh), self.NOW)["state"], "online")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(at=fresh - 0.01), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, {"internet": True, "grok": True}, self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(None, ok, self._p(), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state({"up": 1}, ok, self._p(), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state({"up": "yes"}, ok, self._p(), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": "yes"}, self._p(), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, [], self._p(), self.NOW)["state"], "checking")
+        stamped = self._p()
+        stamped["at"] = True
+        self.assertEqual(gs.grok_state(self.NET, ok, stamped, self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(interval="fast"), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(interval=True), self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(), None)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(), True)["state"], "checking")
+        bad_fails = self._p(internet=False, inet_fails=True, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, bad_fails, self.NOW)["state"], "checking")
+        uncounted = self._p(internet=False, inet_fails=0, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, uncounted, self.NOW)["state"], "checking")
+
+        class Boom(dict):
+            def get(self, *a, **k):
+                raise RuntimeError("boom")
+
+        self.assertEqual(gs.grok_state(Boom(up=True), ok, self._p(), self.NOW)["state"], "checking")
+        # net down is decided before a bad probe or relay is read
+        self.assertEqual(gs.grok_state({"up": False}, Boom(), Boom(), self.NOW), {"state": "dim", "cause": None})
+
+    def test_debounce_and_recovery(self):
+        ok = {"ok": True}
+        one = self._p(internet=False, grok=None, inet_fails=1, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, one, self.NOW)["state"], "online")
+        boot = self._p(internet=False, grok=None, inet_fails=1)
+        self.assertEqual(gs.grok_state(self.NET, ok, boot, self.NOW)["state"], "checking")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(internet=False, grok=None, inet_fails=1, shown="checking"), self.NOW)["state"],
+                         "checking")
+        two = self._p(internet=False, grok=None, inet_fails=2, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, two, self.NOW)["state"], "no-internet")
+        held = self._p(grok=False, grok_fails=1, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, held, self.NOW)["state"], "online")
+        service = self._p(grok=False, grok_fails=2, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, ok, service, self.NOW), {"state": "unreachable", "cause": "service"})
+        pending_relay = self._p(internet=False, grok=None, inet_fails=1, shown="online")
+        self.assertEqual(gs.grok_state(self.NET, {"ok": False}, pending_relay, self.NOW),
+                         {"state": "unreachable", "cause": "relay"})
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(shown="no-internet"), self.NOW)["state"], "online")
+        self.assertEqual(gs.grok_state(self.NET, ok, self._p(shown="unreachable"), self.NOW)["state"], "online")
+
+
+class GrokProbes(unittest.TestCase):
+    def test_targets_are_literals_and_a_name_is_not_resolved(self):
+        import ipaddress
+        hosts = [h for h, port in gs.net_probe_targets("")]
+        self.assertEqual(hosts[0], "1.1.1.1")
+        self.assertIn("8.8.8.8", hosts)
+        for host, port in gs.net_probe_targets("example.invalid:443"):
+            ipaddress.ip_address(host)
+            self.assertNotEqual(host, "example.invalid")
+        self.assertEqual(gs.net_probe_targets("8.8.8.8:443"), [("8.8.8.8", 443)])
+        self.assertEqual(gs.net_probe_targets("1.1.1.1:notaport")[0], ("1.1.1.1", 443))
+        calls = []
+
+        def connect(addr, timeout):
+            calls.append(addr[0])
+            return _closed_sock()
+
+        self.assertTrue(gs.probe_internet(connect, targets=[("example.invalid", 443), ("1.1.1.1", 443)]))
+        self.assertEqual(calls, ["1.1.1.1"])
+
+    def test_connect_is_closed_and_failures_do_not_log_an_address(self):
+        closed = []
+
+        class Sock:
+            def close(self):
+                closed.append(1)
+
+        calls = []
+
+        def connect(addr, timeout):
+            calls.append((addr, timeout))
+            if addr[0] == "1.1.1.1" and len(calls) == 1:
+                raise OSError("down")
+            return Sock()
+
+        saved = set(gs._warned)
+        gs._warned.clear()
+        buf = io.StringIO()
+        try:
+            with redirect_stderr(buf):
+                self.assertTrue(gs.probe_internet(connect, timeout=2, targets=[("1.1.1.1", 443), ("8.8.8.8", 443)]))
+                self.assertEqual(closed, [1])
+                self.assertEqual(calls[0][1], 2)
+                self.assertNotIn("OSError", buf.getvalue())
+
+                def fail(addr, timeout):
+                    raise TimeoutError("1.1.1.1 timed out")
+
+                self.assertFalse(gs.probe_internet(fail, targets=[("1.1.1.1", 443), ("8.8.8.8", 443)]))
+                self.assertFalse(gs.probe_internet(fail, targets=[("8.8.8.8", 443)]))
+        finally:
+            gs._warned.clear()
+            gs._warned.update(saved)
+        text = buf.getvalue()
+        self.assertIn("TimeoutError", text)
+        self.assertEqual(text.count("TimeoutError"), 1)
+        self.assertNotIn("1.1.1.1", text)
+        self.assertNotIn("8.8.8.8", text)
+
+    def test_grok_http_rules_and_no_url_in_the_log(self):
+        self.assertTrue(gs.probe_grok(lambda u, t: 200, url="https://api.x.ai/"))
+        self.assertTrue(gs.probe_grok(lambda u, t: 401, url="https://api.x.ai/"))
+        self.assertTrue(gs.probe_grok(lambda u, t: 403, url="https://api.x.ai/"))
+        self.assertTrue(gs.probe_grok(lambda u, t: 404, url="https://api.x.ai/"))
+        self.assertTrue(gs.probe_grok(lambda u, t: 302, url="https://api.x.ai/"))
+        self.assertFalse(gs.probe_grok(lambda u, t: 500, url="https://api.x.ai/"))
+        self.assertFalse(gs.probe_grok(lambda u, t: 503, url="https://api.x.ai/"))
+        calls = []
+        self.assertFalse(gs.probe_grok(lambda u, t: calls.append(u) or 200, url="http://api.x.ai/"))
+        self.assertIsNone(gs.https_probe_url("https://user:pw@api.x.ai/"))
+        self.assertFalse(gs.probe_grok(lambda u, t: calls.append(u) or 200, url="https://user:pw@api.x.ai/"))
+        self.assertEqual(calls, [])
+        saved = set(gs._warned)
+        gs._warned.clear()
+        buf = io.StringIO()
+        try:
+            with redirect_stderr(buf):
+                self.assertFalse(gs.probe_grok(lambda u, t: (_ for _ in ()).throw(OSError("https://api.x.ai/")), url="https://api.x.ai/"))
+                self.assertFalse(gs.probe_grok(lambda u, t: (_ for _ in ()).throw(OSError("again")), url="https://api.x.ai/"))
+        finally:
+            gs._warned.clear()
+            gs._warned.update(saved)
+        text = buf.getvalue()
+        self.assertIn("OSError", text)
+        self.assertEqual(text.count("OSError"), 1)
+        self.assertNotIn("http", text)
+        self.assertNotIn("api.x.ai", text)
+
+    def test_fetch_sends_no_authorization_and_a_redirect_is_not_followed(self):
+        import urllib.error
+        import urllib.request
+        captured = {}
+
+        class Resp:
+            status = 204
+
+            def read(self, n):
+                captured["n"] = n
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = urllib.request.build_opener
+
+        def fake_build(*handlers):
+            captured["handlers"] = handlers
+            opener = real(*handlers)
+
+            def _open(req, timeout=None):
+                captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+                captured["timeout"] = timeout
+                return Resp()
+
+            opener.open = _open
+            return opener
+
+        urllib.request.build_opener = fake_build
+        try:
+            self.assertEqual(gs.fetch_grok_https("https://api.x.ai/", 3), 204)
+        finally:
+            urllib.request.build_opener = real
+        self.assertEqual(captured["n"], 1024)
+        self.assertEqual(captured["timeout"], 3)
+        self.assertNotIn("authorization", captured["headers"])
+        self.assertTrue(any(isinstance(h, urllib.request.ProxyHandler) for h in captured["handlers"]))
+        self.assertTrue(any(isinstance(h, gs._NoRedirect) for h in captured["handlers"]))
+        req = urllib.request.Request("https://api.x.ai/")
+        try:
+            gs._NoRedirect().http_error_302(req, io.BytesIO(b"x"), 302, "Found", {"Location": "https://api.x.ai/v1"})
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 302)
+            self.assertNotIn("v1", str(e))
+        else:
+            self.fail("redirect was swallowed")
+
+    def test_net_down_does_not_probe_and_polling_follows_the_state(self):
+        self.assertEqual(gs.grok_poll_s("10"), 30.0)
+        self.assertEqual(gs.grok_poll_s("45"), 45.0)
+        self.assertEqual(gs.grok_poll_s("nope"), 60.0)
+        self.assertEqual(gs.grok_probe_every("online", 60, 12), 60)
+        self.assertEqual(gs.grok_probe_every("checking", 60, 12), 12)
+        self.assertEqual(gs.grok_probe_every("no-internet", 60, 12), 12)
+        self.assertEqual(gs.grok_probe_every("unreachable", 60, 12), 12)
+        self.assertEqual(gs.grok_probe_every("dim", 60, 12), 12)
+        self.assertFalse(gs.probe_due({"at": 1000, "shown": "online"}, 1059, 60, 12))
+        self.assertTrue(gs.probe_due({"at": 1000, "shown": "online"}, 1060, 60, 12))
+        self.assertFalse(gs.probe_due({"at": 1000, "shown": "checking"}, 1011, 60, 12))
+        self.assertTrue(gs.probe_due({"at": 1000, "shown": "checking"}, 1012, 60, 12))
+        self.assertTrue(gs.probe_due({}, 0, 60, 12))
+        self.assertTrue(gs.probe_due({"at": True, "shown": "online"}, 5000, 60, 12))
+        calls = []
+        prev = {"at": 10, "internet": True, "grok": True, "internet_fails": 0, "grok_fails": 0, "shown": "online", "interval": 60}
+        out = gs.sample_probe(prev, {"up": False}, 99, lambda *a: calls.append("c"), lambda *a: calls.append("g"))
+        self.assertEqual(calls, [])
+        self.assertEqual(out["at"], 10)
+        self.assertIs(out["internet"], True)
+        self.assertIs(out["grok"], True)
+
+        def down(addr, timeout):
+            calls.append("c")
+            raise OSError("down")
+
+        def grok_up(url, timeout):
+            calls.append("g")
+            return 200
+
+        missed = gs.sample_probe({"grok_fails": 1}, {"up": True}, 50, down, grok_up)
+        self.assertEqual(calls, ["c", "c"])  # primary, then the public fallback; the Grok fetch is not called
+        self.assertNotIn("g", calls)
+        self.assertIs(missed["internet"], False)
+        self.assertIsNone(missed["grok"])
+        self.assertEqual(missed["internet_fails"], 1)
+        self.assertEqual(missed["grok_fails"], 1)
+        ok = gs.sample_probe({"internet_fails": 2, "grok_fails": 2}, {"up": True}, 50, lambda a, t: _closed_sock(), lambda u, t: 401)
+        self.assertIs(ok["internet"], True)
+        self.assertIs(ok["grok"], True)
+        self.assertEqual(ok["internet_fails"], 0)
+        self.assertEqual(ok["grok_fails"], 0)
+        bad = gs.sample_probe({}, {"up": True}, 50, lambda a, t: _closed_sock(), lambda u, t: 500)
+        self.assertIs(bad["grok"], False)
+        self.assertEqual(bad["grok_fails"], 1)
+
+    def test_tick_debounces_and_skips_a_down_network(self):
+        calls = []
+        relay = {"ok": True, "detail": "ok"}
+        net = {"kind": "wifi", "up": True}
+
+        def connect(addr, timeout):
+            calls.append(addr[0])
+            raise OSError("down")
+
+        def fetch(url, timeout):
+            calls.append("grok")
+            return 200
+
+        probe, grok = gs.tick_grok({}, net, relay, 1000, connect, fetch)
+        self.assertEqual(calls, ["1.1.1.1", "8.8.8.8"])
+        self.assertEqual(grok["state"], "checking")
+        self.assertEqual(probe["internet_fails"], 1)
+        self.assertEqual(probe["shown"], "checking")
+        probe, grok = gs.tick_grok(probe, net, relay, 1120, connect, fetch)
+        self.assertEqual(grok["state"], "no-internet")
+        self.assertEqual(probe["internet_fails"], 2)
+        self.assertNotIn("grok", calls)
+
+        def up(addr, timeout):
+            calls.append("up")
+            return _closed_sock()
+
+        probe, grok = gs.tick_grok(probe, net, relay, 1240, up, lambda u, t: 204)
+        self.assertEqual(grok, {"state": "online", "cause": None})
+        self.assertEqual(probe["shown"], "online")
+        quiet = []
+        held = {"at": 2000, "interval": 60, "internet": True, "grok": True, "internet_fails": 0, "grok_fails": 0, "shown": "online"}
+        probe, grok = gs.tick_grok(held, {"up": False}, relay, 5000, lambda *a: quiet.append("c"), lambda *a: quiet.append("g"))
+        self.assertEqual(quiet, [])
+        self.assertEqual(probe["at"], 2000)
+        self.assertEqual(grok["state"], "dim")
+        probe, grok = gs.tick_grok(probe, net, relay, 2001, lambda *a: quiet.append("c"), lambda *a: quiet.append("g"))
+        self.assertEqual(quiet, [])
+        self.assertEqual(grok["state"], "online")
+
+
+class GrokSnapshot(unittest.TestCase):
+    def setUp(self):
+        self.prev = gs.status_snapshot()
+
+    def tearDown(self):
+        gs.store_status(self.prev)
+
+    def test_snapshot_is_enums_only(self):
+        gs.store_status({
+            "net": {"kind": "wifi", "up": True, "addr": "1.1.1.1"},
+            "relay": {"ok": True, "detail": "ok", "misses": 2},
+            "mic": {"ok": True, "detail": "ok"},
+            "update": False,
+            "grok": {"state": "online", "cause": "relay", "url": "https://api.x.ai/"},
+            "probe": {"url": "https://api.x.ai/", "host": "api.x.ai", "ip": "1.1.1.1"},
+            "at": 5,
+        })
+        snap = gs.status_snapshot()
+        blob = json.dumps(snap)
+        for banned in ("http", "api.x.ai", "1.1.1.1", "8.8.8.8", "misses", "probe", "url", "host"):
+            self.assertNotIn(banned, blob)
+        self.assertEqual(snap["grok"], {"state": "online", "cause": None})
+        self.assertEqual(set(snap), {"net", "relay", "mic", "update", "grok", "at"})
+        self.assertEqual(set(snap["relay"]), {"ok", "detail"})
+        self.assertEqual(set(snap["net"]), {"kind", "up"})
+        gs.store_status(dict(gs.status_snapshot(), grok={"state": "teal", "cause": "https://api.x.ai/"}))
+        # status_snapshot drops probe; store the bad grok on top of a full dict
+        gs.store_status({
+            "net": {"kind": "wifi", "up": True}, "relay": {"ok": True, "detail": "ok"},
+            "mic": {"ok": None, "detail": ""}, "update": False,
+            "grok": {"state": "teal", "cause": "https://api.x.ai/"}, "at": 1,
+        })
+        self.assertEqual(gs.status_snapshot()["grok"], {"state": "checking", "cause": None})
+        gs.store_status({
+            "net": {"kind": "wifi", "up": True}, "relay": {"ok": False, "detail": "down", "misses": 3},
+            "mic": {"ok": None, "detail": ""}, "update": False,
+            "grok": {"state": "unreachable", "cause": "both"}, "at": 2,
+        })
+        self.assertEqual(gs.status_snapshot()["grok"], {"state": "unreachable", "cause": "both"})
+        self.assertNotIn("misses", json.dumps(gs.status_snapshot()))
+
+    def test_read_relay_counts_misses_from_the_private_status(self):
+        gs.store_status({
+            "net": {"kind": "wifi", "up": True},
+            "relay": {"ok": True, "detail": "ok", "misses": 2},
+            "mic": {"ok": None, "detail": ""},
+            "update": False,
+            "grok": {"state": "checking", "cause": None},
+            "probe": {"url": "https://api.x.ai/"},
+            "at": 1,
+        })
+        old = gs.fetch_relay_health
+        gs.fetch_relay_health = lambda timeout=2: None
+        try:
+            got = gs.read_relay()
+        finally:
+            gs.fetch_relay_health = old
+        self.assertEqual(got["ok"], False)
+        self.assertEqual(got["detail"], "down")
+        self.assertEqual(got["misses"], 3)
+        self.assertNotIn("misses", gs.status_snapshot()["relay"])
+        self.assertNotIn("http", json.dumps(gs.status_snapshot()))
+
+
+def _near(pixel, color, tol):
+    return pixel.a > 180 and abs(pixel.r - color.r) <= tol and abs(pixel.g - color.g) <= tol and abs(pixel.b - color.b) <= tol
+
+
+class VoiceHint(unittest.TestCase):
+    def test_segments_colours_quotes_and_l36(self):
+        L = gs.Layout(2560, 1706)
+        self.assertEqual(L(36), 48)
+        px = L(36)
+        f = gs.font("body", px)
+        self.assertEqual(gs.TIMER_HINT, "Say \u201cstop\u201d to dismiss")
+        self.assertEqual(gs.voice_hint_plain([("\u201cstop\u201d", "phrase")]), "\u201cstop\u201d")
+        self.assertEqual(gs.voice_hint_plain([('"stop"', "phrase")]), "\u201cstop\u201d")
+        self.assertEqual(gs.hint_spans([("Practice", "text")])[0], ("Practice", gs.TEXT))
+        self.assertNotIn("\u201c", gs.hint_spans([("Practice", "text")])[0][0])
+        self.assertEqual(gs.hint_spans([("Hello", "nope")])[0][1], gs.MUTED)
+        plain = gs.voice_hint_plain(gs.RECIPE_HINT_SEGMENTS)
+        for phrase in ("next step", "previous step", "close recipe"):
+            self.assertIn("\u201c" + phrase + "\u201d", plain)
+        surf = pygame.Surface((900, 90))
+        surf.fill(gs.BG)
+        rect = gs.draw_voice_hint(surf, gs.TIMER_HINT_SEGMENTS, 10, 8, px=px)
+        self.assertEqual(rect.h, f.get_height())
+        spans = [(t, c) for t, c in gs.hint_spans(gs.TIMER_HINT_SEGMENTS) if t]
+        x = 10
+        for text, color in spans:
+            w = f.size(text)[0]
+            hit = False
+            for yy in range(rect.top, rect.bottom):
+                for xx in range(x + 1, min(x + w - 1, surf.get_width())):
+                    if _near(surf.get_at((xx, yy)), color, 30):
+                        hit = True
+                        break
+                if hit:
+                    break
+            self.assertTrue(hit, text)
+            x += w
+        self.assertEqual(spans[0][1], gs.MUTED)
+        self.assertEqual(spans[1][1], gs.TEXT)
+
+    def test_long_title_keeps_the_muted_tail(self):
+        title = "Practice " * 40
+        segments = [("Next:", "muted"), (" " + title + " · 6:30", "text"), (" · and 3 more", "muted")]
+        surf = pygame.Surface((560, 80))
+        surf.fill(gs.BG)
+        rect = gs.draw_voice_hint(surf, segments, 0, 0, px=48, max_w=500)
+        self.assertLessEqual(rect.right, 500)
+        f = gs.font("body", 48)
+        tail_w = f.size(" · and 3 more")[0]
+        text_hit = muted_hit = False
+        for x in range(max(0, rect.right - tail_w + 8), rect.right):
+            for y in range(rect.top, rect.bottom):
+                c = surf.get_at((x, y))
+                if _near(c, gs.TEXT, 24):
+                    text_hit = True
+                if _near(c, gs.MUTED, 24):
+                    muted_hit = True
+        self.assertTrue(muted_hit)
+        self.assertFalse(text_hit)
+
+    def test_recipe_timer_and_calendar_use_the_helper(self):
+        L = gs.Layout(2560, 1706)
+        surf = pygame.Surface((L.w, L.h))
+        surf.fill(gs.BG)
+        calls = []
+        real = gs.draw_voice_hint
+
+        def wrap(surface, segments, x, y, px=36, max_w=None):
+            calls.append((list(segments), px))
+            return real(surface, segments, x, y, px=px, max_w=max_w)
+
+        old_chips, old_epoch = list(gs.TIMER_CHIPS), gs.TIMER_EPOCH
+        gs.draw_voice_hint = wrap
+        try:
+            gs.draw_recipe(surf, L, {"v": 1, "type": "recipe", "title": "Soup", "servings": 4,
+                                      "ingredients": ["onion"], "steps": ["Chop."], "step": 1})
+            self.assertEqual(calls[-1][0], list(gs.RECIPE_HINT_SEGMENTS))
+            self.assertEqual(calls[-1][1], L(36))
+            events = [{"time": "6:30", "title": "Practice"}] + [{"time": "7:00", "title": "Dinner"}] * 7
+            gs.draw_calendar(surf, L, {"v": 1, "type": "calendar", "date": "2026-10-22", "events": events},
+                             pygame.Rect(L(128), L(800), L.w - L(256), L(700)))
+            segs, px = calls[-1]
+            self.assertEqual(px, L(36))
+            self.assertEqual(segs[0], ("Next:", "muted"))
+            self.assertEqual(segs[1][1], "text")
+            self.assertIn("Practice", segs[1][0])
+            self.assertNotIn("\u201c", segs[1][0])
+            self.assertEqual(segs[-1][1], "muted")
+            self.assertIn("more", segs[-1][0])
+            gs.draw_calendar(surf, L, {"v": 1, "type": "calendar", "date": "2026-10-22", "events": []},
+                             pygame.Rect(L(128), L(800), L.w - L(256), L(400)))
+            self.assertEqual(calls[-1][0], [("Nothing on this day", "muted")])
+            self.assertEqual(calls[-1][1], L(36))
+            gs.TIMER_EPOCH = 1_700_000_000
+            gs.TIMER_CHIPS[:] = [{"id": "aaaa01", "label": "pasta", "ends_at_epoch": gs.TIMER_EPOCH - 1,
+                                  "duration": 60, "ringing": True}]
+            gs.draw_timers(surf, L, time.strptime("2026-10-18 19:42", "%Y-%m-%d %H:%M"))
+            self.assertEqual(calls[-1][0], list(gs.TIMER_HINT_SEGMENTS))
+            self.assertEqual(calls[-1][1], L(36))
+        finally:
+            gs.draw_voice_hint = real
+            gs.TIMER_EPOCH = old_epoch
+            gs.TIMER_CHIPS[:] = old_chips
