@@ -140,7 +140,7 @@ class SessionGrace(unittest.TestCase):
         line = buf.getvalue()
         self.assertIn("action=password-grace old=10 new=session", line)
         self.assertIn("session=" + rec["sid"], line)
-        self.assertIn("time=", line)
+        self.assertIn("time=%d" % int(CLOCK[0]), line)
         self.assertNotIn(GOOD, line)
         self.assertNotIn(self.c.jar.get("gs_session", "missing-cookie"), line)
         self.assertNotIn(ta.hashlib.sha256(self.c.jar["gs_session"].encode()).hexdigest(), line)
@@ -173,6 +173,28 @@ class SessionGrace(unittest.TestCase):
         self.assertEqual(self.c.req("POST", "/api/password", {"old": GOOD, "new": "a brand new pass 7"})[0], 200)
         self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 403)
+
+    def test_password_change_still_asks_during_session(self):
+        # Condition 1: an open "session" window is not a substitute for the current password.
+        self.assertEqual(self._put("session")[0], 200)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
+        st, j = self.c.req("POST", "/api/password", {"new": "a brand new pass 7"})
+        self.assertEqual(st, 400, j)
+        self.assertEqual(j.get("error"), "Current password is wrong.")
+        st, j = self.c.req("POST", "/api/password", {"old": "not-the-password", "new": "a brand new pass 7"})
+        self.assertEqual(st, 400, j)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kai"})[0], 200)
+        self.assertIsNotNone(self.c.req("GET", "/api/state")[1].get("stepup_until"))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self._put(10)
+        self.assertEqual(st, 200, j)
+        line = buf.getvalue()
+        self.assertIn("action=password-grace old=session new=10", line)
+        self.assertIn("session=" + self._rec()["sid"], line)
+        self.assertIn("time=%d" % int(CLOCK[0]), line)
+        self.assertNotIn(GOOD, line)
+        self.assertNotIn(self.c.jar.get("gs_session", "missing-cookie"), line)
 
     def test_always_reasks_pii_off_grace_and_reset(self):
         self.assertEqual(self._put("session")[0], 200)
