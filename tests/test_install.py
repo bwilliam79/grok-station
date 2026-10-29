@@ -95,7 +95,7 @@ class Install(unittest.TestCase):
     def test_pi3_audio_and_permissions(self):
         sh = open(os.path.join(ROOT, "install.sh")).read()
         self.assertRegex(sh, r"usermod -aG grok-admin,audio grok-admin")  # admin page lists sound cards
-        self.assertIn("$O/portraits", sh)  # wake listener writes the persona cache (sync_personas PermissionError)
+        self.assertIn("wake/models/enrolled portraits < tools/safe-mkdirs.py", sh)  # wake listener writes the persona cache (sync_personas PermissionError)
         admin = open(os.path.join(ROOT, "systemd", "grok-station-admin.service")).read()
         self.assertIn("SupplementaryGroups=adm audio", admin)
         wake = open(os.path.join(ROOT, "systemd", "grok-station-wake.service")).read()

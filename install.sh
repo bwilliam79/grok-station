@@ -262,7 +262,12 @@ _vosk_model() {
 }
 
 st_wake() {
-  run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
+  # portraits: persona cache the wake listener writes. Not `install -d -o grok`: it follows a symlink grok planted
+  # and chowns the target to grok (0.13.6). safe-mkdirs refuses any symlink on the way.
+  if [ "$DRY" = 1 ]; then echo "+ safe-mkdirs grok $O wake/models/enrolled portraits"; else
+    python3 -I - grok "$O" wake wake/models wake/models/enrolled portraits < tools/safe-mkdirs.py \
+      || { echo "refusing to set up $O/wake: a path there is a symlink or not a directory"; return 1; }
+  fi
   sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
   # openwakeword stays --no-deps. These three are exact pins; the rest stay lower bounds so pip
   # never considers ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name).
