@@ -226,12 +226,18 @@ _vosk_model() {
   if [ "$OFFLINE" = 1 ]; then
     return 0
   fi
-  if [ -f "$dir/.sha256" ]; then
+  # Already installed: trust it only as a real grok-owned folder with a matching marker. Root never repairs
+  # ownership here (Nix 0.13.5 I2); anything else is reinstalled as grok below.
+  if [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$(stat -c %U "$dir")" = grok ] && [ -f "$dir/.sha256" ] && [ ! -L "$dir/.sha256" ]; then
     mark=$(tr -d '[:space:]' < "$dir/.sha256" 2>/dev/null || true)
     if [ "$mark" = "$sha" ]; then
-      chown -R grok:grok "$dir" || true
       return 0
     fi
+  fi
+  # A symlink or a folder not owned by grok in the way: remove the path itself. rm does not follow the link or
+  # leave this file system, and nothing writes or chowns through it. A grok-owned folder is replaced by the unpack.
+  if [ -L "$dir" ] || { [ -e "$dir" ] && [ "$(stat -c %U "$dir")" != grok ]; }; then
+    rm -rf --one-file-system -- "$dir"
   fi
   tmp=$(mktemp 2>/dev/null) || { echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
   curl -fsSL --max-time 120 -o "$tmp" "$url" || { rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }

@@ -98,6 +98,31 @@ class Unpack(unittest.TestCase):
         self.assertNotIn("extractall", sh)
 
 
+class InstalledModelBranch(unittest.TestCase):
+    """Nix 0.13.5 I2: the already-installed branch never repairs ownership as root."""
+
+    def setUp(self):
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        self.body = sh.split("_vosk_model() {", 1)[1].split("\n}\n", 1)[0]
+        self.sh = sh
+
+    def test_no_recursive_chown_of_the_model_folder(self):
+        self.assertNotRegex(self.sh, r"chown -R[^\n]*(\$dir|vosk-model)")
+
+    def test_early_return_needs_grok_owned_real_dir(self):
+        early = self.body.split('if [ "$mark" = "$sha" ]', 1)[0]
+        self.assertIn('[ -d "$dir" ] && [ ! -L "$dir" ]', early)
+        self.assertIn('"$(stat -c %U "$dir")" = grok', early)
+        self.assertIn('[ ! -L "$dir/.sha256" ]', early)
+
+    def test_stale_dir_removed_without_following_links(self):
+        self.assertIn('rm -rf --one-file-system -- "$dir"', self.body)
+        self.assertNotIn('rm -rf --one-file-system -- "$dir/', self.body)
+
+    def test_zip_install_before_runuser(self):
+        self.assertLess(self.body.index('install -o root -g grok -m 0440 "$tmp" "$zd/model.zip"'), self.body.index("runuser -u grok"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
