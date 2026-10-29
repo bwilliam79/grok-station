@@ -4509,7 +4509,7 @@ async function pageIntegrations(el) {
       <div class="intgrid">
         <div class="card intcard"><div class="ih"><div><h2>WLED</h2>
           <span class="intst ${ready ? "ok" : "none"}">${ready ? "Connected" : "Not set up"}</span></div></div>
-          <p class="sub">${ready ? esc(String(devices.length)) + (devices.length === 1 ? " light" : " lights") : "LED strips that speak WLED."}</p>
+          <p class="sub">${ready ? esc(String(devices.length)) + (devices.length === 1 ? " light" : " lights") + (wled.voice ? " · Voice control on" : " · Voice control off") : "LED strips that speak WLED."}</p>
           <div class="acts2">${ready ? `<button class="btn" id="wmanage" type="button">Manage</button><button class="btn p" id="wsetup" type="button">Add lights</button>` : `<button class="btn p" id="wsetup" type="button">Set up</button>`}</div></div>
         <div class="card intcard"><div class="ih"><div><h2>${esc(home.name || "Homebridge")}</h2>
           <span class="intst later">Coming next</span></div></div>
@@ -4522,16 +4522,32 @@ async function pageIntegrations(el) {
     const setup = $("#wsetup", el);
     if (setup) setup.onclick = () => finding();
     const manage = $("#wmanage", el);
-    if (manage) manage.onclick = () => manageView(devices);
+    if (manage) manage.onclick = () => manageView(devices, wled.voice === true);
   }
 
-  function manageView(devices) {
+  function manageView(devices, voiceOn) {
     el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>WLED</h2>
       <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No lights saved."}</p>
+      ${devices.length ? `<div class="row"><button type="button" class="tog${voiceOn ? " on" : ""}" role="switch" id="wvoice" aria-checked="${voiceOn ? "true" : "false"}" aria-label="Voice home control"></button><div><div class="lbl">Voice home control</div><div class="help">Lets anyone who says the wake word turn these lights on, off, or change them. Off until you turn it on.</div></div></div><div id="wvoicee"></div>` : ""}
       <div id="mrows"></div>
       <div class="field inline" style="margin-top:16px"><button class="btn p" id="madd" type="button">Add lights</button>
         <button class="btn d" id="mrm" type="button">Remove WLED</button></div></div>`;
     back(list);
+    const vt = $("#wvoice", el);
+    if (vt) vt.onclick = () => {
+      const on = vt.getAttribute("aria-checked") !== "true";
+      const send = async pw => {
+        const r = await api("PUT", "/api/integrations/wled/voice", pw ? {on, password: pw} : {on});
+        if (r.ok) {
+          setTog(vt, on);
+          attn($("#wvoicee", el), "");
+          toast(on ? "Voice home control on." : "Voice home control off.");
+        } else if (r.status !== 403) attn($("#wvoicee", el), "Couldn't save that.");
+        return r;
+      };
+      if (!on) send("");
+      else withPassword("Turn on voice home control?", "Enter the admin password. Anyone who says the wake word can then control these lights.", "Turn on", send);
+    };
     const box = $("#mrows", el);
     devices.forEach(d => {
       const row = document.createElement("div");
@@ -4549,7 +4565,8 @@ async function pageIntegrations(el) {
         const r = await api("DELETE", "/api/integrations/devices/" + encodeURIComponent(d.id), {});
         if (r.ok) {
           const again = await api("GET", "/api/integrations");
-          manageView((again.data && again.data.devices) || []);
+          const w = (again.data && again.data.integrations && again.data.integrations.wled) || {};
+          manageView((again.data && again.data.devices) || [], w.voice === true);
         }
       };
     });
@@ -4704,24 +4721,34 @@ async function pageIntegrations(el) {
         name: (dev._name != null ? dev._name : dev.name || "").trim(),
         aliases: String(dev._aliases || "").split(",").map(s => s.trim()).filter(Boolean),
       }));
-      busyBtn($("#next", el), true);
-      const r = await api("POST", "/api/integrations/wled/devices", body);
-      if (!r.ok) {
+      // 0.13.0 (Nix I1): adding a light needs the admin password or an open grace window.
+      const send = async pw => {
+        busyBtn($("#next", el), true);
+        const r = await api("POST", "/api/integrations/wled/devices", pw ? {devices: body, password: pw} : body);
         busyBtn($("#next", el), false, "Next");
+        if (r.ok) {
+          if (pw) await refreshStepup();
+          done(r.data && r.data.devices || []);
+          return r;
+        }
+        if (r.status === 403 || r.status === 429) return r;
         if (r.data && r.data.error === "clash") {
           serverClash = r.data;
           names();
-          return;
+          return {ok: true};  // shown on the page; closes the password sheet
         }
         const msg = r.data && r.data.error === "refused" ? "That address isn't on your home network." : "Couldn't save these lights.";
-        return errBox($("#perr", el), msg);
-      }
-      done(r.data && r.data.devices || []);
+        errBox($("#perr", el), msg);
+        return {ok: true};
+      };
+      const ask = () => askPassword("Save these lights?", "Enter the admin password to add lights to the station.", "Save", send);
+      if (stepupOpen()) send("").then(r => { if (r && r.status === 403) ask(); });
+      else ask();
     };
   }
   function done(devices) {
     el.innerHTML = `<div class="card wcard">${head(5, "All set")}
-      <p class="sub">Try it: say 'Hey Grok, turn on ${esc((devices[0] && devices[0].name) || "Kitchen Strip")}'.</p>
+      <p class="sub">Turn on Voice home control in Manage, then try it: say 'Hey Grok, turn on ${esc((devices[0] && devices[0].name) || "Kitchen Strip")}'.</p>
       <div id="drows"></div>
       <p class="help">Say the light's name; 'turn off the lights' on its own isn't supported yet.</p>
       <div class="field inline" style="margin-top:16px"><span class="right"><button class="btn p" id="finish" type="button">Done</button></span></div></div>`;

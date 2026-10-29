@@ -1158,7 +1158,7 @@ def bot_id_from_name(name):
     """Strict slug for Set up and Add bot. ASCII letters and digits only; anything else is a dash.
 
     Does not unicode-lowercase or transliterate. The result matches SLUG_RE or is "". "grok" can
-    still come back; bot_id_problem rejects that id. The name and the id stay editable after this.
+    still come back; bot_id_problem rejects that id. The name and the id are fixed once the bot is added.
     """
     chars = []
     for ch in str(name or ""):
@@ -3294,6 +3294,10 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(j, list):
                 raise ValueError("list expected")
             return j
+        if kind == "any":
+            if not isinstance(j, (list, dict)):
+                raise ValueError("list or object expected")
+            return j
         if not isinstance(j, dict):
             raise ValueError("object expected")
         return j
@@ -3403,7 +3407,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.authed():
                     return self.send(401, {"error": "sign in", "setup_required": AUTH.setup_required()})
                 return self.post_avatar(avatar)
-            kind = "list" if method == "POST" and p == "/api/integrations/wled/devices" else "object"
+            kind = "any" if method == "POST" and p == "/api/integrations/wled/devices" else "object"
             j = self.body(kind=kind) if method in ("POST", "PUT", "PATCH", "DELETE") else {}
         except ValueError:
             return self.send(400, {"error": "bad request"})
@@ -4739,9 +4743,11 @@ class Handler(BaseHTTPRequestHandler):
     # -- integrations (WLED only; other cards are "later")
     def _integration_view(self, doc):
         devices = [self._public_device(d) for d in doc.get("devices") or [] if d.get("kind") == "wled"]
-        enabled = (doc.get("integrations") or {}).get("wled", {}).get("enabled") is True
+        wled = (doc.get("integrations") or {}).get("wled", {})
+        enabled = wled.get("enabled") is True
         status = "connected" if enabled and devices else "not_set_up"
-        return {"integrations": {"wled": {"enabled": enabled, "status": status}}, "devices": devices,
+        voice = enabled and bool(devices) and wled.get("voice") is True
+        return {"integrations": {"wled": {"enabled": enabled, "status": status, "voice": voice}}, "devices": devices,
                 "later": [
                     {"id": "homebridge", "name": "Homebridge", "status": "coming_next"},
                     {"id": "matter", "name": "Matter", "status": "later"},
@@ -4784,6 +4790,34 @@ class Handler(BaseHTTPRequestHandler):
         if aliases is None:
             return None
         return {"host": item["host"].strip(), "name": name, "aliases": aliases}
+
+    def api_put_integrations(self, p, q, j):
+        """PUT /api/integrations/wled/voice {"on": bool, "password"?}. Turning on needs the password
+        (or an open grace window); turning off does not (0.13.0, Nix L2)."""
+        if p != "/api/integrations/wled/voice":
+            return self.send(404, {"error": "not found"})
+        if not isinstance(j, dict) or not {"on"} <= set(j) <= {"on", "password"} or not isinstance(j.get("on"), bool):
+            return self.send(400, {"error": "bad_request"})
+        if "password" in j and not isinstance(j["password"], str):
+            return self.send(400, {"error": "bad_request"})
+        on = j["on"]
+        if on and not self.need_password(j):
+            return
+        with LOCK:
+            doc = gsi.load()
+            wled = doc["integrations"].get("wled")
+            if on and not (isinstance(wled, dict) and any(d.get("kind") == "wled" for d in doc["devices"])):
+                return self.send(400, {"error": "not_set_up"})
+            if isinstance(wled, dict):
+                wled = dict(wled)
+                if on:
+                    wled["voice"] = True
+                else:
+                    wled.pop("voice", None)
+                doc["integrations"]["wled"] = wled
+                gsi.save(doc)
+        audit_home("voice-on" if on else "voice-off", "wled")
+        return self.send(200, self._integration_view(gsi.load()))
 
     def api_get_integrations(self, p, q, j):
         if p != "/api/integrations":
@@ -4854,7 +4888,21 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": status if status in ("refused", "not_wled") else "not_wled"})
         return self.send(200, {"ok": True})
 
-    def _wled_save(self, items):
+    def _wled_save(self, body):
+        """Save new lights. A list (step-up window open) or {"devices": [...], "password": "..."}.
+        Adding a device needs the admin password or an open grace window (0.13.0, Nix I1). Saving never
+        turns on Voice home control (Nix L2)."""
+        pw = {}
+        if isinstance(body, dict):
+            if not {"devices"} <= set(body) <= {"devices", "password"}:
+                return self.send(400, {"error": "bad_request"})
+            if "password" in body:
+                if not isinstance(body["password"], str):
+                    return self.send(400, {"error": "bad_request"})
+                pw = {"password": body["password"]}
+            items = body["devices"]
+        else:
+            items = body
         if not isinstance(items, list) or not items or len(items) > 32:
             return self.send(400, {"error": "bad_request"})
         parsed = []
@@ -4871,6 +4919,8 @@ class Handler(BaseHTTPRequestHandler):
                     code = 400 if hit.get("error") == "bad_name" else 409
                     return self.send(code, hit)
             extra.append(fields)
+        if not self.need_password(pw):  # before any lookup or connection
+            return
         seen_hosts = []
         for fields in parsed:
             if not gsi.host_ok(fields["host"]):
@@ -4903,7 +4953,8 @@ class Handler(BaseHTTPRequestHandler):
                        "presets": presets.get(fields["host"]) or {}}
                 doc["devices"].append(dev)
                 saved.append(dev)
-            doc["integrations"]["wled"] = {"enabled": True}
+            wled = doc["integrations"].get("wled") or {}
+            doc["integrations"]["wled"] = dict(wled, enabled=True)  # keeps "voice" as it was; never turns it on
             gsi.save(doc)
         for dev in saved:
             audit_home("save", dev["id"])

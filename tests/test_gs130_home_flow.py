@@ -29,7 +29,7 @@ def load_mods():
 def _reg(host, device_id):
     return {
         "version": 1,
-        "integrations": {"wled": {"enabled": True}},
+        "integrations": {"wled": {"enabled": True, "voice": True}},
         "devices": [{
             "id": device_id, "kind": "wled", "host": host, "name": "Kitchen Strip",
             "aliases": ["kitchen lights"], "type": "light",

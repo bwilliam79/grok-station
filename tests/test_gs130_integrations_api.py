@@ -239,7 +239,8 @@ class IntegrationsAPI(unittest.TestCase):
 
     def _save(self, name="Kitchen Strip", aliases=None, host=None):
         item = {"host": host or self._host(), "name": name, "aliases": [] if aliases is None else aliases}
-        return self.c.req("POST", "/api/integrations/wled/devices", [item])
+        # 0.13.0 (Nix I1): adding a device needs the admin password (or an open grace window).
+        return self.c.req("POST", "/api/integrations/wled/devices", {"devices": [item], "password": GOOD})
 
     def _prints(self, fn):
         import builtins
@@ -365,7 +366,7 @@ class IntegrationsAPI(unittest.TestCase):
         self.assertEqual(self.c.req("POST", "/api/integrations/wled/blink", {})[1]["error"], "bad_request")
         status, body = self.c.req("POST", "/api/integrations/wled/devices", {"host": self._host(), "name": "Kitchen Strip", "aliases": []})
         self.assertEqual(status, 400)
-        self.assertEqual(body["error"], "bad request")
+        self.assertEqual(body["error"], "bad_request")  # 0.13.0 (Nix I1): an object is parsed; it needs "devices"
         bad = {"host": self._host(), "name": "Kitchen Strip", "aliases": "porch"}
         self.assertEqual(self.c.req("POST", "/api/integrations/wled/devices", [bad])[1]["error"], "bad_request")
         self.assertEqual(self.c.req("POST", "/api/integrations/wled/devices", [])[1]["error"], "bad_request")
@@ -402,10 +403,10 @@ class IntegrationsAPI(unittest.TestCase):
         self.assertFalse(any(path == "/json/info" for method, path in LIGHT.hits if method == "GET"))
 
         # A refused host in the batch writes nothing, including the good row beside it.
-        status, body = self.c.req("POST", "/api/integrations/wled/devices", [
+        status, body = self.c.req("POST", "/api/integrations/wled/devices", {"devices": [
             {"host": self._host(), "name": "Kitchen Strip", "aliases": []},
             {"host": "203.0.113.9", "name": "Porch Light", "aliases": []},
-        ])
+        ], "password": GOOD})
         self.assertEqual(body["error"], "refused", body)
         self.assertEqual(gsi.load()["devices"], [])
 
@@ -466,9 +467,10 @@ class IntegrationsAPI(unittest.TestCase):
         self.assertEqual(body["with"], "device")
 
     def test_delete_wled_needs_stepup(self):
-        status, saved = self._save()
-        self.assertEqual(status, 200, saved)
-        ident = saved["devices"][0]["id"]
+        ident = "w-abcd"  # seeded directly: saving with the password would open the grace window
+        gsi.save({"version": 1, "integrations": {"wled": {"enabled": True}}, "devices": [
+            {"id": ident, "kind": "wled", "host": self._host(), "name": "Kitchen Strip", "aliases": [],
+             "type": "light", "caps": list(gsi.CAPS), "presets": {}}]})
         status, body = self.c.req("DELETE", "/api/integrations/wled", {})
         self.assertEqual(status, 403, body)
         self.assertEqual(body["error"], ga.PASSWORD_BAD)
@@ -543,7 +545,7 @@ class IntegrationsUI(unittest.TestCase):
             "Add by address", "That address didn't answer like a WLED light.",
             "That address isn't on your home network.", "Clashes with bot ", "Used by another device",
             "Clashes with ", "Recommended, not required.", "Settings PIN", "OTA lock",
-            "Try it: say 'Hey Grok, turn on ",
+            "Turn on Voice home control in Manage, then try it: say 'Hey Grok, turn on ", "Voice home control", "Turn on voice home control?",
             "Say the light's name; 'turn off the lights' on its own isn't supported yet.",
             "Offline since ", APPLE, "Google Nest thermostat", "Cameras (RTSP)", "Matter",
             'role="checkbox"', "Blink", "wled-kitchen.local",

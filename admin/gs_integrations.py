@@ -111,6 +111,8 @@ def load():
         wled = got.get("wled")
         if isinstance(wled, dict) and wled.get("enabled") is True:
             integrations["wled"] = {"enabled": True}
+            if wled.get("voice") is True:  # 0.13.0 (Nix L2): voice home control is its own switch, off by default
+                integrations["wled"]["voice"] = True
     return {"version": 1, "integrations": integrations, "devices": _clean_devices(raw.get("devices"))}
 
 
@@ -268,30 +270,45 @@ def split_host(raw):
     return host, port
 
 
-def host_ok(raw):
-    """True when raw is a .local name or a private/link-local/ULA literal, and resolved addresses are too.
+def checked_addr(raw):
+    """(ip, port or None, host header) for raw, or None. The name is resolved once, here.
 
-    Refuses loopback (unless the test flag allows 127.0.0.1), unspecified, multicast,
-    public, the station's own addresses, and 169.254.169.254.
+    Every resolved address must pass _addr_ok (private, link-local or ULA; not loopback unless the test
+    flag allows 127.0.0.1; not unspecified, multicast, public, 169.254.169.254, or one of the station's
+    own addresses). The caller connects to the returned ip, never to the name again, so a later mDNS
+    answer or a changed DNS answer cannot move the request (0.13.0, Nix L1).
     """
     parts = split_host(raw)
     if not parts:
-        return False
-    host, _port = parts
+        return None
+    host, port = parts
     own = set()
     for item in station_addresses() or []:
         ip = _ip(item)
         if ip is not None:
             own.add(ip)
+    shown = display_host(raw)
+    if not shown:
+        return None
     literal = _ip(host)
     if literal is not None:
-        return _addr_ok(literal, own)
+        return (literal, port, shown) if _addr_ok(literal, own) else None
     if _LOCAL_NAME.fullmatch(host.lower()) is None:
-        return False
-    addrs = resolve_host(host)
-    if not addrs:
-        return False
-    return all(_addr_ok(_ip(a), own) for a in addrs)
+        return None
+    ips = [_ip(a) for a in resolve_host(host) or []]
+    if not ips or not all(_addr_ok(ip, own) for ip in ips):
+        return None
+    return ips[0], port, shown
+
+
+def host_ok(raw):
+    """True when raw is a .local name or a private/link-local/ULA literal, and resolved addresses are too."""
+    return checked_addr(raw) is not None
+
+
+def _ip_url(ip, port, path):
+    loc = "[%s]" % ip.compressed if isinstance(ip, ipaddress.IPv6Address) else str(ip)
+    return "http://" + loc + (":%d" % port if port else "") + path
 
 
 def display_host(raw):
@@ -319,14 +336,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def fetch(host, path, method="GET", payload=None):
     """('ok', obj) or ('refused', None) or ('not_wled', None). Never returns a device body on failure."""
-    if not isinstance(path, str) or not path.startswith("/") or not host_ok(host):
+    if not isinstance(path, str) or not path.startswith("/"):
         return "refused", None
-    shown = display_host(host)
-    if not shown:
+    target = checked_addr(host)
+    if target is None:
         return "refused", None
-    url = "http://" + shown + path
+    ip, port, shown = target
+    url = _ip_url(ip, port, path)  # the checked address; the name is only the Host header
     data = None
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "Host": shown}
     if payload is not None:
         data = json.dumps(payload).encode()
         headers["Content-Type"] = "application/json"
@@ -564,12 +582,45 @@ def _parse_mdns(packet):
     return found
 
 
+def _mdns_source_ok(addr):
+    """A reply counts only from a private or link-local IPv4 source on port 5353 (0.13.0, Nix I2)."""
+    if not isinstance(addr, tuple) or len(addr) < 2 or addr[1] != MDNS_GROUP[1]:
+        return False
+    ip = _ip(addr[0])
+    if not isinstance(ip, ipaddress.IPv4Address) or ip.is_loopback or ip.is_multicast or ip.is_unspecified:
+        return False
+    if ip.is_link_local:
+        return ip != _META
+    b = ip.packed
+    return b[0] == 10 or (b[0] == 172 and 16 <= b[1] <= 31) or (b[0] == 192 and b[1] == 168)
+
+
+_new_socket = socket.socket  # tests replace this
+
+
+def lan_address():
+    """The station's LAN IPv4 (the route a private address would take), or "". Nothing is sent."""
+    try:
+        probe = _new_socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return ""
+    try:
+        probe.connect(("192.0.2.1", 9))
+        ip = _ip(probe.getsockname()[0])
+        return str(ip) if ip is not None and _mdns_source_ok((str(ip), MDNS_GROUP[1])) else ""
+    except OSError:
+        return ""
+    finally:
+        probe.close()
+
+
+
 def mdns_browse(timeout=DISCOVER_S):
-    """One-shot QU query. Ephemeral UDP socket, closed in finally. Tests replace this."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    """One-shot QU query on the LAN interface. Ephemeral UDP socket, closed in finally."""
+    sock = _new_socket(socket.AF_INET, socket.SOCK_DGRAM)
     found = []
     try:
-        sock.bind(("", 0))
+        sock.bind((lan_address(), 0))
         sock.settimeout(0.2)
         try:
             sock.sendto(mdns_query(), MDNS_GROUP)
@@ -579,12 +630,14 @@ def mdns_browse(timeout=DISCOVER_S):
         packets = 0
         while time.monotonic() < deadline and packets < 64:
             try:
-                data, _addr = sock.recvfrom(4096)
+                data, addr = sock.recvfrom(4096)
             except socket.timeout:
                 continue
             except OSError:
                 break
             packets += 1
+            if not _mdns_source_ok(addr):
+                continue
             for item in parse_mdns(data):
                 if item not in found:
                     found.append(item)

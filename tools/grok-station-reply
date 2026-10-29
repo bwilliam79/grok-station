@@ -424,7 +424,8 @@ def _do_post(args, body, pin, path="/voice/reply"):
         status, verdict = post_reply(args.station, body, insecure=args.insecure, pin=pin, path=path)
     except ssl.SSLError as e:
         if "pin" in str(e):
-            print("certificate pin mismatch")
+            # 0.13.0 (Nix I3): same line as the home helper. No retry without the pin.
+            print(REFUSAL_LINES["unreachable"], file=sys.stderr)
             return 1
         print("tls error", file=sys.stderr)
         return 1

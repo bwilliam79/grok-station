@@ -184,7 +184,10 @@ class Match(unittest.TestCase):
         block = src[hook:heard]
         self.assertIn('{"type": "home_tone", "ok": bool(ok)}', block)
         self.assertIn("end_routed_turn()", block)
-        self.assertNotIn("play_fixed", block)
+        # 0.13.0 (Nix L2): the only speech is the fixed "Voice home control is off" line, in the off branch.
+        self.assertEqual(block.count("play_fixed"), 1)
+        self.assertIn("play_fixed(home.VOICE_OFF_SAY", block)
+        self.assertLess(block.index("home.voice_on("), block.index("home.run_intent("))
         self.assertNotIn('"heard"', block)
         self.assertNotIn("response.create", block)
         self.assertNotIn('st["turn_heard"]', block)
@@ -324,10 +327,17 @@ class Perform(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         home._offline.clear()
         self.logs = []
+        # 0.13.0 (Nix L1): a .local name is resolved once and the request goes to the checked address.
+        self._resolve, self._own = home.resolve_host, home.station_addresses
+
+        async def fake_resolve(name):
+            return ["192.168.4.20"] if name == "wled-kitchen.local" else []
+        home.resolve_host, home.station_addresses = fake_resolve, lambda: set()
         self.flag = os.environ.get("HOME_ALLOW_LOOPBACK_FOR_TESTS")
         os.environ.pop("HOME_ALLOW_LOOPBACK_FOR_TESTS", None)
 
     async def asyncTearDown(self):
+        home.resolve_host, home.station_addresses = self._resolve, self._own
         if self.flag is None:
             os.environ.pop("HOME_ALLOW_LOOPBACK_FOR_TESTS", None)
         else:
@@ -360,7 +370,8 @@ class Perform(unittest.IsolatedAsyncioTestCase):
             {"ps": 3},
         ])
         for call in stub.calls:
-            self.assertEqual(call["url"], "http://wled-kitchen.local/json/state")
+            self.assertEqual(call["url"], "http://192.168.4.20/json/state")
+            self.assertEqual(call["kw"]["headers"], {"Host": "wled-kitchen.local"})
             self.assertFalse(call["kw"]["allow_redirects"])
             self.assertEqual(call["kw"]["max_redirects"], 0)
             self.assertEqual(call["kw"]["timeout"].total, 3)

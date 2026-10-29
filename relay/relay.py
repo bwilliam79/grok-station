@@ -2459,8 +2459,17 @@ async def session(req):
                             if not st.get("utt"):
                                 st["utt"] = 1
                             st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
-                            ok = await home.run_intent(http, intent, log)
-                            await pi.send_json({"type": "home_tone", "ok": bool(ok)})
+                            act = intent.get("action") if isinstance(intent, dict) else None
+                            if not home.voice_on(home.load_registry()):
+                                # 0.13.0 (Nix L2): off by default; turned on in the admin with the password.
+                                audit_home_voice(act, "off")
+                                log("home voice off")
+                                await play_fixed(home.VOICE_OFF_SAY, (roster.get(st["persona"]) or {}).get("voice") or VOICE,
+                                                 TTS_REPLY_S)
+                            else:
+                                ok = await home.run_intent(http, intent, log)
+                                audit_home_voice(act, "ok" if ok else "fail")
+                                await pi.send_json({"type": "home_tone", "ok": bool(ok)})
                             st["release_model"] = not persona_routed(st["persona"])
                             end = await end_routed_turn()
                             if end:
@@ -3060,6 +3069,17 @@ def audit(actor, slug, action, last4):
     who = actor if actor_ok(actor) else "-"
     tail = last4 if isinstance(last4, str) and len(last4) == 4 and all(0x21 <= ord(c) <= 0x7e for c in last4) else "-"
     _write_audit_line(f"{_audit_stamp()} {who} {slug} {action} {tail}\n")
+
+
+_HOME_AUDIT = frozenset(("on", "off", "bri", "brighten", "dim", "color", "preset", "command"))
+
+
+def audit_home_voice(action, outcome):
+    """`<ts> voice - home-<action> ok|fail|off -` for every voice light command (0.13.0, Nix L3).
+    No device name, id, host, or value; only the fixed action word and the outcome."""
+    act = action if action in _HOME_AUDIT else "command"
+    out = outcome if outcome in ("ok", "fail", "off") else "fail"
+    _write_audit_line(f"{_audit_stamp()} voice - home-{act} {out} -\n")
 
 
 def audit_policy(actor, on):

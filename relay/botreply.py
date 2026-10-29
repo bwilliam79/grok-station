@@ -392,6 +392,10 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
     return out
 
 
+# An acknowledgement and nothing else: an optional "ok/sure/got it", one holding phrase ("checking",
+# "one moment", "let me check on that", ...), then optional trailing holding phrases after punctuation.
+# fullmatch only, and ack_like also caps the length at ACK_MAX, so a real answer that starts with
+# "Checking..." and goes on is never taken for an acknowledgement.
 _ACK_LIKE = re.compile(
     r"(?:ok(?:ay)?[,.!]?\s+|sure[,.!]?\s+|got it[,.!]?\s+)?"
     r"(?:checking|looking(?: (?:into|that up|now))?|on it|one (?:moment|sec(?:ond)?)|just a (?:moment|sec(?:ond)?)|"

@@ -7,7 +7,7 @@ HOME_ALLOW_LOOPBACK_FOR_TESTS=1 allows a loopback host (127.0.0.1 or ::1),
 including a port ("127.0.0.1:PORT"). Tests only. Leave it unset on a Pi:
 loopback is refused, and a public address is refused either way.
 """
-import asyncio, ipaddress, json, os, re, time
+import asyncio, ipaddress, json, os, re, socket, time
 
 import aiohttp
 
@@ -153,6 +153,8 @@ def _parse(raw):
     out = _empty()
     if enabled:
         out["integrations"] = {"wled": {"enabled": True}}
+        if wled.get("voice") is True:  # 0.13.0 (Nix L2): voice home control, off unless turned on in the admin
+            out["integrations"]["wled"]["voice"] = True
     out["devices"] = devices
     return out
 
@@ -247,8 +249,55 @@ def _ip_ok(ip, loopback_ok):
     return (b[0] & 0xFE) == 0xFC  # IPv6 unique local
 
 
+def station_addresses():
+    """This machine's own addresses. Tests replace this. Never logged."""
+    found = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            if info[4]:
+                found.add(info[4][0])
+    except OSError:
+        pass
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect(("192.0.2.1", 9))
+            found.add(sock.getsockname()[0])
+        finally:
+            sock.close()
+    except OSError:
+        pass
+    return found
+
+
+def _as_ip(text):
+    try:
+        ip = ipaddress.ip_address(str(text).split("%", 1)[0])
+    except ValueError:
+        return None
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return mapped if mapped is not None else ip
+
+
+def _own():
+    out = set()
+    for item in station_addresses() or []:
+        ip = _as_ip(item)
+        if ip is not None:
+            out.add(ip)
+    return out
+
+
+def _target_ok(ip, own):
+    """_ip_ok, and never one of the station's own addresses. Test-only loopback is decided by _ip_ok alone."""
+    if ip is None or not _ip_ok(ip, _loopback_ok()):
+        return False
+    return ip.is_loopback or ip not in own
+
+
 def host_ok(host):
-    """True for a .local name or a private or link-local literal.
+    """True for a .local name (shape only; resolved at use) or a private or link-local literal
+    that is not one of the station's own addresses.
 
     Loopback is refused unless HOME_ALLOW_LOOPBACK_FOR_TESTS=1 (tests only).
     A :port on the host is allowed so tests can use 127.0.0.1:PORT.
@@ -258,26 +307,52 @@ def host_ok(host):
         return False
     name, _port_n = parts
     try:
-        ip = ipaddress.ip_address(name)
+        ipaddress.ip_address(name)
     except ValueError:
         return _LOCAL.fullmatch(name) is not None and len(name) <= 253
-    return _ip_ok(ip, _loopback_ok())
+    return _target_ok(_as_ip(name), _own())
 
 
-def _url(host):
+async def resolve_host(name):
+    """Addresses for a .local name, resolved once. Tests replace this."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(loop.getaddrinfo(name, None, type=socket.SOCK_STREAM), 2)
+    except (OSError, asyncio.TimeoutError):
+        return []
+    return [i[4][0] for i in infos if i[0] in (socket.AF_INET, socket.AF_INET6) and i[4]]
+
+
+async def checked_target(host):
+    """(url, host header) for a device, or None (0.13.0, Nix L1).
+
+    A .local name is resolved once here. Every address must pass _target_ok (private or link-local,
+    not 169.254.169.254, not loopback outside tests, not the station's own addresses). The request
+    goes to the checked address with the name only in the Host header, so a later mDNS answer or
+    a changed DNS answer cannot move it to the relay, the admin, or a public address.
+    """
     parts = _split_host(host)
     if not parts:
         return None
     name, port = parts
-    try:
-        ipaddress.ip_address(name)
-        literal = ":" in name
-    except ValueError:
-        literal = False
-    loc = "[%s]" % name if literal else name
+    own = _own()
+    if _as_ip(name) is not None:
+        ips = [_as_ip(name)]
+    else:
+        if _LOCAL.fullmatch(name) is None or len(name) > 253:
+            return None
+        ips = [_as_ip(a) for a in await resolve_host(name)]
+        if not ips:
+            return None
+    if not all(_target_ok(ip, own) for ip in ips):
+        return None
+    ip = ips[0]
+    loc = "[%s]" % ip.compressed if ip.version == 6 else str(ip)
+    shown = ("[%s]" % name if ":" in name else name.lower())
     if port:
-        loc = "%s:%d" % (loc, port)
-    return "http://%s/json/state" % loc
+        loc += ":%d" % port
+        shown += ":%d" % port
+    return "http://%s/json/state" % loc, shown
 
 
 def _clean(text):
@@ -316,6 +391,16 @@ def _wled_on(registry):
         return False
     wled = integrations.get("wled")
     return isinstance(wled, dict) and wled.get("enabled") is True
+
+
+def voice_on(registry):
+    """True only when the admin turned on Voice home control (0.13.0, Nix L2). Saving a device does not."""
+    if not _wled_on(registry):
+        return False
+    return registry["integrations"]["wled"].get("voice") is True
+
+
+VOICE_OFF_SAY = "Voice home control is off. Turn it on in the admin under Integrations."
 
 
 def _usable(registry):
@@ -512,12 +597,14 @@ def _log(logger, action, ok):
     return line
 
 
-async def _call(http, method, url, body):
+async def _call_raw(http, method, url, body, host=None):
     """One request. None unless the status is 2xx and the body is at most 64 KB.
 
     Redirects are not followed. The caller does not log the URL.
     """
     kw = {"allow_redirects": False, "timeout": _TIMEOUT, "max_redirects": 0}
+    if host:
+        kw["headers"] = {"Host": host}
     if body is not None:
         kw["json"] = body
     try:
@@ -540,9 +627,13 @@ def _rgb(intent):
 
 
 async def _perform(http, intent):
-    url = _url(intent.get("host"))
-    if not url or not host_ok(intent.get("host")):
+    target = await checked_target(intent.get("host"))
+    if target is None:
         return False
+    url, shown = target
+
+    async def _call(http_, method, url_, body):
+        return await _call_raw(http_, method, url_, body, shown)
     action = intent.get("action")
     if action in ("on", "off"):
         return await _call(http, "POST", url, {"on": action == "on"}) is not None

@@ -121,7 +121,7 @@ class Ports(unittest.IsolatedAsyncioTestCase):
         try:
             before = owned_ports()
             self.assertIn(fake.port, before[0])
-            reg = {"version": 1, "integrations": {"wled": {"enabled": True}}, "devices": [{
+            reg = {"version": 1, "integrations": {"wled": {"enabled": True, "voice": True}}, "devices": [{
                 "id": "w-port", "kind": "wled", "host": fake.host, "name": "Kitchen Strip",
                 "aliases": ["kitchen lights"], "type": "light", "caps": ["onoff"], "presets": {}}]}
             intent = self.home.home_match("hey grok, please turn off the kitchen strip", reg)
@@ -161,3 +161,67 @@ class Ports(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([r["body"] for r in fake.requests if r["method"] == "POST"], [{"on": False}])
         finally:
             await fake.close()
+
+
+class MdnsBrowse(unittest.TestCase):
+    """0.13.0 (Nix I2): the admin's one-shot WLED search takes replies only from a private source on port
+    5353, binds to the LAN address (not every interface), and always closes its socket."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "admin"))
+        import gs_integrations as gsi
+        self.gsi = gsi
+        self.saved = (gsi._new_socket, gsi.parse_mdns, gsi.lan_address)
+
+    def tearDown(self):
+        self.gsi._new_socket, self.gsi.parse_mdns, self.gsi.lan_address = self.saved
+
+    def _fake(self, packets, fail_send=False):
+        made = []
+
+        class FakeSock:
+            def __init__(self, *a):
+                self.closed, self.bound, self.queue = False, None, list(packets)
+                made.append(self)
+
+            def bind(self, addr):
+                self.bound = addr
+
+            def settimeout(self, t):
+                pass
+
+            def sendto(self, data, addr):
+                if fail_send:
+                    raise OSError("down")
+
+            def recvfrom(self, n):
+                if self.queue:
+                    return self.queue.pop(0)
+                raise OSError("done")
+
+            def close(self):
+                self.closed = True
+        self.gsi._new_socket = FakeSock
+        self.gsi.lan_address = lambda: "192.168.4.20"
+        self.gsi.parse_mdns = lambda data: [{"name": data.decode(), "host": data.decode() + ".local", "port": 80}]
+        return made
+
+    def test_only_private_sources_on_5353_count_and_the_socket_closes(self):
+        made = self._fake([
+            (b"good", ("192.168.4.31", 5353)),
+            (b"badport", ("192.168.4.32", 5354)),
+            (b"public", ("203.0.113.9", 5353)),
+            (b"loop", ("127.0.0.1", 5353)),
+            (b"meta", ("169.254.169.254", 5353)),
+            (b"link", ("169.254.7.7", 5353)),
+        ])
+        found = self.gsi.mdns_browse(timeout=0.5)
+        self.assertEqual([f["name"] for f in found], ["good", "link"])
+        self.assertEqual(len(made), 1)
+        self.assertTrue(made[0].closed)
+        self.assertEqual(made[0].bound, ("192.168.4.20", 0))
+
+    def test_socket_closes_when_the_send_fails(self):
+        made = self._fake([], fail_send=True)
+        self.assertEqual(self.gsi.mdns_browse(timeout=0.2), [])
+        self.assertTrue(made[0].closed)
