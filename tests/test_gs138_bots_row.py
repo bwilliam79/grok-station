@@ -112,7 +112,7 @@ class BotsRowCompact(unittest.TestCase):
         paint = _fn("paintBots")
         handler = paint.split('querySelectorAll(".bmsg")', 1)[1].split("querySelectorAll(\".botrow\")", 1)[0]
         self.assertIn("stopPropagation()", handler)
-        self.assertIn("openBotMessage(btn, el)", handler)
+        self.assertIn("showBotMessage(btn, el)", handler)
         self.assertIn("botRowTapOpensConfigure(", paint)
         self.assertIn("el._msgSaid", paint)
 

@@ -3228,7 +3228,7 @@ function closeBotMessage() {
   botMessageCloser = null;
   if (close) close();
 }
-function openBotMessage(btn, el) {
+function showBotMessage(btn, el) {
   if (!btn) return;
   closeBotMessage();
   const row = btn.closest ? btn.closest(".botrow") : null;
@@ -3364,7 +3364,7 @@ function paintBots(el, bots) {
   list.querySelectorAll(".bmsg").forEach(btn => btn.onclick = ev => {
     ev.preventDefault();
     ev.stopPropagation();
-    openBotMessage(btn, el);
+    showBotMessage(btn, el);
   });
   list.querySelectorAll(".botrow").forEach(row => row.onclick = ev => {
     if (row.getAttribute("data-fixed") || row.getAttribute("data-pending")) return;

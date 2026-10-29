@@ -106,7 +106,7 @@ class IntegrationsBack(unittest.TestCase):
         self.assertIsNotNone(hover, "missing a.iback:hover rule")
         self.assertIn("text-decoration:underline", hover.group(1))
         phone = css.split("@media(max-width:767px)", 1)[-1]
-        self.assertIn("a.iback{font-size:15px;min-height:44px;min-width:88px}", phone)
+        self.assertIn("a.iback{font-size:var(--fs-dev);min-height:44px;min-width:88px}", phone)
 
 
 if __name__ == "__main__":

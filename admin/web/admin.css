@@ -260,8 +260,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .grow input{appearance:none;width:20px;height:20px;margin-top:2px;flex:none;border:2px solid #A89B8C;border-radius:999px;background:transparent;display:grid;place-items:center}
 .grow input:checked{border-color:#3FD3B6;background:#3FD3B6}
 .grow input:checked::after{content:"";width:8px;height:8px;border-radius:999px;background:#1A1408}
-.grow b{display:block;font-size:16px;font-weight:600;color:var(--gs-text)}
-.grow .sub{display:block;color:var(--gs-muted);font-size:15px;font-weight:400}
+.grow b{display:block;font-size:var(--fs-cat);font-weight:600;color:var(--gs-text)}
+.grow .sub{display:block;color:var(--gs-muted);font-size:var(--fs-dev);font-weight:400}
 .gmin{display:flex;align-items:center;gap:8px;margin:0 0 8px 44px}
 .gmin .inp{width:72px}
 .gmin .inp:focus{outline:2px solid #3FD3B6;outline-offset:2px;box-shadow:none}
@@ -346,7 +346,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .botrow .l2 .help{margin-top:0;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .botrow.hasmsg .l2 .help{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 .botrow .ww{position:relative;z-index:2}
-.bmsg{display:flex;align-items:center;gap:6px;width:100%;height:20px;margin:0;padding:0;border:0;background:none;color:var(--gs-amber);font:500 var(--fs-help)/20px var(--body);text-align:left;cursor:pointer;position:relative;border-radius:4px}
+.bmsg{display:flex;align-items:center;gap:6px;width:100%;height:20px;margin:0;padding:0;border:0;background:none;color:var(--gs-amber);font:500 var(--fs-help) var(--body);line-height:20px;text-align:left;cursor:pointer;position:relative;border-radius:4px}
 .bmsg::before{content:"";position:absolute;inset:-2px -4px}
 .bmsg .gl{flex:none}
 .bmsg .tx{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -576,12 +576,12 @@ p#emptybot{margin:10px 2px 0}
 .nmrow:first-child{border-top:0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
 .wake{color:var(--gs-teal);font-weight:600}
-a.iback{display:inline-flex;align-items:center;font:500 13px/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:24px;margin:0 0 6px}
+a.iback{display:inline-flex;align-items:center;font:500 var(--fs-help)/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:24px;margin:0 0 6px}
 a.iback:hover{color:var(--gs-text);text-decoration:underline}
 a.iback:focus-visible{outline:3px solid rgba(63,211,182,.30);outline-offset:2px;color:var(--gs-text)}
 .mhead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
 .mhead h2{margin:0}
-.mhead .tcount{font-size:13px;color:var(--gs-muted)}
+.mhead .tcount{font-size:var(--fs-help);color:var(--gs-muted)}
 .mhead .btn{margin-left:auto}
 .dacts{display:flex;align-items:center;gap:8px;margin-left:auto;flex:none}
 .rdiv{width:1px;align-self:stretch;background:var(--gs-rule-2);margin:8px 0}
@@ -594,7 +594,7 @@ a.iback:focus-visible{outline:3px solid rgba(63,211,182,.30);outline-offset:2px;
 .danger p{margin:4px 0 0;color:var(--gs-muted);font-size:var(--fs-help)}
 .danger .btn{margin-left:auto;flex:none}
 @media (max-width:767px){
-  a.iback{font-size:15px;min-height:44px;min-width:88px}
+  a.iback{font-size:var(--fs-dev);min-height:44px;min-width:88px}
   .mhead{flex-wrap:wrap}
   .mhead .btn{width:100%;min-height:48px;margin-left:0}
   .rdiv{display:none}
