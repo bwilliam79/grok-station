@@ -33,6 +33,7 @@ class Reject(Exception):
         self.verdict = verdict if isinstance(verdict, str) else "error"
         self.bot = bot if handoff.bot_slug_ok(bot) else "-"
         self.rid = rid if isinstance(rid, str) and handoff.REQUEST_ID.fullmatch(rid) else "-"
+        self.reason = None  # 0.13.0: "pii" or "secret" for a lint block; a code only, never content
         super().__init__(self.verdict)
 
 
@@ -343,6 +344,12 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
     if not isinstance(doc, dict):
         raise Reject(400, "schema", bot)
     keys = set(doc)
+    # 0.13.0: a signed reply may carry "interim": true (an acknowledgement; the real answer follows).
+    interim = "interim" in keys
+    if interim:
+        if doc.get("interim") is not True:
+            raise Reject(400, "schema", bot)
+        keys = keys - {"interim"}
     if keys == _REPLY_KEYS:
         if doc.get("kind") != "reply":
             raise Reject(400, "schema", bot)
@@ -374,10 +381,32 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
     except Exception:
         why = "error"
     if why:
-        raise Reject(400, "lint", bot, rid)
+        rej = Reject(400, "lint", bot, rid)
+        rej.reason = "secret" if why == "secret" else "pii"
+        raise rej
     nonce = pending.get("nonce")
-    return {"request_id": rid, "text": cleaned, "tier": 0, "action_class": "answer", "bot": bot,
-            "nonce": nonce if isinstance(nonce, str) else ""}
+    out = {"request_id": rid, "text": cleaned, "tier": 0, "action_class": "answer", "bot": bot,
+           "nonce": nonce if isinstance(nonce, str) else ""}
+    if interim:
+        out["interim"] = True
+    return out
+
+
+_ACK_LIKE = re.compile(
+    r"(?:ok(?:ay)?[,.!]?\s+|sure[,.!]?\s+|got it[,.!]?\s+)?"
+    r"(?:checking|looking(?: (?:into|that up|now))?|on it|one (?:moment|sec(?:ond)?)|just a (?:moment|sec(?:ond)?)|"
+    r"give me a (?:moment|sec(?:ond)?)|let me (?:check|look|see)(?: (?:on|into) (?:that|it))?|working on it|"
+    r"hang on|hold on)"
+    r"(?:[,.!…]+\s*(?:one (?:moment|sec(?:ond)?)|just a (?:moment|sec(?:ond)?)|be right back|back in a (?:moment|sec(?:ond)?|bit))?)*[.!…]*",
+    re.I)
+ACK_MAX = 60
+
+
+def ack_like(text):
+    """True for a short acknowledgement with no answer in it ("Checking, one moment."). Used only when the bot
+    did not say whether a reply is interim, and only for its first reply to a request."""
+    t = " ".join(str(text or "").split())
+    return 0 < len(t) <= ACK_MAX and bool(_ACK_LIKE.fullmatch(t))
 
 
 def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
@@ -623,14 +652,16 @@ def ingest_avatar(raw, station_sk, keys_doc, known, seen=None, now_ms=None):
     """Open a sealed profile picture. Returns bot, nonce, exp_ms, content_type, and image bytes.
 
     The signed document is kind "avatar" plus nonce, exp_ms, content_type, and image_b64.
-    A bot field inside is rejected. The reply limiter is not charged. seen is not updated here.
+    "voice" may be present; any other extra field is rejected. The voice value is returned
+    only when the key is present, and it is not checked here. A bot field inside is rejected.
+    The reply limiter is not charged. seen is not updated here.
     """
     bot, message = open_signed(raw, station_sk, keys_doc, known, None, limit=AVATAR_OUTER_MAX, rate=False)
     try:
         doc = json.loads(message)
     except ValueError:
         raise Reject(400, "schema", bot)
-    if not isinstance(doc, dict) or set(doc) != _AVATAR_KEYS or doc.get("kind") != "avatar":
+    if not isinstance(doc, dict) or doc.get("kind") != "avatar" or not _AVATAR_KEYS <= set(doc) or set(doc) - _AVATAR_KEYS - {"voice"}:
         raise Reject(400, "schema", bot)
     nonce, exp = doc.get("nonce"), doc.get("exp_ms")
     if not nonce_ok(nonce) or type(exp) is not int:
@@ -654,4 +685,7 @@ def ingest_avatar(raw, station_sk, keys_doc, known, seen=None, now_ms=None):
         raise Reject(415, "type", bot)
     if len(image) > AVATAR_IMAGE_MAX:
         raise Reject(413, "size", bot)
-    return {"bot": bot, "nonce": nonce, "exp_ms": exp, "content_type": ctype, "image": image}
+    out = {"bot": bot, "nonce": nonce, "exp_ms": exp, "content_type": ctype, "image": image}
+    if "voice" in doc:
+        out["voice"] = doc["voice"]
+    return out

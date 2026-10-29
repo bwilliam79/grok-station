@@ -2986,12 +2986,12 @@ def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
     LAST_PORTRAIT_BG = SURFACE
-    label = draw_state_label(surf, L, state, L(64), rect.right - L(54), rect.top + pad + L(36), align="right")
+    # 0.13.0: no state word in the card's top-right corner; the ring around the avatar is the state.
     x = rect.left + L(54) + d + L(96)
     width = max(L(120), rect.right - L(60) - x)
     name_px, heard_px, reply_px, step = zone_reply_metrics(L, rect, bool(heard))
     y = rect.top + pad
-    name_w = width - (label.w + L(32) if label else 0)
+    name_w = width
     nm = _line(surf, "display", name_px, who, TEXT, max(40, name_w))
     surf.blit(nm, (x, y))
     y += nm.get_height() + L(12)

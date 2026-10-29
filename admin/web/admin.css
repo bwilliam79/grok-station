@@ -1,7 +1,7 @@
 /* grok-station admin · Hearth theme. Errors and destructive actions are amber 'Needs attention' (design.md §8.2). Red is allowed only for the offline avatar status ring. Mic off and stock-down stay on the station, not in the admin.
    Hearth theme, settings scale (see ADMIN-UI.md) */
 :root{--fs-help:13px;--fs-body:15px;--fs-label:14px;--fs-h3:18px;--fs-h2:22px;--fs-h1:28px;--fs-mono:13px;--fs-mono-sm:10px;--fs-caps:12px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--panel-pad:var(--sp-4) 0 var(--sp-2);--fs-preview-time:clamp(var(--fs-h1),14cqi,72px);--fs-preview-date:clamp(var(--fs-help),4cqi,var(--fs-h3));--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
---gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#6F655A;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
+--gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
 --gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
 @media (max-width:767px){:root{--fs-body:16px}}  /* 16px stops iOS zoom on input focus */
@@ -47,7 +47,7 @@ html,body{background:var(--gs-bg);color:var(--gs-text);font:var(--fs-body)/1.45 
 .sl{position:relative;height:6px;border-radius:3px;background:var(--gs-surface-3);flex:1}
 .sl b{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--gs-teal)}
 .sl i{position:absolute;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;background:var(--gs-text);box-shadow:0 0 0 4px rgba(63,211,182,.25)}
-.sel,.inp{height:38px;border-radius:10px;background:var(--gs-bg);border:1px solid var(--gs-rule-2);display:flex;align-items:center;padding:0 12px;gap:8px;color:var(--gs-text);font-size:var(--fs-label);white-space:nowrap;overflow:hidden}
+.sel,.inp{height:38px;border-radius:10px;background:var(--gs-bg);border:1px solid var(--gs-field-edge);display:flex;align-items:center;padding:0 12px;gap:8px;color:var(--gs-text);font-size:var(--fs-label);white-space:nowrap;overflow:hidden}
 .sel::after{content:"";margin-left:auto;width:8px;height:8px;border-right:2px solid var(--gs-muted);border-bottom:2px solid var(--gs-muted);transform:rotate(45deg) translate(-2px,-2px)}
 .inp.focus{border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30)}
 .mono{font-family:var(--mono);font-size:var(--fs-mono)}
@@ -186,7 +186,7 @@ button.x:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
 .mono{word-break:break-all}
 .tipwrap{position:relative;display:inline-flex;align-items:center;outline:none}
 .tipwrap .tip{display:none;position:absolute;z-index:40;left:0;top:calc(100% + 6px);width:max-content;max-width:280px;padding:8px 10px;border-radius:10px;background:var(--gs-surface-3);color:var(--gs-text);border:1px solid var(--gs-rule-2);font:400 var(--fs-help)/1.4 var(--body);white-space:normal;text-align:left;box-shadow:0 8px 24px rgba(0,0,0,.45)}
-.tipwrap:hover>.tip,.tipwrap:focus>.tip,.tipwrap:focus-within>.tip{display:block}
+.tipwrap:hover>.tip,.tipwrap:focus>.tip,.tipwrap:focus-within>.tip,.tipwrap.open>.tip{display:block}
 .info{width:18px;height:18px;margin-left:6px;border-radius:50%;border:1px solid var(--gs-rule-2);color:var(--gs-muted);font:600 var(--fs-help)/1.33 var(--body);justify-content:center;cursor:help}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 @media (max-width:1023px){.side{width:72px;padding:22px 8px}.side .brand div,.side .grp,.side .nav span,.side .foot{display:none}.nav{justify-content:center;position:relative}.nav .b.updot{position:absolute;top:6px;left:calc(50% + 4px);margin:0}}
@@ -458,3 +458,37 @@ p#emptybot{margin:10px 2px 0}
 .saychip{display:inline-block;white-space:nowrap;color:var(--gs-teal);background:var(--gs-teal-bg);border-radius:var(--gs-radius-pill);padding:2px 8px;font-weight:600}
 .tipadd{font:inherit;font-weight:600;color:var(--gs-text);background:none;border:0;padding:0;cursor:pointer;appearance:none}
 .finbtns{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+/* Integrations (0.13.0). */
+.intgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:18px;margin-top:16px}
+.intcard{display:flex;flex-direction:column;gap:10px;min-height:168px}
+.intcard .ih{display:flex;align-items:center;gap:12px}
+.intcard .acts2{margin-top:auto;display:flex;gap:10px;align-items:center}
+.intcard.later{background:transparent;border-style:dashed}
+.intcard.later h2{color:var(--gs-muted)}
+.intst{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-help);font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.intst.ok{color:var(--gs-teal);background:var(--gs-teal-bg)}
+.intst.none{color:var(--gs-muted);background:var(--gs-surface-2)}
+.intst.later{color:var(--gs-muted);background:transparent;border:1px dashed var(--gs-muted)}
+.wcard{max-width:760px}
+.wcard h2{font:600 var(--fs-h2) var(--disp);margin-bottom:6px}
+.lead{color:var(--gs-muted);font-size:var(--fs-body);max-width:62ch}
+.drow{display:flex;align-items:center;gap:14px;min-height:56px;padding:10px 0;border-top:1px solid var(--gs-rule)}
+.drow:first-child{border-top:0}
+.drow .dm{flex:1;min-width:0}
+.cbx{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;flex:none;cursor:pointer;background:none;border:0;padding:0;color:inherit}
+.cbx i{width:20px;height:20px;border-radius:6px;border:2px solid var(--gs-muted);display:flex;align-items:center;justify-content:center}
+.cbx.on i{background:var(--gs-teal);border-color:var(--gs-teal)}
+.cbx.on i::after{content:"";width:10px;height:5px;border-left:2.5px solid var(--gs-on-teal);border-bottom:2.5px solid var(--gs-on-teal);transform:rotate(-45deg) translate(1px,-1px)}
+.nmrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 16px;padding:14px 0;border-top:1px solid var(--gs-rule)}
+.nmrow:first-child{border-top:0}
+.ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
+.sayline{display:flex;align-items:flex-start;gap:10px;margin-top:4px}
+.sayline .w{color:var(--gs-teal);font-weight:600}
+.tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
+.apple{margin-top:16px;padding:12px 14px;border-radius:12px;background:var(--gs-surface);border:1px solid var(--gs-rule);color:var(--gs-muted);font-size:var(--fs-label)}
+@media (max-width:767px){.intgrid{grid-template-columns:1fr}.nmrow{grid-template-columns:1fr}}
+
+/* 0.13.0 wake word dialog: the message area keeps its height so the dialog does not jump */
+.wwmsg{min-height:6.5rem}
+.wwmsg .warnmsg{color:var(--gs-amber)}
+.wwsugs{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.4rem}

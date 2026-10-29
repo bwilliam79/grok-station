@@ -19,7 +19,7 @@ if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
 fi
 [ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ] && install -d -o grok -g grok /opt/grok-station/wake/lines && install -o grok -g grok -m644 "$S"/wake/lines/*.wav /opt/grok-station/wake/lines/
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
-install -m644 "$S/admin/gs_routine.py" "$S/admin/bot_content.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" /opt/grok-station/admin/
+install -m644 "$S/admin/gs_routine.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" /opt/grok-station/admin/
 # Every module grok_admin.py imports must be installed next to it (a missing one crash-loops the admin page).
 rm -f /opt/grok-station/admin/pairing.py /opt/grok-station/admin/pair_listener.py /opt/grok-station/admin/release.py  # removed (single device)
 install -m644 "$S"/admin/web/index.html "$S"/admin/web/deploy-pins.js "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/

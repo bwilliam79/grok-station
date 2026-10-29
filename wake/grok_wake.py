@@ -574,6 +574,14 @@ def on_comms_fail(dev):
     play_file(dev, mod.fail_file() if mod else None, block=True)
 
 
+def on_home_tone(dev, ok):
+    """Local success or failure tone for a home command. Not spoken, and not a setting."""
+    print("relay: home tone", flush=True)
+    mod = station_sounds()
+    sid = "home-ok" if ok else "home-fail"
+    play_file(dev, mod.file_for(sid) if mod else None, block=False)
+
+
 def _notice_and_chime(label):
     name = label or "timer"
     text = "Your timer is done." if str(name).strip().lower() == "timer" else f"Your {name} timer is done."
@@ -2287,6 +2295,8 @@ class Session:
                         ws.send(json.dumps({"type": "listening"}))
                     elif t == "comms_fail":
                         on_comms_fail(self.play_dev)
+                    elif t == "home_tone":
+                        on_home_tone(self.play_dev, ev.get("ok") is True)
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
                         if ev.get("local"):

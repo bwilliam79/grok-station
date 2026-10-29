@@ -51,8 +51,10 @@ class Catalog(unittest.TestCase):
 
     def test_every_listed_file_exists(self):
         raw = json.load(open(os.path.join(SHIPPED, "manifest.json")))
-        self.assertEqual(list(raw), ["alarm", "listen", "end", "fail"])
+        self.assertEqual(list(raw), ["alarm", "listen", "end", "fail", "home_ok", "home_fail"])
         self.assertEqual(raw["fail"], ["comms-fail-2"])
+        self.assertEqual(raw["home_ok"], ["home-ok"])
+        self.assertEqual(raw["home_fail"], ["home-fail"])
         self.assertEqual(raw["listen"], ["notify-1", "notify-2"])
         self.assertEqual(raw["end"], ["end-1", "end-2", "end-3", "notify-1", "notify-2"])
         for cat, ids in raw.items():
@@ -119,6 +121,11 @@ class Catalog(unittest.TestCase):
             self.assertIn(i, c["end"])
         self.assertNotIn("alarm-1", c["end"])
         self.assertNotIn("comms-fail-2", c["alarm"])
+        self.assertNotIn("home-ok", c["alarm"] + c["listen"] + c["end"])
+        self.assertNotIn("home-fail", c["alarm"] + c["listen"] + c["end"])
+        self.assertFalse(sounds.allowed("ALARM_SOUND", "home-ok"))
+        self.assertFalse(sounds.allowed("LISTEN_TONE", "home-fail"))
+        self.assertFalse(sounds.allowed("END_TONE", "home-ok"))
         self.assertTrue(sounds.allowed("END_TONE", "none"))
         self.assertTrue(sounds.allowed("END_TONE", "notify-1"))
         self.assertFalse(sounds.allowed("END_TONE", "alarm-1"))

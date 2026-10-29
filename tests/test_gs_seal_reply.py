@@ -843,7 +843,7 @@ class SealReply(unittest.TestCase):
         with _patched(gs, "read_key", watch):
             for text in samples:
                 (rc, out, err), tls = self.reply(text)
-                self.assertEqual((rc, out, err), (1, "", "refused\n"), text[:24])
+                self.assertEqual((rc, out, err), (1, "", "refused: looks like a secret\n"), text[:24])
                 self.assertEqual(tls.connects, [], text[:24])
                 self.assertEqual(tls.posts, [], text[:24])
                 self.assertNotIn(text, err)
@@ -867,7 +867,7 @@ class SealReply(unittest.TestCase):
             self.assertNotIn(text, log)
         self.assertEqual(self.mode(self.log_path()), 0o600)
         (rc, _, err), tls = self.reply("password is swordfish", kind="bot_list", rid=RID2)
-        self.assertEqual((rc, err), (1, "refused\n"))
+        self.assertEqual((rc, err), (1, "refused: looks like a secret\n"))
         self.assertEqual(tls.connects, [])
         self.assertNotIn("password is swordfish", self.slurp(self.log_path()))
 
@@ -903,7 +903,7 @@ class SealReply(unittest.TestCase):
     def test_wrong_pin_sends_no_request_and_does_not_retry(self):
         seed = self.provision(pin="ab" * 32)
         (rc, out, err), tls = self.reply(ANSWER)
-        self.assertEqual((rc, out, err), (1, "", "refused\n"))
+        self.assertEqual((rc, out, err), (1, "", "refused: station unreachable\n"))
         self.assertEqual(len(tls.connects), 1)
         self.assertEqual(tls.posts, [])
         (rc2, _, err2), tls2 = self.reply(ANSWER)
@@ -931,7 +931,7 @@ class SealReply(unittest.TestCase):
         finally:
             socket.create_connection = real
         self.assertEqual(calls, [("127.0.0.1", 8443)])
-        self.assertEqual((rc, out, err), (1, "", "refused\n"))
+        self.assertEqual((rc, out, err), (1, "", "refused: station unreachable\n"))
         self.assertEqual((rc2, err2), (1, "refused\n"))
         log = self.slurp(self.log_path())
         self.assertRegex(log, rf"^request_id={RID} persona=kai status=0 ms=\d+\n$")

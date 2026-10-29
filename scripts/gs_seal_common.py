@@ -15,7 +15,11 @@ _IOREG = ["/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
 
 
 class Refused(Exception):
-    """Fail closed. The message is never shown."""
+    """Fail closed. Only reason, a fixed code (see gs-seal-reply REFUSAL_LINES), is ever shown."""
+
+    def __init__(self, reason=None):
+        super().__init__("refused")
+        self.reason = reason
 
 
 class Unsupported(Exception):
@@ -57,7 +61,7 @@ class QuietParser(argparse.ArgumentParser):
 
 # The home helper's release. Sent as the X-GS-Helper header on each post (not signed; older stations
 # ignore it). The station shows "Helper out of date" when this is behind its own helper release.
-HELPER_VERSION = "0.11.8"
+HELPER_VERSION = "0.13.0"
 
 def root_dir():
     return os.path.join(os.path.expanduser("~"), ".config", "grok-station")

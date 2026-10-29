@@ -49,7 +49,7 @@ class NoFalseBehind(_Rel):
         super().setUp()
         self.rel = ga.version()
         maj, mi, pa = (int(x) for x in self.rel.split("."))
-        self.prev = "%d.%d.%d" % (maj, mi, pa - 1)
+        self.prev = "%d.%d.%d" % ((maj, mi, pa - 1) if pa else (maj, mi - 1, 99))  # x.y.0: any older release
         self.pins = {"commit": C_NEW, "update_commit": "3" * 40, "files": {"scripts/gs-update.sh": S_NEW}}
         self._saved = getattr(ga, "bot_content", None)
 

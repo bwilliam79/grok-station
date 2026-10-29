@@ -3,7 +3,7 @@
 
   seal  answer on stdin, seed from GROK_STATION_BOT_KEY only; prints the outer {v,bot,sealed} JSON.
   seal-list  bot names, one per line on stdin; same outer JSON, inner kind bot_list.
-  seal-avatar  a png, jpeg, or webp on stdin; same outer JSON, inner kind avatar.
+  seal-avatar [--voice <id>]  a png, jpeg, or webp on stdin; same outer JSON, inner kind avatar.
   post  sealed JSON on stdin; validates it and POSTs it. No key, no PyNaCl (stdlib only).
   post --avatar  a sealed picture, to /voice/avatar. Larger than a reply.
   send  seal | post on one machine.
@@ -19,11 +19,14 @@ AVATAR_OUTER_MAX = 4 << 20
 _REFUSED = ("--key", "--seed", "--bot-key", "--private-key", "--secret")
 _LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 _RID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+_VOICE_ID = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _LIST_MAX = 24
 
 
-def canonical(request_id, text):
+def canonical(request_id, text, interim=False):
     body = {"action_class": "answer", "kind": "reply", "request_id": request_id, "text": text, "tier": 0}
+    if interim:
+        body["interim"] = True  # 0.13.0: an acknowledgement only; the answer follows in a second reply
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
 
 
@@ -97,7 +100,7 @@ def _read_list_names():
     return names
 
 
-def build_outer(bot, request_id, text, seed_b64, station_pub_b64):
+def build_outer(bot, request_id, text, seed_b64, station_pub_b64, interim=False):
     """Outer JSON bytes: {"v":1,"bot":...,"sealed":...}. Raises ValueError on a bad key."""
     from nacl.public import PublicKey, SealedBox
     from nacl.signing import SigningKey
@@ -105,7 +108,7 @@ def build_outer(bot, request_id, text, seed_b64, station_pub_b64):
     pub = base64.b64decode("".join(str(station_pub_b64).split()), validate=True)
     if len(seed) != 32 or len(pub) != 32:
         raise ValueError("key")
-    signed = SigningKey(seed).sign(canonical(request_id, text))
+    signed = SigningKey(seed).sign(canonical(request_id, text, interim))
     sealed = SealedBox(PublicKey(pub)).encrypt(signed)
     outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
     return json.dumps(outer, separators=(",", ":")).encode()
@@ -223,11 +226,20 @@ def sniff_image(raw):
     return ""
 
 
-def build_avatar(bot, image, seed_b64, station_pub_b64):
+def _voice_id(raw):
+    """Lowercase voice id, or "" when it is not the voice-id shape. The station checks the name."""
+    if not isinstance(raw, str):
+        return ""
+    s = raw.strip().casefold()
+    return s if _VOICE_ID.fullmatch(s) else ""
+
+
+def build_avatar(bot, image, seed_b64, station_pub_b64, voice=None):
     """Outer JSON bytes for a profile picture. Raises ValueError on a bad key, type, or size.
 
     The signed document is kind avatar, a fresh nonce, exp_ms about 60 seconds ahead, the file
-    type, and the image. The same bytes sealed twice are two different blobs.
+    type, and the image. voice is included only when it matches the voice-id shape.
+    The same bytes sealed twice are two different blobs.
     """
     from nacl.public import PublicKey, SealedBox
     from nacl.signing import SigningKey
@@ -243,11 +255,38 @@ def build_avatar(bot, image, seed_b64, station_pub_b64):
     doc = {"content_type": kind, "exp_ms": int(time.time() * 1000) + 60_000,
            "image_b64": base64.b64encode(bytes(image)).decode("ascii"), "kind": "avatar",
            "nonce": secrets.token_urlsafe(16)}
+    vid = _voice_id(voice)
+    if vid:
+        doc["voice"] = vid
     signed = SigningKey(seed).sign(json.dumps(doc, separators=(",", ":"), sort_keys=True).encode())
     sealed = SealedBox(PublicKey(pub)).encrypt(signed)
     outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
     return json.dumps(outer, separators=(",", ":")).encode()
 
+
+# 0.13.0: one line per refusal reason. Fixed text only; the reply is never echoed.
+REFUSAL_LINES = {
+    "pii": "refused: blocked by station PII filter (personal info in reply)",
+    "secret": "refused: looks like a secret",
+    "unreachable": "refused: station unreachable",
+    "expired": "refused: request expired",
+    "duplicate": "refused: already answered",
+    "schema": "refused: reply format not accepted",
+}
+
+
+def refusal_line(reason):
+    return REFUSAL_LINES.get(reason, "refused") if isinstance(reason, str) else "refused"
+
+
+def reason_from_body(raw):
+    """The station's reason code from a refused reply's JSON body, or None. Only known codes."""
+    try:
+        doc = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+    reason = doc.get("reason") if isinstance(doc, dict) else None
+    return reason if reason in REFUSAL_LINES else None
 
 def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
     """POST /voice/reply, /voice/show, or /voice/avatar. Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
@@ -264,10 +303,12 @@ def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
     try:
         conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
         resp = conn.getresponse()
-        resp.read()
+        raw = resp.read()
         status = resp.status
     finally:
         conn.close()
+    if status != 200 and reason_from_body(raw):
+        return status, refusal_line(reason_from_body(raw))
     verdict = {200: "ok", 400: "bad request", 403: "forbidden", 409: "conflict",
                413: "too large", 415: "unsupported media type",
                429: "too many", 404: "not found"}.get(status, "bad request" if status >= 400 else "ok")
@@ -315,7 +356,7 @@ def _seal_body(args):
         print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
         return None, 2
     try:
-        return build_outer(args.bot, args.request_id, text, seed, args.station_pub), 0
+        return build_outer(args.bot, args.request_id, text, seed, args.station_pub, bool(getattr(args, "interim", False))), 0
     except Exception:
         print("400 bad request")
         return None, 1
@@ -361,7 +402,7 @@ def _seal_avatar_body(args):
         print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
         return None, 2
     try:
-        return build_avatar(args.bot, image, seed, args.station_pub), 0
+        return build_avatar(args.bot, image, seed, args.station_pub, getattr(args, "voice", None)), 0
     except Exception:
         print("400 bad request")
         return None, 1
@@ -410,6 +451,8 @@ def main(argv=None):
         sp.add_argument("--station", required=True)
         sp.add_argument("--insecure", action="store_true")
         sp.add_argument("--pin-sha256", default="")
+    for sp in (send, seal):
+        sp.add_argument("--interim", action="store_true", help="an acknowledgement only; send the answer as a second reply")
     for sp in (send, seal, seal_list):
         sp.add_argument("--bot", required=True)
         sp.add_argument("--station-pub", required=True)
@@ -422,6 +465,7 @@ def main(argv=None):
     seal_avatar = sub.add_parser("seal-avatar")
     seal_avatar.add_argument("--bot", required=True)
     seal_avatar.add_argument("--station-pub", required=True)
+    seal_avatar.add_argument("--voice", default=None)
     show = sub.add_parser("show")
     show.add_argument("--bot", required=True)
     show.add_argument("--station-pub", required=True)

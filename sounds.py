@@ -5,7 +5,7 @@ The thinking chime is synthesized here (stdlib only). Nothing is downloaded.
 import array, json, math, os, re
 
 ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_CATS = ("alarm", "listen", "end", "fail")
+_CATS = ("alarm", "listen", "end", "fail", "home_ok", "home_fail")
 _KEYS = {"ALARM_SOUND": "alarm", "LISTEN_TONE": "listen", "END_TONE": "end"}
 
 

@@ -139,8 +139,11 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         r = self.relay
+        loop = asyncio.get_running_loop()
         for t in list(r._run_tasks):
             t.cancel()
+            if t.get_loop() is not loop:  # left by another test file's loop; it can't be awaited here
+                r._run_tasks.discard(t)
         if r._run_tasks:
             await asyncio.gather(*list(r._run_tasks), return_exceptions=True)
         r._runs.clear()

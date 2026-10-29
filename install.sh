@@ -150,6 +150,9 @@ st_users() {
     run install -d -o grok-relay -g grok-admin -m 0770 "$d"
   done
   run chmod 0755 $V
+  # 0.13.0 home control: the admin writes integrations.json here (0640, group grok-admin via setgid);
+  # the relay (group grok-admin) reads it and cannot write. No secrets in it.
+  run install -d -o grok-admin -g grok-admin -m 2750 $V/integrations
   # Late answers are spoken by the wake listener (user grok). voice/ is grok-admin only, so this
   # directory is group grok and setgid: new files stay readable by grok, not by everyone.
   run install -d -o grok-relay -g grok -m 2770 $V/late
@@ -181,7 +184,7 @@ st_display() {
 
 st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
-for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py; do run install -m644 relay/$f $O/relay/; done
+for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py home.py; do run install -m644 relay/$f $O/relay/; done
   sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
   if [ "$OFFLINE" != 1 ]; then run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt; fi
   run install -m644 systemd/grok-station-relay.service /etc/systemd/system/

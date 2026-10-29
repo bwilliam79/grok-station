@@ -482,7 +482,7 @@ def note_from(doc, hosts=(), names=(), pii=None):
             "needs_tap": p.get("scope", "own_notes") != "own_notes"}, None
 
 
-def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None, note_ok=False, names=(), pii=None):
+def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None, note_ok=False, names=(), pii=None, info=None):
     """(text, None) for a reply that is bound, in scope and clean; (None, reason) for a bad one; (None, None) if none yet.
     The reply file is consumed (deleted) on read, so it can be spoken at most once; seen dedupes request_ids.
     A reply for a different request_id cannot satisfy this one (a test rid never resolves a real request)."""
@@ -499,10 +499,15 @@ def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None, note_ok=False, names=
             os.unlink(p)
         except OSError:
             pass
+    interim = isinstance(doc, dict) and doc.get("interim") is True  # 0.13.0: an acknowledgement; the answer follows
+    if info is not None:
+        info["interim"] = interim
+        info["n"] = doc.get("n") if isinstance(doc, dict) and type(doc.get("n")) is int else 1
     if seen is not None:
         if rid in seen:
             return None, "duplicate"
-        seen.add(rid)
+        if not interim:
+            seen.add(rid)
     if not isinstance(doc, dict) or doc.get("request_id") != rid or doc.get("agent") != bot:
         return None, "unbound"
     if not secrets.compare_digest(str(doc.get("nonce", "")), nonce):

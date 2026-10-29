@@ -70,7 +70,7 @@ Add your main bot first.
 1. On the bot's own computer (where its secret store lives), install Python 3 and PyNaCl, and copy `tools/grok-station-reply` there. That machine seals. In home mode, skip this and use [gs-seal-setup and gs-seal-reply](#home-mode-gs-seal-setup-and-gs-seal-reply) on the home machine instead.
 2. On the home machine that can reach `https://<station-ip>` on the LAN, copy the same file to `~/bin/grok-station-reply`. `post` is standard library only, so that machine needs only `python3`, no PyNaCl and no key. If the bot runs on the home machine itself, one copy is enough and you can use `send`.
 3. Run `grok-station-reply keygen` on the bot's computer. Put `GROK_STATION_BOT_KEY` in the bot's secret store. Paste the `public:` line into the station admin. Never put the seed in the routine prompt, on the command line, or in a file the routine can read.
-4. On the station, open **Bots**. Add the bot: name, id, and voice (leave voice on **Station default** to use the station's voice). On the public-key step, choose where the key lives (cloud computer is the default, or the home machine). Paste the bot's public key and, if you have them, the webhook URL and webhook key. The last step shows a summary (name, id, voice, where the key lives, a short fingerprint of the pinned key, and whether a webhook was set) and asks for the admin password, unless a password grace window is still open for this sign-in. The webhook key is stored with the relay secrets. The browser cannot read it back.
+4. On the station, open **Bots**. Add the bot: name, id, and voice. Leave voice on **Station default** to let the bot's own voice fill in: after pairing, the bot reports the voice set for it in Grok Bot, and the station saves it only if no voice is saved for that bot yet. A voice you pick here or later under Configure, Voice and avatar is never replaced by a report. On the public-key step, choose where the key lives (cloud computer is the default, or the home machine). Paste the bot's public key and, if you have them, the webhook URL and webhook key. The last step shows a summary (name, id, voice, where the key lives, a short fingerprint of the pinned key, and whether a webhook was set) and asks for the admin password, unless a password grace window is still open for this sign-in. The webhook key is stored with the relay secrets. The browser cannot read it back.
 5. Paste the routine below into the bot. The text changes with the key location. Cloud is two commands. Home is one. The same instructions include the one-time deploy step below, which installs the programs for you.
 
 ## Where the key lives
@@ -202,7 +202,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 Cloud mode is the default (seal on the cloud computer, post from the home machine):
 
 ```text
-Grok Station instructions, release 0.12.17.
+Grok Station instructions, release 0.13.0.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -215,6 +215,7 @@ printf '%s' "$NAMES" | grok-station-reply seal-list --bot <slug> --station-pub '
 Otherwise, the answer:
 printf '%s' "$ANSWER" | grok-station-reply seal --bot <slug> --station-pub '<station public key>' --request-id "$REQUEST_ID"
 Set REQUEST_ID from the webhook's request_id. For a list, set NAMES to those names. Otherwise set ANSWER to the speech you just wrote. The signing key is already in the environment as GROK_STATION_BOT_KEY. The output is one line of JSON: {"v":1,"bot":"<slug>","sealed":"..."}.
+Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the seal command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
 
 2. On the home machine, post that line unchanged, with SEALED_JSON replaced by the exact output of step 1:
 printf '%s' 'SEALED_JSON' | python3 ~/bin/grok-station-reply post --station <station address> --insecure --pin-sha256 '<fingerprint>'
@@ -235,7 +236,9 @@ printf '%s' "$CARD_JSON" | grok-station-reply seal-show --bot <slug> --station-p
 Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_CARD' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'
 
-Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the commands above). Copy your own profile picture (PNG, JPEG or WebP, 2 MB or less) to "$HOME/.local/share/grok-station/avatar-<slug>.png", replacing any older copy, and send that file. Never use a shared avatar.png or any other bot's picture. On the cloud computer:
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the commands above). Copy your own profile picture (PNG, JPEG or WebP, 2 MB or less) to "$HOME/.local/share/grok-station/avatar-<slug>.png", replacing any older copy, and send that file. Never use a shared avatar.png or any other bot's picture.
+Read voiceId from your own Grok Bot settings.json (your own agent's settings file, never another bot's). If it is present, add --voice <voiceId> to the command below. If it is not, send that command without --voice.
+On the cloud computer:
 grok-station-reply seal-avatar --bot <slug> --station-pub '<station public key>' < "$HOME/.local/share/grok-station/avatar-<slug>.png"
 Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_PICTURE' | python3 ~/bin/grok-station-reply post --avatar --station <station address> --insecure --pin-sha256 '<fingerprint>'
@@ -255,7 +258,7 @@ Which home computer: if you can run commands on more than one, pick the one that
 Home mode (gs-seal-setup once, then one reply command on the home machine):
 
 ```text
-Grok Station instructions, release 0.12.17.
+Grok Station instructions, release 0.13.0.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -266,6 +269,7 @@ Then run exactly one command (two when you also send a card, below), and no othe
 printf '%s' "$ANSWER" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID"
 
 Set REQUEST_ID from the webhook's request_id and ANSWER to the speech you just wrote. For a list, names one per line, the same command with --kind bot_list:
+Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the reply command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
 
 printf '%s' "$NAMES" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID" --kind bot_list
 
@@ -283,7 +287,8 @@ To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Un
 For a card, run one more command, after the reply command:
 printf '%s' "$CARD_JSON" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" show --persona <slug>
 
-Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the reply command). Copy your own profile picture (PNG, JPEG or WebP, 2 MB or less) to "$HOME/.local/share/grok-station/avatar-<slug>.png", replacing any older copy, and send that file. Never use a shared avatar.png or any other bot's picture:
+Profile picture. Send your profile picture once after you are paired, and again when the webhook's kind is avatar (then do not answer a question or run the reply command). Copy your own profile picture (PNG, JPEG or WebP, 2 MB or less) to "$HOME/.local/share/grok-station/avatar-<slug>.png", replacing any older copy, and send that file. Never use a shared avatar.png or any other bot's picture.
+Read voiceId from your own Grok Bot settings.json (your own agent's settings file, never another bot's). If it is present, add --voice <voiceId> to the command below. If it is not, send that command without --voice.
 "$HOME/.local/share/grok-station/bin/gs-seal-reply" avatar --persona <slug> < "$HOME/.local/share/grok-station/avatar-<slug>.png"
 The station takes at most 6 pictures an hour.
 

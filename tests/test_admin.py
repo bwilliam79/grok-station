@@ -882,6 +882,9 @@ class WakePhraseAndStatus(unittest.TestCase):
         st, j = c.req("POST", "/api/enroll/check", {"phrase": "Hey Kitchen!"})
         self.assertEqual((st, j), (200, {"ok": True, "id": "hey_kitchen", "label": "Hey Kitchen"}))
         st, j = c.req("POST", "/api/enroll/check", {"phrase": "hey fin"})
+        # 0.13.0: sounding alike is a warning; creating it still needs close_ok ("Use it anyway")
+        self.assertEqual((st, j["warning"], j["close_to"]), (200, "Sounds a lot like Hey Finn and might wake the wrong bot.", "Hey Finn"))
+        st, j = c.req("POST", "/api/enroll", {"phrase": "hey fin", "count": 5, "persona": "grok"})
         self.assertEqual((st, j["error"]), (400, "Too close to “Hey Finn”. Pick something that sounds different."))
         st, j = c.req("POST", "/api/enroll", {"phrase": "cat", "count": 5, "persona": "grok"})
         self.assertEqual((st, j["error"]), (400, "Too short. Use two or three words."))
@@ -1598,7 +1601,8 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])  # not a version
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": ga.HELPER_RELEASE})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.1"})["out_of_date"])
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])  # 0.13.0 helper
         common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()
         self.assertIn('HELPER_VERSION = "%s"' % ga.HELPER_RELEASE, common)
 

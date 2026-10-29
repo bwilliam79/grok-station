@@ -176,7 +176,8 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("function keyNote", js)
         self.assertNotIn("From grok-station-reply keygen.", js)
         self.assertNotIn("From gs-seal-setup keygen", js)
-        self.assertIn("Gives up after 30 seconds.", js)
+        self.assertIn("Gives up after ${TEST_LIMIT_S} seconds.", js)  # 0.13.0: one deadline with the relay
+        self.assertIn("const TEST_LIMIT_S = 30;", js)
         self.assertNotIn("No answer after 2 min", js)
         self.assertNotIn("Gives up after 2 min", js)
         hook = _fn(js, "mountWebhookStep")
@@ -941,7 +942,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1069,7 +1070,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1364,7 +1365,7 @@ class PostAddCheckUI(unittest.TestCase):
         self.assertIn("{then_avatar: true}", fn)
         self.assertIn("/test/", fn)
         self.assertIn('watchPicture(slug, before, document.body, res => { if (res === "updated") bustPortraits(el); });', fn)
-        html = _fn(js, "botCheckHTML")
+        html = _fn(js, "botCheckText")
         self.assertNotIn("Checking connection", html)
         self.assertNotIn(">Online<", html)
         self.assertNotIn("pill", html)
@@ -1374,6 +1375,9 @@ class PostAddCheckUI(unittest.TestCase):
         paint = _fn(js, "paintBots")
         # A live check (including the gray Checking ring) hides the stale computer warning.
         self.assertIn('const hideWarn = check || (known && known.state !== "offline");', paint)
+        # 0.13.0: status and warnings ride the avatar tooltip; no line under the name, so rows keep one height.
+        self.assertNotIn('<div class="need">${ICO_TRI}${esc(warn)}</div>', paint)
+        self.assertNotIn("${check", paint)
         self.assertIn('const warn = hideWarn ? "" :', paint)
 
 
@@ -1386,7 +1390,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         cls.css = _read(os.path.join("admin", "web", "admin.css"))
 
     def test_no_online_or_checking_pills_on_bot_rows(self):
-        html = _fn(self.js, "botCheckHTML")
+        html = _fn(self.js, "botCheckText")
         paint = _fn(self.js, "paintBots")
         for src in (html, paint):
             self.assertNotIn('pill ok"><i></i>Online', src)
@@ -1422,7 +1426,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertIn('class="tip" role="tooltip"', avatar)
         self.assertIn('alt=""', avatar)
         paint = _fn(self.js, "paintBots")
-        self.assertIn("avatar(b.slug, b.name, false, botRing(b))", paint)
+        self.assertIn("avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})", paint)  # 0.13.0: full status text
         self.assertIn('avatar("grok", "Grok")', paint)
         self.assertNotIn("botRing", paint.split('avatar("grok", "Grok")', 1)[0])
         pending = paint.split("pending.map", 1)[1]

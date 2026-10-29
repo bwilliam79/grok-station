@@ -281,7 +281,11 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
             text, verdict = await relay.ask_teammate(http, "jules", "what's for dinner this week?", on_wait)
         self.assertEqual((text, verdict), ("Tacos on Tuesday.", "ok"))
         self.assertEqual(len(self.calls), 1); self.assertEqual(waited, [1])
-        self.assertEqual(os.listdir(relay.PENDING_DIR), [])           # pending removed: a late reply can't bind
+        # 0.13.0: the pending request stays for one follow-up reply, parked for at most FOLLOWUP_S (60 s), then goes.
+        rid = self.calls[0]["request_id"]
+        self.assertEqual(os.listdir(relay.PENDING_DIR), [rid + ".json"])
+        self.assertLessEqual(relay._LATE[rid]["hard_at"], time.time() + relay.FOLLOWUP_S)
+        relay._LATE.pop(rid, None)
         line = [l for l in self.lines if "verdict=spoken" in l][0]
         self.assertNotIn("Tacos", line); self.assertNotIn("dinner", line)
         print("\nLOG", line)

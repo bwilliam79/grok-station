@@ -1285,7 +1285,7 @@ def phrase_personas():
     return {w["name"]: w.get("persona") or "grok" for w in wakewords() if w.get("name")}
 
 
-def phrase_problem(text, known=None, for_persona=None):
+def phrase_problem(text, known=None, for_persona=None, allow_close=False):
     """None when the phrase can be a new wake word, otherwise the sentence to show.
 
     for_persona reclaims that same slug's word, and a word whose owner bot is gone.
@@ -1319,8 +1319,39 @@ def phrase_problem(text, known=None, for_persona=None):
         if not ow:
             continue
         if lev_ratio(mid, other) >= 0.75 or (words[-1] == ow[-1] and mine_syl == phrase_syllables(ow)):
+            if allow_close:
+                continue  # 0.13.0: sounding alike is a warning the user can accept; exact duplicates stay blocked
             return too_close_msg(phrase_label(other))
     return None
+
+
+def close_warning(label):
+    return f"Sounds a lot like {label} and might wake the wrong bot."
+
+
+def phrase_close(text, known=None, for_persona=None):
+    """The label of an existing word this one sounds like, or None. Only meaningful when phrase_problem with
+    allow_close=True is None."""
+    err = phrase_problem(text, known, for_persona)
+    m = re.match(r"^Too close to “([^”]+)”", err or "")
+    return m.group(1) if m else None
+
+
+SUGGEST_LEADS = ("Okay", "Hi", "Hello", "Yo")
+
+
+def wake_suggestions(name, known=None, for_persona=None, limit=3):
+    """Up to limit phrasings that keep the bot's name and pass every check, including not sounding alike."""
+    base = " ".join(str(name or "").split())
+    if not base:
+        return []
+    out = []
+    for cand in [f"{lead} {base}" for lead in SUGGEST_LEADS] + [base]:
+        if phrase_problem(cand, known, for_persona) is None and cand not in out:
+            out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def persona_allowed(slug):
@@ -1697,6 +1728,7 @@ def silence_weak(doc):
 sys.path.insert(0, HERE)
 import gs_routine  # noqa: E402  (shared with scripts/gs-update.sh; a test keeps them byte-identical)
 import bot_content  # noqa: E402  (0.12.10: release-free content fingerprints, station side only)
+import gs_integrations as gsi  # noqa: E402  (WLED registry; installed next to this file)
 
 ROUTINES = {m: os.path.join(HERE, "routine-%s.txt" % m) for m in ("home", "cloud")}
 FINISH = "finish-update.json"
@@ -2082,6 +2114,112 @@ def clean_name(v):
     if not name or len(name) > 40 or any(ord(c) < 32 for c in name):
         return None
     return name
+
+
+# Spoken words a device must not take. Recipe commands match the relay; exit words match its stop phrases.
+_RECIPE_WORDS = ("next", "prev", "repeat", "start", "close", "dismiss")
+_EXIT_WORDS = ("stop", "goodbye", "cancel", "bye", "never mind", "nevermind")
+
+
+def _wake_labels():
+    """Wake phrases as a person would say them. Does not write overrides or call the listener."""
+    labels = ["Hey Grok"]
+    cfg = read_json(WAKE_CONFIG, {})
+    rows = []
+    if isinstance(cfg, dict):
+        rows.extend(cfg.get("words") or [])
+        rows.extend(cfg.get("enroll") or [])
+        fb = cfg.get("fallback")
+        if isinstance(fb, dict):
+            rows.append(fb)
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("name"), str):
+            labels.append(phrase_label(row["name"]))
+    ov = read_json(path("wake-overrides.json"), {})
+    if isinstance(ov, dict):
+        for name in ov:
+            if wake_name_ok(name):
+                labels.append(phrase_label(name))
+    return labels
+
+
+def _bot_labels():
+    """Bot names and aliases from the relay list, or the cached personas when the relay is quiet."""
+    labels = []
+    got = relay_call("GET", "/admin/bots")
+    if got and got[0] == 200 and isinstance(got[1], dict):
+        for bot in got[1].get("bots") or []:
+            if not isinstance(bot, dict):
+                continue
+            name = clean_name(bot.get("name"))
+            if name:
+                labels.append(name)
+            for alias in bot.get("aliases") or []:
+                cleaned = clean_name(alias) if isinstance(alias, str) else None
+                if cleaned:
+                    labels.append(cleaned)
+        if labels:
+            return labels
+    for bot in local_bots():
+        labels.append(bot["name"])
+    doc = read_json(PERSONAS, {})
+    items = doc.get("personas", doc) if isinstance(doc, dict) else doc
+    if isinstance(items, list):
+        for row in items:
+            if not isinstance(row, dict):
+                continue
+            for alias in row.get("aliases") or []:
+                cleaned = clean_name(alias) if isinstance(alias, str) else None
+                if cleaned:
+                    labels.append(cleaned)
+    return labels
+
+
+def _device_labels(skip_device=None, extra=None):
+    labels = []
+    for dev in gsi.load().get("devices") or []:
+        if dev.get("id") == skip_device:
+            continue
+        labels.append((dev.get("name"), dev.get("aliases") or []))
+    for dev in extra or []:
+        labels.append((dev.get("name"), dev.get("aliases") or []))
+    out = []
+    for name, aliases in labels:
+        if isinstance(name, str) and name:
+            out.append(name)
+        for alias in aliases or []:
+            if isinstance(alias, str) and alias:
+                out.append(alias)
+    return out
+
+
+def name_clash(candidate, skip_device=None, extra=None, devices_only=False):
+    """None, or {"error","with","name"}.
+
+    Device setup (devices_only False) refuses a bot, wake word, recipe/exit word, or another device.
+    Bot add/rename (devices_only True) refuses a name already used by a device. Same comparison.
+    """
+    key = gsi.spoken_key(candidate)
+    if not key:
+        return None if devices_only else {"error": "bad_name"}
+    occupied = []
+    if not devices_only:
+        for label in _bot_labels() + _wake_labels():
+            occupied.append(("bot", label))
+        for label in _RECIPE_WORDS + _EXIT_WORDS:
+            occupied.append(("reserved", label))
+    for label in _device_labels(skip_device, extra):
+        occupied.append(("device", label))
+    for kind, label in occupied:
+        if gsi.spoken_key(label) == key:
+            return {"error": "clash", "with": kind, "name": label}
+    return None
+
+
+def audit_home(verb, device_id):
+    """Audit a save or removal. The id is hashed; names and hosts are not written."""
+    digest = hashlib.sha256(str(device_id).encode()).hexdigest()
+    audit("-", "home-" + verb, digest[:4])
 
 
 def voice_ok(v):
@@ -2521,7 +2659,7 @@ def safe_bot(b):
     }
 
 
-HELPER_RELEASE = "0.11.8"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.0"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -3146,12 +3284,16 @@ class Handler(BaseHTTPRequestHandler):
     def set_cookie(self, name, val, max_age):
         return ("Set-Cookie", f"{name}={val}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={max_age}")
 
-    def body(self, limit=16384):
+    def body(self, limit=16384, kind="object"):
         n = int(self.headers.get("Content-Length") or 0)
         if n > limit:
             raise ValueError("too large")
         raw = self.rfile.read(n) if n else b""
         j = json.loads(raw or b"{}")
+        if kind == "list":
+            if not isinstance(j, list):
+                raise ValueError("list expected")
+            return j
         if not isinstance(j, dict):
             raise ValueError("object expected")
         return j
@@ -3261,7 +3403,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.authed():
                     return self.send(401, {"error": "sign in", "setup_required": AUTH.setup_required()})
                 return self.post_avatar(avatar)
-            j = self.body() if method in ("POST", "PUT", "PATCH", "DELETE") else {}
+            kind = "list" if method == "POST" and p == "/api/integrations/wled/devices" else "object"
+            j = self.body(kind=kind) if method in ("POST", "PUT", "PATCH", "DELETE") else {}
         except ValueError:
             return self.send(400, {"error": "bad request"})
         open_routes = {("GET", "/api/state"), ("POST", "/api/setup/code"), ("POST", "/api/setup/password"),
@@ -3712,11 +3855,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(503, {"error": "Couldn't reach the station's microphone."})
         if p == "/api/enroll/check":
             asked = j.get("persona") if isinstance(j, dict) else None
-            err = phrase_problem(j.get("phrase", ""), for_persona=asked if persona_ok(asked) else None)
+            fp = asked if persona_ok(asked) else None
+            err = phrase_problem(j.get("phrase", ""), for_persona=fp, allow_close=True)
             if err:
                 return self.send(400, {"error": err})
             mid, _words = normalize_phrase(j.get("phrase", ""))
-            return self.send(200, {"ok": True, "id": mid, "label": phrase_label(mid)})
+            out = {"ok": True, "id": mid, "label": phrase_label(mid)}
+            close = phrase_close(j.get("phrase", ""), for_persona=fp)
+            if close:
+                name = j.get("name") if isinstance(j.get("name"), str) and len(j.get("name")) <= 40 else ""
+                out.update(warning=close_warning(close), close_to=close,
+                           suggestions=wake_suggestions(name, for_persona=fp))
+            return self.send(200, out)
         raw, count = j.get("phrase", ""), ENROLL_REPS  # fixed per session; "Train more" adds another session
         direct = str(raw or "").strip().lower()
         # hey_<bot id> can contain a hyphen or a digit; normalize_phrase would strip those.
@@ -3730,7 +3880,7 @@ class Handler(BaseHTTPRequestHandler):
         # An unused or hidden override is not a new word: a failed re-record must not drop it.
         creating = mid not in personas and not ov_mid
         if creating:
-            err = phrase_problem(raw)
+            err = phrase_problem(raw, allow_close=j.get("close_ok") is True)  # 0.13.0: "Use it anyway"
             if err:
                 return self.send(400, {"error": err})
             if not isinstance(persona, str) or not persona_allowed(persona):
@@ -4220,6 +4370,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": problem})
         if not name:
             return self.send(400, {"error": "Type a name."})
+        clash = name_clash(name, devices_only=True)
+        if clash:
+            return self.send(409, clash)
         raw = j.get("voice", None) if isinstance(j, dict) else None
         voice = None
         if raw is not None:
@@ -4277,6 +4430,10 @@ class Handler(BaseHTTPRequestHandler):
         name = clean_name(j.get("name")) if has_name else None
         if has_name and not name:
             return self.send(400, {"error": "Type a name."})
+        if has_name:
+            clash = name_clash(name, devices_only=True)
+            if clash:
+                return self.send(409, clash)
         voice = j.get("voice") if has_voice else None
         if has_voice:
             # An empty voice means "station default". The relay stores that default voice.
@@ -4454,6 +4611,8 @@ class Handler(BaseHTTPRequestHandler):
             "elapsed_s": 0.0 if elapsed is None else elapsed,
             "answered_in_s": _num(data.get("answered_in_s")),
             "error": None if err in (None, "") else self.shown_error(data),
+            "limit_s": _num(data.get("limit_s")) or 30.0,  # 0.13.0: the relay's deadline, so the page counts to it
+            "remaining_s": _num(data.get("remaining_s")),
         })
 
     def bots_test_delete(self, slug, tid):
@@ -4576,6 +4735,254 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(500, {"error": "Couldn't save that."})
         _audit_update("update-autocheck", "on" if on else "off")
         return self.send(200, {"ok": True, "autocheck": on})
+
+    # -- integrations (WLED only; other cards are "later")
+    def _integration_view(self, doc):
+        devices = [self._public_device(d) for d in doc.get("devices") or [] if d.get("kind") == "wled"]
+        enabled = (doc.get("integrations") or {}).get("wled", {}).get("enabled") is True
+        status = "connected" if enabled and devices else "not_set_up"
+        return {"integrations": {"wled": {"enabled": enabled, "status": status}}, "devices": devices,
+                "later": [
+                    {"id": "homebridge", "name": "Homebridge", "status": "coming_next"},
+                    {"id": "matter", "name": "Matter", "status": "later"},
+                    {"id": "nest", "name": "Google Nest thermostat", "status": "later"},
+                    {"id": "cameras", "name": "Cameras (RTSP)", "status": "later"},
+                    {"id": "apple_home", "name": "Apple Home", "status": "later",
+                     "note": "Use Homebridge for these devices. Apple Home has no API outside Apple devices."},
+                ]}
+
+    def _public_device(self, dev):
+        return {"id": dev["id"], "name": dev["name"], "aliases": list(dev.get("aliases") or []),
+                "type": dev.get("type") or "light", "caps": list(dev.get("caps") or gsi.CAPS)}
+
+    def _alias_list(self, name, aliases):
+        """Cleaned aliases, or None when the list is not the strict shape."""
+        if not isinstance(aliases, list) or len(aliases) > 8:
+            return None
+        seen = {gsi.spoken_key(name)}
+        out = []
+        for alias in aliases:
+            text = clean_name(alias) if isinstance(alias, str) else None
+            if not text or not gsi.spoken_key(text):
+                return None
+            key = gsi.spoken_key(text)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(text)
+        return out
+
+    def _device_fields(self, item):
+        if not isinstance(item, dict) or set(item) != {"host", "name", "aliases"}:
+            return None
+        if not isinstance(item.get("host"), str) or not item["host"].strip():
+            return None
+        name = clean_name(item.get("name"))
+        if not name or not gsi.spoken_key(name):
+            return None
+        aliases = self._alias_list(name, item.get("aliases"))
+        if aliases is None:
+            return None
+        return {"host": item["host"].strip(), "name": name, "aliases": aliases}
+
+    def api_get_integrations(self, p, q, j):
+        if p != "/api/integrations":
+            return self.send(404, {"error": "not found"})
+        return self.send(200, self._integration_view(gsi.load()))
+
+    def api_post_integrations(self, p, q, j):
+        if p == "/api/integrations/wled/discover":
+            return self._wled_discover(j)
+        if p == "/api/integrations/wled/probe":
+            return self._wled_probe(j)
+        if p == "/api/integrations/wled/blink":
+            return self._wled_blink(j)
+        if p == "/api/integrations/wled/devices":
+            return self._wled_save(j)
+        m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})/test", p)
+        if m:
+            return self._wled_test(m.group(1), j)
+        return self.send(404, {"error": "not found"})
+
+    def api_patch_integrations(self, p, q, j):
+        m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})", p)
+        if not m:
+            return self.send(404, {"error": "not found"})
+        return self._wled_patch(m.group(1), j)
+
+    def api_delete_integrations(self, p, q, j):
+        if p == "/api/integrations/wled":
+            return self._wled_delete_all(j)
+        m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})", p)
+        if m:
+            return self._wled_delete(m.group(1), j)
+        return self.send(404, {"error": "not found"})
+
+    def _wled_discover(self, j):
+        if j != {}:
+            return self.send(400, {"error": "bad_request"})
+        try:
+            found = gsi.mdns_browse()
+        except Exception:
+            found = []
+        rows = []
+        if isinstance(found, list):
+            for item in found[:32]:
+                host, name = gsi.join_host(item)
+                if not host:
+                    continue
+                status, info = gsi.probe(host, name)
+                if status == "ok" and isinstance(info, dict):
+                    rows.append(info)
+                if len(rows) >= 32:
+                    break
+        return self.send(200, {"devices": rows})
+
+    def _wled_probe(self, j):
+        if not isinstance(j, dict) or set(j) != {"host"} or not isinstance(j.get("host"), str):
+            return self.send(400, {"error": "bad_request"})
+        status, info = gsi.probe(j["host"])
+        if status != "ok":
+            return self.send(400, {"error": status if status in ("refused", "not_wled") else "not_wled"})
+        return self.send(200, info)
+
+    def _wled_blink(self, j):
+        if not isinstance(j, dict) or set(j) != {"host"} or not isinstance(j.get("host"), str):
+            return self.send(400, {"error": "bad_request"})
+        status = gsi.blink(j["host"])
+        if status != "ok":
+            return self.send(400, {"error": status if status in ("refused", "not_wled") else "not_wled"})
+        return self.send(200, {"ok": True})
+
+    def _wled_save(self, items):
+        if not isinstance(items, list) or not items or len(items) > 32:
+            return self.send(400, {"error": "bad_request"})
+        parsed = []
+        for item in items:
+            fields = self._device_fields(item)
+            if not fields:
+                return self.send(400, {"error": "bad_request"})
+            parsed.append(fields)
+        extra = []
+        for fields in parsed:
+            for label in [fields["name"], *fields["aliases"]]:
+                hit = name_clash(label, extra=extra)
+                if hit:
+                    code = 400 if hit.get("error") == "bad_name" else 409
+                    return self.send(code, hit)
+            extra.append(fields)
+        seen_hosts = []
+        for fields in parsed:
+            if not gsi.host_ok(fields["host"]):
+                return self.send(400, {"error": "refused"})
+            fields["host"] = gsi.display_host(fields["host"])
+            if not fields["host"] or fields["host"] in seen_hosts:
+                return self.send(400, {"error": "refused" if not fields["host"] else "bad_request"})
+            seen_hosts.append(fields["host"])
+        presets = {fields["host"]: gsi.read_presets(fields["host"]) for fields in parsed}
+        with LOCK:
+            doc = gsi.load()
+            have = {d["host"] for d in doc["devices"]}
+            if any(fields["host"] in have for fields in parsed):
+                return self.send(400, {"error": "bad_request"})
+            fresh = []
+            for fields in parsed:
+                for label in [fields["name"], *fields["aliases"]]:
+                    hit = name_clash(label, extra=fresh)
+                    if hit:
+                        code = 400 if hit.get("error") == "bad_name" else 409
+                        return self.send(code, hit)
+                fresh.append(fields)
+            used = {d["id"] for d in doc["devices"]}
+            saved = []
+            for fields in parsed:
+                ident = gsi.new_id(used)
+                used.add(ident)
+                dev = {"id": ident, "kind": "wled", "host": fields["host"], "name": fields["name"],
+                       "aliases": fields["aliases"], "type": "light", "caps": list(gsi.CAPS),
+                       "presets": presets.get(fields["host"]) or {}}
+                doc["devices"].append(dev)
+                saved.append(dev)
+            doc["integrations"]["wled"] = {"enabled": True}
+            gsi.save(doc)
+        for dev in saved:
+            audit_home("save", dev["id"])
+        return self.send(200, {"devices": [self._public_device(d) for d in saved]})
+
+    def _wled_patch(self, ident, j):
+        if not isinstance(j, dict) or not set(j) or not set(j) <= {"name", "aliases"}:
+            return self.send(400, {"error": "bad_request"})
+        with LOCK:
+            doc = gsi.load()
+            dev = next((d for d in doc["devices"] if d["id"] == ident), None)
+            if dev is None:
+                return self.send(404, {"error": "not found"})
+            name = dev["name"]
+            if "name" in j:
+                name = clean_name(j.get("name"))
+                if not name or not gsi.spoken_key(name):
+                    return self.send(400, {"error": "bad_request"})
+            aliases = dev["aliases"]
+            if "aliases" in j:
+                aliases = self._alias_list(name, j.get("aliases"))
+                if aliases is None:
+                    return self.send(400, {"error": "bad_request"})
+            for label in [name, *aliases]:
+                hit = name_clash(label, skip_device=ident)
+                if hit:
+                    code = 400 if hit.get("error") == "bad_name" else 409
+                    return self.send(code, hit)
+            dev["name"] = name
+            dev["aliases"] = aliases
+            gsi.save(doc)
+        audit_home("rename", ident)
+        return self.send(200, self._public_device(dev))
+
+    def _wled_test(self, ident, j):
+        if j != {}:
+            return self.send(400, {"error": "bad_request"})
+        dev = next((d for d in gsi.load()["devices"] if d["id"] == ident), None)
+        if dev is None:
+            return self.send(404, {"error": "not found"})
+        status = gsi.blink(dev["host"])
+        if status != "ok":
+            if status == "refused":
+                return self.send(400, {"error": "refused"})
+            return self.send(502, {"error": "unreachable"})
+        return self.send(200, {"ok": True})
+
+    def _wled_delete(self, ident, j):
+        if j != {}:
+            return self.send(400, {"error": "bad_request"})
+        with LOCK:
+            doc = gsi.load()
+            before = len(doc["devices"])
+            doc["devices"] = [d for d in doc["devices"] if d["id"] != ident]
+            if len(doc["devices"]) == before:
+                return self.send(404, {"error": "not found"})
+            if not any(d.get("kind") == "wled" for d in doc["devices"]):
+                doc["integrations"].pop("wled", None)
+            gsi.save(doc)
+        audit_home("remove", ident)
+        return self.send(200, {"ok": True})
+
+    def _wled_delete_all(self, j):
+        if not isinstance(j, dict) or not set(j) <= {"password"}:
+            return self.send(400, {"error": "bad_request"})
+        if "password" in j and not isinstance(j.get("password"), str):
+            return self.send(400, {"error": "bad_request"})
+        if not self.need_password(j):
+            return
+        with LOCK:
+            doc = gsi.load()
+            gone = [d["id"] for d in doc["devices"] if d.get("kind") == "wled"]
+            doc["devices"] = [d for d in doc["devices"] if d.get("kind") != "wled"]
+            doc["integrations"].pop("wled", None)
+            gsi.save(doc)
+        for ident in gone:
+            audit_home("remove", ident)
+        audit_home("remove-wled", "wled")
+        return self.send(200, {"ok": True})
 
 
 def services():

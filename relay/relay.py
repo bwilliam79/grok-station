@@ -6,7 +6,7 @@ as binary PCM16 24 kHz mono frames. The relay opens one xAI realtime session per
 (server VAD) and sends back binary frames of reply audio (PCM16 24 kHz mono) plus small JSON events:
   {"type":"ready"} {"type":"speech_started"} {"type":"speech_stopped"} {"type":"heard","text":...}
   {"type":"ack","audio":...} {"type":"response_started"} {"type":"reply_delta","text":...} {"type":"reply","text":...}
-  {"type":"done"}
+  {"type":"done"} {"type":"home_tone","ok":bool}
   {"type":"timeout","speech":bool} {"type":"xai_error","message":...} (non-fatal) {"type":"error","message":...}
 Multi-turn (MULTI_TURN=1, default; docs/multiturn.md): after each answer the relay sends {"type":"turn_done"}; the Pi
 plays it, then sends {"type":"listening"} and a follow-up turn opens with no wake word. "thanks"/"that's all" ends it
@@ -33,6 +33,8 @@ except ModuleNotFoundError as _e:  # a venv from an older install: say which pac
           "(it installs relay/requirements.txt on every run).", file=_sys.stderr, flush=True)
     raise SystemExit(1)
 import handoff
+import home
+import voices
 import late_answer
 import tools as station_tools
 import t1
@@ -125,12 +127,8 @@ LINT = [("link or email", re.compile(r"https?:|www\.|@|\b[a-z0-9-]+\.(com|net|or
 VOICES = set()               # live xAI list; empty until a fetch or a seed from offered.json
 _voice_fetch_at = 0.0        # monotonic; a bots list with an empty live set kicks one fetch per minute
 # Known xAI voices, sorted. Used when the live list is empty so add is not blocked by a failed boot fetch.
-BUILTIN_VOICES = (
-    "altair", "ara", "atlas", "carina", "castor", "celeste", "cosmo", "eve",
-    "helios", "helix", "iris", "kepler", "leo", "lumen", "luna", "lux",
-    "naksh", "orion", "perseus", "rex", "rigel", "sal", "sirius", "ursa",
-    "zagan", "zenith",
-)
+# The ids live in voices.XAI_VOICES (the same table the reported-voice map uses).
+BUILTIN_VOICES = tuple(sorted(voices.XAI_VOICES))
 _VOICE_ID = re.compile(r"[a-z0-9_-]{1,32}")
 _personas = {"mtime": None, "map": {}, "voices": None, "hosts": [], "names": []}
 _policy = {"mtime": None, "pii": True}
@@ -143,6 +141,8 @@ WEBHOOKS_FILE = E("WEBHOOKS_FILE", os.path.join(STATE_DIR, "bots", "webhooks.jso
 MINTED_FILE = E("VOICE_MINTED_FILE", os.path.join(STATE_DIR, "voice", "minted", "voice-tokens.json"))
 _hooks = {"mtime": None, "map": {}}
 TEST_COOLDOWN_S = 15
+FOLLOWUP_S = 60  # 0.13.0: after a bot's first answer, one more reply within this window is spoken as a late line
+TEST_LIMIT_S = 30  # 0.13.0: one deadline for an admin Test; the page counts down to this same number
 _test_last = {}     # slug -> monotonic time of the last admin Test started
 _runs = {}          # admin test id -> in-memory record (pasted url/key live only until that test posts)
 _run_tasks = set()
@@ -473,8 +473,14 @@ def load_overlay_doc():
         return base
     added = {}
     for slug, ent in (doc.get("added") if isinstance(doc.get("added"), dict) else {}).items():
-        if handoff.bot_slug_ok(slug) and isinstance(ent, dict) and _name_shape(ent.get("name")) and isinstance(ent.get("voice"), str) and ent["voice"]:
-            added[slug] = {"name": ent["name"], "voice": ent["voice"]}
+        # A missing or empty voice is kept (the station default). A present voice must be a non-empty string.
+        if not (handoff.bot_slug_ok(slug) and isinstance(ent, dict) and _name_shape(ent.get("name"))):
+            continue
+        voice = ent.get("voice")
+        if "voice" not in ent or voice in (None, ""):
+            added[slug] = {"name": ent["name"]}
+        elif isinstance(voice, str):
+            added[slug] = {"name": ent["name"], "voice": voice}
     renamed = {}
     for slug, name in (doc.get("renamed") if isinstance(doc.get("renamed"), dict) else {}).items():
         if handoff.bot_slug_ok(slug) and _name_shape(name):
@@ -558,7 +564,9 @@ def persona_list():
             why = "bad name"
         elif not isinstance(p.get("prompt"), str) or not p["prompt"].strip() or len(p["prompt"].split()) > 200:
             why = "prompt missing or over 200 words"
-        elif not isinstance(p.get("voice"), str) or p["voice"].lower() not in offered:
+        elif p.get("voice") not in (None, "") and (not isinstance(p.get("voice"), str) or p["voice"].lower() not in offered):
+            why = "voice not offered by xAI"
+        elif p.get("voice") in (None, "") and VOICE.lower() not in offered:
             why = "voice not offered by xAI"
         elif "portrait" in p and not PORTRAIT_FILE.match(str(p["portrait"])):
             why = "bad portrait file name"
@@ -579,6 +587,9 @@ def persona_list():
             log(f"personas: skipped {str(p.get('slug', '?'))[:16] if isinstance(p, dict) else '?'}: {why}")
             continue
         if p.get("on_voice", True) is not False and p["slug"] not in out:
+            v = p.get("voice")
+            if not isinstance(v, str) or not v:
+                p = dict(p, voice=VOICE.lower())
             out[p["slug"]] = p
     ov = load_overlay_doc()
     for slug in ov["hidden"]:
@@ -589,12 +600,19 @@ def persona_list():
     for slug, ent in ov["added"].items():
         if slug in ov["hidden"] or slug in out:
             continue
-        if ent["voice"].lower() not in offered:
+        raw = ent.get("voice")
+        if isinstance(raw, str) and raw:
+            if raw.lower() not in offered:
+                continue
+            voice = raw.lower()
+        elif VOICE.lower() not in offered:
             continue
+        else:
+            voice = VOICE.lower()
         name = ov["renamed"].get(slug, ent["name"])
         if not _name_ok(name, hosts):
             continue
-        out[slug] = {"slug": slug, "name": name, "voice": ent["voice"].lower(), "aliases": [], "facts": [],
+        out[slug] = {"slug": slug, "name": name, "voice": voice, "aliases": [], "facts": [],
                      "prompt": f"You are {name}, one of the household's assistant team."}
     for slug, voice in ov["voices"].items():
         if slug in out and voice.lower() in offered:
@@ -1119,8 +1137,27 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
         while time.time() < deadline:
             if cancel is not None and cancel.is_set():
                 return None, "cancelled"
+            info = {}
             text, bad = handoff.take_reply(REPLIES_DIR, rid, bot, nonce, _personas["hosts"], _seen_rids,
-                                           note_ok=t1.ENABLED, names=_personas.get("names") or (), pii=pii)
+                                           note_ok=t1.ENABLED, names=_personas.get("names") or (), pii=pii, info=info)
+            blocked = _BLOCKED.pop(rid, None)
+            if blocked and not text:
+                log(f"handoff {rid} agent={bot} verdict=blocked ({blocked})")  # the code only, never the text
+                _note_status(bot, error="Answer blocked (personal info)" if blocked == "pii"
+                             else "Answer blocked (looked like a secret)" if blocked == "secret" else "Reply rejected")
+                return None, "blocked-" + blocked
+            if text and info.get("interim"):
+                # 0.13.0: the bot acknowledged; keep waiting (still thinking) for its answer. The station's own
+                # checking line stands in for the acknowledgement, once.
+                if not said_checking and on_still is not None:
+                    said_checking = True
+                    try:
+                        await on_still()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass
+                continue
             if bad:
                 log(f"handoff {rid} agent={bot} length=? verdict=reject ({bad})")
                 alert("handoff", "grok-station relay: handoff reply rejected", f"request_id={rid} agent={bot} verdict=reject {bad}")
@@ -1134,6 +1171,11 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                 log(f"handoff {rid} agent={bot} length={len(text)} verdict=spoken wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
                 _note_status(bot, answered=True, clear_error=True)
                 _note_icon(bot, "ok")
+                if info.get("n") == 1 and not test:
+                    # 0.13.0: a first answer may be followed by one more reply (an unmarked acknowledgement that
+                    # was taken as the answer). Keep the request open briefly; a follow-up is spoken as a late line.
+                    _park_late(rid, bot, q, nonce, min(reply_at, time.time() + FOLLOWUP_S))
+                    parked = True
                 return text, "ok"
             if not said_checking and on_still is not None and time.monotonic() - t_wait >= CHECKING_AFTER_S:
                 said_checking = True
@@ -1189,6 +1231,12 @@ def handoff_line(name, verdict, host=None, reached=False):
     never landed, since that's what usually sleeps. reached: the webhook accepted the ask, so the
     hard-limit line is that the bot didn't answer in time.
     """
+    if verdict == "blocked-pii":
+        return "Answer blocked: it contained personal info (PII filter is on)."
+    if verdict == "blocked-secret":
+        return "Answer blocked: it looked like a secret."
+    if isinstance(verdict, str) and verdict.startswith("blocked"):
+        return "Couldn't deliver the answer."
     if verdict == "timeout" and reached:
         return f"{name} couldn't reply in time."
     if verdict == "timeout" and host:
@@ -2209,7 +2257,7 @@ async def session(req):
                                             "needs_tap": text["needs_tap"]})
                         await play_fixed(t1.readback(name, text), voice, TTS_REPLY_S)
                     return await end_routed_turn()
-                if not text and verdict in ("timeout", "post-failed"):
+                if not text and (verdict in ("timeout", "post-failed", "reject") or verdict.startswith("blocked")):
                     await pi.send_json({"type": "comms_fail"})  # wake plays the fixed fail tone, then the line
                 if text:
                     say = text
@@ -2398,6 +2446,22 @@ async def session(req):
                             if say.strip():
                                 await play_fixed(say, recipe_voice(roster, result.get("bot")), TTS_REPLY_S)
                             log("recipe " + cmd)  # the command only; the step text is not logged
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
+                        # Home is station-local, before "heard" (that would show thinking). A tone, not speech.
+                        intent = home.home_match(heard, home.load_registry())
+                        if intent:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
+                            ok = await home.run_intent(http, intent, log)
+                            await pi.send_json({"type": "home_tone", "ok": bool(ok)})
+                            st["release_model"] = not persona_routed(st["persona"])
                             end = await end_routed_turn()
                             if end:
                                 return end
@@ -2923,7 +2987,7 @@ def _last4(token):
 
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
-_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "pair", "revoke",
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-seeded", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
                   "update-reply", "update-bad"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
@@ -3321,6 +3385,55 @@ def _declared_image_kind(ctype):
     return ctype
 
 
+def _stored_voice(slug):
+    """A voice already saved for this bot, or "". A resolved station default does not count.
+
+    Looks at the overlay and the registry file, not persona_list (that fills the default).
+    """
+    ov = load_overlay_doc()
+    ent = ov["added"].get(slug)
+    if isinstance(ent, dict):
+        v = ent.get("voice")
+        if isinstance(v, str) and v.strip():
+            return v
+    v = ov["voices"].get(slug)
+    if isinstance(v, str) and v.strip():
+        return v
+    reg = registry_index().get(slug)
+    if isinstance(reg, dict):
+        v = reg.get("voice")
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+
+def seed_reported_voice(slug, raw):
+    """Save a bot-reported voice only when this bot has none yet. The id is not logged.
+
+    A picture that already saved must still succeed if this write fails.
+    """
+    mapped = voices.map_reported_voice(raw, VOICES or None)
+    if not mapped or _stored_voice(slug):
+        return
+    try:
+        ov = load_overlay_doc()
+        if slug in ov["added"]:
+            ov["added"][slug]["voice"] = mapped
+        elif slug in registry_index() and slug not in ov["hidden"]:
+            ov["voices"][slug] = mapped
+        else:
+            return
+        save_overlay(ov)
+    except OSError:
+        return
+    audit("bot", slug, "voice-seeded", "-")
+    forget_ack_clips(slug)
+    try:
+        persona_list()
+    except Exception:
+        return
+
+
 async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now_ms=None):
     """Open a sealed profile picture and hand the bytes to save(bot, image) -> {ok, sha8|status}.
 
@@ -3367,6 +3480,11 @@ async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now
             status = 500
         err = {413: "too large", 415: "unsupported media type", 500: "unavailable"}[status]
         return status, {"error": err}
+    if "voice" in opened:
+        try:
+            seed_reported_voice(opened["bot"], opened["voice"])
+        except Exception:
+            pass  # the picture is already saved; a voice seed must not fail the upload
     return 200, {"ok": True, "sha8": result.get("sha8")}
 
 
@@ -3850,8 +3968,6 @@ async def admin_bots_post(req):
     voice = chosen_voice(voice, allow_default=True)
     if voice is False:
         return web.json_response({"error": "bad voice"}, status=400)
-    if voice is None:
-        voice = VOICE.lower()
     mode = "cloud"
     if "key_mode" in body:
         mode = body.get("key_mode")
@@ -3863,7 +3979,10 @@ async def admin_bots_post(req):
     ov = load_overlay_doc()
     if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
         return web.json_response({"error": "exists"}, status=409)
-    ov["added"][slug] = {"name": name, "voice": voice}
+    entry = {"name": name}
+    if voice:
+        entry["voice"] = voice
+    ov["added"][slug] = entry
     if not list_source_slug():  # the first bot (or the first after the main bot went away) becomes the main bot
         ov["list_source"] = slug
     if mode == "home":
@@ -4134,6 +4253,10 @@ def _test_error(verdict, detail):
         return "Key was refused (401)"
     if verdict == "reject":
         return "Reply rejected"
+    if verdict == "blocked-pii":
+        return "Answer blocked (personal info)"
+    if isinstance(verdict, str) and verdict.startswith("blocked"):
+        return "Reply rejected"
     if verdict == "no-webhook":
         return "Not configured"
     return "Couldn't reach the bot"
@@ -4141,7 +4264,9 @@ def _test_error(verdict, detail):
 
 def test_view(rec):
     elapsed = rec["elapsed_s"] if rec["state"] != "waiting" else time.monotonic() - rec["t0"]
-    return {"state": rec["state"], "elapsed_s": float(elapsed), "answered_in_s": rec.get("answered_in_s"), "error": rec.get("error")}
+    remaining = max(0.0, TEST_LIMIT_S - elapsed) if rec["state"] == "waiting" else 0.0
+    return {"state": rec["state"], "elapsed_s": float(elapsed), "answered_in_s": rec.get("answered_in_s"), "error": rec.get("error"),
+            "limit_s": TEST_LIMIT_S, "remaining_s": float(remaining)}
 
 
 async def _run_bot_test(tid):
@@ -4150,11 +4275,28 @@ async def _run_bot_test(tid):
         return
     hook = rec.pop("hook", None)  # pasted url and key live only inside this task
     detail = rec.setdefault("detail", {})
+    # 0.13.0: the Test gives up at TEST_LIMIT_S from t0, the deadline the page shows, by the same cancel path.
+    expired = asyncio.Event()
+
+    def _expire():
+        expired.set()
+        rec["cancel"].set()
+
+    timer = asyncio.get_running_loop().call_later(max(0.0, TEST_LIMIT_S - (time.monotonic() - rec["t0"])), _expire)
     try:
         async with ClientSession() as http:
             text, verdict = await ask_teammate(http, rec["slug"], TEST_QUESTION, hook=hook, cancel=rec["cancel"], detail=detail,
                                                test=True, include_avatar=bool(rec.get("include_avatar")))
-        if rec["cancel"].is_set() or rec.get("state") == "cancelled" or verdict == "cancelled":
+        if expired.is_set() and rec.get("state") == "waiting":
+            rec["state"] = "failed"
+            rec["error"] = "No answer"
+            rec["answered_in_s"] = None
+            _note_status(rec["slug"], error="No answer")  # the Bots row turns offline now, not when REPLY_WAIT ends
+            _note_icon(rec["slug"], "timeout")
+            rid = detail.get("rid")
+            if rid:
+                handoff.remove_pending(PENDING_DIR, rid)
+        elif rec["cancel"].is_set() or rec.get("state") == "cancelled" or verdict == "cancelled":
             rec["state"] = "cancelled"
             rec["error"] = None
             rec["answered_in_s"] = None
@@ -4173,18 +4315,21 @@ async def _run_bot_test(tid):
                     rec["avatar_asked"] = await ask_avatar(rec["slug"], rec.get("actor") or "admin")
                 except Exception:
                     rec["avatar_asked"] = False
-                if auto:
+                if auto and rec["avatar_asked"] is True:  # 0.13.0: a failed ask is not done; the next pass asks again
                     avatar_auto_mark(rec["slug"])
         else:
             rec["state"] = "failed"
             rec["error"] = _test_error(verdict, detail)
             rec["answered_in_s"] = None
+            if verdict not in ("limit", "busy", "too-soon"):  # a refused Test is not news about the bot
+                _note_status(rec["slug"], error=rec["error"])  # 0.13.0: a failed Test marks the bot offline with its reason
         rec["elapsed_s"] = float(time.monotonic() - rec["t0"])
     except asyncio.CancelledError:
         rec["state"] = "cancelled"
         rec["error"] = None
         raise
     finally:
+        timer.cancel()
         rec.pop("hook", None)
 
 
@@ -5020,8 +5165,25 @@ def _pending_doc(rid):
     return doc if isinstance(doc, dict) else None
 
 
-def _reply_error(status):
-    return web.json_response({"error": _REPLY_HTTP.get(status, "bad request")}, status=status)
+def _reply_error(status, reason=None):
+    body = {"error": _REPLY_HTTP.get(status, "bad request")}
+    if reason in REPLY_REASONS:
+        body["reason"] = reason
+    return web.json_response(body, status=status)
+
+
+# 0.13.0: content-free reason codes for a refused reply from a signed bot with a known request.
+REPLY_REASONS = ("pii", "secret", "schema", "expired", "duplicate")
+_BLOCKED = {}  # request id -> reason: a reply for this open handoff was refused; the waiter ends now
+
+
+def reply_reason(rej):
+    """The reason code a bot may see, or None. Only after the signature and request id checked out."""
+    if rej.rid == "-":
+        return None
+    if rej.verdict == "lint":
+        return rej.reason if rej.reason in ("pii", "secret") else "pii"
+    return rej.verdict if rej.verdict in ("schema", "expired", "duplicate") else None
 
 
 async def admin_key_put(req):
@@ -5087,6 +5249,38 @@ async def admin_revoke_all(req):
     return web.json_response({"ok": True})
 
 
+_reply_steps = {}  # rid -> {"n", "interim", "digest", "at"}; 0.13.0 multi-reply handoffs. Memory only.
+
+
+def _reply_step(rid, bot, reply):
+    """What this answer is for its request: "interim" (an acknowledgement, at most one, the first reply),
+    "first" (the first real answer; one follow-up may come), "followup" (a later answer, spoken late), or
+    "duplicate" (a second acknowledgement, or the same answer again). Logs the reply index only."""
+    now = time.time()
+    for k in [k for k, v in _reply_steps.items() if now - v["at"] > 600]:
+        _reply_steps.pop(k, None)
+    st = _reply_steps.setdefault(rid, {"n": 0, "interim": False, "digest": None, "at": now})
+    text = reply["text"]
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    flagged = reply.get("interim") is True
+    if flagged and st["n"] > 0:
+        return "duplicate"
+    if st["digest"] == digest:
+        return "duplicate"
+    st["n"] += 1
+    st["at"] = now
+    if flagged or (st["n"] == 1 and botreply.ack_like(text)):
+        st["interim"] = True
+        log(f"handoff {rid} agent={bot} reply={st['n']} interim length={len(text)}")
+        return "interim"
+    first = st["digest"] is None and not st["interim"]
+    st["digest"] = st["digest"] or digest
+    log(f"handoff {rid} agent={bot} reply={st['n']} {'final' if first or st['interim'] else 'followup'} length={len(text)}")
+    if first:
+        return "first"
+    return "final" if st["interim"] and st["n"] == 2 else "followup"
+
+
 async def voice_reply(req):
     """Verify a sealed reply and hand the text to the waiting ask. Generic errors; the body is not echoed."""
     n_hdr = req.content_length if isinstance(req.content_length, int) else 0
@@ -5114,11 +5308,38 @@ async def voice_reply(req):
                                 names=_personas.get("names") or (), source=list_source_slug)
     except botreply.Reject as rej:
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
-        return _reply_error(rej.status)
+        reason = reply_reason(rej)
+        if reason in ("pii", "secret", "schema"):
+            _BLOCKED[rej.rid] = reason  # the waiting handoff (if any) ends with a message, not a 3-minute hang
+            while len(_BLOCKED) > 64:
+                _BLOCKED.pop(next(iter(_BLOCKED)))
+        return _reply_error(rej.status, reason)
     rid, bot = reply["request_id"], reply["bot"]
     pend = _pending_doc(rid) or {}
-    _reply_seen.add(rid)
-    handoff.remove_pending(PENDING_DIR, rid)
+    answer = (pend.get("kind") not in ("update_bot", "update_helper", "bot_list") and reply.get("kind") != "bot_list"
+              and not pend.get("test") and isinstance(reply.get("text"), str))
+    step = _reply_step(rid, bot, reply) if answer else "final"
+    if step == "duplicate":
+        audit_reply(bot, rid, "duplicate", len(raw))
+        return _reply_error(409)
+    if step == "interim":
+        audit_reply(bot, rid, "ok", len(raw))
+        with _LATE_LOCK:
+            parked = rid in _LATE
+        if not parked:  # a parked ask has no waiter; its acknowledgement is not news
+            out = {"request_id": rid, "agent": bot, "nonce": reply.get("nonce") or "", "tier": 0,
+                   "action_class": "answer", "text": reply["text"], "interim": True, "n": 1}
+            try:
+                os.makedirs(REPLIES_DIR, exist_ok=True)
+                atomic_write(os.path.join(REPLIES_DIR, rid + ".json"), json.dumps(out).encode())
+            except OSError:
+                return web.json_response({"error": "unavailable"}, status=500)
+        return web.json_response({"ok": True})
+    if step == "first":
+        pass  # the pending request stays for one follow-up (FOLLOWUP_S); ask_teammate parks it
+    else:
+        _reply_seen.add(rid)
+        handoff.remove_pending(PENDING_DIR, rid)
     if pend.get("kind") == "update_bot":
         ok = note_update(bot, reply.get("text"))
         if ok:
@@ -5167,7 +5388,12 @@ async def voice_reply(req):
         audit_reply(bot, rid, "ok", len(raw))
         return web.json_response({"ok": True})
     out = {"request_id": rid, "agent": bot, "nonce": reply.get("nonce") or "", "tier": 0,
-           "action_class": "answer", "text": reply["text"]}
+           "action_class": "answer", "text": reply["text"], "n": 1 if step == "first" else 2}
+    if step == "first":
+        with _LATE_LOCK:
+            parked = rid in _LATE
+        if parked:  # the session closed before any answer: speak this one late and accept no follow-up
+            _reply_seen.add(rid)
     # A parked ask has no waiter left. Speak it only when the request id matches that park.
     if late_accept(rid, reply["text"], reply.get("nonce") or ""):
         audit_reply(bot, rid, "ok", len(raw))
