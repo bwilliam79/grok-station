@@ -3,7 +3,7 @@
 The helper is stubbed here (grok_admin may already be imported, so ADMIN_HELPER is not
 how the stub is installed). The real helper is exercised in test_gs131_homebridge_helper.
 """
-import hashlib, http.client, json, os, shutil, stat, sys, tempfile, threading, unittest
+import hashlib, http.client, json, os, shutil, stat, subprocess, sys, tempfile, threading, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -115,6 +115,12 @@ def tearDownModule():
 class HomebridgeAPI(unittest.TestCase):
     def setUp(self):
         HB.reset()
+        with ga.HB_PENDING_LOCK:
+            ga.HB_PENDING.clear()
+        self._pending_ttl = ga.HB_PENDING_TTL
+        self._pending_tries = ga.HB_PENDING_MAX_TRIES
+        self._checked = gsi.checked_base
+        self._hb_check = ga.Handler._hb_check
         self.tmp = tempfile.mkdtemp(prefix="gs131-hb-")
         self.creds = os.path.join(self.tmp, "secrets", "homebridge.json")
         self.block = os.path.join(self.tmp, "status", "homebridge.json")
@@ -144,6 +150,12 @@ class HomebridgeAPI(unittest.TestCase):
         gsi.resolve_host = self._resolve
         gsi.station_addresses = self._own
         gsi.FETCH_TIMEOUT = self._timeout
+        gsi.checked_base = self._checked
+        ga.Handler._hb_check = self._hb_check
+        ga.HB_PENDING_TTL = self._pending_ttl
+        ga.HB_PENDING_MAX_TRIES = self._pending_tries
+        with ga.HB_PENDING_LOCK:
+            ga.HB_PENDING.clear()
         if self._close_grace:
             try:
                 del ga.AUTH.stepup_open
@@ -515,7 +527,16 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(anon.req("GET", "/api/integrations/homebridge/accessories")[0], 401)
         self.assertEqual(anon.req("POST", "/api/integrations/homebridge/check-address", {"base": self._base()})[0], 401)
         self.assertEqual(anon.req("POST", "/api/integrations/homebridge/verify", {"base": self._base(), "username": "grok-station", "password": SECRET})[0], 401)
+        self.assertEqual(anon.req("POST", "/api/integrations/homebridge/retry", {"pending": "x"})[0], 401)
+        self.assertEqual(anon.req("POST", "/api/integrations/homebridge/retry/cancel", {"pending": "x"})[0], 401)
         self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/verify", {"base": self._base(), "username": "grok-station", "password": SECRET}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry", {"pending": "x"}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry/cancel", {"pending": "x"}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry", {"pending": "x", "extra": True})[1]["error"], "bad_request")
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry", {"pending": 1})[1]["error"], "bad_request")
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry", {"stepup": GOOD})[1]["error"], "bad_request")
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry/cancel", {})[1]["error"], "bad_request")
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry/cancel", {"pending": "x", "stepup": GOOD})[1]["error"], "bad_request")
         self.assertEqual(self.c.req("DELETE", "/api/integrations/homebridge", {}, csrf=False)[0], 403)
         self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/check-address", {"base": self._base(), "password": SECRET})[1]["error"], "bad_request")
         self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/verify", {"base": self._base(), "username": "bad name", "password": SECRET, "stepup": GOOD})[1]["error"], "bad_request")
@@ -658,3 +679,350 @@ class HomebridgeAPI(unittest.TestCase):
         view = self.c.req("GET", "/api/integrations")[1]["integrations"]["homebridge"]
         self.assertEqual(view["status"], "signed_in")
         self.assertEqual(view["base"], self._base())
+
+    def _retry(self, pending, stepup=GOOD, **extra):
+        body = {"pending": pending}
+        if stepup is not None:
+            body["stepup"] = stepup
+        body.update(extra)
+        return self.c.req("POST", "/api/integrations/homebridge/retry", body)
+
+    def _no_homebridge_saved(self):
+        self.assertFalse(os.path.exists(self.creds))
+        self.assertFalse(any(cmd == "homebridge-set" for cmd, _stdin in self.calls))
+        self.assertNotIn("homebridge", gsi.load()["integrations"])
+        if os.path.exists(self.reg):
+            text = open(self.reg, encoding="utf-8").read()
+            self.assertNotIn("homebridge", text)
+            self.assertNotIn(SECRET, text)
+
+    def _assert_quiet(self, lines, blob):
+        self._no_secret(blob)
+        self._no_secret("\n".join(lines))
+        self.assertNotIn("password", blob if isinstance(blob, dict) else {})
+        self.assertNotIn("username", blob if isinstance(blob, dict) else {})
+
+    def test_accessory_failure_is_not_unreachable(self):
+        """A reachable Homebridge whose login works but whose accessory list fails (insecure mode off)
+        is not 'didn't answer'. Nothing is saved; the login is held in memory under a pending id."""
+        self._grace_off()
+        HB.acc_status = 400
+
+        def go():
+            return self._verify()
+        (status, body), lines = self._prints(go)
+        self.assertEqual(status, 400, body)
+        self.assertNotIn(body.get("error"), ("unreachable", "refused", "not_homebridge", "cert"), body)
+        self.assertEqual(body.get("error"), "accessories", body)
+        self.assertEqual(body.get("message"), ga.HB_ACCESSORIES_MSG)
+        self.assertEqual(body["message"], "Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.")
+        self.assertTrue(body["checks"][0]["ok"])
+        self.assertIsInstance(body.get("pending"), str)
+        self.assertGreaterEqual(len(body["pending"]), 20)
+        self.assertNotEqual(body["pending"], SECRET)
+        self._no_homebridge_saved()
+        self._assert_quiet(lines, body)
+        self.assertEqual(len(ga.HB_PENDING), 1)
+
+    def test_retry_same_pending_then_saves_and_cannot_be_reused(self):
+        self._grace_off()
+        HB.acc_status = 400
+        (status, body), lines = self._prints(lambda: self._verify())
+        self.assertEqual(body["error"], "accessories")
+        pending = body["pending"]
+        (status, again), more = self._prints(lambda: self._retry(pending))
+        lines += more
+        self.assertEqual(status, 400, again)
+        self.assertEqual(again["error"], "accessories")
+        self.assertEqual(again["message"], ga.HB_ACCESSORIES_MSG)
+        self.assertEqual(again["pending"], pending)
+        self._no_homebridge_saved()
+        HB.acc_status = 200
+        (status, saved), more = self._prints(lambda: self._retry(pending))
+        lines += more
+        self.assertEqual(status, 200, saved)
+        self.assertTrue(saved["ok"])
+        self.assertEqual(saved["base"], self._base())
+        self.assertTrue(saved["checks"][0]["ok"])
+        self.assertTrue(saved["checks"][1]["ok"])
+        self.assertTrue(saved["checks"][2]["ok"])
+        self.assertTrue(os.path.exists(self.creds))
+        stored = json.load(open(self.creds, encoding="utf-8"))
+        self.assertEqual(stored["username"], "grok-station")
+        self.assertEqual(stored["password"], SECRET)
+        reg = gsi.load()["integrations"]["homebridge"]
+        self.assertTrue(reg["enabled"])
+        self.assertEqual(reg["base"], self._base())
+        self.assertEqual(len(ga.HB_PENDING), 0)
+        (status, gone), more = self._prints(lambda: self._retry(pending))
+        lines += more
+        self.assertEqual((status, gone.get("error")), (410, "pending_gone"), gone)
+        self._assert_quiet(lines, body)
+        self._no_secret(again)
+        self._no_secret(saved)
+        self._no_secret("\n".join(lines))
+
+    def test_cancel_and_ttl_forget_the_pending_login(self):
+        self._grace_off()
+        HB.acc_status = 400
+        pending = self._verify()[1]["pending"]
+        (status, body), lines = self._prints(lambda: self.c.req(
+            "POST", "/api/integrations/homebridge/retry/cancel", {"pending": pending}))
+        self.assertEqual((status, body), (200, {"ok": True}))
+        self._no_secret("\n".join(lines))
+        status, body = self._retry(pending)
+        self.assertEqual((status, body.get("error")), (410, "pending_gone"), body)
+        self._no_homebridge_saved()
+        # A second pending dies when its TTL has passed. Cancel of an unknown id is still ok.
+        pending = self._verify()[1]["pending"]
+        self.assertEqual(self.c.req("POST", "/api/integrations/homebridge/retry/cancel", {"pending": "nope"})[0], 200)
+        self.assertEqual(self._retry(pending)[1]["error"], "accessories")
+        with ga.HB_PENDING_LOCK:
+            ga.HB_PENDING.clear()
+        ga.HB_PENDING_TTL = -1
+        pending = self._verify()[1]["pending"]
+        status, body = self._retry(pending)
+        self.assertEqual((status, body.get("error")), (410, "pending_gone"), body)
+        self.assertEqual(len(ga.HB_PENDING), 0)
+
+    def test_retry_from_another_session_is_not_an_oracle(self):
+        self._grace_off()
+        HB.acc_status = 400
+        pending = self._verify()[1]["pending"]
+        other = Client(ADMIN.port)
+        self.assertEqual(other.req("POST", "/api/login", {"password": GOOD})[0], 200)
+        status, body = other.req("POST", "/api/integrations/homebridge/retry", {"pending": pending, "stepup": GOOD})
+        self.assertEqual((status, body.get("error")), (410, "pending_gone"), body)
+        self.assertEqual(len(ga.HB_PENDING), 1)  # mismatch does not delete the owner's row
+        status, body = other.req("POST", "/api/integrations/homebridge/retry/cancel", {"pending": pending})
+        self.assertEqual((status, body), (200, {"ok": True}))
+        self.assertEqual(len(ga.HB_PENDING), 1)
+        status, body = self._retry(pending)
+        self.assertEqual(body.get("error"), "accessories", body)
+        self.assertEqual(body.get("pending"), pending)
+
+    def test_retry_reruns_admin_check_and_asks_for_stepup(self):
+        self._grace_off()
+        HB.acc_status = 400
+        pending = self._verify()[1]["pending"]
+        self.assertEqual(ga.HB_PENDING[pending]["tries"], 0)
+        HB.requests = []
+        status, body = self._retry(pending, stepup=None)
+        self.assertEqual((status, body.get("error")), (403, ga.PASSWORD_BAD), body)
+        self.assertEqual(HB.requests, [])
+        self.assertEqual(ga.HB_PENDING[pending]["tries"], 0)
+        self._no_homebridge_saved()
+        HB.acc_status = 200
+        HB.users_status = 200
+        HB.requests = []
+        status, body = self._retry(pending)
+        self.assertEqual((status, body.get("error")), (403, "admin"), body)
+        self.assertEqual(body.get("message"), ADMIN_MSG)
+        self.assertIn("/api/users", [r["path"] for r in HB.requests])
+        self._no_homebridge_saved()
+        self.assertNotIn(pending, ga.HB_PENDING)
+        status, body = self._retry(pending)
+        self.assertEqual((status, body.get("error")), (410, "pending_gone"), body)
+
+    def test_retry_rechecks_base_and_does_not_call_check_address(self):
+        self._grace_off()
+        HB.acc_status = 400
+        base = "http://homebridge.local:%d" % HB.port
+        status, body = self._verify(base=base)
+        self.assertEqual(body.get("error"), "accessories", body)
+        pending = body["pending"]
+        seen = []
+        hits = []
+        real = gsi.checked_base
+        orig = ga.Handler._hb_check
+
+        def wrapped(raw):
+            seen.append(raw)
+            return real(raw)
+
+        def checked(self, j):
+            hits.append(j)
+            return orig(self, j)
+
+        gsi.checked_base = wrapped
+        ga.Handler._hb_check = checked
+        gsi.resolve_host = lambda host: ["203.0.113.9"]
+        before = len(HB.requests)
+        (status, body), lines = self._prints(lambda: self._retry(pending))
+        self.assertEqual((status, body.get("error")), (400, "refused"), body)
+        self.assertEqual(body.get("message"), "That address isn't on your home network.")
+        self.assertIn("checks", body)
+        self.assertEqual(seen, [base])
+        self.assertEqual(hits, [])
+        self.assertEqual(len(HB.requests), before)
+        self.assertNotIn("check-address", "\n".join(lines))
+        self._no_secret(body)
+        self._no_secret("\n".join(lines))
+        self.assertNotIn(pending, ga.HB_PENDING)
+        self._no_homebridge_saved()
+
+    def test_signin_timeout_after_check_is_not_an_address_failure(self):
+        self._grace_off()
+        gsi.FETCH_TIMEOUT = 0.2
+        status, body = self.c.req("POST", "/api/integrations/homebridge/check-address", {"base": self._base()})
+        self.assertEqual(status, 200, body)
+        HB.login_delay = 1.0
+        (status, body), lines = self._prints(lambda: self._verify())
+        self.assertEqual(status, 400, body)
+        self.assertEqual(body.get("error"), "signin_unreachable", body)
+        self.assertNotEqual(body.get("error"), "unreachable")
+        self.assertEqual(body.get("message"), ga.HB_SIGNIN_UNREACHABLE_MSG)
+        self.assertEqual(body["message"], "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again.")
+        self.assertNotIn("pending", body)
+        self._no_homebridge_saved()
+        self._no_secret(body)
+        self._no_secret("\n".join(lines))
+        self.assertEqual(len(ga.HB_PENDING), 0)
+        # The address check itself still says unreachable. So does a settings timeout during verify.
+        HB.login_delay = 0
+        HB.mode = "slow"
+        HB.delay = 1.0
+        status, body = self.c.req("POST", "/api/integrations/homebridge/check-address", {"base": self._base()})
+        self.assertEqual(body.get("error"), "unreachable", body)
+        status, body = self._verify()
+        self.assertEqual(body.get("error"), "unreachable", body)
+        self.assertNotEqual(body.get("error"), "signin_unreachable")
+
+    def test_accessory_transport_error_stays_signin_unreachable(self):
+        self._grace_off()
+        gsi.FETCH_TIMEOUT = 0.2
+        HB.acc_delay = 1.0
+        status, body = self._verify()
+        self.assertEqual(body.get("error"), "signin_unreachable", body)
+        self.assertNotIn("pending", body)
+        self._no_homebridge_saved()
+
+    def test_retry_cap_and_pending_cap(self):
+        self._grace_off()
+        HB.acc_status = 400
+        ga.HB_PENDING_MAX_TRIES = 1
+        pending = self._verify()[1]["pending"]
+        status, body = self._retry(pending)
+        self.assertEqual(body.get("error"), "accessories", body)
+        self.assertEqual(body.get("pending"), pending)
+        status, body = self._retry(pending)
+        self.assertEqual((status, body.get("error")), (410, "pending_gone"), body)
+        self.assertNotIn(pending, ga.HB_PENDING)
+        ga.HB_PENDING_MAX_TRIES = 10
+        ids = []
+        for _ in range(5):
+            ids.append(self._verify()[1]["pending"])
+        self.assertEqual(len(ga.HB_PENDING), 4)
+        self.assertNotIn(ids[0], ga.HB_PENDING)
+        status, body = self._retry(ids[0])
+        self.assertEqual(body.get("error"), "pending_gone", body)
+        status, body = self._retry(ids[-1])
+        self.assertEqual(body.get("error"), "accessories", body)
+        self.assertEqual(body.get("pending"), ids[-1])
+
+    def test_successful_verify_clears_this_sessions_pending(self):
+        self._grace_off()
+        HB.acc_status = 400
+        pending = self._verify()[1]["pending"]
+        HB.acc_status = 200
+        status, body = self._verify()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(ga.HB_PENDING), 0)
+        self.assertEqual(self._retry(pending)[1].get("error"), "pending_gone")
+
+    def test_saved_login_accessories_failure_is_still_a_502(self):
+        self._verify()
+        HB.acc_status = 400
+        status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
+        self.assertEqual(status, 502, body)
+        self.assertEqual(body.get("error"), "unreachable")
+        self.assertEqual(body.get("message"), "Homebridge didn't answer.")
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_hb_apply_routes_accessories_and_signin(self):
+        src = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        apply = _fn(src, "hbApply")
+        screen = _fn(src, "hbInsecure")
+        retry = _fn(src, "hbRetry")
+        for line in apply.splitlines():
+            if 'err === "accessories"' in line:
+                self.assertIn("hbInsecure", line)
+                self.assertNotIn("hbAddress", line)
+            if 'err === "signin_unreachable"' in line:
+                self.assertIn("hbEnter", line)
+                self.assertNotIn("hbAddress", line)
+        self.assertIn('err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable"', apply)
+        self.assertIn("hbAddress", apply)
+        signin = "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."
+        self.assertIn(signin, apply)
+        for text in (
+            "‹ Homebridge",
+            "Turn on insecure mode in Homebridge",
+            "Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.",
+            "Open Homebridge in your browser.",
+            "Go to Settings, then Homebridge Settings.",
+            "Turn on Insecure mode.",
+            "Restart Homebridge.",
+            "Your login is saved. You won't need to enter it again.",
+            "Still can't list accessories. Make sure Homebridge finished restarting, then try again.",
+            "Try again",
+            'id="hbcancel"',
+            'id="hbretry"',
+            'id="hberr"',
+            'class="card wcard"',
+            'class="btn g back"',
+            'class="help"',
+            "hbStepper(4)",
+            "/api/integrations/homebridge/retry/cancel",
+        ):
+            self.assertIn(text, screen, text)
+        self.assertLess(screen.index('id="hberr"'), screen.index('id="hbretry"'))
+        self.assertIn("/api/integrations/homebridge/retry", retry)
+        self.assertNotIn("retry/cancel", retry)
+        self.assertIn('askPassword("Check this login?", "Enter the admin password. The Homebridge login is saved on this station only after the checks pass.", "Verify"', retry)
+        self.assertIn('data.error === "pending_gone"', retry)
+        self.assertIn("hbEnter(hbBase)", retry)
+        self.assertIn("hbInsecure(data.pending || pending, true)", retry)
+        prog = "\n".join([
+            "const calls = [];",
+            "function hbStopped() { calls.push(['hbStopped']); }",
+            "function hbEnter(base, opts) { calls.push(['hbEnter', base, opts || null]); }",
+            "function hbAddress(base, msg) { calls.push(['hbAddress', base, msg]); }",
+            "function hbInsecure(pending, again) { calls.push(['hbInsecure', pending, again === true]); }",
+            "let hbBase = 'http://hb.local:8581';",
+            apply,
+            "function run(data) { calls.length = 0; hbApply({ok: false, data: data}); return calls.slice(); }",
+            "process.stdout.write(JSON.stringify({",
+            "  accessories: run({error: 'accessories', pending: 'pid-1', message: 'Signed in to Homebridge, but it won\\'t share its accessories with the station until insecure mode is on.'}),",
+            "  signinEmpty: run({error: 'signin_unreachable', message: ''}),",
+            "  signin: run({error: 'signin_unreachable', message: %s})," % json.dumps(signin),
+            "  unreachable: run({error: 'unreachable', message: 'Homebridge didn\\'t answer.'}),",
+            "  cert: run({error: 'cert', message: 'The certificate didn\\'t check out.'}),",
+            "  refused: run({error: 'refused', message: 'That address isn\\'t on your home network.'}),",
+            "  nothb: run({error: 'not_homebridge', message: 'That address isn\\'t the Homebridge UI.'}),",
+            "  bad: run({error: 'bad_login'})",
+            "}));",
+        ])
+        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stderr or out.stdout)
+        got = json.loads(out.stdout)
+        self.assertEqual(got["accessories"], [["hbInsecure", "pid-1", False]])
+        self.assertEqual(got["signinEmpty"], [["hbEnter", "http://hb.local:8581", {"message": signin}]])
+        self.assertEqual(got["signin"], [["hbEnter", "http://hb.local:8581", {"message": signin}]])
+        self.assertEqual(got["unreachable"][0][0], "hbAddress")
+        self.assertEqual(got["cert"][0][0], "hbAddress")
+        self.assertEqual(got["refused"][0][0], "hbAddress")
+        self.assertEqual(got["nothb"][0][0], "hbAddress")
+        self.assertEqual(got["bad"][0][0], "hbEnter")
+        self.assertNotEqual(got["bad"][0][0], "hbAddress")
+
+
+def _fn(src, name):
+    mark = "function " + name + "("
+    i = src.index(mark)
+    depth, j = 0, src.index("{", i)
+    for k in range(j, len(src)):
+        depth += {"{": 1, "}": -1}.get(src[k], 0)
+        if depth == 0:
+            return src[i:k + 1]
+    raise AssertionError("unclosed " + name)

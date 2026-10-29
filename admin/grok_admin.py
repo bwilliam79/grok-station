@@ -2304,8 +2304,98 @@ HB_ADMIN_MSG = ("This login is an admin. Grok Station won't store an admin login
                 "Turn Admin off for this user in Homebridge, or make a new user without Admin, then try again.")
 HB_UNCONFIRMED_MSG = "Couldn't confirm this login isn't an admin"
 # 0.13.1: the relay signs in again on its own and cannot type a code, so a 2-step login is refused at Verify.
+HB_ACCESSORIES_MSG = ("Signed in to Homebridge, but it won't share its accessories "
+                      "with the station until insecure mode is on.")
+HB_SIGNIN_UNREACHABLE_MSG = ("Homebridge stopped answering while signing in. "
+                             "The address checked out, so make sure Homebridge is running, then sign in again.")
 HB_TWO_STEP_MSG = ("This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, "
                    "so make the grok-station user without 2-step and try again.")
+# Pending Homebridge login, admin process memory only. Never written to disk, never logged.
+HB_PENDING = {}
+HB_PENDING_LOCK = threading.Lock()
+HB_PENDING_TTL = 15 * 60
+HB_PENDING_MAX_TRIES = 10
+HB_PENDING_MAX = 4
+
+
+def _hb_no_http(got):
+    """True when the call never got an HTTP answer (cert, refused, timeout, or status 0)."""
+    if not isinstance(got, dict):
+        return True
+    if got.get("error") in ("cert", "refused", "unreachable"):
+        return True
+    status = got.get("status")
+    if isinstance(status, bool) or not isinstance(status, int) or status <= 0:
+        return True
+    return False
+
+
+def _hb_pending_purge():
+    """Drop expired rows. Caller holds HB_PENDING_LOCK."""
+    now_m = time.monotonic()
+    for ident in [i for i, row in HB_PENDING.items()
+                  if not isinstance(row, dict) or now_m >= row.get("expires", 0)]:
+        HB_PENDING.pop(ident, None)
+
+
+def _hb_pending_add(key, base, username, password):
+    """Remember one checked login. The id is unguessable; the session cookie is stored only as sha256."""
+    if not key:
+        return None
+    with HB_PENDING_LOCK:
+        _hb_pending_purge()
+        while len(HB_PENDING) >= HB_PENDING_MAX:
+            HB_PENDING.pop(next(iter(HB_PENDING)))
+        now_m = time.monotonic()
+        ident = secrets.token_urlsafe(32)
+        while ident in HB_PENDING:
+            ident = secrets.token_urlsafe(32)
+        HB_PENDING[ident] = {
+            "key": key, "base": base, "username": username, "password": password,
+            "expires": now_m + HB_PENDING_TTL, "tries": 0,
+        }
+        return ident
+
+
+def _hb_pending_clear_key(key):
+    """Drop every pending login for this session. A successful verify does this."""
+    if not key:
+        return
+    with HB_PENDING_LOCK:
+        _hb_pending_purge()
+        for ident in [i for i, row in HB_PENDING.items() if isinstance(row, dict) and row.get("key") == key]:
+            HB_PENDING.pop(ident, None)
+
+
+def _hb_pending_claim(ident, key):
+    """Copy a live row for this session and count one try. None if missing, expired, or not ours.
+
+    A try past the cap deletes the row. Expired rows are deleted. A session mismatch leaves the row.
+    """
+    with HB_PENDING_LOCK:
+        _hb_pending_purge()
+        row = HB_PENDING.get(ident)
+        if not isinstance(row, dict) or row.get("key") != key:
+            return None
+        row["tries"] = int(row.get("tries") or 0) + 1
+        if row["tries"] > HB_PENDING_MAX_TRIES:
+            HB_PENDING.pop(ident, None)
+            return None
+        return {"base": row.get("base"), "username": row.get("username"), "password": row.get("password")}
+
+
+def _hb_pending_drop(ident):
+    with HB_PENDING_LOCK:
+        HB_PENDING.pop(ident, None)
+
+
+def _hb_pending_cancel(ident, key):
+    """Delete the row only when this session owns it. Expired rows are purged either way."""
+    with HB_PENDING_LOCK:
+        _hb_pending_purge()
+        row = HB_PENDING.get(ident)
+        if isinstance(row, dict) and row.get("key") == key:
+            HB_PENDING.pop(ident, None)
 
 
 def _voice_copy(doc, kind):
@@ -4997,6 +5087,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._hb_check(j)
         if p == "/api/integrations/homebridge/verify":
             return self._hb_verify(j)
+        if p == "/api/integrations/homebridge/retry":
+            return self._hb_retry(j)
+        if p == "/api/integrations/homebridge/retry/cancel":
+            return self._hb_retry_cancel(j)
         if p == "/api/integrations/homebridge/devices":
             return self._hb_save(j)
         m = re.fullmatch(r"/api/integrations/devices/(w-[0-9a-f]{4})/test", p)
@@ -5240,11 +5334,18 @@ class Handler(BaseHTTPRequestHandler):
         if login["status"] != 201 or not token:
             if login["status"] in (400, 401, 403):
                 return None, "bad_login", checks, "Username or password didn't work."
-            err = login["error"] if login["error"] in ("cert", "refused", "unreachable") else "unreachable"
-            return None, err, checks, "Homebridge didn't answer."
+            # Settings already answered. A dead connection here is not an address problem.
+            if _hb_no_http(login):
+                return None, "signin_unreachable", checks, HB_SIGNIN_UNREACHABLE_MSG
+            return None, "unreachable", checks, "Homebridge didn't answer."
         acc = gsi.hb_request(base, "GET", "/api/accessories", token=token)
         if not (acc["error"] is None and acc["status"] == 200 and isinstance(acc["json"], (dict, list))):
-            return None, "unreachable", checks, "Homebridge didn't answer."
+            if acc.get("error") == "cert":
+                return None, "cert", checks, "Homebridge didn't answer."
+            if acc.get("error") in ("refused", "unreachable") or _hb_no_http(acc):
+                return None, "signin_unreachable", checks, HB_SIGNIN_UNREACHABLE_MSG
+            # Reachable and signed in, but no accessory list (for example insecure mode is off). Not an address problem.
+            return None, "accessories", checks, HB_ACCESSORIES_MSG
         checks[1]["ok"] = True
         users = gsi.hb_request(base, "GET", "/api/users", token=token)
         if users["status"] == 200:
@@ -5287,22 +5388,78 @@ class Handler(BaseHTTPRequestHandler):
             return self._hb_fail(400, "refused", "That address isn't on your home network.", checks)
         token, err, checks, message = self._hb_session(target["base"], j["username"], j["password"])
         token = None  # the login is checked; the relay logs in itself. Do not keep it.
+        if err == "accessories":
+            # In memory only, and only for this case. Nothing is written until a later retry succeeds.
+            pending = _hb_pending_add(self._hb_caller_key(), target["base"], j["username"], j["password"])
+            return self.send(400, {"error": "accessories", "message": HB_ACCESSORIES_MSG,
+                                   "checks": checks, "pending": pending})
         if err:
             code = 403 if err in ("admin", "unconfirmed") else (401 if err == "bad_login" else 400)
             return self._hb_fail(code, err, message, checks)
-        if not _hb_store(j["username"], j["password"]):
+        _hb_pending_clear_key(self._hb_caller_key())
+        return self._hb_commit(target["base"], j["username"], j["password"], checks)
+
+    def _hb_caller_key(self):
+        """sha256 of the gs_session cookie. The raw cookie is not stored."""
+        raw = self.cookie("gs_session")
+        if not isinstance(raw, str) or not raw:
+            return None
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _hb_commit(self, target_base, username, password, checks):
+        """Save a checked login. Shared by verify and retry. The password is not logged."""
+        if not _hb_store(username, password):
             return self.send(500, {"error": "Couldn't save that."})
         gsi.hb_clear_block()
         with LOCK:
             doc = gsi.load()
             old = doc["integrations"].get("homebridge")
-            block = {"enabled": True, "base": target["base"]}
+            block = {"enabled": True, "base": target_base}
             if (isinstance(old, dict) and old.get("voice") is True) or _voice_copy(doc, "homebridge"):
                 block["voice"] = True
             doc["integrations"]["homebridge"] = block
             gsi.save(doc)
         audit_home("homebridge-verify", "homebridge")
-        return self.send(200, {"ok": True, "base": target["base"], "checks": checks})
+        return self.send(200, {"ok": True, "base": target_base, "checks": checks})
+
+    def _hb_retry(self, j):
+        """POST /api/integrations/homebridge/retry. Body is {"pending"} plus an optional step-up."""
+        if not isinstance(j, dict) or not {"pending"} <= set(j) <= {"pending", "stepup"}:
+            return self.send(400, {"error": "bad_request"})
+        if not isinstance(j.get("pending"), str) or ("stepup" in j and not isinstance(j.get("stepup"), str)):
+            return self.send(400, {"error": "bad_request"})
+        # Step-up first, same as verify, so a guess at a pending id is not a login oracle.
+        step = {"password": j["stepup"]} if "stepup" in j else {}
+        if not self.need_password(step):
+            return
+        ident = j["pending"]
+        entry = _hb_pending_claim(ident, self._hb_caller_key())
+        if entry is None:
+            return self.send(410, {"error": "pending_gone"})
+        target = gsi.checked_base(entry.get("base"))
+        if target is None:
+            _hb_pending_drop(ident)
+            checks = self._hb_checks(False, False, False)
+            return self._hb_fail(400, "refused", "That address isn't on your home network.", checks)
+        username, password = entry.get("username"), entry.get("password")
+        token, err, checks, message = self._hb_session(target["base"], username, password)
+        token = None
+        if err == "accessories":
+            return self.send(400, {"error": "accessories", "message": HB_ACCESSORIES_MSG,
+                                   "checks": checks, "pending": ident})
+        if err:
+            _hb_pending_drop(ident)
+            code = 403 if err in ("admin", "unconfirmed") else (401 if err == "bad_login" else 400)
+            return self._hb_fail(code, err, message, checks)
+        _hb_pending_drop(ident)  # drop the in-memory copy before anything is written
+        return self._hb_commit(target["base"], username, password, checks)
+
+    def _hb_retry_cancel(self, j):
+        """POST /api/integrations/homebridge/retry/cancel. Always ok, so the id is not an oracle."""
+        if not isinstance(j, dict) or set(j) != {"pending"} or not isinstance(j.get("pending"), str):
+            return self.send(400, {"error": "bad_request"})
+        _hb_pending_cancel(j["pending"], self._hb_caller_key())
+        return self.send(200, {"ok": True})
 
     def _hb_open(self):
         """(base, username, password) or an error response already sent."""
@@ -5323,6 +5480,9 @@ class Handler(BaseHTTPRequestHandler):
         if err == "bad_login":
             gsi.hb_write_block("signin")
             return self.send(401, {"error": "signin", "message": "Homebridge sign-in stopped working."})
+        # Verify-flow codes. Once the login is saved, the caller still gets the old "didn't answer" 502.
+        if err in ("accessories", "signin_unreachable"):
+            return self.send(502, {"error": "unreachable", "message": "Homebridge didn't answer."})
         if err or not token:
             return self.send(502, {"error": err or "unreachable", "message": message or "Homebridge didn't answer."})
         return base, token

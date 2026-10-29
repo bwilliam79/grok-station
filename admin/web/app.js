@@ -4950,9 +4950,72 @@ async function pageIntegrations(el) {
     if (err === "two_step") return hbStopped(data.message || "This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, so make the grok-station user without 2-step and try again.", data.checks, "Back to Create a login", () => hbCreate(hbBase), "We can't use this login");
     if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase), "We couldn't finish the check");
     if (err === "bad_login") return hbEnter(hbBase, {message: data.message || "Username or password didn't work."});
+    if (err === "accessories") return hbInsecure(data.pending);
+    if (err === "signin_unreachable") return hbEnter(hbBase, {message: data.message || "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."});
     const msg = data.message || "Homebridge didn't answer.";
     if (err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable") return hbAddress(hbBase, msg);
     return hbEnter(hbBase, {message: msg});
+  }
+  function hbInsecure(pending, again) {
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepper(4)}<h2>Turn on insecure mode in Homebridge</h2>
+      <p class="sub">Signed in to Homebridge, but it won't share its accessories with the station until insecure mode is on.</p>
+      <ol class="hbsteps"><li>Open Homebridge in your browser.</li>
+        <li>Go to Settings, then Homebridge Settings.</li>
+        <li>Turn on Insecure mode.</li>
+        <li>Restart Homebridge.</li></ol>
+      <p class="help">Your login is saved. You won't need to enter it again.</p>
+      <div id="hberr"></div>
+      <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
+        <span class="right"><button class="btn p" id="hbretry" type="button">Try again</button></span></div></div>`;
+    if (again) errBox($("#hberr", el), "Still can't list accessories. Make sure Homebridge finished restarting, then try again.");
+    const leave = () => {
+      api("POST", "/api/integrations/homebridge/retry/cancel", {pending: pending});
+      list();
+    };
+    back(leave);
+    $("#hbcancel", el).onclick = leave;
+    $("#hbretry", el).onclick = () => hbRetry(pending);
+  }
+  async function hbRetry(pending) {
+    const post = stepup => {
+      const body = {pending: pending};
+      if (stepup) body.stepup = stepup;
+      return api("POST", "/api/integrations/homebridge/retry", body);
+    };
+    const finish = async r => {
+      if (r && r.ok) {
+        hbPass = "";
+        await refreshStepup();
+        hbPassed((r.data && r.data.checks) || []);
+        return {ok: true};
+      }
+      if (r && r.status === 403 && r.data && r.data.error === PASSWORD_BAD) return r;
+      const data = (r && r.data) || {};
+      if (data.error === "accessories") {
+        hbInsecure(data.pending || pending, true);
+        return {ok: true};
+      }
+      if (data.error === "pending_gone") {
+        hbEnter(hbBase);
+        return {ok: true};
+      }
+      hbApply(r);
+      return {ok: true};
+    };
+    const ask = () => askPassword("Check this login?", "Enter the admin password. The Homebridge login is saved on this station only after the checks pass.", "Verify", async pw => {
+      const btn = $("#hbretry", el);
+      if (btn) busyBtn(btn, true);
+      return finish(await post(pw));
+    });
+    const btn = $("#hbretry", el);
+    if (btn) busyBtn(btn, true);
+    const first = await post("");
+    if (first && first.status === 403 && first.data && first.data.error === PASSWORD_BAD) {
+      const againBtn = $("#hbretry", el);
+      if (againBtn) busyBtn(againBtn, false, "Try again");
+      return ask();
+    }
+    return finish(first);
   }
   async function hbPost(base, stepup) {
     return api("POST", "/api/integrations/homebridge/verify", hbVerifyBody(base, stepup));

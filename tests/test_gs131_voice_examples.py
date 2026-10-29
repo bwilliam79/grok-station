@@ -95,7 +95,8 @@ class IntegrationsBack(unittest.TestCase):
         self.assertGreaterEqual(len(buttons), 4, buttons)  # WLED add + manage, Homebridge add + manage
         for label in buttons:
             self.assertIn("‹", label)
-            self.assertIn("Integrations", label)
+            # Insecure-mode stop goes back to Homebridge. Every other control says Integrations.
+            self.assertTrue("Integrations" in label or label == "‹ Homebridge", label)
         # Both flows use that control, not a private underlined link.
         self.assertIn("WLED", page)
         self.assertIn("Homebridge", page)

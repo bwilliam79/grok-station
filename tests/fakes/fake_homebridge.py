@@ -45,6 +45,8 @@ class FakeHomebridge:
         self.mode = "ok"  # ok, admin, users500, users401, otp, badlogin, redirect, plain, missing, slow, big
         self.users_status = 403
         self.acc_status = 200
+        self.login_delay = 0  # seconds; the login route only, so Check can pass and sign-in can time out
+        self.acc_delay = 0  # seconds; the accessories route only
         self.delay = 5
         self.otp_code = "123456"
         self.token_exp = None
@@ -114,6 +116,8 @@ class FakeHomebridge:
         raw = await request.read()
         body = self._remember(request, raw)
         self.logins += 1
+        if self.login_delay:
+            await asyncio.sleep(self.login_delay)
         if self.mode == "slow":
             await asyncio.sleep(self.delay)
         if self.mode == "badlogin" or self.login_ok_left == 0:
@@ -127,6 +131,8 @@ class FakeHomebridge:
     async def _accessories(self, request):
         raw = await request.read()
         self._remember(request, raw)
+        if self.acc_delay:
+            await asyncio.sleep(self.acc_delay)
         if self.acc_status != 200:
             return web.json_response({"error": "no"}, status=self.acc_status)
         if self.wrap:
@@ -158,6 +164,8 @@ class FakeHomebridge:
         self.mode = "ok"
         self.users_status = 403
         self.acc_status = 200
+        self.login_delay = 0
+        self.acc_delay = 0
         self.delay = 5
         self.token_exp = None
         self.login_ok_left = None
