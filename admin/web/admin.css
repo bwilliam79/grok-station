@@ -587,3 +587,51 @@ button#iback{height:auto;min-height:44px;text-decoration:none}
 .wwmsg{min-height:6.5rem}
 .wwmsg .warnmsg{color:var(--gs-amber)}
 .wwsugs{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.4rem}
+/* 0.13.7 Homebridge Voice names (Noor SPEC gs-hb-alias rev1.1): clash cards, Rename others, single-row Rename */
+.vn{scroll-padding-bottom:120px}
+.vnfix{display:grid;grid-template-columns:20px minmax(0,1fr);gap:12px;background:var(--gs-surface-2);border:1px solid #F5C04A;border-left:4px solid #F5C04A;border-radius:14px;padding:16px;margin-bottom:12px}
+.vnwarn{color:#F5C04A;font-size:var(--fs-cat);line-height:1.4}
+.vnft{display:block;font:600 var(--fs-cat) var(--body);color:var(--gs-text)}
+.vnbody{margin:6px 0 12px;font-size:var(--fs-body);line-height:1.5;color:var(--gs-text)}
+.vnfix label,.vnedit label{display:block;font-size:var(--fs-label);color:var(--gs-text);margin-bottom:6px}
+.vnin{height:48px;width:100%;box-sizing:border-box}
+.vnin.bad{border-color:#F5C04A}
+.vnin:focus{border-color:#3FD3B6;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
+.vntry{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+.vnsug{min-height:44px}
+.vnsug:hover{background:var(--gs-surface-3)}
+.vndisc{border:1px solid var(--gs-rule);border-radius:14px;overflow:hidden}
+.vndisc:empty{display:none}
+.vndh{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:68px;padding:10px 16px;background:none;border:0;text-align:left;color:var(--gs-text)}
+.vndh b{display:block;font:600 var(--fs-body) var(--body)}
+.vndh .help{display:block;font-size:var(--fs-help);color:var(--gs-muted)}
+.vndh svg{width:16px;height:16px;flex:none;color:var(--gs-muted)}
+.vndh[aria-expanded=true] svg{transform:rotate(180deg)}
+.vndh:hover{background:var(--gs-surface-2)}
+.vndh:focus-visible,.vnren:focus-visible,.vnsug:focus-visible,.vnx:focus-visible,.vnmore:focus-visible{outline:none;box-shadow:0 0 0 3px #3FD3B6}
+.vndh:active{background:var(--gs-surface-3)}
+#vnothers{border-top:1px solid var(--gs-rule);padding:0 16px;background:var(--gs-bg)}
+.vnrow{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:68px;border-top:1px solid var(--gs-rule)}
+.vnrow:first-child{border-top:0}
+.vnrow .nm{font-size:var(--fs-body);color:var(--gs-text)}
+.vnrow .help{font-size:var(--fs-help);color:var(--gs-muted)}
+.vnren{min-height:44px}
+.vnedit{padding:14px 0;border-top:1px solid var(--gs-rule)}
+.vnedit:first-child{border-top:0}
+.vnedit .help{font-size:var(--fs-help);color:var(--gs-muted);margin:6px 0 0}
+.vnerr{color:var(--gs-text);font-size:var(--fs-help);margin:6px 0 0}
+.vnerr span{color:#F5C04A}
+.vnalab{font-size:var(--fs-help);color:var(--gs-muted);margin:14px 0 8px}
+.vnchips{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.vnchip{display:inline-flex;align-items:center;gap:2px;min-height:44px;padding:0 4px 0 14px;border-radius:999px;background:var(--gs-surface-3);color:var(--gs-text);font-size:var(--fs-help)}
+.vnx{width:44px;height:44px;border:0;background:none;color:var(--gs-muted);border-radius:999px}
+.vnmore{min-height:44px}
+.vnadd{height:44px;width:180px}
+.vnacts{display:flex;gap:8px;margin-top:16px}
+.vnacts .btn{min-height:44px}
+@media (max-width:767px){.vnacts .btn,.vnsug{min-height:48px}}
+.vnfix.ok{border-color:rgba(63,211,182,.4)}
+.vnfix.ok .vnwarn{color:#3FD3B6}
+.vnchip.bad{box-shadow:inset 0 0 0 1px #F5C04A}
+.vnspin{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gs-spin .8s linear infinite;box-sizing:border-box}
+@media (prefers-reduced-motion:reduce){.vnspin{width:auto;height:auto;border:0;border-radius:0;animation:none;vertical-align:baseline}.vnspin::before{content:"\00b7\00b7\00b7"}}

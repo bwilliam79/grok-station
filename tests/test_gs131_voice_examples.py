@@ -119,8 +119,8 @@ class HomebridgeStopScreen(unittest.TestCase):
 
     def test_stop_title_is_escaped_once_and_always_given(self):
         js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
-        self.assertIn("const hbHead = (n, title) => ", js)
-        self.assertIn("<h2>${esc(title)}</h2>", js.split("const hbHead = (n, title) => ", 1)[1].split("\n", 1)[0])
+        self.assertIn("const hbHead = (n, title, noName) => ", js)
+        self.assertIn("<h2>${esc(title)}</h2>", js.split("const hbHead = (n, title, noName) => ", 1)[1].split("\n", 1)[0])
         self.assertNotIn("hbHead(4, esc(", js)
         for call in re.findall(r"hbStopped\(([^\n]*)\);", js):
             self.assertRegex(call, r'"We (can\'t use this login|couldn\'t finish the check)"\)?$', call)

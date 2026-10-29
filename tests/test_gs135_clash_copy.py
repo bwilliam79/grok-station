@@ -55,7 +55,9 @@ class ClashCopy(unittest.TestCase):
         for path in ("rowClash", "serverClashMsg"):
             self.assertIn("function " + path, JS)
         self.assertIn("serverClashMsg(serverClash, values[i], others)", JS)
-        self.assertIn("serverClashMsg(hbClash, values[i], others)", JS)
+        # 0.13.7: Homebridge names moved to Voice names; its device clash names the source the same way.
+        self.assertIn("function voiceClashBody(hit)", JS)
+        self.assertIn("sourceLabel(hit.src)", JS)
         self.assertIn("batchClashMsg(a)", JS)
 
 

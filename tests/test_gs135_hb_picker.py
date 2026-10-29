@@ -256,7 +256,7 @@ class PickerLogic(unittest.TestCase):
         self.assertIn("hbEnsurePicked", pick)
         self.assertIn("hbPickListHtml(", pick)
         self.assertIn("hbFooterState(", pick)
-        self.assertIn("hbNames(rows.filter(row => row && row._picked), () => hbPick(rows, backFn))", pick)
+        self.assertIn("hbNames(rows.filter(row => row && row._picked), () => hbPick(rows, backFn), next)", pick)
         self.assertIn("hbPickLoadingHtml()", load)
         self.assertIn("Choose what Grok can turn on and off by voice. Open a category to pick single devices.", JS)
         self.assertNotIn("Switches and outlets", JS)

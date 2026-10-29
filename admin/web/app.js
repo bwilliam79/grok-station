@@ -4723,20 +4723,26 @@ function hbRoomLine(row) {
   const room = row && row.room;
   return typeof room === "string" && room.trim() ? room.trim() : "";
 }
-function hbFooterState(selected, kind) {
+function hbFooterState(selected, kind, label) {
   const n = selected | 0;
-  const label = "Continue";
+  label = label || "Continue";
   if (kind === "loading") return {summary: "Loading devices\u2026", hint: "", disabled: true, label: label};
   if (kind === "empty") return {summary: "No devices selected", hint: "Nothing to pick yet.", disabled: true, label: label};
   if (n <= 0) return {summary: "No devices selected", hint: "Pick at least one device to continue.", disabled: true, label: label};
   return {summary: n === 1 ? "1 device selected" : (n + " devices selected"), hint: "", disabled: false, label: label};
+}
+// Gate only Pick's primary button while the name lists load (rev1.2 answer 7).
+function hbPickGate(state, namesState) {
+  if (namesState !== "loading" || !state || state.disabled) return state;
+  return Object.assign({}, state, {disabled: true, busy: true, label: "Checking names\u2026"});
 }
 function hbPickFootHtml(state) {
   const hint = state && state.hint ? '<span class="hint" id="pkh">' + esc(state.hint) + "</span>" : "";
   const dis = state && state.disabled ? (state.hint ? ' disabled aria-describedby="pkh"' : " disabled") : "";
   const summary = state && state.summary ? state.summary : "";
   const label = state && state.label ? state.label : "Continue";
-  return '<div class="pkfoot" id="hpfoot"><div class="sum" role="status"><b>' + esc(summary) + "</b>" + hint + '</div><button class="btn g" id="hbback" type="button">Back</button><button class="btn p" id="hbnext" type="button"' + dis + ">" + esc(label) + "</button></div>";
+  const spin = state && state.busy ? '<span class="vnspin" aria-hidden="true"></span>' : "";
+  return '<div class="pkfoot" id="hpfoot"><div class="sum" role="status"><b>' + esc(summary) + "</b>" + hint + '</div><button class="btn g" id="hbback" type="button">Back</button><button class="btn p" id="hbnext" type="button"' + dis + (state && state.busy ? ' aria-busy="true"' : "") + ">" + spin + esc(label) + "</button></div>";
 }
 function hbEmptyHtml() {
   return '<div class="cats"><div class="empty"><b>No devices to add</b><p class="help" style="line-height:1.5">Homebridge didn\u2019t share any lights, switches, outlets, fans or TVs that aren\u2019t already on the station. Add them in Homebridge, then try again.</p><div class="field inline" style="margin-top:14px"><button class="btn" id="hbretry" type="button">Try again</button></div></div></div>';
@@ -4790,6 +4796,176 @@ function hbPickListHtml(rows, picked, open) {
   return html + "</div>" + hbPickNoteHtml();
 }
 
+const HB_TYPE_LABEL = {light: "Light", switch: "Switch", outlet: "Outlet", fan: "Fan", tv: "TV"};
+// 0.13.7 Homebridge "Voice names" (Noor SPEC gs-hb-alias rev1.1, build answers rev1.2). Pure helpers;
+// pageIntegrations draws them. ctx: {bots: [names], reserved: [words], saved: [{name, src}]}. earlier: labels of
+// the other devices being added (at Pick, the rows before this one, so only the later of two is flagged).
+function voiceClash(value, ctx, earlier) {
+  const text = String(value == null ? "" : value).trim();
+  const key = spokenKey(text);
+  if (!text || !key) return {kind: "empty", other: ""};
+  const c = ctx || {};
+  for (const b of c.bots || []) if (spokenKey(b) === key) return {kind: "bot", other: String(b)};
+  for (const w of c.reserved || []) if (spokenKey(w) === key) return {kind: "reserved", other: String(w)};
+  for (const d of c.saved || []) if (d && spokenKey(d.name) === key) return {kind: "device", other: String(d.name), src: d.src || ""};
+  // earlier: labels of the other devices being added now, as strings or {label, name}; the reason names the device.
+  for (const o of earlier || []) {
+    const lab = o && typeof o === "object" ? o.label : o;
+    if (spokenKey(lab) === key) return {kind: "batch", other: String(o && typeof o === "object" ? o.name : o)};
+  }
+  return null;
+}
+// Clash of a whole row: its name, then each extra name.
+function voiceRowClash(row, ctx, earlier) {
+  earlier = earlier || [];
+  const name = row && row._name != null ? row._name : (row && row.name) || "";
+  const hit = voiceClash(name, ctx, earlier);
+  if (hit) return hit;
+  const extra = (row && Array.isArray(row._aliases)) ? row._aliases : [];
+  for (const a of extra) {
+    const h = voiceClash(a, ctx, earlier.concat([name]));
+    if (h && h.kind !== "empty") return h;
+  }
+  return null;
+}
+function voiceRowLabels(row) {
+  const name = row && row._name != null ? row._name : (row && row.name) || "";
+  return [name].concat((row && Array.isArray(row._aliases)) ? row._aliases : []);
+}
+// The same labels, each tagged with the device's current name (for "another device you're adding now").
+function voiceRowEntries(row) {
+  const labels = voiceRowLabels(row);
+  return labels.map(label => ({label: label, name: labels[0]}));
+}
+// Index -> clash for every row, checked in order (later rows see the earlier ones).
+function voiceClashes(rows, ctx) {
+  const out = {};
+  let earlier = [];
+  (rows || []).forEach((row, i) => {
+    const hit = voiceRowClash(row, ctx, earlier);
+    if (hit) out[i] = hit;
+    earlier = earlier.concat(voiceRowEntries(row));
+  });
+  return out;
+}
+// Reason copy, Noor SPEC gs-hb-alias rev1.2 build answer 1. Never "above" or "below"; always name the other.
+function voiceClashBody(hit) {
+  if (!hit) return "";
+  if (hit.kind === "empty") return "Enter a name so Grok knows what to call it.";
+  const other = String(hit.other == null ? "" : hit.other);
+  if (hit.kind === "device") {
+    const tag = sourceLabel(hit.src);
+    return "It sounds the same as \"" + other + "\"" + (tag ? " (" + tag + ")" : "") + " when you say it, so Grok can't tell them apart.";
+  }
+  if (hit.kind === "bot") return "It sounds the same as your bot \"" + other + "\" when you say it, so Grok can't tell them apart.";
+  if (hit.kind === "reserved") return "Grok already uses \"" + other + "\" as a command word, so it can't be a device name.";
+  return "It sounds the same as \"" + other + "\", another device you're adding now.";
+}
+// Room-based suggestion only (rev1.2 answer 2): "room" before a trailing light/lights, otherwise " room" at the end.
+function voiceRoomSuggestion(name) {
+  const t = String(name == null ? "" : name).trim();
+  if (!t) return "";
+  const m = t.match(/^(.*?)\s*\b(lights?)$/i);
+  if (m) return (m[1] ? m[1] + " " : "") + "room " + m[2].toLowerCase();
+  return t + " room";
+}
+// "Try:" suggestions: the room one, hidden when it clashes too (taken(s) true) or sounds like the name itself.
+function voiceSuggestions(name, taken) {
+  const ex = voiceRoomSuggestion(name);
+  if (!ex || !spokenKey(ex) || spokenKey(ex) === spokenKey(name) || (taken && taken(ex))) return [];
+  return [ex];
+}
+function voiceFootState(nFix, nTotal) {
+  const k = nFix | 0;
+  if (k > 0) return {summary: k + (k === 1 ? " name to fix" : " names to fix"), hint: "Fix the name above to continue.", disabled: true};
+  const n = nTotal | 0;
+  return {summary: n + (n === 1 ? " name ready" : " names ready"), hint: "", disabled: false};
+}
+function voiceFootHtml(state) {
+  const hint = state && state.hint ? '<span class="hint" id="vnh">' + esc(state.hint) + "</span>" : "";
+  const dis = state && state.disabled ? (state.hint ? ' disabled aria-describedby="vnh"' : " disabled") : "";
+  return '<div class="pkfoot" id="vnfoot"><div class="sum" role="status"><b>' + esc(state && state.summary || "") + "</b>" + hint + '</div><button class="btn g" id="hbback" type="button">Back</button><button class="btn p" id="hbnext" type="button"' + dis + ">Save devices</button></div>";
+}
+function voiceTypeWord(type) {
+  return {light: "light", switch: "switch", outlet: "outlet", fan: "fan", tv: "TV"}[type] || "device";
+}
+// A fix card; once its name no longer clashes it stays in place in the ready state (rev1.2 answer 4).
+function voiceFixCardHtml(row, i, hit, sugg) {
+  const name = row && row.name ? String(row.name) : "Device";
+  const val = row && row._name != null ? row._name : name;
+  const bad = !!hit;
+  const tid = "vnft" + i, bid = "vnfb" + i, fid = "vnf" + i;
+  let html = '<div class="vnfix' + (bad ? "" : " ok") + '" role="group" aria-labelledby="' + tid + '" data-i="' + i + '"><span class="vnwarn" aria-hidden="true">' + (bad ? "\u26a0" : "\u2713") + '</span><div class="vnfb">';
+  html += '<b class="vnft" id="' + tid + '">' + esc(voiceFixTitle(row, bad)) + "</b>";
+  html += '<p class="vnbody" id="' + bid + '">' + esc(bad ? voiceClashBody(hit) : VOICE_READY_BODY) + "</p>";
+  html += '<label for="' + fid + '">New name</label><input class="inp vnin' + (bad ? " bad" : "") + '" id="' + fid + '" data-fix="' + i + '" maxlength="40" value="' + esc(val) + '" aria-describedby="' + bid + '"' + (bad ? ' aria-invalid="true"' : "") + ">";
+  if (bad && sugg && sugg.length) {
+    html += '<div class="vntry"><span class="help">Try:</span>' + sugg.map(s => '<button type="button" class="btn vnsug" data-sug="' + i + '" data-v="' + esc(s) + '">' + esc(s) + "</button>").join("") + "</div>";
+  }
+  return html + "</div></div>";
+}
+const VOICE_READY_BODY = "Sounds different from your other devices now.";
+function voiceFixTitle(row, bad) {
+  const name = row && row.name ? String(row.name) : "Device";
+  if (bad) return name + " needs a new name";
+  const now = String(row && row._name != null ? row._name : name).trim();
+  return "\"" + now + "\" is ready";
+}
+function voiceDisclosureHtml(title, n, open) {
+  const chev = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+  return '<button type="button" class="vndh" id="vndh" aria-expanded="' + (open ? "true" : "false") + '" aria-controls="vnothers"><span><b>' + esc(title) + '</b><span class="help">Optional \u00b7 ' + n + (n === 1 ? " device keeps its Homebridge name" : " devices keep their Homebridge names") + "</span></span>" + chev + "</button>";
+}
+function voiceRowHtml(row, i) {
+  const name = row && row._name != null ? row._name : (row && row.name) || "";
+  const type = (row && HB_TYPE_LABEL[row.type]) || "Device";
+  return '<div class="vnrow" data-row="' + i + '"><div><div class="nm">' + esc(name) + '</div><div class="help">' + esc(type) + '</div></div><button type="button" class="btn vnren" data-ren="' + i + '">Rename</button></div>';
+}
+const VOICE_MAX_CHIPS = 3;
+// Clash per "Also answers to" chip: against the other devices, the draft name and the chips before it.
+function voiceChipHits(draft, ctx, earlier) {
+  let seen = (earlier || []).concat([draft && draft.name || ""]);
+  return ((draft && draft.aliases) || []).map(a => {
+    const hit = voiceClash(a, ctx, seen);
+    seen = seen.concat([a]);
+    return hit && hit.kind !== "empty" ? hit : null;
+  });
+}
+// Single-row Rename under "Rename others" (rev1.2 answers 3, 5, 6). nameHit: clash of the name; chipHits: per chip.
+// Done stays disabled with the reason visible while anything clashes; Cancel reverts.
+function voiceEditHtml(row, i, draft, nameHit, chipHits) {
+  const orig = row && row.name ? String(row.name) : "";
+  const bad = !!nameHit;
+  chipHits = chipHits || [];
+  const chipBad = chipHits.some(Boolean);
+  const reasons = [];
+  if (bad) reasons.push("vnee" + i);
+  if (chipBad) reasons.push("vnce" + i);
+  let html = '<div class="vnedit" data-row="' + i + '"><label for="vne' + i + '">What you say for this ' + esc(voiceTypeWord(row && row.type)) + "</label>";
+  html += '<input class="inp vnin' + (bad ? " bad" : "") + '" id="vne' + i + '" maxlength="40" value="' + esc(draft.name) + '" aria-describedby="vneh' + i + (bad ? " vnee" + i : "") + '"' + (bad ? ' aria-invalid="true"' : "") + ">";
+  if (bad) html += '<p class="vnerr" id="vnee' + i + '"><span aria-hidden="true">\u26a0 </span>' + esc(voiceClashBody(nameHit)) + "</p>";
+  html += '<p class="help" id="vneh' + i + '">Was "' + esc(orig) + '" in Homebridge. Pick something short that\u2019s easy to say.</p>';
+  html += '<div class="vnalab">Also answers to (optional)</div><div class="vnchips">';
+  html += draft.aliases.map((a, k) => '<span class="vnchip' + (chipHits[k] ? " bad" : "") + '">' + (chipHits[k] ? '<span aria-hidden="true">\u26a0 </span>' : "") + esc(a) + '<button type="button" class="vnx" data-rm="' + k + '" aria-label="Remove &quot;' + esc(a) + '&quot;">\u00d7</button></span>').join("");
+  if (draft.aliases.length < VOICE_MAX_CHIPS) {
+    html += draft.adding ? '<input class="inp vnadd" id="vnadd" maxlength="40" aria-label="Also answers to"' + (chipBad ? ' aria-describedby="vnce' + i + '"' : "") + ">" : '<button type="button" class="btn vnmore" id="vnmore">+ Add another</button>';
+  }
+  html += "</div>";
+  if (chipBad) {
+    html += '<div id="vnce' + i + '">' + draft.aliases.map((a, k) => chipHits[k] ? '<p class="vnerr"><span aria-hidden="true">\u26a0 </span>' + esc(voiceClashBody(chipHits[k])) + "</p>" : "").join("") + "</div>";
+  }
+  const dis = bad || chipBad;
+  html += '<div class="vnacts"><button type="button" class="btn p" id="vndone"' + (dis ? ' disabled aria-describedby="' + reasons.join(" ") + '"' : "") + '>Done</button><button type="button" class="btn" id="vncancel">Cancel</button></div></div>';
+  return html;
+}
+// Split typed chip text on commas; keep non-empty parts up to the chip limit.
+function voiceAddChips(aliases, text) {
+  const out = (aliases || []).slice();
+  String(text == null ? "" : text).split(",").map(t => t.trim()).filter(Boolean).forEach(t => {
+    if (out.length < VOICE_MAX_CHIPS) out.push(t);
+  });
+  return out;
+}
+
 async function pageIntegrations(el) {
   const STEPS = ["Find", "Pick", "Name", "Protect", "Done"];
   let found = [];
@@ -4797,6 +4973,10 @@ async function pageIntegrations(el) {
   let bots = [];
   let savedNames = [];
   let savedSrc = {};
+  let namesOk = false;
+  // Homebridge Pick: "loading" while bots and saved devices load, then "ok" or "failed" (rev1.2 answer 7).
+  let hbNamesState = "loading";
+  let hbPickRedraw = null;
   let serverClash = "";
   let hbBase = "";
   let hbUser = "";
@@ -4809,6 +4989,7 @@ async function pageIntegrations(el) {
   const head = (n, title) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${stepper(n)}<h2>${title}</h2>`;
 
   async function loadNames() {
+    namesOk = false;
     bots = [];
     savedNames = [];
     savedSrc = {};
@@ -4820,6 +5001,7 @@ async function pageIntegrations(el) {
       });
     }
     const g = await api("GET", "/api/integrations");
+    namesOk = !!(b.ok && g.ok);
     if (g.ok && g.data && Array.isArray(g.data.devices)) {
       g.data.devices.forEach(d => {
         if (d && d.name) { savedNames.push(String(d.name)); savedSrc[String(d.name)] = d.kind; }
@@ -5182,11 +5364,16 @@ async function pageIntegrations(el) {
   const HB_STEPS = ["Address", "Create login", "Enter login", "Verify", "Pick", "Name", "Done"];
   const HB_CHECK_LABEL = {reach: "Reached Homebridge", login: "Login works", admin: "Not an admin"};
   const HB_TYPE = {light: "Light", switch: "Switch", outlet: "Outlet", fan: "Fan", tv: "TV"};
-  const hbStepper = n => `<p class="stepper" aria-label="${HB_STEPS.join(" · ")}">${HB_STEPS.map((t, i) => {
-    const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
-    return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
-  }).join('<span class="sep"> · </span>')}</p>`;
-  const hbHead = (n, title) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(n)}<h2>${esc(title)}</h2>`;
+  // noName: a run with no name clash skips Voice names, so the stepper drops "Name" (Noor SPEC gs-hb-alias rev1.1).
+  const hbStepper = (n, noName) => {
+    const steps = noName ? HB_STEPS.filter(t => t !== "Name") : HB_STEPS;
+    if (noName && n > 6) n -= 1;
+    return `<p class="stepper" aria-label="${steps.join(" · ")}">${steps.map((t, i) => {
+      const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
+      return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
+    }).join('<span class="sep"> · </span>')}</p>`;
+  };
+  const hbHead = (n, title, noName) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(n, noName)}<h2>${esc(title)}</h2>`;
   function hbChecks(checks, pending) {
     const byId = {};
     (checks || []).forEach(c => { if (c && c.id) byId[c.id] = !!c.ok; });
@@ -5522,11 +5709,18 @@ async function pageIntegrations(el) {
   function hbPickShell(inner, footHtml) {
     el.innerHTML = `<div class="card wcard pk" id="hbpick">${hbHead(5, "Pick devices")}
       <p class="sub">Choose what Grok can turn on and off by voice. Open a category to pick single devices.</p>
-      <div id="hpbody">${inner}</div>
+      <div id="hpbody">${inner}</div><div id="hnerr"></div>
       ${footHtml}</div>`;
   }
   async function hbLoadPick(backTo) {
     const backFn = backTo || (() => hbEnter(hbBase));
+    // Bots and saved devices load alongside; Pick shows at once and only its button waits ("Checking names…").
+    hbNamesState = "loading";
+    hbPickRedraw = null;
+    loadNames().then(() => namesOk, () => false).then(ok => {
+      hbNamesState = ok ? "ok" : "failed";
+      if (hbPickRedraw && $("#hbpick", el)) hbPickRedraw();
+    });
     hbPickShell(hbPickLoadingHtml(), hbPickFootHtml(hbFooterState(0, "loading")));
     back(backFn);
     $("#hbback", el).onclick = backFn;
@@ -5575,8 +5769,11 @@ async function pageIntegrations(el) {
       }
     };
     const draw = focusKey => {
+      const picked = rows.filter(row => row && row._picked);
+      const clashes = voiceClashes(picked, voiceCtx());
+      const noName = hbNamesState === "ok" && !Object.keys(clashes).length;
       const inner = hbPickListHtml(rows, hbPickedMap(rows), open);
-      const foot = hbPickFootHtml(hbFooterState(hbPickedCount(rows), hbPickKind(rows)));
+      const foot = hbPickFootHtml(hbPickGate(hbFooterState(hbPickedCount(rows), hbPickKind(rows), noName ? "Save devices" : "Continue"), hbNamesState));
       const body = $("#hpbody", el);
       if (!$("#hbpick", el) || !body) hbPickShell(inner, foot);
       else {
@@ -5584,13 +5781,15 @@ async function pageIntegrations(el) {
         const oldFoot = $("#hpfoot", el);
         if (oldFoot) oldFoot.outerHTML = foot;
       }
+      const step = $("#hbpick .stepper", el);
+      if (step) step.outerHTML = hbStepper(5, noName);
       back(backFn);
       const backBtn = $("#hbback", el);
       if (backBtn) backBtn.onclick = backFn;
       const next = $("#hbnext", el);
       if (next) next.onclick = () => {
-        if (next.disabled) return;
-        hbNames(rows.filter(row => row && row._picked), () => hbPick(rows, backFn));
+        if (next.disabled || hbNamesState === "loading") return;
+        hbNames(rows.filter(row => row && row._picked), () => hbPick(rows, backFn), next);
       };
       const box = $("#hpbody", el);
       if (box && !box._hbPick) {
@@ -5603,85 +5802,227 @@ async function pageIntegrations(el) {
         if (nodes[i].getAttribute("data-k") === focusKey) { nodes[i].focus(); break; }
       }
     };
+    hbPickRedraw = () => draw();
     draw();
   }
-  async function hbNames(rows, backFn) {
-    if (!rows.length) return hbPick(rows, backFn);
-    await loadNames();
-    let hbClash = "";
-    el.innerHTML = `<div class="card wcard">${hbHead(6, "Name them")}
-      <p class="sub">This is the name you say. Aliases are optional, separated by commas.</p>
-      <div id="hnrows"></div>
-      <div id="hnerr"></div>
-      <div class="field inline" style="margin-top:8px"><button class="btn g" id="hbback" type="button">Back</button>
-        <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
-    back(backFn);
-    $("#hbback", el).onclick = backFn;
-    const box = $("#hnrows", el);
-    rows.forEach((row, i) => {
-      const block = document.createElement("div");
-      block.className = "nmrow";
-      block.innerHTML = `<div class="field"><label for="hn${i}">Name</label><input class="inp" id="hn${i}" maxlength="40" value="${esc(row._name != null ? row._name : (row.name || ""))}"></div>
-        <div class="field"><label for="ha${i}">Aliases</label><input class="inp" id="ha${i}" maxlength="80" value="${esc(row._aliases != null ? row._aliases : "")}"></div>
-        <div class="ferr" data-err hidden></div>`;
-      box.appendChild(block);
-    });
-    const sync = () => {
-      const values = rows.map((_, i) => $("#hn" + i, el).value);
-      const aliases = rows.map((_, i) => $("#ha" + i, el).value.split(",").map(s => s.trim()).filter(Boolean));
-      let blocked = false;
-      rows.forEach((row, i) => {
-        row._name = values[i];
-        row._aliases = $("#ha" + i, el).value;
-        const others = [];
-        rows.forEach((_, j) => { if (j !== i) { others.push(values[j]); aliases[j].forEach(a => others.push(a)); } });
-        let msg = rowClash(values[i], others);
-        aliases[i].forEach(a => { const am = rowClash(a, others); if (am) msg = msg || am; });
-        if (hbClash && (spokenKey(values[i]) === spokenKey(hbClash.name || "") || aliases[i].some(a => spokenKey(a) === spokenKey(hbClash.name || "")))) {
-          msg = serverClashMsg(hbClash, values[i], others);
-        }
-        const blocks = box.querySelectorAll(".nmrow");
-        const err = blocks[i] ? blocks[i].querySelector("[data-err]") : null;
-        if (err) { err.hidden = !msg; err.textContent = msg || ""; }
-        if (msg) blocked = true;
-      });
-      const next = $("#hbnext", el);
-      if (next) next.disabled = blocked || values.some(v => !v.trim());
-    };
-    box.querySelectorAll("input").forEach(inp => inp.addEventListener("input", () => { hbClash = ""; sync(); }));
-    sync();
-    $("#hbnext", el).onclick = () => {
-      const body = rows.map(row => ({
-        uid: row.uid,
-        name: (row._name != null ? row._name : row.name || "").trim(),
-        aliases: String(row._aliases || "").split(",").map(s => s.trim()).filter(Boolean),
-      }));
-      const send = async pw => {
-        busyBtn($("#hbnext", el), true);
-        const r = await api("POST", "/api/integrations/homebridge/devices", pw ? {devices: body, password: pw} : {devices: body});
-        busyBtn($("#hbnext", el), false, "Next");
-        if (r.ok) {
-          if (pw) await refreshStepup();
-          hbDone(r.data && r.data.devices || []);
-          return r;
-        }
-        if (r.status === 403 || r.status === 429) return r;
-        if (r.data && r.data.error === "clash") {
-          hbClash = r.data;
-          sync();
-          return {ok: true};
-        }
-        errBox($("#hnerr", el), (r.data && r.data.message) || "Couldn't save these devices.");
-        return {ok: true};
-      };
-      const ask = () => askPassword("Save these devices?", "Enter the admin password to add devices to the station.", "Save", send);
-      if (stepupOpen()) send("").then(r => { if (r && r.status === 403) ask(); });
-      else ask();
-    };
+  function voiceCtx() {
+    return {bots: bots.slice(), reserved: SPOKEN_RESERVED.slice(), saved: savedNames.map(n => ({name: n, src: savedSrc[n] || ""}))};
   }
-  function hbDone(devices) {
+  // Save with the existing password step. onClash(hit) gets a server clash (409). Payload unchanged.
+  function hbSaveRows(rows, btn, onClash, noName) {
+    const body = rows.map(row => ({
+      uid: row.uid,
+      name: String(row._name != null ? row._name : row.name || "").trim(),
+      aliases: (Array.isArray(row._aliases) ? row._aliases : []).map(s => String(s).trim()).filter(Boolean),
+    }));
+    const send = async pw => {
+      if (btn) busyBtn(btn, true, "Saving\u2026");
+      const r = await api("POST", "/api/integrations/homebridge/devices", pw ? {devices: body, password: pw} : {devices: body});
+      if (btn && btn.isConnected) busyBtn(btn, false, "Save devices");
+      if (r.ok) {
+        if (pw) await refreshStepup();
+        hbDone(r.data && r.data.devices || [], noName);
+        return r;
+      }
+      if (r.status === 403 || r.status === 429) return r;
+      if (r.data && r.data.error === "clash") {
+        onClash(r.data);
+        return {ok: true};
+      }
+      const box = $("#hnerr", el);
+      if (box) errBox(box, (r.data && r.data.message) || "Couldn't save these devices.");
+      return {ok: true};
+    };
+    const ask = () => askPassword("Save these devices?", "Enter the admin password to add devices to the station.", "Save", send);
+    if (stepupOpen()) send("").then(r => { if (r && r.status === 403) ask(); });
+    else ask();
+  }
+  // A server clash names the occupied label, not the row. Flag every row with a name that sounds like it.
+  function serverFlag(rows, hit) {
+    const key = spokenKey(hit && hit.name || "");
+    const flagged = {};
+    const match = rows.map((row, i) => i).filter(i => voiceRowLabels(rows[i]).some(l => spokenKey(l) === key));
+    const saved = savedNames.some(n => spokenKey(n) === key);
+    // The occupied label belongs to another device in this batch: flag the later ones and name the first.
+    if (hit && hit.with === "device" && !saved && match.length > 1) {
+      const first = rows[match[0]];
+      match.slice(1).forEach(i => { flagged[i] = {kind: "batch", other: voiceRowLabels(first)[0]}; });
+      return flagged;
+    }
+    match.forEach(i => {
+      flagged[i] = {kind: hit.with === "device" ? "device" : hit.with === "reserved" ? "reserved" : "bot",
+                    other: hit.name || "", src: hit.source || savedSrc[hit.name] || ""};
+    });
+    return flagged;
+  }
+  // Voice names, clash layout only (no-clash runs skip this step). fixHits: index -> clash at entry.
+  function hbVoiceNames(rows, backFn, fixHits, focusFix) {
+    const fixIdx = Object.keys(fixHits).map(Number).sort((a, b) => a - b);
+    rows.forEach((row, i) => { if (fixHits[i]) row._fixHit = fixHits[i]; });
+    let open = false;
+    let editing = -1;
+    let draft = null;
+    const others = () => rows.map((_, i) => i).filter(i => fixIdx.indexOf(i) < 0);
+    // A name being fixed or edited is checked against every other row in the batch, not only earlier ones.
+    const allBut = i => [].concat(...rows.filter((_, j) => j !== i).map(voiceRowEntries));
+    const live = () => {
+      const out = {};
+      fixIdx.forEach(i => { const h = voiceRowClash(rows[i], voiceCtx(), allBut(i)); if (h) out[i] = h; });
+      return out;
+    };
+    const takenFor = i => s => !!voiceClash(s, voiceCtx(), allBut(i));
+    const nameHit = i => voiceClash(draft.name, voiceCtx(), allBut(i));
+    const chipHits = i => voiceChipHits(draft, voiceCtx(), allBut(i));
+    const keepCount = ids => ids.filter(i => rows[i]._name == null || rows[i]._name === rows[i].name).length;
+    const shell = () => {
+      el.innerHTML = `<div class="card wcard pk vn" id="hbvn">${hbHead(6, "Voice names")}
+        <p class="sub">Grok will use these names when you talk to it. Most are ready as they are.</p>
+        <div id="vnfixes"></div><div class="vndisc" id="vndisc"></div><div id="hnerr"></div><div id="vnfootw"></div></div>`;
+      back(backFn);
+    };
+    const drawFoot = hits => {
+      const n = fixIdx.filter(i => hits[i]).length;
+      $("#vnfootw", el).innerHTML = voiceFootHtml(voiceFootState(n, rows.length));
+      $("#hbback", el).onclick = backFn;
+      const next = $("#hbnext", el);
+      next.onclick = () => {
+        if (next.disabled) return;
+        hbSaveRows(rows, next, hit => {
+          const flagged = serverFlag(rows, hit);
+          const merged = Object.assign({}, fixHits, flagged);
+          hbVoiceNames(rows, backFn, merged, Object.keys(flagged).map(Number)[0]);
+        }, false);
+      };
+    };
+    const drawFixes = (hits, focusId) => {
+      $("#vnfixes", el).innerHTML = fixIdx.map(i => voiceFixCardHtml(rows[i], i, hits[i], voiceSuggestions(rows[i]._name != null ? rows[i]._name : rows[i].name, takenFor(i)))).join("");
+      if (focusId) { const f = $("#" + focusId, el); if (f) { f.focus(); const v = f.value; f.value = ""; f.value = v; } }
+    };
+    const drawOthers = focusSel => {
+      const ids = others();
+      const box = $("#vndisc", el);
+      if (!ids.length) { box.innerHTML = ""; return; }
+      let inner = "";
+      if (open) {
+        inner = '<div id="vnothers">' + ids.map(i => i === editing ? voiceEditHtml(rows[i], i, draft, nameHit(i), chipHits(i)) : voiceRowHtml(rows[i], i)).join("") + "</div>";
+      }
+      box.innerHTML = voiceDisclosureHtml("Rename others", keepCount(ids), open) + inner;
+      if (focusSel) { const f = box.querySelector(focusSel); if (f) f.focus(); }
+    };
+    const redraw = (focusId, focusSel) => {
+      const hits = live();
+      drawFixes(hits, focusId);
+      drawOthers(focusSel);
+      drawFoot(hits);
+    };
+    shell();
+    redraw(focusFix != null ? "vnf" + focusFix : null);
+    const root = $("#hbvn", el);
+    root.addEventListener("input", ev => {
+      const t = ev.target;
+      if (t && t.dataset && t.dataset.fix != null) {
+        const i = +t.dataset.fix;
+        rows[i]._name = t.value;
+        const hits = live();
+        const card = t.closest(".vnfix");
+        const bad = !!hits[i];
+        t.classList.toggle("bad", bad);
+        if (bad) t.setAttribute("aria-invalid", "true"); else t.removeAttribute("aria-invalid");
+        // The card stays in place; only its state changes (rev1.2 answer 4). The field keeps focus.
+        if (card) {
+          card.classList.toggle("ok", !bad);
+          const icon = card.querySelector(".vnwarn");
+          if (icon) icon.textContent = bad ? "\u26a0" : "\u2713";
+          const title = card.querySelector(".vnft");
+          if (title) title.textContent = voiceFixTitle(rows[i], bad);
+          const body = card.querySelector(".vnbody");
+          if (body) body.textContent = bad ? voiceClashBody(hits[i]) : VOICE_READY_BODY;
+          // A ready card hides its "Try:" line at once, not at the next redraw (Noor).
+          const tryLine = card.querySelector(".vntry");
+          if (tryLine) tryLine.hidden = !bad;
+        }
+        drawFoot(hits);
+      } else if (t && t.id === "vne" + editing) {
+        draft.name = t.value;
+        const pos = t.selectionStart;
+        drawOthers("#vne" + editing);
+        const f = $("#vne" + editing, el);
+        if (f && pos != null) f.setSelectionRange(pos, pos);
+      } else if (t && t.id === "vnadd" && draft && t.value.indexOf(",") >= 0) {
+        addChips(t.value);
+      }
+    });
+    // Enter or a comma adds a chip; the field stays open for another until the limit (rev1.2 answer 5).
+    const addChips = text => {
+      draft.aliases = voiceAddChips(draft.aliases, text);
+      draft.adding = draft.aliases.length < VOICE_MAX_CHIPS;
+      drawOthers(draft.adding ? "#vnadd" : "#vnmore");
+    };
+    root.addEventListener("keydown", ev => {
+      const t = ev.target;
+      // Backspace in an empty field never deletes a chip.
+      if (t && t.id === "vnadd" && ev.key === "Enter") { ev.preventDefault(); const v = t.value; t.value = ""; addChips(v); }
+    });
+    root.addEventListener("focusout", ev => {
+      const t = ev.target;
+      if (t && t.id === "vnadd" && draft && t.isConnected) {
+        draft.aliases = voiceAddChips(draft.aliases, t.value);
+        draft.adding = false;
+        setTimeout(() => drawOthers("#vnmore"), 0);
+      }
+    });
+    root.addEventListener("click", ev => {
+      const b = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!b || !root.contains(b)) return;
+      if (b.dataset.sug != null) {
+        const i = +b.dataset.sug;
+        rows[i]._name = b.dataset.v;
+        redraw("vnf" + i);
+      } else if (b.id === "vndh") {
+        open = !open;
+        if (!open) { editing = -1; draft = null; }
+        drawOthers("#vndh");
+      } else if (b.dataset.ren != null) {
+        editing = +b.dataset.ren;
+        const row = rows[editing];
+        draft = {name: row._name != null ? row._name : row.name || "", aliases: (row._aliases || []).slice(), adding: false};
+        drawOthers("#vne" + editing);
+      } else if (b.id === "vncancel") {
+        const i = editing;
+        editing = -1; draft = null;
+        drawOthers('[data-ren="' + i + '"]');
+      } else if (b.id === "vndone") {
+        if (b.disabled) return;
+        const i = editing;
+        rows[i]._name = draft.name.trim();
+        rows[i]._aliases = draft.aliases.slice();
+        editing = -1; draft = null;
+        redraw(null, '[data-ren="' + i + '"]');
+      } else if (b.id === "vnmore") {
+        draft.adding = true;
+        drawOthers("#vnadd");
+      } else if (b.dataset.rm != null) {
+        draft.aliases.splice(+b.dataset.rm, 1);
+        drawOthers(draft.adding ? "#vnadd" : "#vnmore");
+      }
+    });
+  }
+  // After Pick: no clash saves with the Homebridge names (Voice names is skipped); a clash opens Voice names.
+  function hbNames(rows, backFn, btn) {
+    if (!rows.length) return hbPick(rows, backFn);
+    const clashes = voiceClashes(rows, voiceCtx());
+    // Name lists failed to load: always go to Voice names; the server check runs on save.
+    if (hbNamesState === "failed") return hbVoiceNames(rows, backFn, clashes);
+    const reopen = hit => {
+      const flagged = serverFlag(rows, hit);
+      hbVoiceNames(rows, backFn, flagged, Object.keys(flagged).map(Number)[0]);
+    };
+    if (Object.keys(clashes).length) return hbVoiceNames(rows, backFn, clashes);
+    hbSaveRows(rows, btn, reopen, true);
+  }
+  function hbDone(devices, noName) {
     const sample = (devices[0] && devices[0].name) || "Porch Light";
-    el.innerHTML = `<div class="card wcard">${hbHead(7, "All set")}
+    el.innerHTML = `<div class="card wcard">${hbHead(7, "All set", noName)}
       <p class="sub">Turn on Voice home control, then try it: say 'Hey Grok, turn on ${esc(sample)}'.</p>
       <div id="hdrows"></div>
       <p class="help">Test writes the current value, so nothing changes. Say the device's name; 'turn off the lights' on its own isn't supported yet.</p>
