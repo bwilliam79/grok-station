@@ -24,10 +24,10 @@ from urllib.parse import urlsplit
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(ROOT, "scripts", "vendor-lock.txt")
 
-# Home mode pins. pynacl stays. cffi and pycparser are the versions to lock
+# Home mode pins (pynacl 1.6.2 matches the relay, 0.13.7). cffi and pycparser are the versions to lock
 # once their published hashes have been fetched.
 PINS = (
-    ("pynacl", "1.5.0"),
+    ("pynacl", "1.6.2"),
     ("cffi", "2.0.0"),
     ("pycparser", "2.23"),
 )

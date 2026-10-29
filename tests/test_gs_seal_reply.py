@@ -1939,11 +1939,11 @@ class SealReply(unittest.TestCase):
             self.assertTrue(su.wheel_compatible(uni))
             self.assertFalse(su.wheel_compatible("cffi-1.17.1-%s-%s-macosx_11_0_arm64.whl" % (cp, cp)))
         self.assertEqual(su.parse_vendor_lock(self.slurp(os.path.join(ROOT, "scripts", "vendor-lock.txt")))[:1],
-                         [("pynacl", "1.5.0", su.parse_vendor_lock(self.slurp(os.path.join(ROOT, "scripts", "vendor-lock.txt")))[0][2])])
+                         [("pynacl", "1.6.2", su.parse_vendor_lock(self.slurp(os.path.join(ROOT, "scripts", "vendor-lock.txt")))[0][2])])
         reqs = su.parse_vendor_lock(self.slurp(os.path.join(ROOT, "scripts", "vendor-lock.txt")))
         self.assertEqual([row[0] for row in reqs], ["pynacl", "cffi", "pycparser"])
         self.assertEqual([(row[0], row[1]) for row in reqs],
-                         [("pynacl", "1.5.0"), ("cffi", "2.0.0"), ("pycparser", "2.23")])
+                         [("pynacl", "1.6.2"), ("cffi", "2.0.0"), ("pycparser", "2.23")])
         for url in (
             "http://pypi.org/pypi/cffi/1.17.1/json",
             "https://evil.example/pypi/cffi/1.17.1/json",
@@ -1977,7 +1977,7 @@ class SealReply(unittest.TestCase):
         self.assertEqual(parsed[0][2], ["cd" * 32, "ab" * 32])
         doc = {"urls": [{"digests": {"sha256": digest}}, {"digests": {"sha256": digest}}]}
         self.assertEqual(mod.hashes_from_doc(doc), [digest])
-        self.assertEqual(mod.PINS, (("pynacl", "1.5.0"), ("cffi", "2.0.0"), ("pycparser", "2.23")))
+        self.assertEqual(mod.PINS, (("pynacl", "1.6.2"), ("cffi", "2.0.0"), ("pycparser", "2.23")))
 
     def _pack_installed(self, dist, version, roots):
         buf = io.BytesIO()

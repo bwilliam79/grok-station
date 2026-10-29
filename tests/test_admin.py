@@ -1614,7 +1614,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])  # not a version
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": ga.HELPER_RELEASE})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.1"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.8"})["out_of_date"])  # newer than the station knows
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])  # 0.13.0 helper
         common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()
         self.assertIn('HELPER_VERSION = "%s"' % ga.HELPER_RELEASE, common)
