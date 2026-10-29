@@ -14,6 +14,7 @@ if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
   install -o grok -g grok -m644 "$S/wake/gain.py" /opt/grok-station/wake/gain.py.new && mv /opt/grok-station/wake/gain.py.new /opt/grok-station/wake/gain.py
   install -o grok -g grok -m644 "$S/wake/fewshot.py" /opt/grok-station/wake/fewshot.py.new && mv /opt/grok-station/wake/fewshot.py.new /opt/grok-station/wake/fewshot.py
   install -o grok -g grok -m644 "$S/wake/wait_tone.py" /opt/grok-station/wake/wait_tone.py.new && mv /opt/grok-station/wake/wait_tone.py.new /opt/grok-station/wake/wait_tone.py
+  install -o grok -g grok -m644 "$S/wake/stopword.py" /opt/grok-station/wake/stopword.py.new && mv /opt/grok-station/wake/stopword.py.new /opt/grok-station/wake/stopword.py
   install -d -o grok -g grok /opt/grok-station/wake/models /opt/grok-station/wake/models/enrolled
   install -o grok -g grok -m644 "$S/wake/models/fewshot_negatives.npz" /opt/grok-station/wake/models/fewshot_negatives.npz
 fi

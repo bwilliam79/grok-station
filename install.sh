@@ -194,6 +194,81 @@ for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py
   run rm -f $O/relay/release.py  # old updater module, no longer used
 }
 
+_vosk_pip() {
+  # A failed install must not fail the station: the tile still works by touch.
+  # Offline first boot already has the image venv; do not print or run pip.
+  if [ "$OFFLINE" = 1 ]; then
+    return 0
+  fi
+  if [ "$DRY" = 1 ]; then
+    echo "+ $O/wake/venv/bin/pip install --quiet -r wake/requirements-vosk.txt"
+    return 0
+  fi
+  "$O/wake/venv/bin/pip" install --quiet -r wake/requirements-vosk.txt || echo "stop word: off (on-device recogniser not installed); touch still works"
+}
+
+_vosk_model() {
+  # Online only. Dry run prints the fetch and never the checksum. A bad zip is deleted and the install continues.
+  model=vosk-model-small-en-us-0.15
+  sha=30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
+  url=https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+  dir=$O/wake/models/$model
+  if [ "$DRY" = 1 ]; then
+    echo "+ fetch $url and verify sha256 before unzip into $dir"
+    return 0
+  fi
+  if [ "$OFFLINE" = 1 ]; then
+    return 0
+  fi
+  if [ -f "$dir/.sha256" ]; then
+    mark=$(tr -d '[:space:]' < "$dir/.sha256" 2>/dev/null || true)
+    if [ "$mark" = "$sha" ]; then
+      chown -R grok:grok "$dir" || true
+      return 0
+    fi
+  fi
+  tmp=$(mktemp 2>/dev/null) || { echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
+  curl -fsSL --max-time 120 -o "$tmp" "$url" || { rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
+  got=$(sha256sum "$tmp" 2>/dev/null | awk 'NR==1 {print $1}') || true
+  if [ "$got" != "$sha" ]; then
+    rm -f "$tmp"
+    echo "stop word: model checksum mismatch; touch still works"
+    return 0
+  fi
+  if python3 - "$tmp" "$O/wake/models" "$model" "$sha" <<'PY'
+import os, sys, zipfile
+zpath, dest, model, sha = sys.argv[1:5]
+root = os.path.realpath(dest)
+os.makedirs(root, exist_ok=True)
+try:
+    z = zipfile.ZipFile(zpath)
+except Exception:
+    sys.exit(1)
+try:
+    for info in z.infolist():
+        name = info.filename.replace("\\", "/")
+        if name.startswith("/") or os.path.isabs(info.filename) or ".." in name.split("/"):
+            sys.exit(1)
+        target = os.path.realpath(os.path.join(root, name))
+        if target != root and not target.startswith(root + os.sep):
+            sys.exit(1)
+    z.extractall(root)
+finally:
+    z.close()
+model_dir = os.path.join(root, model)
+if not os.path.isdir(model_dir):
+    sys.exit(1)
+with open(os.path.join(model_dir, ".sha256"), "w") as f:
+    f.write(sha + "\n")
+PY
+  then
+    chown -R grok:grok "$dir" || true
+  else
+    echo "stop word: off (on-device recogniser not installed); touch still works"
+  fi
+  rm -f "$tmp"
+}
+
 st_wake() {
   run install -d -o grok -g grok $O/wake $O/wake/models $O/wake/models/enrolled $O/portraits  # portraits: persona cache the wake listener writes
   sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
@@ -205,7 +280,7 @@ st_wake() {
     requests "websockets>=17"
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json $O/wake/
+  run install -o grok -g grok -m644 wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/stopword.py wake/wakewords.json $O/wake/
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
   run install -o grok -g grok -m644 wake/models/hey_grok.onnx $O/wake/models/
   # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).
@@ -235,6 +310,9 @@ if gone:
     os.chown(p + ".tmp", st.st_uid, st.st_gid); os.chmod(p + ".tmp", st.st_mode & 0o777); os.replace(p + ".tmp", p)
 PY
   fi
+  # vosk: offline speech recognition so saying stop works during wake-word training; grammar limited to stop, never leaves the station.
+  _vosk_pip
+  _vosk_model
 }
 
 st_boot() {  # boot splash and kiosk; hides the blinking console cursor

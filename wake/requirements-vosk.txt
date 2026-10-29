@@ -1,0 +1,4 @@
+# vosk: offline speech recognition so saying stop works during wake-word training; grammar limited to stop, never leaves the station.
+# Exact pin (not a hash lock): vosk pulls cffi, requests, srt, tqdm, and websockets, and a
+# hash-locked install of that tree would downgrade websockets in the wake venv.
+vosk==0.3.44

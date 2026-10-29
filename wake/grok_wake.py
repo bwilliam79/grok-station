@@ -899,16 +899,6 @@ def control_server():
                     return self._r(400, {"error": "bad json"})
                 code, obj = enroll_control(body)
                 return self._r(code, obj)
-            if self.path == "/enroll/heard":
-                try:
-                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
-                    body = json.loads(self.rfile.read(n) or b"{}")
-                except (ValueError, TypeError):
-                    return self._r(400, {"error": "bad json"})
-                if not isinstance(body, dict) or set(body) != {"text"} or not isinstance(body.get("text"), str):
-                    return self._r(400, {"error": "bad json"})
-                # The words are not logged. "stop" discards; anything else is ignored.
-                return self._r(200, {"ok": True, "command": note_training_speech(body["text"])})
             if self.path == "/enroll/open-tile":
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
@@ -1305,16 +1295,9 @@ def _note_clip(i, kept, phase, why, topup, n):
     last["topup"] = bool(topup)
 
 
-def _enroll_hold():
-    """Pause between clips. Discard clears the pause so this returns."""
-    while ENROLL_STATE.get("pause") and not ENROLL_STATE.get("discard"):
-        _poll_training_speech()
-        if ENROLL_STATE.get("discard"):
-            break
-        time.sleep(0.2)
-
-
 _TRAIN_LOCK = threading.Lock()
+_STOP_LOCK = threading.Lock()
+_STOP = {"tried": False, "rec": None}  # on-device "stop" recogniser; created once, only while training
 
 
 def training_command(text):
@@ -1353,12 +1336,104 @@ def note_training_speech(text):
 
 
 def _poll_training_speech():
-    """A transcript left in heard_text takes the same path as /enroll/control discard."""
-    text = ENROLL_STATE.get("heard_text") or ""
+    """A transcript left in heard_text takes the same path as /enroll/control discard.
+
+    The read-and-clear is under the lock. The handler takes the same lock, so it runs after.
+    """
+    with _TRAIN_LOCK:
+        text = ENROLL_STATE.get("heard_text") or ""
+        if text:
+            ENROLL_STATE["heard_text"] = ""
     if not text:
         return None
-    ENROLL_STATE["heard_text"] = ""
     return note_training_speech(text)
+
+
+def _stop_recogniser_unlocked():
+    """The cached on-device recogniser. Caller holds _STOP_LOCK. None when it is not installed."""
+    if _STOP["tried"]:
+        return _STOP["rec"]
+    _STOP["tried"] = True
+    import stopword
+    _STOP["rec"] = stopword.recogniser()
+    return _STOP["rec"]
+
+
+def _reset_stop_recogniser():
+    """New training (a recording, or the prompt tile). Nothing is loaded until the first one."""
+    with _STOP_LOCK:
+        rec = _stop_recogniser_unlocked()
+        if rec is None:
+            return
+        try:
+            rec.reset()
+        except Exception:
+            return
+
+
+def _feed_training_audio(samples):
+    """One 16 kHz int16 frame while training. The text is not logged, stored, or posted."""
+    if samples is None:
+        return
+    with _STOP_LOCK:
+        rec = _stop_recogniser_unlocked()
+        if rec is None:
+            return
+        try:
+            text = rec.feed(samples)
+        except Exception:
+            return
+    if not isinstance(text, str) or not text.strip():
+        return
+    with _TRAIN_LOCK:
+        ENROLL_STATE["heard_text"] = text
+    _poll_training_speech()
+
+
+def _training_read(read16):
+    """Mic read used only by enroll and the prompt hold. Every frame is checked for "stop"."""
+    if getattr(read16, "_gs_hears_stop", False):
+        return read16
+
+    def wrapped(raw=False):
+        frame = read16(raw=raw)
+        _feed_training_audio(frame)
+        return frame
+
+    wrapped._gs_hears_stop = True
+    return wrapped
+
+
+def _training_holding():
+    """Paused between clips, or the prompt tile is up and nothing is recording yet."""
+    if ENROLL_STATE.get("discard"):
+        return False
+    if ENROLL_STATE.get("pause"):
+        return True
+    return bool(ENROLL_STATE.get("prompt")) and not ENROLL_STATE.get("busy")
+
+
+def _enroll_hold(read16=None):
+    """Pause between clips, or wait on the prompt tile. A spoken stop leaves this.
+
+    The capture thread is blocked here, so the mic has to be drained or the next read stalls.
+    Not holding returns without touching the recogniser.
+    """
+    if not _training_holding():
+        return
+    if read16 is None:
+        while _training_holding():
+            _poll_training_speech()
+            if not _training_holding():
+                break
+            time.sleep(0.2)
+        return
+    hear = _training_read(read16)
+    while _training_holding():
+        _poll_training_speech()
+        if not _training_holding():
+            break
+        hear()
 
 
 def _umask_077():
@@ -1536,6 +1611,7 @@ def open_enroll_tile(j):
         if ENROLL_STATE.get("busy"):
             return 409, {"error": "enrollment in progress"}
         ENROLL_STATE["prompt"] = {"phrase": phrase or "", "persona": who, "text": say}
+    _reset_stop_recogniser()
     post_state("enroll", text=say, who=who, heard=f"1/{ENROLL_COUNT}|prompt|")
     return 200, {"ok": True}
 
@@ -1638,6 +1714,8 @@ def enroll(req, read16, play):
         ENROLL_STATE["pause"] = False
         ENROLL_STATE["discard"] = False
         ENROLL_STATE["heard_text"] = ""
+    _reset_stop_recogniser()
+    read16 = _training_read(read16)
     show = lambda i, stage, extra="": post_state("enroll", text=say, who=persona, heard=f"{i}/{n}|{stage}|{extra}")
     ENROLL_STATE["last"] = {"phrase": phrase, "session": ses, "count": n, "started": time.time(),
                              "persona": persona, "stage": "recording", "message": "Say it on the station.",
@@ -1655,7 +1733,7 @@ def enroll(req, read16, play):
             _poll_training_speech()
             if ENROLL_STATE.get("discard"):
                 break
-            _enroll_hold()
+            _enroll_hold(read16)
             _poll_training_speech()
             if ENROLL_STATE.get("discard"):
                 break
@@ -3184,6 +3262,9 @@ def main():
             xx = np.concatenate([st["tail"], x]); st["tail"] = xx[-(len(_K) - 1):]
             x = np.convolve(xx, _K, "valid")[::DECIM]
         pcm = np.clip(x * GAIN, -32768, 32767).astype("<i2")
+        # The prompt tile is up while this loop still owns the mic. Recording uses enroll's own read.
+        if ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy"):
+            _feed_training_audio(pcm)
         sc = scores(model, pcm)
         s = max(sc.values(), default=0.0)
         hit = det.feed(sc)
