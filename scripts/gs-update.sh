@@ -421,53 +421,37 @@ head -n 1 "$T/instructions" | grep -qx "Grok Station instructions, release $rele
 
 # G and the tools. One update at a time per computer.
 mkdir -p "$STATE"
-lock="$STATE/.update-lock"
-# A run killed between mktemp and rename leaves .update-lock.new.* behind. Drop folders older than
-# 15 minutes once, before taking the lock. A symlink is left alone: it might point outside this directory.
-now=$(date +%s)
-for d in "$STATE"/.update-lock.new.*; do
+# A kernel lock (flock) on a file that is never deleted: the kernel drops it when the holder exits or dies,
+# so there is no stale lock to break and no window where one waiter deletes another's live lock.
+lockf="$STATE/.update.flock"
+[ -L "$lockf" ] && die "$lockf is a symlink; refusing"
+exec 9>>"$lockf" || die "cannot open $lockf"
+if [ -z "${GS_UPDATE_NO_FLOCK:-}" ] && command -v flock >/dev/null 2>&1; then
+  flock -w 60 9 || die "another update is running"
+else
+  # No flock(1) (macOS): take the same lock with fcntl on the inherited fd 9. It stays held after python
+  # exits because this shell keeps the open file description.
+  py - <<'PY' || die "another update is running"
+import fcntl, sys, time
+end = time.time() + 60
+while True:
+    try:
+        fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        sys.exit(0)
+    except BlockingIOError:
+        if time.time() > end:
+            sys.exit(1)
+        time.sleep(0.2)
+PY
+fi
+# Leftovers of the old rename lock (0.13.5 and earlier). Safe to drop now that we hold the kernel lock;
+# a symlink is left alone: it might point outside this directory.
+for d in "$STATE/.update-lock" "$STATE"/.update-lock.new.*; do
   [ -L "$d" ] && continue
   [ -d "$d" ] || continue
-  mt=$(stat -c %Y "$d" 2>/dev/null) || continue
-  if [ $((now - mt)) -gt 900 ]; then
-    rm -rf "$d"
-  fi
+  rm -rf -- "$d"
 done
-n=0
-take_lock() {
-  # Build the lock with its owner inside a fresh folder next to it, then rename it into place in one step, so
-  # a lock never exists without an owner. rename() onto an existing (non-empty) lock fails.
-  nl=$(mktemp -d "$STATE/.update-lock.new.XXXXXX") || return 1
-  printf '%s %s\n' "$$" "$(date +%s)" > "$nl/owner" || { rm -rf "$nl"; return 1; }
-  if py - "$nl" "$lock" <<'PY'
-import os, sys
-try:
-    os.rename(sys.argv[1], sys.argv[2])
-except OSError:
-    sys.exit(1)
-PY
-  then return 0; fi
-  rm -rf "$nl"; return 1
-}
-read_owner() { head -c 64 "$lock/owner" 2>/dev/null | tr -cd '0-9 '; }
-until take_lock; do
-  # A lock left by a dead process, or older than 15 minutes, is stale: break it and try again.
-  owner=$(read_owner) || owner=""
-  opid=$(printf '%s' "$owner" | cut -d' ' -f1); otime=$(printf '%s' "$owner" | cut -d' ' -f2)
-  stale=0
-  case "$opid:$otime" in
-    *[!0-9:]*|:*|*:) [ "$n" -ge 5 ] && stale=1 ;;  # no owner (a lock from an older script): wait 5 seconds
-    *) if ! kill -0 "$opid" 2>/dev/null || [ $(( $(date +%s) - otime )) -gt 900 ]; then stale=1; fi ;;
-  esac
-  # Re-read right before removing: only the same stale owner is broken, never a lock someone just took.
-  if [ "$stale" = 1 ] && [ "$(read_owner)" = "$owner" ]; then
-    rm -rf "$lock"
-    continue
-  fi
-  n=$((n + 1)); [ "$n" -lt 60 ] || die "another update is running"
-  sleep 1
-done
-trap 'rm -rf "$lock" "$T"' EXIT INT TERM
+trap 'rm -rf "$T"' EXIT INT TERM
 helper="-"
 computer="-"
 if [ "$mode" = home ]; then

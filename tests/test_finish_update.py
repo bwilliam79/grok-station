@@ -202,33 +202,90 @@ class Script(unittest.TestCase):
             self.assertEqual(r.returncode, 0, (owner, r.stderr))
             self.assertFalse(os.path.exists(lock))
 
-    def test_live_lock_is_respected_and_owner_recorded(self):
-        src = open(SCRIPT).read()
-        self.assertIn('printf \'%s %s\\n\' "$$" "$(date +%s)" > "$nl/owner"', src)
-        self.assertIn('mktemp -d "$STATE/.update-lock.new.XXXXXX"', src)
-        self.assertIn('[ "$(read_owner)" = "$owner" ]', src)
-        self.assertIn("-gt 900", src)
+    def test_live_lock_is_respected(self):
+        """A held kernel lock keeps the updater out until it is released; nothing ever deletes it."""
+        import fcntl, time
+        for no_flock in ("", "1"):
+            f = Fake("home")
+            f.files["scripts/install-home.sh"] = (b'#!/bin/sh\nprintf "start\\n" >> "$HOME/windows"\n'
+                                                  b'printf "%s\\n" 0.11.7\n')
+            f.publish()
+            os.makedirs(f.state, exist_ok=True)
+            lockf = os.path.join(f.state, ".update.flock")
+            fd = os.open(lockf, os.O_WRONLY | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            p = subprocess.Popen(f.run_args(), env=dict(f.env(), GS_UPDATE_NO_FLOCK=no_flock),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            time.sleep(3)
+            self.assertIsNone(p.poll(), no_flock)
+            self.assertFalse(os.path.exists(os.path.join(f.home, "windows")), no_flock)
+            os.close(fd)
+            o, e = p.communicate(timeout=90)
+            self.assertEqual(p.returncode, 0, (no_flock, e))
+            self.assertTrue(os.path.exists(lockf))
 
-    def test_two_waiters_on_a_stale_lock_both_finish_one_at_a_time(self):
+    def test_lock_file_symlink_is_refused(self):
+        f = Fake("home")
+        os.makedirs(f.state, exist_ok=True)
+        target = os.path.join(f.home, "elsewhere")
+        os.symlink(target, os.path.join(f.state, ".update.flock"))
+        r = f.run()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("symlink", r.stderr)
+        self.assertFalse(os.path.exists(target))
+
+    def _windows_serial(self, f):
+        ev = [l.split() for l in open(os.path.join(f.home, "windows")).read().split("\n") if l]
+        self.assertEqual([e[0] for e in ev], ["start", "end", "start", "end"])  # never two holders at once
+
+    def test_forced_interleave_never_runs_two_updaters(self):
+        """0.13.6 L-pre: waiter A is held right at its stale-lock delete until waiter B is inside the lock.
+
+        The rename/re-read/rm-rf lock lets A delete B's live lock, so both run. A kernel lock never deletes one.
+        """
         import time
         f = Fake("home")
         lock = os.path.join(f.state, ".update-lock")
         os.makedirs(lock)
         open(os.path.join(lock, "owner"), "w").write("999999 %d\n" % int(time.time()))  # dead owner
-        # Each waiter's install step records when it holds the lock; overlapping windows would mean a race.
+        f.files["scripts/install-home.sh"] = (b'#!/bin/sh\nprintf "start %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
+                                              b'sleep 2\nprintf "end %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
+                                              b'printf "%s\\n" 0.11.7\n')
+        f.publish()
+        # rm shim: for the gated waiter, a delete of the lock itself waits until the other waiter has started.
+        shim = os.path.join(f.bin, "rm")
+        open(shim, "w").write('#!/bin/sh\nfor a in "$@"; do case "$a" in */.update-lock)\n'
+                              '  if [ -n "$GATE" ]; then : > "$HOME/a-waiting"; i=0\n'
+                              '    while ! grep -q start "$HOME/windows" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; fi;;\n'
+                              'esac; done\nexec /bin/rm "$@"\n')
+        os.chmod(shim, 0o755)
+        env_a = dict(f.env(), GATE="1")
+        a = subprocess.Popen(f.run_args(persona="jules"), env=env_a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        win = os.path.join(f.home, "windows")
+        for _ in range(100):  # A is either parked at the delete (old lock) or already inside (kernel lock)
+            if os.path.exists(os.path.join(f.home, "a-waiting")) or os.path.exists(win):
+                break
+            time.sleep(0.1)
+        b = subprocess.Popen(f.run_args(persona="moose"), env=f.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        outs = [p.communicate(timeout=90) for p in (a, b)]
+        for p, (o, e) in zip((a, b), outs):
+            self.assertEqual(p.returncode, 0, e)
+        self._windows_serial(f)
+
+    def test_waiters_serialize_without_flock_too(self):
+        """macOS has no flock(1): the python fcntl fallback must serialize the same way."""
+        f = Fake("home")
         f.files["scripts/install-home.sh"] = (b'#!/bin/sh\nprintf "start %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
                                               b'sleep 1\nprintf "end %s\\n" "$(date +%s%N)" >> "$HOME/windows"\n'
                                               b'printf "%s\\n" 0.11.7\n')
         f.publish()
-        procs = [subprocess.Popen(f.run_args(persona=p), env=f.env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env = dict(f.env(), GS_UPDATE_NO_FLOCK="1")
+        procs = [subprocess.Popen(f.run_args(persona=p), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   text=True) for p in ("jules", "moose")]
         outs = [p.communicate(timeout=90) for p in procs]
         for p, (o, e) in zip(procs, outs):
             self.assertEqual(p.returncode, 0, e)
-        ev = [l.split() for l in open(os.path.join(f.home, "windows")).read().split("\n") if l]
-        self.assertEqual([e[0] for e in ev], ["start", "end", "start", "end"])  # never two holders at once
-        self.assertFalse(os.path.exists(lock))
-        self.assertEqual([x for x in os.listdir(f.state) if x.startswith(".update-lock")], [])
+        self._windows_serial(f)
 
     def test_c_a_file_off_the_manifest_is_refused(self):
         for tamper in ("admin/routine-home.txt", "scripts/install-home.sh"):
