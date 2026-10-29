@@ -399,10 +399,6 @@ class TrainingNotice(unittest.TestCase):
         import http.client
         import socket
         import threading
-        s = socket.socket()
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        s.close()
         d = tempfile.mkdtemp()
         cfg = os.path.join(d, "wakewords.json")
         json.dump({"words": [{"name": "hey_finn", "persona": "finn"}]}, open(cfg, "w"))
@@ -414,12 +410,32 @@ class TrainingNotice(unittest.TestCase):
         old_policy = dict(gw.WAKE_TOKEN_POLICY)
         gw.WAKE_TOKEN_POLICY.update(uid=os.getuid(), gid=os.getgid())
         old = (gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES)
-        gw.CONTROL_PORT = port
+        # Port 0: the server binds its own free port and keeps it, so nothing can take it between a probe
+        # bind and the real one. Wait until the server object exists, then read the port it holds.
+        gw.CONTROL_PORT = 0
         gw.RELAY_URL = ""
         gw.WAKE_CONFIG = cfg
         gw.OVERRIDES = os.path.join(d, "missing.json")
-        th = threading.Thread(target=gw.control_server, daemon=True)
+        gw.CONTROL_HTTPD = None
+        # Wait on an Event, not time.sleep: other tests swap time.sleep/monotonic (gw.time is the time module).
+        tick = threading.Event()
+        died = []
+
+        def serve():
+            try:
+                gw.control_server()
+            except BaseException as e:  # surfaced below instead of a silent dead thread
+                died.append(repr(e))
+
+        th = threading.Thread(target=serve, daemon=True)
         th.start()
+        for _ in range(1000):  # up to ~10 s
+            if gw.CONTROL_HTTPD is not None or died:
+                break
+            tick.wait(0.01)
+        self.assertEqual(died, [])
+        self.assertIsNotNone(gw.CONTROL_HTTPD, "control server did not start")
+        port = gw.CONTROL_HTTPD.server_address[1]
 
         def post(body):
             last = None
@@ -434,7 +450,7 @@ class TrainingNotice(unittest.TestCase):
                     return r.status, out
                 except OSError as e:
                     last = e
-                    gw.time.sleep(0.02)
+                    tick.wait(0.02)
             raise last
 
         try:

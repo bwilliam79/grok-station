@@ -180,6 +180,8 @@ class UsbReset(unittest.TestCase):
             real(path, data)
 
         mod._store = wrap
+        # mod.time is the process-wide time module: put sleep back, or every later test's sleep is a no-op.
+        self.addCleanup(setattr, mod.time, "sleep", mod.time.sleep)
         mod.time.sleep = lambda _s: None
         return seen
 
