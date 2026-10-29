@@ -2308,8 +2308,8 @@ HB_ACCESSORIES_MSG = ("Signed in to Homebridge, but it won't share its accessori
                       "with the station until accessory control (insecure mode) is on.")
 HB_SIGNIN_UNREACHABLE_MSG = ("Homebridge stopped answering while signing in. "
                              "The address checked out, so make sure Homebridge is running, then sign in again.")
-# 0.13.4 placeholder: reuses the generic message until Noor supplies copy for the accessory list being too large.
-HB_TOO_LARGE_MSG = "Homebridge didn't answer."
+# 0.13.4, Noor SPEC rev3 frame 08 lead. The Verify screen shows its own copy; this is the API message.
+HB_TOO_LARGE_MSG = ("Grok Station signed in to Homebridge, but its accessory list is bigger than the station can take.")
 HB_TWO_STEP_MSG = ("This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, "
                    "so make the grok-station user without 2-step and try again.")
 # Pending Homebridge login, admin process memory only. Never written to disk, never logged.
@@ -5405,10 +5405,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._hb_fail(400, "refused", "That address isn't on your home network.", checks)
         token, err, checks, message = self._hb_session(target["base"], j["username"], j["password"])
         token = None  # the login is checked; the relay logs in itself. Do not keep it.
-        if err == "accessories":
-            # In memory only, and only for this case. Nothing is written until a later retry succeeds.
+        if err in ("accessories", "too_large"):
+            # In memory only, and only for these cases. Nothing is written until a later retry succeeds.
             pending = _hb_pending_add(self._hb_caller_key(), target["base"], j["username"], j["password"])
-            return self.send(400, {"error": "accessories", "message": HB_ACCESSORIES_MSG,
+            return self.send(400, {"error": err, "message": message,
                                    "checks": checks, "pending": pending})
         if err:
             code = 403 if err in ("admin", "unconfirmed") else (401 if err == "bad_login" else 400)
@@ -5461,8 +5461,8 @@ class Handler(BaseHTTPRequestHandler):
         username, password = entry.get("username"), entry.get("password")
         token, err, checks, message = self._hb_session(target["base"], username, password)
         token = None
-        if err == "accessories":
-            return self.send(400, {"error": "accessories", "message": HB_ACCESSORIES_MSG,
+        if err in ("accessories", "too_large"):
+            return self.send(400, {"error": err, "message": message,
                                    "checks": checks, "pending": ident})
         if err:
             _hb_pending_drop(ident)

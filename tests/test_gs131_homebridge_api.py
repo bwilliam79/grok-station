@@ -974,10 +974,30 @@ class HomebridgeAPI(unittest.TestCase):
         self._grace_off()
         HB.accessories = bulky_accessories(2 * 1024 * 1024 + 4096)
         status, body = self._verify()
-        self.assertEqual(body.get("error"), "too_large", body)
-        self.assertNotIn("pending", body)
+        self.assertEqual((status, body.get("error")), (400, "too_large"), body)
         self.assertNotEqual(body.get("message"), ga.HB_ACCESSORIES_MSG)
+        self.assertEqual(body.get("message"), ga.HB_TOO_LARGE_MSG)
+        self.assertIsInstance(body.get("pending"), str)  # login kept in memory, as for accessories
         self._no_homebridge_saved()
+
+    def test_gs134_too_large_try_again_reverifies_with_saved_login(self):
+        self._grace_off()
+        gsi.HB_ACC_MAX_BODY = 100 * 1024
+        HB.accessories = bulky_accessories(150 * 1024)
+        (status, body), lines = self._prints(lambda: self._verify())
+        pending = body["pending"]
+        logins = HB.logins
+        (status, again), more = self._prints(lambda: self._retry(pending))
+        lines += more
+        self.assertEqual((status, again.get("error"), again.get("pending")), (400, "too_large", pending), again)
+        self.assertEqual(HB.logins, logins + 1)  # Try again signs in again with the saved login
+        self._no_homebridge_saved()
+        HB.accessories = bulky_accessories(10 * 1024)
+        (status, saved), more = self._prints(lambda: self._retry(pending))
+        lines += more
+        self.assertEqual(status, 200, saved)
+        self.assertTrue(os.path.exists(self.creds))
+        self._assert_quiet(lines, saved)
 
     def test_gs134_saved_login_list_beyond_cap_is_too_large(self):
         self._verify()
@@ -1062,17 +1082,20 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertIn('data.error === "pending_gone"', retry)
         self.assertIn("hbEnter(hbBase)", retry)
         self.assertIn("hbInsecure(data.pending || pending, true)", retry)
+        self.assertIn("hbTooLarge(data.pending || pending, true)", retry)
         prog = "\n".join([
             "const calls = [];",
             "function hbStopped() { calls.push(['hbStopped']); }",
             "function hbEnter(base, opts) { calls.push(['hbEnter', base, opts || null]); }",
             "function hbAddress(base, msg) { calls.push(['hbAddress', base, msg]); }",
             "function hbInsecure(pending, again) { calls.push(['hbInsecure', pending, again === true]); }",
+            "function hbTooLarge(pending, again) { calls.push(['hbTooLarge', pending, again === true]); }",
             "let hbBase = 'http://hb.local:8581';",
             apply,
             "function run(data) { calls.length = 0; hbApply({ok: false, data: data}); return calls.slice(); }",
             "process.stdout.write(JSON.stringify({",
             "  accessories: run({error: 'accessories', pending: 'pid-1', message: 'Signed in to Homebridge, but it won\\'t share its accessories with the station until accessory control (insecure mode) is on.'}),",
+            "  toolarge: run({error: 'too_large', pending: 'pid-2', message: 'x'}),",
             "  signinEmpty: run({error: 'signin_unreachable', message: ''}),",
             "  signin: run({error: 'signin_unreachable', message: %s})," % json.dumps(signin),
             "  unreachable: run({error: 'unreachable', message: 'Homebridge didn\\'t answer.'}),",
@@ -1086,6 +1109,7 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr or out.stdout)
         got = json.loads(out.stdout)
         self.assertEqual(got["accessories"], [["hbInsecure", "pid-1", False]])
+        self.assertEqual(got["toolarge"], [["hbTooLarge", "pid-2", False]])
         self.assertEqual(got["signinEmpty"], [["hbEnter", "http://hb.local:8581", {"attn": True, "message": signin}]])
         self.assertEqual(got["signin"], [["hbEnter", "http://hb.local:8581", {"attn": True, "message": signin}]])
         self.assertEqual(got["unreachable"][0][0], "hbAddress")
@@ -1094,6 +1118,29 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(got["nothb"][0][0], "hbAddress")
         self.assertEqual(got["bad"][0][0], "hbEnter")
         self.assertNotEqual(got["bad"][0][0], "hbAddress")
+
+    def test_gs134_too_large_screen_copy_and_focus(self):
+        src = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        screen = _fn(src, "hbTooLarge")
+        for text in (
+            "‹ Homebridge",
+            "hbStepperWarn(4)",
+            "<h2>Homebridge has too many accessories to share</h2>",
+            "Grok Station signed in to Homebridge, but its accessory list is bigger than the station can take.",
+            "<li>Open Homebridge in your browser.</li>",
+            "<li>Turn off plugins or <b>child bridges</b> you don't use, or set a plugin to leave out accessories you don't need.</li>",
+            "<li>Restart Homebridge.</li>",
+            "Your login is saved. You won't need to enter it again.",
+            'id="hbretry" type="button">Try again</button>',
+            'id="hbcancel" type="button">Cancel</button>',
+            "() => hbRetry(pending)",
+            "/api/integrations/homebridge/retry/cancel",
+            'if (again) hbAttn($("#hberr", el), "The list is still too big. Turn off a few more plugins or child bridges, restart Homebridge, then try again.");',
+            'else $("#hbretry", el).focus();',
+        ):
+            self.assertIn(text, screen, text)
+        self.assertNotIn("accessory control", screen)
+        self.assertLess(screen.index('id="hberr"'), screen.index('id="hbretry"'))
 
 
 def _fn(src, name):

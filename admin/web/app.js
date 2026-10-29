@@ -4829,9 +4829,9 @@ async function pageIntegrations(el) {
     }).join("")}</ul>`;
   }
   function hbHttpWarn(base) {
-    // Nix I1: http is allowed on the home network, but say plainly what crosses it unencrypted.
+    // Nix I1 + Noor SPEC rev3 (09b): http is fine on the home network; say so as information, not a warning.
     if (!/^http:\/\//i.test(String(base || ""))) return "";
-    return `<p class="help hbwarn" role="note">This address uses http, so the Homebridge login and its sign-in token cross your home network unencrypted. If you can, turn on https in Homebridge's UI settings and use the https address instead.</p>`;
+    return `<div class="hbinfo" role="note"><span class="ii" aria-hidden="true">i</span><span><b>Not encrypted.</b> This address uses http, so the connection isn't encrypted. That's fine on your home network. To encrypt it, turn on https in Homebridge's settings and use the https address.</span></div>`;
   }
   function usersHref(base) {
     return /^https?:\/\/[^/?#]+$/.test(base) ? base + "/users" : "";
@@ -4951,6 +4951,7 @@ async function pageIntegrations(el) {
     if (err === "unconfirmed") return hbStopped(data.message || "Couldn't confirm this login isn't an admin", data.checks, "Try again", () => hbEnter(hbBase), "We couldn't finish the check");
     if (err === "bad_login") return hbEnter(hbBase, {message: data.message || "Username or password didn't work."});
     if (err === "accessories") return hbInsecure(data.pending);
+    if (err === "too_large") return hbTooLarge(data.pending);
     if (err === "signin_unreachable") return hbEnter(hbBase, {attn: true, message: data.message || "Homebridge stopped answering while signing in. The address checked out, so make sure Homebridge is running, then sign in again."});
     const msg = data.message || "Homebridge didn't answer.";
     if (err === "refused" || err === "not_homebridge" || err === "cert" || err === "unreachable") return hbAddress(hbBase, msg);
@@ -4989,6 +4990,27 @@ async function pageIntegrations(el) {
     if (again) hbAttn($("#hberr", el), "Still can't list accessories. Make sure Homebridge finished restarting, then try again.");
     else $("#hbretry", el).focus();
   }
+  // Noor SPEC rev3 frames 08 and 08b: accessory list over the station's limit. Same layout and pending login as 06.
+  function hbTooLarge(pending, again) {
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Homebridge</button>${hbStepperWarn(4)}<h2>Homebridge has too many accessories to share</h2>
+      <p class="sub">Grok Station signed in to Homebridge, but its accessory list is bigger than the station can take.</p>
+      <ol class="hbsteps"><li>Open Homebridge in your browser.</li>
+        <li>Turn off plugins or <b>child bridges</b> you don't use, or set a plugin to leave out accessories you don't need.</li>
+        <li>Restart Homebridge.</li></ol>
+      <p class="help"><span aria-hidden="true">✓ </span>Your login is saved. You won't need to enter it again.</p>
+      <div id="hberr"></div>
+      <div class="field inline" style="margin-top:16px"><button class="btn p" id="hbretry" type="button">Try again</button>
+        <button class="btn g" id="hbcancel" type="button">Cancel</button></div></div>`;
+    const leave = () => {
+      api("POST", "/api/integrations/homebridge/retry/cancel", {pending: pending});
+      list();
+    };
+    back(leave);
+    $("#hbcancel", el).onclick = leave;
+    $("#hbretry", el).onclick = () => hbRetry(pending);
+    if (again) hbAttn($("#hberr", el), "The list is still too big. Turn off a few more plugins or child bridges, restart Homebridge, then try again.");
+    else $("#hbretry", el).focus();
+  }
   async function hbRetry(pending) {
     const post = stepup => {
       const body = {pending: pending};
@@ -5006,6 +5028,10 @@ async function pageIntegrations(el) {
       const data = (r && r.data) || {};
       if (data.error === "accessories") {
         hbInsecure(data.pending || pending, true);
+        return {ok: true};
+      }
+      if (data.error === "too_large") {
+        hbTooLarge(data.pending || pending, true);
         return {ok: true};
       }
       if (data.error === "pending_gone") {

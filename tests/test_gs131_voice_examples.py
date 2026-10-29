@@ -134,8 +134,15 @@ class HomebridgeHttpWarning(unittest.TestCase):
         self.assertIn("function hbHttpWarn(base)", js)
         fn = js.split("function hbHttpWarn(base)", 1)[1].split("\n  }\n", 1)[0]
         self.assertIn('/^http:\\/\\//i.test', fn)
-        self.assertIn("unencrypted", fn)
-        self.assertIn("https", fn)
+        # 0.13.4, Noor SPEC rev3 09b: informational box, not the amber warning.
+        self.assertIn('<div class="hbinfo" role="note"><span class="ii" aria-hidden="true">i</span>', fn)
+        self.assertIn("<b>Not encrypted.</b> This address uses http, so the connection isn't encrypted. That's fine on your home network. To encrypt it, turn on https in Homebridge's settings and use the https address.", fn)
+        self.assertNotIn("hbwarn", fn)
+        css = open(os.path.join(os.path.dirname(JS_PATH), "admin.css"), encoding="utf-8").read()
+        rules = "".join(line for line in css.splitlines() if line.startswith(".hbinfo"))
+        self.assertIn("background:var(--gs-surface-2)", rules)
+        self.assertNotIn("amber", rules)
+        self.assertNotIn(".hbwarn{", css)
         for where in ("function hbAddress(", "function hbEnter(", "async function list("):
             body = js.split(where, 1)[1].split("\n  }\n", 1)[0]
             with self.subTest(where):
