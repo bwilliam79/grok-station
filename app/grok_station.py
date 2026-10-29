@@ -1036,19 +1036,36 @@ def speakerphone_present(cards_text, match="emeet"):
     return False
 
 
+def _reset_hold(payload, now, window, grace):
+    """True while a planned USB reset may hide the card or a stale capture.
+
+    reset_until is a real positive number, not a bool. It must still be inside the same
+    grace used for a reopen, and it must not sit further ahead than a reopen wait
+    (window + grace). A negative, huge, or non-numeric deadline does not count.
+    """
+    if not isinstance(payload, dict):
+        return False
+    raw = payload.get("reset_until")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return False
+    if raw != raw or raw in (float("inf"), float("-inf")) or raw <= 0:
+        return False
+    if now > raw + grace or raw - now > window + grace:
+        return False
+    return True
+
+
 def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
     """fetch() -> wake /status JSON or None. ok when the speakerphone is present and capture is alive.
     Uses audio_at (any frame read, any mode) when the listener sends it, else level_at (older listeners).
     A brief reopen (no capture device, audio within grace_s) stays ok, and so does a planned reopen wait:
-    while the listener reports reopen_by, ok holds until reopen_by + grace_s. Older listeners omit it."""
-    if not speakerphone_present(cards_text, match):
-        return {"ok": False, "detail": "speakerphone missing"}
+    while the listener reports reopen_by, ok holds until reopen_by + grace_s. Older listeners omit it.
+    A planned USB reset publishes reset_until. The card leaves /proc/asound/cards while it re-enumerates,
+    so that deadline is read before a missing card is treated as an unplug. A real unplug has no deadline."""
     try:
         payload = fetch()
     except Exception:
         payload = None
-    if not isinstance(payload, dict):
-        return {"ok": False, "detail": "wake listener down"}
     try:
         window = float(stale_s)
     except (TypeError, ValueError):
@@ -1057,6 +1074,12 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
         grace = max(0.0, float(grace_s))
     except (TypeError, ValueError):
         grace = 10.0
+    if _reset_hold(payload, now, window, grace):
+        return {"ok": True, "detail": "ok"}
+    if not speakerphone_present(cards_text, match):
+        return {"ok": False, "detail": "speakerphone missing"}
+    if not isinstance(payload, dict):
+        return {"ok": False, "detail": "wake listener down"}
     raw = payload.get("audio_at") if payload.get("audio_at") else payload.get("level_at")
     try:
         alive_at = float(raw)

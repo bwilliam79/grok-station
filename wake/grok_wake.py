@@ -174,7 +174,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "d
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None}  # capture: open input device; reopen_by: backoff deadline
+LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None, "reset_until": None}  # capture: open input device; reopen_by: backoff deadline; reset_until: USB reset hold
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
@@ -925,7 +925,7 @@ def control_server():
             if self.path != "/status":
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "audio_at": LIVE.get("audio_at"), "session": LIVE["session"],
-                                 "capture": LIVE["capture"], "reopen_by": LIVE.get("reopen_by"),
+                                 "capture": LIVE["capture"], "reopen_by": LIVE.get("reopen_by"), "reset_until": LIVE.get("reset_until"),
                                  "enrolling": ENROLL_STATE["busy"], "enroll_queued": not ENROLL_Q.empty(), "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
                                  "mic_reset": mic_reset_flags(),
@@ -2864,6 +2864,12 @@ def run_usb_reset(card, run=None):
     return "refused: reset failed"
 
 
+# Icon hold across a USB reset. The card is gone while it re-enumerates; the display adds the
+# same 10 s grace it uses for a reopen. Kept within the 30 s stall window plus that grace so a
+# bad deadline cannot hide an unplug for longer than a planned reopen.
+MIC_RESET_ICON_HOLD_S = 20.0
+
+
 def kick_capture():
     """Drop the open capture so the loop opens it again (after a USB reset)."""
     guard = CAPTURE.get("guard")
@@ -3181,11 +3187,20 @@ class MicRecovery:
             self._backoff(reason)
             return "failed"
         self._last_reset = self.now()
+        # Publish the hold and drop the read before deauthorize. Killing arecord after
+        # authorized is already 0 can leave the read stuck and audio_at stale, and the
+        # card is absent from /proc/asound/cards for the whole re-enumeration.
+        LIVE["reset_until"] = self.now() + MIC_RESET_ICON_HOLD_S
+        try:
+            self.kick()
+        except Exception:
+            pass
         try:
             err = self.reset(card)
         except Exception:
             err = "refused: reset failed"
         if err:
+            LIVE["reset_until"] = None
             self.log(f"mic reset failed: {err} ({reason})")
             self._backoff(reason)
             return "failed"
@@ -3193,10 +3208,6 @@ class MicRecovery:
         self.events.clear()
         if reason == "night":
             self.last_night = self.local(self.now()).date()
-        try:
-            self.kick()
-        except Exception:
-            pass
         return "ok"
 
 
