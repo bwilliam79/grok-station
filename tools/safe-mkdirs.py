@@ -17,7 +17,8 @@ that same directory (Nix 0.13.6 L3: root never writes through a path grok could 
 Temp names end in a random suffix (secrets.token_hex), so they can't be predicted and pre-planted.
 
 --replace rewrites the existing regular file BASE/RELDIR/NAME with stdin the same way, keeping that file's owner,
-group and mode (read with fstat on an O_NOFOLLOW descriptor; a symlink or non-regular NAME is refused).
+group and permission bits (fstat on an O_NOFOLLOW descriptor; never setuid, setgid or sticky). A symlink,
+non-regular or hardlinked (st_nlink > 1) NAME is refused.
 
 BASE itself must be owned by root and not group- or other-writable, checked on its open descriptor (L4).
 """
@@ -165,7 +166,10 @@ def replace(base, rel_dir, name, data, root_uid=None):
             os.close(cur)
         if not stat.S_ISREG(st.st_mode):
             raise Refused("%s is not a regular file; refusing" % shown)
-        _write_at(fd, name, data, st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode))
+        if st.st_nlink > 1:  # a hard link planted to a file elsewhere: its owner and mode are not this file's
+            raise Refused("%s has %d hard links; refusing" % (shown, st.st_nlink))
+        # permission bits only: setuid, setgid and sticky are never carried over (Nix 0.13.6 I1)
+        _write_at(fd, name, data, st.st_uid, st.st_gid, st.st_mode & 0o777)
     finally:
         os.close(fd)
 
