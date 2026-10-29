@@ -4619,6 +4619,9 @@ async function pageBots(el) {
   };
 }
 const PII_TEXT = "Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. When this is on, replies also block personal info: household names, emails, phones, addresses, IPs, MACs, and host names.";
+function privacyAsksFirst(nextOn, open) {
+  return nextOn === false || !open;
+}
 async function pagePrivacy(el) {
   const r = await api("GET", "/api/privacy");
   const on = !(r.data && r.data.pii_mode === false);
@@ -4654,12 +4657,65 @@ async function pagePrivacy(el) {
       toast(next ? "Personal info blocked in replies." : "Personal info can appear in replies.");
       return res;
     };
-    if (stepupOpen()) {
+    if (privacyAsksFirst(next, stepupOpen())) askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
+    else {
       const res = await send("");
       if (res.status === 403) askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
       else apply(res);
-    } else askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
+    }
   };
+}
+function graceView(stored, remembered) {
+  const choice = stored === "session" ? "session" : stored === 0 ? "every" : "time";
+  let minutes = 10;
+  if (typeof stored === "number" && stored >= 1 && stored <= 120) minutes = stored;
+  else if (typeof remembered === "number" && remembered >= 1 && remembered <= 120) minutes = remembered;
+  return {choice: choice, minutes: minutes};
+}
+function gracePayload(choice, minutes) {
+  if (choice === "every") return 0;
+  if (choice === "session") return "session";
+  const n = Number(minutes);
+  return Number.isInteger(n) ? n : NaN;
+}
+function graceMinutesInvalid(choice, raw) {
+  if (choice !== "time") return "";
+  const s = String(raw == null ? "" : raw).trim();
+  if (!/^\d+$/.test(s)) return "Enter 1 to 120 minutes.";
+  const n = Number(s);
+  if (n < 1 || n > 120) return "Enter 1 to 120 minutes.";
+  return "";
+}
+function graceToast(value) {
+  if (value === 0) return "Saved. The password is asked for each change.";
+  if (value === "session") return "Saved. The password isn't asked again this session.";
+  const n = Number(value);
+  return "Saved. The password is asked again after " + n + " " + (n === 1 ? "minute." : "minutes.");
+}
+function graceSummary(value) {
+  if (value === 0) return "Every time";
+  if (value === "session") return "Not while signed in";
+  const n = Number(value);
+  return "After " + n + (n === 1 ? " minute" : " minutes");
+}
+function graceFormHTML(view) {
+  view = view || graceView(10);
+  const choice = view.choice;
+  const on = v => choice === v ? " checked" : "";
+  const minutes = String(view.minutes);
+  return `<form id="graceform" autocomplete="off"><fieldset class="grace" id="gracefs">
+      <legend>Ask for the password again</legend>
+      <p class="help">For changes like adding a bot or an integration, while you're signed in. Signing out always ends this.</p>
+      <label class="grow"><input type="radio" name="grace" value="every"${on("every")}><span class="gl"><b>Every time</b><span class="sub">Ask for each change.</span></span></label>
+      <label class="grow"><input type="radio" name="grace" value="time"${on("time")}><span class="gl"><b>After a set time</b><span class="sub">Ask once, then not again for a while.</span></span></label>
+      <div class="gmin" id="gmin"${choice === "time" ? "" : " hidden"}><label for="gminn">Minutes</label><input class="inp" id="gminn" type="number" inputmode="numeric" min="1" max="120" step="1" value="${esc(minutes)}"><span>minutes</span></div>
+      <p class="ferr" id="gmine" hidden></p>
+      <label class="grow"><input type="radio" name="grace" value="session"${on("session")}><span class="gl"><b>Not while I'm signed in</b><span class="sub">Ask once, then not again until you sign out, change the password, leave it idle for 30 minutes, or 12 hours pass.</span></span></label>
+      <div class="hbinfo" id="gnotice" role="note"${choice === "session" ? "" : " hidden"}><span class="ii" aria-hidden="true">i</span><span>Anyone using this signed-in browser can change bots, webhooks and most other settings without the password.</span></div>
+    </fieldset>
+    <p class="help">Changing the password and a few other security settings always ask.</p>
+    <div id="ge"></div>
+    <div class="field"><button class="btn p" id="gsave" type="button" disabled aria-describedby="gnoch">Save</button><span class="help" id="gnoch">No changes</span></div></form>`;
 }
 async function pageSystem(el) {
   el.innerHTML = `<div class="card" id="hl"><h2>Health</h2></div>
@@ -4670,12 +4726,7 @@ async function pageSystem(el) {
     <div class="card"><h2>Restart</h2><div class="inline" style="margin-top:8px"><button class="btn" id="rv">Restart voice only</button><button class="btn dg" id="rb">Reboot station…</button><button class="btn g" id="again">Run setup again</button></div><div id="se"></div></div>
     <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
       ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
-    <div class="card"><h2>Password grace period</h2>
-      <p class="sub">After you enter the admin password, later changes on this sign-in skip it for this many minutes. 0 always asks. Signing out ends it.</p>
-      <div class="field"><label for="grace">Minutes</label><input class="inp" id="grace" type="number" inputmode="numeric" min="0" max="120" step="1" value="10"></div>
-      <p class="note">Changing this always asks for the password.</p>
-      <div id="ge"></div>
-      <div class="field"><button class="btn p" id="gsave" type="button" disabled>Save</button></div></div>`;
+    <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>`;
   wirePw("np1", "np2", $("#pgo", el));
   $("#pw", el).onsubmit = async ev => {
     ev.preventDefault();
@@ -4687,34 +4738,58 @@ async function pageSystem(el) {
     else { markUnsaved(); attn($("#pe", el), (r.data && r.data.error) || "Couldn't save that."); }
   };
   const s = (await api("GET", "/api/system")).data || {};
-  const g = s.password_grace_min;
-  const gEl = $("#grace", el);
-  if (gEl && typeof g === "number" && g >= 0 && g <= 120) gEl.value = String(g);
+  const storedGrace = s.password_grace_min;
+  const remembered = graceView(storedGrace).minutes;
+  let savedGrace = gracePayload(graceView(storedGrace).choice, remembered);
+  const card = $("#gracecard", el);
+  if (card) card.innerHTML = graceFormHTML(graceView(storedGrace));
   const gsave = $("#gsave", el);
-  const syncGrace = () => { if (gsave && gEl) gsave.disabled = gEl.value.trim() !== (gEl.dataset.saved || ""); };
-  if (gEl) {
-    gEl.dataset.saved = gEl.value;
-    gEl.addEventListener("input", syncGrace);
-    syncGrace();
-  }
-  if (gsave) gsave.onclick = () => {
-    const raw = (gEl && gEl.value || "").trim();
-    const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
-    if (!Number.isInteger(n) || n < 0 || n > 120) {
-      attn($("#ge", el), "Pick a grace period from 0 to 120 minutes.");
-      return;
+  const syncGrace = () => {
+    const picked = ($("input[name=grace]:checked", el) || {}).value || "time";
+    const field = $("#gmin", el);
+    const notice = $("#gnotice", el);
+    const errEl = $("#gmine", el);
+    const input = $("#gminn", el);
+    if (field) field.hidden = picked !== "time";
+    if (notice) notice.hidden = picked !== "session";
+    const err = graceMinutesInvalid(picked, input ? input.value : "");
+    if (errEl) { errEl.hidden = !err; errEl.textContent = err ? "\u26a0 " + err : ""; }
+    if (input) input.classList.toggle("bad", !!err);
+    const dirty = !err && gracePayload(picked, input ? input.value : "") !== savedGrace;
+    if (gsave) {
+      gsave.disabled = !dirty;
+      if (dirty) gsave.removeAttribute("aria-describedby");
+      else gsave.setAttribute("aria-describedby", "gnoch");
     }
+    const hint = $("#gnoch", el);
+    if (hint) hint.hidden = !!dirty;
+  };
+  el.querySelectorAll('input[name=grace]').forEach(r => r.addEventListener("change", syncGrace));
+  const gIn = $("#gminn", el);
+  if (gIn) gIn.addEventListener("input", syncGrace);
+  syncGrace();
+  if (gsave) gsave.onclick = () => {
+    const picked = ($("input[name=grace]:checked", el) || {}).value || "time";
+    const raw = ($("#gminn", el) && $("#gminn", el).value) || "";
+    const err = graceMinutesInvalid(picked, raw);
+    if (err) { syncGrace(); return; }
+    const payload = gracePayload(picked, raw);
     attn($("#ge", el), "");
-    askPassword("Password grace period", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", async pw => {
+    askPassword("Ask for the password again", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", async pw => {
+      const fs = $("#gracefs", el);
+      if (fs) fs.inert = true;
+      busyBtn(gsave, true, "Saving\u2026");
       markSaving();
-      const r = await api("PUT", "/api/system/password-grace", {password_grace_min: n, password: pw});
+      const r = await api("PUT", "/api/system/password-grace", {password_grace_min: payload, password: pw});
+      if (fs) fs.inert = false;
+      busyBtn(gsave, false, "Save");
       if (r && r.ok) {
         noteStepup(r.data);
-        if (gEl) { gEl.value = String(n); gEl.dataset.saved = String(n); }
+        savedGrace = payload;
         syncGrace();
         attn($("#ge", el), "");
         markSaved();
-        toast(n === 0 ? "The station will always ask for the password." : "Grace period saved.");
+        toast(graceToast(payload));
       } else markUnsaved();
       return r;
     });

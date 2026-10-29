@@ -5,9 +5,9 @@ No default password: until an admin password is set, the station shows a one-tim
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a grace window on that session (password_grace_min, default 10 minutes;
-0 always asks) for saving a webhook, adding, renaming, or removing a bot, changing a bot's voice, uploading a
-portrait, revoking a key, and changing the privacy toggle. Changing the grace period always asks again. Logging
-out ends the window. Stdlib only.
+0 always asks; the distinct value "session" lasts this sign-in). The window never outlives the 30-minute idle limit or the 12-hour absolute limit. It covers saving a webhook, adding, renaming, or removing a bot, changing a bot's voice, uploading a
+portrait, revoking a key, and turning personal-info blocking on. Changing the grace setting, the password, reset-admin, and turning personal-info blocking off always ask again. Logging
+out, a password change, or any session revoke ends the window. Stdlib only.
 """
 import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re, secrets, shutil, ssl, sys
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
@@ -175,6 +175,9 @@ class Auth:
             until = rec.get("stepup_until")
             if _is_num(until):
                 item["stepup_until"] = float(until)
+            sid = rec.get("sid")
+            if isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8}", sid):
+                item["sid"] = sid
             kept[key] = item
         self.sessions = kept
         self._load_note.append(len(kept))
@@ -282,7 +285,7 @@ class Auth:
     def new_session(self):
         t = secrets.token_urlsafe(32)
         t0 = now()
-        self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0}
+        self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0, "sid": secrets.token_hex(4)}
         self._save_sessions()
         return t
 
@@ -307,12 +310,22 @@ class Auth:
         self._save_sessions()
         return True
 
+    def session_public_id(self, token):
+        """Short id for audit lines. Not the cookie and not the session key."""
+        rec = self.sessions.get(self._key(token)) if token else None
+        sid = rec.get("sid") if isinstance(rec, dict) else None
+        return sid if isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8}", sid) else "-"
+
     def stepup_until(self, token):
         """Epoch when this session's grace window closes, or None. Does not slide or refresh it.
 
         A grace setting of 0 means there is never a window, even if a timestamp is still stored.
+        "session" stays inside this sign-in: idle (30 min) and the absolute cap (rec exp, 12 h) still end it.
         """
-        if password_grace_min() <= 0 or not token or self.setup_required():
+        grace = password_grace_min()
+        if grace != "session" and (isinstance(grace, bool) or not isinstance(grace, int) or grace <= 0):
+            return None
+        if not token or self.setup_required():
             return None
         rec = self.sessions.get(self._key(token))
         t = now()
@@ -321,6 +334,12 @@ class Auth:
         until = rec.get("stepup_until")
         if isinstance(until, bool) or not isinstance(until, (int, float)) or until <= t:
             return None
+        exp = rec.get("exp")
+        if grace == "session":
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= t:
+                return None
+            if until > exp:
+                until = exp
         return until
 
     def stepup_open(self, token):
@@ -330,15 +349,24 @@ class Auth:
         """Start a fresh grace window on this session. Caller already checked the password.
 
         The length is password_grace_min at this moment. Zero does not open a window.
+        "session" ends at this sign-in's absolute expiry, never later, and does not move idle.
         """
-        ttl = password_grace_min() * 60
-        if ttl <= 0 or not token or self.setup_required():
+        grace = password_grace_min()
+        if not token or self.setup_required():
             return None
         rec = self.sessions.get(self._key(token))
         t = now()
         if not self._fresh(rec, t):
             return None
-        rec["stepup_until"] = t + ttl
+        if grace == "session":
+            exp = rec.get("exp")
+            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= t:
+                return None
+            rec["stepup_until"] = float(exp)
+        elif isinstance(grace, int) and not isinstance(grace, bool) and grace > 0:
+            rec["stepup_until"] = t + grace * 60
+        else:
+            return None
         self._save_sessions()
         audit_stepup()
         return rec["stepup_until"]
@@ -3299,12 +3327,45 @@ def _settings_doc():
     return d if isinstance(d, dict) else {}
 
 
+def grace_ok(n):
+    """Allowed stored values: 0, an int from 1 to 120, or the string "session". Nothing else."""
+    if n == "session":
+        return True
+    if isinstance(n, bool) or not isinstance(n, int):
+        return False
+    return n == 0 or 1 <= n <= GRACE_MAX
+
+
 def password_grace_min():
-    """Minutes a correct password covers later changes. 0 always asks. Bad values fall back to 10."""
+    """0 always asks. 1..120 is a minute window. "session" lasts this sign-in.
+
+    A missing or rejected value is the factory default, 10. "session" is not stored as a number.
+    """
     n = _settings_doc().get("password_grace_min", 10)
+    if n == "session":
+        return "session"
     if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
         return 10
     return n
+
+
+def _grace_rank(n):
+    """Session outlasts any minute window, but only inside the sign-in limits."""
+    return GRACE_MAX + 1 if n == "session" else n
+
+
+def _grace_log(n):
+    if n == "session":
+        return "session"
+    if isinstance(n, int) and not isinstance(n, bool) and 0 <= n <= GRACE_MAX:
+        return str(n)
+    return "-"
+
+
+def audit_grace(old, new, sid):
+    """One journal line when the grace setting is saved. No password, cookie, or session key."""
+    sid_s = sid if isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8}", sid) else "-"
+    print(f"audit persona=- action=password-grace old={_grace_log(old)} new={_grace_log(new)} session={sid_s} last4=- time={int(now())}", flush=True)
 
 
 def store_password_grace_min(n):
@@ -4288,7 +4349,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_put_privacy(self, p, q, j):
         if not isinstance(j.get("pii_mode"), bool):
             return self.send(400, {"error": "bad value"})
-        if not self.need_password(j):  # before the relay, so a wrong password never leaves the station
+        # Turning personal-info blocking off always asks, even during "session" (Nix). Turning it on uses the window.
+        if not self.need_password(j, always=j.get("pii_mode") is False):
             return
         got = relay_call("PUT", "/admin/policy", {"pii_mode": j["pii_mode"], "actor": RELAY_ACTOR})
         if got is None:
@@ -4327,15 +4389,19 @@ class Handler(BaseHTTPRequestHandler):
     def need_password(self, j, always=False):
         """Password check. An open grace window is enough unless always=True.
 
-        always=True is for changing the grace period: a correct password is required even when a
-        window is already open. A correct password opens the window (no-op when the setting is 0).
-        A wrong password does not.
+        always=True is for changing the grace setting and for turning personal-info blocking off:
+        a correct password is required even when a window is already open. A correct password opens
+        the window (no-op when the setting is 0). A wrong password does not.
         """
         token = self.cookie("gs_session")
         pw = j.get("password") if isinstance(j, dict) and "password" in j else None
         supplied = isinstance(pw, str) and pw != ""
         if not always and not supplied and AUTH.stepup_open(token):
             return True
+        if always and not supplied:
+            # Omitted is "ask again", not a wrong guess, so it must not burn the lockout.
+            self.send(403, {"error": PASSWORD_BAD})
+            return False
         why = AUTH.reauth(pw if supplied else None)
         if why == "locked":
             self.send(429, {"error": "Too many tries. Wait 15 minutes.", "locked_s": AUTH.locked()})
@@ -4989,10 +5055,10 @@ class Handler(BaseHTTPRequestHandler):
         if p != "/api/system/password-grace":
             return self.send(404, {"error": "not found"})
         if not isinstance(j, dict):
-            return self.send(400, {"error": "Pick a grace period from 0 to 120 minutes."})
+            return self.send(400, {"error": "Pick every time, 1 to 120 minutes, or this sign-in."})
         n = j.get("password_grace_min")
-        if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
-            return self.send(400, {"error": "Pick a grace period from 0 to 120 minutes."})
+        if not grace_ok(n):
+            return self.send(400, {"error": "Pick every time, 1 to 120 minutes, or this sign-in."})
         old = password_grace_min()
         if not self.need_password(j, always=True):
             return
@@ -5001,13 +5067,14 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self.send(500, {"error": "Couldn't save that."})
         token = self.cookie("gs_session")
-        if n < old:
+        if _grace_rank(n) < _grace_rank(old):
             AUTH.clear_stepups()
             until = None
-        elif n > old:
+        elif _grace_rank(n) > _grace_rank(old):
             until = AUTH.open_stepup(token)
         else:
             until = AUTH.stepup_until(token)
+        audit_grace(old, n, AUTH.session_public_id(token))
         return self.send(200, {"ok": True, "password_grace_min": n, "stepup_until": until})
 
     def api_post_system(self, p, q, j):

@@ -239,7 +239,10 @@ class AdminUI(unittest.TestCase):
         self.assertIn('type="password"', rm)
         self.assertIn("DELETE", rm)
         sysp = _fn(self.js, "pageSystem")
-        self.assertIn("Password grace period", sysp)
+        form = _fn(self.js, "graceFormHTML")
+        self.assertIn("Ask for the password again", form)
+        self.assertNotIn("Password grace period", sysp)
+        self.assertIn("graceFormHTML(", sysp)
         self.assertIn("/api/system/password-grace", sysp)
         self.assertIn("askPassword(", sysp)
         self.assertNotIn("withPassword(", sysp)
@@ -330,7 +333,7 @@ class AdminUI(unittest.TestCase):
             "time": chunk("async function timePanel", "\nfunction soundLabel"),
             "audio": chunk("async function audioPanel", "\nfunction wordLabel"),
             "display": disp,
-            "system": chunk("async function pageSystem", "\nfunction pageMore"),
+            "system": chunk("async function pageSystem", "\nfunction pageMore") + _fn(js, "graceFormHTML"),
             "xai": chunk("async function xaiKeyPanel", "\nasync function wizard"),
         }
         for name, body in groups.items():
