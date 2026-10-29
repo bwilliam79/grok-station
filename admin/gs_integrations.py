@@ -893,6 +893,37 @@ def checked_base(raw):
     return {"ip": ip, "port": connect, "host": shown, "name": host, "scheme": parts.scheme, "base": stored}
 
 
+def connect_ip_private(ip):
+    """Private for the http label (Nix, Noor SPEC gs-hb-http-label rev1): 10/8, 172.16/12, 192.168/16, 127/8,
+    169.254/16, fc00::/7, fe80::/10, ::1. Checked by octet (no range literals in the repo). Anything else is not."""
+    ip = _ip(ip) if not isinstance(ip, (ipaddress.IPv4Address, ipaddress.IPv6Address)) else ip
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if isinstance(ip, ipaddress.IPv4Address):
+        b = ip.packed
+        return (b[0] in (10, 127) or (b[0] == 172 and 16 <= b[1] <= 31) or (b[0] == 192 and b[1] == 168)
+                or (b[0] == 169 and b[1] == 254))
+    if isinstance(ip, ipaddress.IPv6Address):
+        b = ip.packed
+        return ip.packed == bytes(15) + b"\x01" or (b[0] & 0xFE) == 0xFC or (b[0] == 0xFE and (b[1] & 0xC0) == 0x80)
+    return False
+
+
+def hb_http_private(base):
+    """True when the base is http and the IP the station actually connects to (checked_base, after DNS) is private.
+
+    Run on every status read, so a name that starts resolving somewhere else shows the full note again. A base
+    that doesn't resolve, or fails checked_base for any reason, is not private."""
+    stored = hb_base_text(base)
+    if not stored or not stored.startswith("http://"):
+        return False
+    try:
+        target = checked_base(stored)
+    except Exception:
+        return False
+    return bool(target) and connect_ip_private(target.get("ip"))
+
+
 def _hb_left(deadline):
     return max(0.01, deadline - time.monotonic())
 

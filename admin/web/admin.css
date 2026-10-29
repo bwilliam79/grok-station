@@ -508,6 +508,19 @@ button#iback{height:auto;min-height:44px;text-decoration:none}
 .hbinfo{display:flex;gap:10px;align-items:flex-start;background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:12px;max-width:560px;font-size:var(--fs-label);color:var(--gs-muted)}
 .hbinfo .ii{flex:none;width:20px;height:20px;border-radius:999px;border:1.5px solid var(--gs-muted);color:var(--gs-muted);display:grid;place-items:center;font-size:var(--fs-caps);font-weight:600;margin-top:1px}
 .hbinfo b{color:var(--gs-text);font-weight:600}
+/* 0.13.7 http label (Noor SPEC gs-hb-http-label rev1): pill after the address, 8px gap; hit area 24px, 44pt on phone */
+/* Connected card address line (Noor gs-hb-http-label answer): under "Connected · N devices", 15px muted host:port, 8px gap, pill centred. */
+.hbaddrl{display:flex;align-items:center;gap:8px;margin:4px 0 0;font-size:var(--fs-body);color:#A89B8C;position:relative}
+.hbpill{position:relative;display:inline-flex;align-items:center;gap:4px;font:500 var(--fs-caps) var(--body);color:#A89B8C;background:transparent;border:1px solid rgba(168,155,140,.4);border-radius:999px;padding:1px 8px;cursor:pointer;min-height:0}
+.hbpill::before{content:"";position:absolute;left:50%;top:50%;width:max(100%,24px);height:max(100%,24px);transform:translate(-50%,-50%)}
+.hbpill:hover{color:#F5EFE6;border-color:#A89B8C}
+.hbpill:focus-visible{outline:2px solid #3FD3B6;outline-offset:2px}
+.hbpill:active{background:rgba(245,239,230,.08)}
+.hbpop{position:absolute;z-index:20;margin-top:8px;max-width:420px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:12px 14px;font-size:var(--fs-label);color:var(--gs-muted)}
+.hbpop b{color:var(--gs-text);font-weight:600}
+.hbpop p{margin:0 0 10px}
+.hbpop[hidden]{display:none}
+@media (max-width:767px){.hbpill::before{width:max(100%,44px);height:max(100%,44px)}.hbpop{position:fixed;left:0;right:0;bottom:0;max-width:none;margin:0;border-radius:16px 16px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom))}}
 .hbsteps{margin:8px 0 0;padding-left:1.2rem}
 .hbsteps li{margin:6px 0}
 .hbaddr{display:flex;gap:10px;align-items:flex-end}

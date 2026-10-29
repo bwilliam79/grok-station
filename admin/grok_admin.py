@@ -5101,6 +5101,8 @@ class Handler(BaseHTTPRequestHandler):
                    "voice": hb_enabled and bool(hb_rows) and hb.get("voice") is True and blocked is None}
         if hb_enabled and hb_status != "not_set_up":
             hb_view["base"] = hb["base"]
+            # 0.13.7 (Noor SPEC gs-hb-http-label rev1, Nix): server-side, on the resolved connect IP, every read.
+            hb_view["http_private"] = hb_status == "connected" and gsi.hb_http_private(hb["base"])
         return {"integrations": {"wled": {"enabled": enabled, "status": status, "voice": voice},
                                  "homebridge": hb_view},
                 "devices": devices,

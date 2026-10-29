@@ -4914,7 +4914,7 @@ async function pageIntegrations(el) {
           <div class="acts2">${ready ? `<button class="btn" id="wmanage" type="button">Manage</button><button class="btn p" id="wsetup" type="button">Add lights</button>` : `<button class="btn p" id="wsetup" type="button">Set up</button>`}</div></div>
         <div class="card intcard"><div class="ih"><div><h2>Homebridge</h2>
           <span class="intst ${hbClass}">${esc(hbLabel)}</span></div></div>
-          <p class="sub">${esc(hbSub)}</p>${hbStatus !== "not_set_up" ? hbHttpWarn(hb.base) : ""}
+          <p class="sub">${esc(hbSub)}</p>${hbStatus === "not_set_up" ? "" : hb.http_private === true ? hbHttpPill(hb.base) : hbHttpWarn(hb.base)}
           <div class="acts2">${hbBtn}</div></div>
       </div>
       <div class="seclab" style="margin-top:22px">Later</div>
@@ -4947,6 +4947,7 @@ async function pageIntegrations(el) {
     if (hbFix) hbFix.onclick = () => { hbBase = hb.base || ""; hbBase ? hbEnter(hbBase, {fix: true}) : hbAddress(); };
     const hbRm = $("#hbremove", el);
     if (hbRm) hbRm.onclick = () => removeHomebridge();
+    hbPillWire(el);
   }
 
   function manageView(devices) {
@@ -5200,6 +5201,42 @@ async function pageIntegrations(el) {
     // Nix I1 + Noor SPEC rev3 (09b): http is fine on the home network; say so as information, not a warning.
     if (!/^http:\/\//i.test(String(base || ""))) return "";
     return `<div class="hbinfo" role="note"><span class="ii" aria-hidden="true">i</span><span><b>Not encrypted.</b> This address uses http, so the connection isn't encrypted. That's fine on your home network. To encrypt it, turn on https in Homebridge's settings and use the https address.</span></div>`;
+  }
+  const HB_HTTP_NOTE = "<b>Not encrypted.</b> This address uses http, so the connection isn't encrypted. That's fine on your home network. To encrypt it, turn on https in Homebridge's settings and use the https address.";
+  // host:port only: no scheme, path, username or token (Noor gs-hb-http-label answer).
+  function hbHostPort(base) {
+    const raw = String(base || "");
+    if (/^https?:\/\//i.test(raw)) {
+      try { return new URL(raw).host; } catch (e) { /* fall through */ }
+    }
+    return raw.replace(/^[a-z]+:\/\//i, "").replace(/^[^@/]*@/, "").split(/[/?#]/)[0];
+  }
+  function hbHttpPill(base) {
+    // 0.13.7, Noor SPEC gs-hb-http-label rev1: Connected card with a private connect address (server decides,
+    // hb.http_private). The note moves behind a small "http ⓘ" pill on the address line.
+    const addr = hbHostPort(base);
+    return `<p class="hbaddrl"><span class="hbaddrtx">${esc(addr)}</span><button type="button" class="hbpill" id="hbpill" aria-label="Not encrypted (http). Show details" aria-haspopup="dialog" aria-expanded="false" aria-controls="hbpop">http <span aria-hidden="true">ⓘ</span></button></p>
+      <div class="hbpop" id="hbpop" role="dialog" aria-modal="false" aria-labelledby="hbpopt" tabindex="-1" hidden><p id="hbpopt">${HB_HTTP_NOTE}</p><div class="acts2"><button type="button" class="btn" id="hbpopx">Close</button></div></div>`;
+  }
+  function hbPillWire(root) {
+    const pill = $("#hbpill", root), pop = $("#hbpop", root);
+    if (!pill || !pop) return;
+    const close = () => {
+      if (pop.hidden) return;
+      pop.hidden = true;
+      pill.setAttribute("aria-expanded", "false");
+      document.removeEventListener("keydown", onKey);
+      pill.focus();
+    };
+    const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } };
+    pill.onclick = () => {
+      if (!pop.hidden) { close(); return; }
+      pop.hidden = false;
+      pill.setAttribute("aria-expanded", "true");
+      document.addEventListener("keydown", onKey);
+      $("#hbpopx", pop).focus();
+    };
+    $("#hbpopx", pop).onclick = close;
   }
   function usersHref(base) {
     return /^https?:\/\/[^/?#]+$/.test(base) ? base + "/users" : "";
