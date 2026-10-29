@@ -108,7 +108,7 @@ class Install(unittest.TestCase):
         for n in ("ash", "jules", "kai", "miles", "piper", "rhea"):  # retired starter models are removed on update
             self.assertIn("$O/wake/models/hey_%s.onnx" % n, sh)
         self.assertNotIn("rm -f $O/wake/models/enrolled", sh)
-        self.assertIn("$V/voice/ack", sh)  # cached "Asking <name>" clips; the relay unit already writes the state dir
+        self.assertIn(" voice/replies voice/ack", sh)  # (via safe-mkdirs, Nix M-pre) cached "Asking <name>" clips; the relay unit already writes the state dir
         # Late answers are spoken by user grok. voice/ is grok-admin only, so late/ is group grok and setgid.
         self.assertIn("install -d -o grok-relay -g grok -m 2770 $V/late", sh)
         self.assertNotIn("$V/voice/late", sh)

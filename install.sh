@@ -151,11 +151,18 @@ st_users() {
   run chown root:grok /etc/grok-station/env   # every run: an older admin save left it root:root 0600 (relay can't read the location)
   run chmod 0640 /etc/grok-station/env
   sh_ "[ -e /etc/grok-station/wake.env ] || { install -m 0640 -o root -g grok /dev/null /etc/grok-station/wake.env; }"
-  for d in $V/state $V/bots $V/voice $V/voice/minted $V/voice/pending $V/voice/replies $V/voice/ack $V/audit $V/personas \
-           $V/portraits $V/alerts $V/wakewords; do
+  for d in $V/state $V/bots $V/voice $V/audit $V/personas $V/portraits $V/alerts $V/wakewords; do
     run install -d -o grok-relay -g grok-admin -m 0770 "$d"
   done
   run chmod 0755 $V
+  # voice/{minted,pending,replies,ack} sit inside $V/voice, which grok-relay owns: root `install -d -o` there would
+  # follow a symlink the relay planted and chown its target (Nix 0.13.6 M-pre). Walk from the root-owned $V instead,
+  # O_NOFOLLOW at every step; voice itself is re-asserted on the way. A refusal fails this stage.
+  if [ "$DRY" = 1 ]; then echo "+ safe-mkdirs --mode 0770 --group grok-admin grok-relay $V voice/{minted,pending,replies,ack}"; else
+    python3 -I - --mode 0770 --group grok-admin grok-relay "$V" voice voice/minted voice/pending voice/replies voice/ack \
+      < tools/safe-mkdirs.py \
+      || { echo "refusing to set up $V/voice: a path there is a symlink or not a directory"; return 1; }
+  fi
   # 0.13.0 home control: the admin writes integrations.json here (0640, group grok-admin via setgid);
   # the relay (group grok-admin) reads it and cannot write. No secrets in it.
   run install -d -o grok-admin -g grok-admin -m 2750 $V/integrations

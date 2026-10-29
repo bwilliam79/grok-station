@@ -6,7 +6,8 @@ so a symlink grok planted at $O/wake or $O/wake/models would hand grok whatever 
 component is opened with O_NOFOLLOW relative to its parent's descriptor, created if missing, and chowned
 and chmodded through that descriptor. A symlink anywhere on the way is refused and nothing past it is touched.
 
-Usage: safe-mkdirs.py [--mode 0750] USER BASE REL [REL ...]   (REL like wake/models; default mode 0755)
+Usage: safe-mkdirs.py [--mode 0750] [--group GROUP] USER BASE REL [REL ...]   (REL like wake/models; default mode
+       0755, default group USER's primary group)
        safe-mkdirs.py --put USER BASE RELDIR SRC [SRC ...]
 
 --put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
@@ -133,15 +134,23 @@ def main(argv):
             sys.stderr.write("safe-mkdirs: %s\n" % e)
             return 1
         return 0
-    mode = 0o755
-    if argv[:1] == ["--mode"]:
-        mode, argv = int(argv[1], 8), argv[2:]
+    mode, group = 0o755, None
+    while argv[:1] in (["--mode"], ["--group"]) and len(argv) > 1:
+        if argv[0] == "--mode":
+            mode = int(argv[1], 8)
+        else:
+            group = argv[1]
+        argv = argv[2:]
     if len(argv) < 3:
         sys.stderr.write(__doc__)
         return 2
     pw = pwd.getpwnam(argv[0])
+    gid = pw.pw_gid
+    if group is not None:
+        import grp
+        gid = grp.getgrnam(group).gr_gid
     try:
-        mkdirs(argv[1], argv[2:], pw.pw_uid, pw.pw_gid, mode=mode)
+        mkdirs(argv[1], argv[2:], pw.pw_uid, gid, mode=mode)
     except Refused as e:
         sys.stderr.write("safe-mkdirs: %s\n" % e)
         return 1
