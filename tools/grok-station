@@ -32,17 +32,43 @@ tls_cert() {
 }
 reset() {
   [ -f "$AUTH" ] || { echo "No admin password is set yet (setup code is on the station screen)."; return 0; }
+  # auth.json sits in $V/admin, which grok-admin owns: open it and write the new one through that folder's
+  # descriptor, never by path, so a planted auth.json or temp symlink is not followed (Nix 0.13.6 M-pre2).
   /usr/bin/python3 - "$AUTH" <<'PY'
-import json, os, sys, time
+import json, os, secrets, stat, sys, time
 f = sys.argv[1]
-d = json.load(open(f))
-d.pop("password", None); d["reset_at"] = int(time.time())
-tmp = f + ".tmp"
-st = os.stat(os.path.dirname(f))
-with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as fh:
-    json.dump(d, fh)
-os.chown(tmp, st.st_uid, st.st_gid)  # stays readable by the admin service user
-os.replace(tmp, f)
+folder, name = os.path.split(f)
+NF = os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | NF)
+try:
+    try:
+        cur = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NF, dir_fd=dfd)
+    except OSError:
+        sys.exit("refusing to reset: %s is a symlink or can't be opened" % f)
+    with os.fdopen(cur) as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            sys.exit("refusing to reset: %s is not a plain file with one link" % f)
+        d = json.load(fh)
+    d.pop("password", None); d["reset_at"] = int(time.time())
+    own = os.fstat(dfd)  # stays the admin service user's, as before: folder owner and group, mode 0600
+    tmp = ".%s.new.%s" % (name, secrets.token_hex(8))
+    out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NF, 0o600, dir_fd=dfd)
+    try:
+        with os.fdopen(out, "w") as fh:
+            json.dump(d, fh)
+            fh.flush()
+            os.fchown(fh.fileno(), own.st_uid, own.st_gid)
+            os.fchmod(fh.fileno(), 0o600)
+        os.rename(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except OSError:
+            pass
+        raise
+finally:
+    os.close(dfd)
 PY
   rm -f /run/grok-station-admin/setup.json
   echo "Admin password reset. The new setup code is on the station screen."
