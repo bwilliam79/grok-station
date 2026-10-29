@@ -126,7 +126,12 @@ class LeastPrivilege(unittest.TestCase):
         body = sh.split("_vosk_model() {", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("runuser -u grok -- python3", body)
         self.assertIn("tools/vosk-unpack.py", body)
-        self.assertIn("install -o grok -m 0400", body)
         self.assertNotIn('if python3 tools/vosk-unpack.py', body)
-        self.assertLess(body.index("sha256sum"), body.index("install -o grok -m 0400"))
+        self.assertLess(body.index("sha256sum"), body.index("install -o root -g grok -m 0440"))
         self.assertIn('rm -rf "$zd"', body)
+        # Nix 0.13.5 L1-b: $zd is never handed to grok; grok only reads.
+        self.assertNotRegex(body, r'chown[^\n]*grok[^\n]*"\$zd"')
+        self.assertIn('install -d -o root -g grok -m 0750 "$zd"', body)
+        self.assertIn('install -o root -g grok -m 0440 "$tmp" "$zd/model.zip"', body)
+        self.assertNotIn('chmod 0700 "$zd"', body)
+        self.assertLess(body.index('install -d -o root -g grok -m 0750 "$zd"'), body.index("runuser -u grok"))
