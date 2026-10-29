@@ -12,6 +12,8 @@ Usage: safe-mkdirs.py [--mode 0750] USER BASE REL [REL ...]   (REL like wake/mod
 --put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
 written to a fresh temp name through the directory's descriptor, fchowned, then renamed over the final name in
 that same directory (Nix 0.13.6 L3: root never writes through a path grok could have swapped for a symlink).
+
+BASE itself must be owned by root and not group- or other-writable, checked on its open descriptor (L4).
 """
 import os
 import sys
@@ -19,8 +21,25 @@ import sys
 FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
+ROOT_UID = 0  # the base must be owned by root; tests swap this for their own uid
+
+
 class Refused(Exception):
     pass
+
+
+def _open_base(base, root_uid):
+    """Open BASE and trust it only if root owns it and neither group nor others can write it (Nix 0.13.6 L4)."""
+    fd = _open(base, None, base)
+    st = os.fstat(fd)
+    uid = ROOT_UID if root_uid is None else root_uid
+    if st.st_uid != uid:
+        os.close(fd)
+        raise Refused("%s is not owned by root (uid %d); refusing" % (base, st.st_uid))
+    if st.st_mode & 0o022:
+        os.close(fd)
+        raise Refused("%s is group- or other-writable (%o); refusing" % (base, st.st_mode & 0o777))
+    return fd
 
 
 def _open(name, dir_fd, shown):
@@ -39,9 +58,9 @@ def _parts(rel):
     return parts
 
 
-def mkdirs(base, rels, uid, gid, mode=0o755):
+def mkdirs(base, rels, uid, gid, mode=0o755, root_uid=None):
     base = os.path.abspath(base)
-    bfd = _open(base, None, base)
+    bfd = _open_base(base, root_uid)
     try:
         for rel in rels:
             fd, shown = os.dup(bfd), base
@@ -63,9 +82,9 @@ def mkdirs(base, rels, uid, gid, mode=0o755):
         os.close(bfd)
 
 
-def put(base, rel_dir, srcs, uid, gid, mode=0o644):
+def put(base, rel_dir, srcs, uid, gid, mode=0o644, root_uid=None):
     base = os.path.abspath(base)
-    fd, shown = _open(base, None, base), base
+    fd, shown = _open_base(base, root_uid), base
     try:
         for p in _parts(rel_dir):
             shown = os.path.join(shown, p)

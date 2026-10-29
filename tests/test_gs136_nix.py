@@ -216,5 +216,49 @@ class L3(Base):
         self.assertEqual(sorted(os.listdir(os.path.join(base, "wake"))), ["grok_wake.py"])
 
 
+class L4(Base):
+    def test_base_not_owned_by_root_is_refused(self):
+        m = _load()
+        base = os.path.join(self.t, "base")
+        os.mkdir(base, 0o755)
+        self.assertTrue(hasattr(m, "ROOT_UID"))
+        if os.getuid() == 0:
+            os.chown(base, 65534, 65534)
+            uid = 0
+        else:
+            uid = os.getuid() + 1  # trust someone else: this user's base must be refused
+        with self.assertRaises(m.Refused) as c:
+            m.mkdirs(base, ["x"], os.getuid(), os.getgid(), root_uid=uid)
+        self.assertIn("not owned by root", str(c.exception))
+        self.assertFalse(os.path.exists(os.path.join(base, "x")))
+
+    def test_group_or_other_writable_base_is_refused(self):
+        m = _load()
+        for mode in (0o775, 0o757):
+            base = os.path.join(self.t, "base%o" % mode)
+            os.mkdir(base)
+            os.chmod(base, mode)
+            with self.assertRaises(m.Refused):
+                m.mkdirs(base, ["x"], os.getuid(), os.getgid(), root_uid=os.getuid())
+            self.assertFalse(os.path.exists(os.path.join(base, "x")))
+
+    def test_good_base_with_mode(self):
+        m = _load()
+        base = os.path.join(self.t, "ok")
+        os.mkdir(base, 0o755)
+        m.mkdirs(base, ["a/b"], os.getuid(), os.getgid(), mode=0o750, root_uid=os.getuid())
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(base, "a", "b")).st_mode), 0o750)
+
+    @unittest.skipUnless(os.getuid() == 0, "needs root: the real ROOT_UID path is run with sudo in /tmp/gs136-l4-*")
+    def test_cli_as_root_refuses_user_owned_base(self):
+        base = os.path.join(self.t, "nb")
+        os.mkdir(base, 0o755)
+        os.chown(base, 65534, 65534)
+        r = subprocess.run([sys.executable, "-I", "-", "nobody", base, "x"], stdin=open(TOOL), capture_output=True,
+                           text=True)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not owned by root", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

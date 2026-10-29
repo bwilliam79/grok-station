@@ -19,19 +19,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 spec = importlib.util.spec_from_file_location("safe_mkdirs", os.path.join(ROOT, "tools", "safe-mkdirs.py"))
 
 
-def _dir_step():
+SHIM = """import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("safe_mkdirs", %r)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.ROOT_UID = os.getuid()  # unprivileged test: trust a base this user owns instead of root
+sys.exit(m.main(sys.argv[1:]))
+""" % os.path.join(ROOT, "tools", "safe-mkdirs.py")
+
+
+def _dir_step(shim):
     """st_wake's lines before the venv step, with the owner set to whoever runs the tests."""
     src = open(os.path.join(ROOT, "install.sh")).read()
     body = src[src.index("st_wake() {\n") + len("st_wake() {\n"):]
     body = body[:body.index('  sh_ "[ -x $O/wake/venv/bin/python ]')]
     me = getpass.getuser()
     return (body.replace("-o grok -g grok", "").replace(" - grok ", " - %s " % me)
-            .replace("tools/safe-mkdirs.py", os.path.join(ROOT, "tools", "safe-mkdirs.py")))
+            .replace("tools/safe-mkdirs.py", shim))
 
 
 class WakeDirs(unittest.TestCase):
     def setUp(self):
         self.t = tempfile.mkdtemp()
+        self.shim = os.path.join(self.t, "shim.py")
+        open(self.shim, "w").write(SHIM)
         self.O = os.path.join(self.t, "opt")
         os.mkdir(self.O)
         self.victim = os.path.join(self.t, "victim")
@@ -42,7 +53,7 @@ class WakeDirs(unittest.TestCase):
         shutil.rmtree(self.t, ignore_errors=True)
 
     def _run(self):
-        script = 'set -e\nDRY=0\nO="$1"\nrun() { "$@"; }\nf() {\n%s}\nf\n' % _dir_step()
+        script = 'set -e\nDRY=0\nO="$1"\nrun() { "$@"; }\nf() {\n%s}\nf\n' % _dir_step(self.shim)
         return subprocess.run(["sh", "-c", script, "sh", self.O], capture_output=True, text=True, cwd=ROOT)
 
     def _victim_untouched(self):
