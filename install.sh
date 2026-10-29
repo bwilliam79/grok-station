@@ -135,6 +135,7 @@ st_users() {
   run install -d -o root -g root -m 0711 /etc/grok-station $S
   gen $S/local_token grok-relay:grok 0440       # display + wake -> relay
   gen $S/admin_token grok-relay:grok-admin 0440 # admin page -> relay bots API
+  gen $S/wake_control_token grok:grok 0440      # loopback wake control: group grok is admin, relay, display, wake
   # Station X25519 key (bots seal replies to it). The relay runs with ProtectSystem=strict, so /etc is read-only to
   # it and it can't create this file itself: make it here, and re-assert owner and mode on every run. A file that
   # is not exactly 32 bytes is unusable and is replaced (any pairing made with it could never have worked).
@@ -349,7 +350,7 @@ st_health() {
   for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do
     if [ -f /etc/systemd/system/$u.service ] && systemctl is-enabled -q $u; then echo "ok   $u enabled"; else echo "!!   $u is not installed or enabled"; bad=1; fi
   done
-  for f in /etc/grok-station/env $S/local_token $S/admin_token /opt/grok-station/VERSION; do
+  for f in /etc/grok-station/env $S/local_token $S/admin_token $S/wake_control_token /opt/grok-station/VERSION; do
     if [ -s "$f" ]; then echo "ok   $f"; else echo "!!   missing $f"; bad=1; fi
   done
   chk() { if "$@" >/dev/null 2>&1; then echo "ok   $*"; else echo "!!   failed: $*"; "$@" 2>&1 | tail -n 5; bad=1; fi; }

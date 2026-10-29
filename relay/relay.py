@@ -1646,6 +1646,32 @@ def open_train_tile(hit, post=None):
     return True
 
 
+_WAKE_TOKEN_WARNED = False
+
+
+def _wake_control_headers(base=None):
+    """X-Grok-Wake-Token from the file, read on each call. Unreadable: no header, one generic line, still try.
+
+    Not secret(): that helper falls back to an environment variable of the same name.
+    """
+    global _WAKE_TOKEN_WARNED
+    headers = dict(base or {})
+    path = E("WAKE_CONTROL_TOKEN_FILE", "/etc/grok-station/secrets/wake_control_token")
+    tok = ""
+    try:
+        with open(path, "r", encoding="ascii") as f:
+            tok = f.read().strip()
+    except (OSError, UnicodeError):
+        tok = ""
+    if not tok:
+        if not _WAKE_TOKEN_WARNED:
+            _WAKE_TOKEN_WARNED = True
+            print("wake control: token unreadable", flush=True)
+    else:
+        headers["X-Grok-Wake-Token"] = tok
+    return headers
+
+
 def post_wake_open_tile(body, post=None, opener=None):
     """Show the prompt tile on the loopback wake control port. Does not record.
 
@@ -1683,7 +1709,7 @@ def post_wake_open_tile(body, post=None, opener=None):
     data = json.dumps(allow).encode()
     req = urllib.request.Request(
         "http://127.0.0.1:%d/enroll/open-tile" % port, data=data,
-        headers={"Content-Type": "application/json"})
+        headers=_wake_control_headers({"Content-Type": "application/json"}))
     if opener is None:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
@@ -2126,7 +2152,7 @@ def _post_wake_late(rid, text, who, pcm):
     body = json.dumps({"id": rid}).encode()
     req = urllib.request.Request(
         "http://127.0.0.1:%d/late-reply" % port, data=body,
-        headers={"Content-Type": "application/json"})
+        headers=_wake_control_headers({"Content-Type": "application/json"}))
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
             return int(resp.status)

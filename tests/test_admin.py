@@ -1383,6 +1383,10 @@ class WakePersonaSync(unittest.TestCase):
         import grok_wake as gw
         port = free_port()
         old_port, old_sync = gw.CONTROL_PORT, gw.sync_personas
+        token_dir = tempfile.mkdtemp()
+        open(os.path.join(token_dir, "wake_control_token"), "w").write("wake-test-value\n")
+        old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
+        os.environ["WAKE_CONTROL_TOKEN_FILE"] = os.path.join(token_dir, "wake_control_token")
         box = {"n": 0, "release": threading.Event()}
         def fake():
             box["n"] += 1
@@ -1421,10 +1425,15 @@ class WakePersonaSync(unittest.TestCase):
                 gw.CONTROL_HTTPD.server_close()
                 gw.CONTROL_HTTPD = None
             gw.CONTROL_PORT = old_port
+            if old_tok is None:
+                os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
+            else:
+                os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
 
     def _post(self, port):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-        c.request("POST", "/personas/sync", b"{}", {"Content-Type": "application/json"})
+        c.request("POST", "/personas/sync", b"{}",
+                  {"Content-Type": "application/json", "X-Grok-Wake-Token": "wake-test-value"})
         r = c.getresponse()
         body = json.loads(r.read() or b"{}")
         c.close()

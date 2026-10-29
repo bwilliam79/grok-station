@@ -406,6 +406,10 @@ class TrainingNotice(unittest.TestCase):
         d = tempfile.mkdtemp()
         cfg = os.path.join(d, "wakewords.json")
         json.dump({"words": [{"name": "hey_finn", "persona": "finn"}]}, open(cfg, "w"))
+        token = os.path.join(d, "wake_control_token")
+        open(token, "w").write("wake-test-value\n")
+        old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
+        os.environ["WAKE_CONTROL_TOKEN_FILE"] = token
         old = (gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES)
         gw.CONTROL_PORT = port
         gw.RELAY_URL = ""
@@ -419,7 +423,8 @@ class TrainingNotice(unittest.TestCase):
             for _ in range(50):
                 try:
                     c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-                    c.request("POST", "/enroll", json.dumps(body).encode(), {"Content-Type": "application/json"})
+                    c.request("POST", "/enroll", json.dumps(body).encode(),
+                              {"Content-Type": "application/json", "X-Grok-Wake-Token": "wake-test-value"})
                     r = c.getresponse()
                     out = json.loads(r.read() or b"{}")
                     c.close()
@@ -449,6 +454,10 @@ class TrainingNotice(unittest.TestCase):
                 gw.CONTROL_HTTPD.server_close()
                 gw.CONTROL_HTTPD = None
             gw.CONTROL_PORT, gw.RELAY_URL, gw.WAKE_CONFIG, gw.OVERRIDES = old
+            if old_tok is None:
+                os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
+            else:
+                os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
 
 
 class _FakeDisplay:

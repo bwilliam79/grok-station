@@ -266,6 +266,11 @@ class MicReset(unittest.TestCase):
         s.close()
         old_port, old_rec = gw.CONTROL_PORT, gw.RECOVERY
         gw.CONTROL_PORT = port
+        token_dir = tempfile.mkdtemp()
+        token = os.path.join(token_dir, "wake_control_token")
+        open(token, "w").write("wake-test-value\n")
+        old_tok = os.environ.get("WAKE_CONTROL_TOKEN_FILE")
+        os.environ["WAKE_CONTROL_TOKEN_FILE"] = token
         calls = []
         gw.RECOVERY = gw.MicRecovery(lambda card: calls.append(card) or None, busy=lambda: True, card=lambda: "M0",
                                      flags=lambda: {"button": True, "night": True, "drought": True},
@@ -279,7 +284,8 @@ class MicReset(unittest.TestCase):
             for _ in range(50):
                 try:
                     c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-                    c.request("POST", "/mic-reset", b"{}", {"Content-Type": "application/json"})
+                    c.request("POST", "/mic-reset", b"{}",
+                              {"Content-Type": "application/json", "X-Grok-Wake-Token": "wake-test-value"})
                     r = c.getresponse()
                     out = json.loads(r.read() or b"{}")
                     c.close()
@@ -305,6 +311,10 @@ class MicReset(unittest.TestCase):
                 gw.CONTROL_HTTPD.server_close()
                 gw.CONTROL_HTTPD = None
             gw.CONTROL_PORT, gw.RECOVERY = old_port, old_rec
+            if old_tok is None:
+                os.environ.pop("WAKE_CONTROL_TOKEN_FILE", None)
+            else:
+                os.environ["WAKE_CONTROL_TOKEN_FILE"] = old_tok
 
     def test_sudo_command_and_admin_page(self):
         seen = []

@@ -32,7 +32,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 5 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, datetime, hashlib, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, datetime, hashlib, hmac, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 import wait_tone
 
@@ -164,6 +164,9 @@ ENROLLED_DIR = E("WAKE_ENROLLED_DIR", "/opt/grok-station/wake/models/enrolled") 
 DROP_DIR = E("WAKE_DROP_DIR", "/var/lib/grok-station/wakewords")  # onnx + json dropped for the listener
 DROP_POLL_S = 60
 CONTROL_PORT = int(E("WAKE_CONTROL_PORT", "8789"))                     # 127.0.0.1 only
+WAKE_TOKEN_FILE = "/etc/grok-station/secrets/wake_control_token"       # group grok reads it; the value is never logged
+_WAKE_TOKEN = {"raw": b""}
+_WAKE_CLIENT_WARNED = False
 ENROLL_Q, SYNC_NOW, RELOAD = queue.Queue(maxsize=1), threading.Event(), threading.Event()
 ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "discard": False}
 # Admin page (admin/grok_admin.py): until setup is done the station connects no one. The admin service writes
@@ -817,13 +820,58 @@ def parse_enroll(j):
     return {"phrase": phrase, "persona": persona, "count": count, "topup": bool(j.get("topup"))}
 
 
+def _wake_token_path():
+    return E("WAKE_CONTROL_TOKEN_FILE", WAKE_TOKEN_FILE)
+
+
+def _read_wake_token_file():
+    """Stripped file bytes, or None. Missing, empty, and non-ascii files are unreadable. Never logged."""
+    try:
+        with open(_wake_token_path(), "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text:
+        return None
+    return text.encode("ascii")
+
+
+def _load_wake_token(force=False):
+    """Token cached at server start. A request re-reads only while that read found nothing."""
+    if not force and _WAKE_TOKEN["raw"]:
+        return _WAKE_TOKEN["raw"]
+    tok = _read_wake_token_file() or b""
+    if tok or force:
+        _WAKE_TOKEN["raw"] = tok
+    return _WAKE_TOKEN["raw"]
+
+
+def _wake_client_headers(base=None):
+    """Header for a call this process makes to the control port. One generic line if the file cannot be read."""
+    global _WAKE_CLIENT_WARNED
+    headers = dict(base or {})
+    tok = _read_wake_token_file()
+    if not tok:
+        if not _WAKE_CLIENT_WARNED:
+            _WAKE_CLIENT_WARNED = True
+            print("wake control: token unreadable", flush=True)
+    else:
+        headers["X-Grok-Wake-Token"] = tok.decode("ascii")
+    return headers
+
+
 def control_server():
     """127.0.0.1:CONTROL_PORT POST /enroll {"phrase","count"}: queue one enrollment (the display's LAN /enroll and
     `grok_wake.py --enroll` both land here). POST /personas/sync re-runs persona and portrait sync in a thread.
     POST /mic-reset asks for a speakerphone USB reset (deferred while a session is open).
-    Never reachable from the LAN."""
+    Every route requires X-Grok-Wake-Token. Never reachable from the LAN. The token is never logged."""
     global CONTROL_HTTPD
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    _load_wake_token(force=True)
 
     class H(BaseHTTPRequestHandler):
         def _r(self, code, obj):
@@ -831,7 +879,22 @@ def control_server():
             self.send_response(code); self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
 
+        def _allow(self):
+            """403 before the body is read. compare_digest on the stripped file bytes."""
+            tok = _load_wake_token()
+            got = self.headers.get("X-Grok-Wake-Token")
+            try:
+                ok = bool(tok) and isinstance(got, str) and hmac.compare_digest(tok, got.encode("utf-8"))
+            except Exception:
+                ok = False
+            if not ok:
+                self._r(403, {"error": "forbidden"})
+                return False
+            return True
+
         def do_GET(self):
+            if not self._allow():
+                return
             if self.path != "/status":
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "audio_at": LIVE.get("audio_at"), "session": LIVE["session"],
@@ -842,6 +905,8 @@ def control_server():
                                  "setup": setup_mode()})
 
         def do_POST(self):
+            if not self._allow():
+                return
             if self.path == "/personas/sync":
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
@@ -3314,6 +3379,20 @@ def main():
                        chunk_s=CHUNK / 16000.0, gap=_env_float("WAKE_CAPTURE_REOPEN_S", 30.0))
 
 
+def enroll_cli(phrase, count, topup):
+    """POST /enroll on the loopback control port. Sends the token header when the file is readable."""
+    body = json.dumps({"phrase": phrase, "count": count, "topup": bool(topup)}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{CONTROL_PORT}/enroll", body,
+                                 _wake_client_headers({"Content-Type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            print(r.read().decode())
+            return 0
+    except urllib.error.HTTPError as e:
+        print(e.read().decode())
+        return 1
+
+
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--test":
         test(sys.argv[2])
@@ -3327,13 +3406,8 @@ if __name__ == "__main__":
         args = [a for a in sys.argv[2:] if a != "--topup"]
         top = "--topup" in sys.argv
         n = int(args[1]) if len(args) > 1 else (TOPUP_COUNT if top else ENROLL_COUNT)
-        body = json.dumps({"phrase": args[0], "count": n, "topup": top}).encode()
-        try:
-            with urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{CONTROL_PORT}/enroll", body,
-                                                               {"Content-Type": "application/json"}), timeout=5) as r:
-                print(r.read().decode())
-        except urllib.error.HTTPError as e:
-            print(e.read().decode()); sys.exit(1)
+        if enroll_cli(args[0], n, top):
+            sys.exit(1)
     elif len(sys.argv) in (3, 4) and sys.argv[1] == "--ask":
         ask(sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None)
     else:

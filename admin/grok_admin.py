@@ -612,11 +612,34 @@ def read_display_status(fetch=None, timeout=1.5):
     return grok_public(grok)
 
 
+_WAKE_TOKEN_WARNED = False
+
+
+def _wake_control_headers(base=None):
+    """X-Grok-Wake-Token from the file, read on each call. Unreadable: no header, one generic line, still try."""
+    global _WAKE_TOKEN_WARNED
+    headers = dict(base or {})
+    path = E("WAKE_CONTROL_TOKEN_FILE", "/etc/grok-station/secrets/wake_control_token")
+    tok = ""
+    try:
+        with open(path, "r", encoding="ascii") as f:
+            tok = f.read().strip()
+    except (OSError, UnicodeError):
+        tok = ""
+    if not tok:
+        if not _WAKE_TOKEN_WARNED:
+            _WAKE_TOKEN_WARNED = True
+            print("wake control: token unreadable", flush=True)
+    else:
+        headers["X-Grok-Wake-Token"] = tok
+    return headers
+
+
 def wake(method, p, body=None, timeout=3):
     """Loopback wake control. Proxies are off so this cannot leave the machine."""
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
-                                     {"Content-Type": "application/json"}, method=method)
+                                     _wake_control_headers({"Content-Type": "application/json"}), method=method)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=timeout) as r:
             return r.status, json.loads(r.read(65536) or b"{}")

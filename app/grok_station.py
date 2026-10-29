@@ -385,6 +385,29 @@ CARD_HOLD = 4  # a finished session that showed a card stays up this long; a not
 VOICE_HOLDS = {"listening": LISTEN_HOLD, "thinking": 20, "speaking": 45, "error": 5, "notice": 10, "enroll": 30, "confirm": 30}  # safety timeouts per state
 VOICE_TEXT = {"listening": "Go ahead, I’m listening.", "thinking": "Thinking…", "speaking": "…", "error": "Can’t reach Grok right now.", "notice": "Didn’t catch that.", "enroll": "Get ready…", "confirm": "…"}
 WAKE_CONTROL = E("GROK_STATION_WAKE_CONTROL", "http://127.0.0.1:8789/enroll")  # wake listener's local enroll endpoint
+_WAKE_TOKEN_WARNED = False
+
+
+def _wake_control_headers(base=None):
+    """X-Grok-Wake-Token from the file, read on each call. Unreadable: no header, one generic line, still try."""
+    global _WAKE_TOKEN_WARNED
+    headers = dict(base or {})
+    path = E("WAKE_CONTROL_TOKEN_FILE", "/etc/grok-station/secrets/wake_control_token")
+    tok = ""
+    try:
+        with open(path, "r", encoding="ascii") as f:
+            tok = f.read().strip()
+    except (OSError, UnicodeError):
+        tok = ""
+    if not tok:
+        if not _WAKE_TOKEN_WARNED:
+            _WAKE_TOKEN_WARNED = True
+            print("wake control: token unreadable", flush=True)
+    else:
+        headers["X-Grok-Wake-Token"] = tok
+    return headers
+
+
 STATUS_DIR = os.path.join(ASSETS, "status")
 VOICE_NAME = E("GROK_STATION_VOICE_NAME", "Grok")        # portrait/name shown while listening
 SPIN_PERIOD = 1.2                                         # seconds for one thinking-ring revolution
@@ -595,7 +618,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._reply(400, {"error": "bad json"})
         try:
-            req = urllib.request.Request(WAKE_CONTROL, body, {"Content-Type": "application/json"})
+            req = urllib.request.Request(WAKE_CONTROL, body, _wake_control_headers({"Content-Type": "application/json"}))
             with urllib.request.urlopen(req, timeout=3) as r:
                 code, out = r.status, json.loads(r.read(4096))
         except urllib.error.HTTPError as e:
@@ -1084,7 +1107,8 @@ def wake_status_url(control=None):
 def fetch_wake_status(url=None, timeout=2):
     target = wake_status_url() if url is None else url
     try:
-        with urllib.request.urlopen(urllib.request.Request(target), timeout=timeout) as r:
+        req = urllib.request.Request(target, headers=_wake_control_headers())
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             payload = json.loads(r.read(8192))
     except Exception:
         return None
