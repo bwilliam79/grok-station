@@ -472,6 +472,8 @@ VOICE_OFF_SAY = "Voice home control is off. Turn it on in the admin under Integr
 
 
 def _usable(registry):
+    if not isinstance(registry, dict):
+        return []
     out = []
     for row in registry.get("devices") or []:
         if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("id"), str):

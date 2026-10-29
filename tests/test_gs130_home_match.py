@@ -194,7 +194,13 @@ class Match(unittest.TestCase):
         line = [ln for ln in open(os.path.join(ROOT, "install.sh")) if ln.startswith("for f in relay.py")][0]
         self.assertIn("home.py", line)
         opens = re.findall(r"open\([^)]*\)", open(os.path.join(ROOT, "relay", "home.py"), encoding="utf-8").read())
-        self.assertEqual(opens, ['open(path, "rb")'])
+        # Registry read, Homebridge creds, the block flag, and the rewrite of that flag. Nothing else.
+        self.assertEqual(opens, [
+            'open(path, "rb")',
+            'open(raw, encoding="utf-8")',
+            'open(path, encoding="utf-8")',
+            'open(tmp, "w", encoding="utf-8")',
+        ])
 
 
 class Host(unittest.TestCase):
