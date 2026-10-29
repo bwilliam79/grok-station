@@ -3841,7 +3841,7 @@ def transcode_avatar(raw):
         return None, 415
     Image.MAX_IMAGE_PIXELS = AVATAR_PIXELS
     try:
-        im = Image.open(io.BytesIO(raw))
+        im = Image.open(io.BytesIO(raw), formats=["PNG", "JPEG", "WEBP"])  # Nix P1: no other decoder is reachable
         w, h = im.size
         if not isinstance(w, int) or not isinstance(h, int) or w < 1 or h < 1 or w * h > AVATAR_PIXELS:
             return None, 413

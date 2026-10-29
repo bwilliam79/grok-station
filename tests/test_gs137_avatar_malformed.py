@@ -59,16 +59,32 @@ class Malformed(unittest.TestCase):
         self.assertLess(len(bomb), 200)
         self.assertEqual(self.go(bomb), (None, 413))
 
-    def test_gif_with_oversized_later_frame_is_clean(self):
+    def test_gif_with_oversized_later_frame_is_415(self):
         gif = bytes.fromhex(
             "47494638396101000100800000000000ffffff"
             "2c000000000100010000" "02024401" "00"
             "2c00000000409c409c00"
             "2c000000000100010000" "02024401" "00" "3b")
-        png, status = self.go(gif)
-        self.assertIn(status, (None, 413, 415))
-        if status is None:
-            self.assertTrue(png.startswith(b"\x89PNG"))
+        self.assertEqual(self.go(gif), (None, 415))
+
+
+    def _encode(self, fmt, **kw):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (32, 32), (1, 2, 3)).save(buf, format=fmt, **kw)
+        return buf.getvalue()
+
+    def test_only_png_jpeg_webp_are_opened(self):
+        # Nix P1: Image.open(..., formats=["PNG", "JPEG", "WEBP"]); every other decoder stays unreachable.
+        for fmt in ("TIFF", "GIF", "BMP", "PPM"):
+            self.assertEqual(self.go(self._encode(fmt)), (None, 415), fmt)
+        for fmt in ("PNG", "JPEG", "WEBP"):
+            png, status = self.go(self._encode(fmt))
+            self.assertIsNone(status, fmt)
+
+    def test_open_names_the_formats(self):
+        src = open(os.path.join(ROOT, "relay", "relay.py")).read()
+        self.assertIn('Image.open(io.BytesIO(raw), formats=["PNG", "JPEG", "WEBP"])', src)
 
 
 class Pins(unittest.TestCase):
