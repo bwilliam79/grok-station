@@ -550,7 +550,7 @@ class IntegrationsUI(unittest.TestCase):
             "Set up", "Manage", "Add lights", "Looking for WLED lights on your network.",
             "No WLED lights found.", "The station and the lights have to be on the same network.",
             "Add by address", "That address didn't answer like a WLED light.",
-            "That address isn't on your home network.", "Clashes with bot ", "Used by another device",
+            "That address isn't on your home network.", "Clashes with bot ", "Sounds the same as ",
             "Clashes with ", "Recommended, not required.", "Settings PIN", "OTA lock",
             "Turn on Voice home control, then try it: say 'Hey Grok, turn on ", "Voice home control", "Turn on voice home control?",
             "Say the light's name; 'turn off the lights' on its own isn't supported yet.",

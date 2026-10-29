@@ -4610,8 +4610,28 @@ function clockNow() {
   try { return new Date().toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}); }
   catch (e) { return ""; }
 }
-function clashPhrase(kind, name) {
-  if (kind === "device") return "Used by another device";
+/* Noor clash copy (0.13.5). The example puts "room" before light/lights ("Bar Light" -> "Bar room light").
+   No light word, or an example that would clash too (taken(example) is true), drops the whole ", like ..." clause. */
+function roomExample(typed) {
+  const t = String(typed == null ? "" : typed).trim();
+  if (!/\blights?\b/i.test(t)) return "";
+  return t.replace(/\b(lights?)\b/i, w => "room " + w.toLowerCase());
+}
+function sourceLabel(src) {
+  return src === "wled" ? "WLED" : src === "homebridge" ? "Homebridge" : "";
+}
+function deviceClashMsg(typed, other, src, taken) {
+  const tag = sourceLabel(src);
+  let msg = "Sounds the same as \u201c" + String(other == null ? "" : other) + "\u201d" + (tag ? " (" + tag + ")" : "") + " when you say it. Pick a name that sounds different";
+  const ex = roomExample(typed);
+  if (ex && spokenKey(ex) && spokenKey(ex) !== spokenKey(typed) && !(taken && taken(ex))) msg += ", like \u201c" + ex + "\u201d";
+  return msg + ".";
+}
+function batchClashMsg(other) {
+  return "Sounds the same as \u201c" + String(other == null ? "" : other) + "\u201d above";
+}
+function clashPhrase(kind, name, src) {
+  if (kind === "device") return "Sounds the same as \u201c" + String(name || "") + "\u201d" + (sourceLabel(src) ? " (" + sourceLabel(src) + ")" : "") + " when you say it";
   if (kind === "reserved") return "Clashes with " + (name || "that word");
   return "Clashes with bot " + (name || "");
 }
@@ -4622,6 +4642,7 @@ async function pageIntegrations(el) {
   let on = [];
   let bots = [];
   let savedNames = [];
+  let savedSrc = {};
   let serverClash = "";
   let hbBase = "";
   let hbUser = "";
@@ -4636,6 +4657,7 @@ async function pageIntegrations(el) {
   async function loadNames() {
     bots = [];
     savedNames = [];
+    savedSrc = {};
     const b = await api("GET", "/api/bots");
     if (b.ok && b.data && Array.isArray(b.data.bots)) {
       b.data.bots.forEach(bot => {
@@ -4646,8 +4668,8 @@ async function pageIntegrations(el) {
     const g = await api("GET", "/api/integrations");
     if (g.ok && g.data && Array.isArray(g.data.devices)) {
       g.data.devices.forEach(d => {
-        if (d && d.name) savedNames.push(String(d.name));
-        (d && d.aliases || []).forEach(a => { if (a) savedNames.push(String(a)); });
+        if (d && d.name) { savedNames.push(String(d.name)); savedSrc[String(d.name)] = d.kind; }
+        (d && d.aliases || []).forEach(a => { if (a) { savedNames.push(String(a)); savedSrc[String(a)] = d.kind; } });
       });
     }
   }
@@ -4656,8 +4678,22 @@ async function pageIntegrations(el) {
     if (!key) return value.trim() ? "Pick another name so Grok knows which you mean." : "";
     for (const b of bots) if (spokenKey(b) === key) return clashPhrase("bot", b) + ". Pick another name so Grok knows which you mean.";
     for (const word of SPOKEN_RESERVED) if (spokenKey(word) === key) return clashPhrase("reserved", word) + ". Pick another name so Grok knows which you mean.";
-    for (const d of savedNames.concat(others)) if (spokenKey(d) === key) return "Used by another device. Pick another name so Grok knows which you mean.";
+    for (const d of savedNames) if (spokenKey(d) === key) return deviceClashMsg(value, d, savedSrc[d], ex => nameTaken(ex, others));
+    for (const d of others) if (spokenKey(d) === key) return batchClashMsg(d);
     return "";
+  }
+  /* Any bot, reserved word, saved device, or other row in this batch that sounds the same. */
+  function nameTaken(value, others) {
+    const key = spokenKey(value);
+    if (!key) return true;
+    return bots.concat(SPOKEN_RESERVED, savedNames, others || []).some(n => spokenKey(n) === key);
+  }
+  function serverClashMsg(hit, typed, others) {
+    if (hit.with === "device") {
+      const src = hit.source || savedSrc[hit.name] || "";
+      return deviceClashMsg(typed, hit.name, src, ex => nameTaken(ex, others) || spokenKey(ex) === spokenKey(hit.name || ""));
+    }
+    return clashPhrase(hit.with, hit.name) + ". Pick another name so Grok knows which you mean.";
   }
   function addByAddress(done) {
     const d = document.createElement("div");
@@ -4900,13 +4936,13 @@ async function pageIntegrations(el) {
         for (const a of aliases[i]) {
           const ak = spokenKey(a);
           if (!ak || ak === own) continue;
-          if (seenAlias[ak]) msg = msg || "Used by another device. Pick another name so Grok knows which you mean.";
+          if (seenAlias[ak]) msg = msg || batchClashMsg(a);
           seenAlias[ak] = true;
           const am = rowClash(a, others);
           if (am) msg = msg || am;
         }
         const serverHit = serverClash && (spokenKey(values[i]) === spokenKey(serverClash.name || "") || aliases[i].some(a => spokenKey(a) === spokenKey(serverClash.name || "")));
-        if (serverHit) msg = clashPhrase(serverClash.with, serverClash.name) + ". Pick another name so Grok knows which you mean.";
+        if (serverHit) msg = serverClashMsg(serverClash, values[i], others);
         const err = blockErr(i);
         if (err) { err.hidden = !msg; err.textContent = msg || ""; }
         if (msg) blocked = true;
@@ -5387,7 +5423,7 @@ async function pageIntegrations(el) {
         let msg = rowClash(values[i], others);
         aliases[i].forEach(a => { const am = rowClash(a, others); if (am) msg = msg || am; });
         if (hbClash && (spokenKey(values[i]) === spokenKey(hbClash.name || "") || aliases[i].some(a => spokenKey(a) === spokenKey(hbClash.name || "")))) {
-          msg = clashPhrase(hbClash.with, hbClash.name) + ". Pick another name so Grok knows which you mean.";
+          msg = serverClashMsg(hbClash, values[i], others);
         }
         const blocks = box.querySelectorAll(".nmrow");
         const err = blocks[i] ? blocks[i].querySelector("[data-err]") : null;
