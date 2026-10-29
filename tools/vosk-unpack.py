@@ -45,6 +45,13 @@ def unpack(zpath, dest, model, sha, extract=None):
     if sha256_file(zpath) != sha:
         return False
     os.makedirs(dest, exist_ok=True)
+    # Only unpack into a real folder this process owns (install.sh runs this as grok, never root).
+    try:
+        st = os.lstat(dest)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        return False
     final = os.path.join(dest, model)
     tmp = tempfile.mkdtemp(prefix=".vosk-", dir=dest)
     try:

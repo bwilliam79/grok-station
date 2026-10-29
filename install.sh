@@ -241,12 +241,18 @@ _vosk_model() {
     echo "stop word: model checksum mismatch; touch still works"
     return 0
   fi
-  if python3 tools/vosk-unpack.py "$tmp" "$O/wake/models" "$model" "$sha"
+  # Least privilege (Nix 0.13.5 L1): $O/wake/models is grok-owned, so the unpack runs as grok, never root.
+  # Root only verified the SHA above; grok gets a read-only copy. The script goes in on stdin so grok
+  # does not need to read this clone.
+  zd=$(mktemp -d 2>/dev/null) || { rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
+  chown grok:grok "$zd" && chmod 0700 "$zd" && install -o grok -m 0400 "$tmp" "$zd/model.zip" || { rm -rf "$zd"; rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
+  if runuser -u grok -- python3 - "$zd/model.zip" "$O/wake/models" "$model" "$sha" < tools/vosk-unpack.py
   then
     chown -R grok:grok "$dir" || true
   else
     echo "stop word: off (on-device recogniser not installed); touch still works"
   fi
+  rm -rf "$zd"
   rm -f "$tmp"
 }
 

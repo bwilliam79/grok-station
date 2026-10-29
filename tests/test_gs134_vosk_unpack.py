@@ -100,3 +100,33 @@ class Unpack(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeastPrivilege(unittest.TestCase):
+    """Nix 0.13.5 L1: unpack only into a folder this process owns, and run it as grok from install.sh."""
+
+    def test_refuses_dest_not_owned_by_euid(self):
+        z, sha = _zip(GOOD)
+        dest = tempfile.mkdtemp()
+        from unittest import mock
+        with mock.patch.object(vu.os, "geteuid", return_value=os.geteuid() + 1):
+            self.assertFalse(vu.unpack(z, dest, MODEL, sha))
+        self.assertEqual(sorted(os.listdir(dest)), [])
+
+    def test_refuses_symlinked_dest(self):
+        z, sha = _zip(GOOD)
+        real = tempfile.mkdtemp()
+        link = os.path.join(tempfile.mkdtemp(), "models")
+        os.symlink(real, link)
+        self.assertFalse(vu.unpack(z, link, MODEL, sha))
+        self.assertEqual(os.listdir(real), [])
+
+    def test_install_runs_the_extractor_as_grok(self):
+        sh = open(os.path.join(ROOT, "install.sh")).read()
+        body = sh.split("_vosk_model() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("runuser -u grok -- python3", body)
+        self.assertIn("tools/vosk-unpack.py", body)
+        self.assertIn("install -o grok -m 0400", body)
+        self.assertNotIn('if python3 tools/vosk-unpack.py', body)
+        self.assertLess(body.index("sha256sum"), body.index("install -o grok -m 0400"))
+        self.assertIn('rm -rf "$zd"', body)
