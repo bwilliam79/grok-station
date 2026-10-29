@@ -522,6 +522,56 @@ button#iback{height:auto;min-height:44px;text-decoration:none}
 .hchecks li.bad .mark,.hchecks li.bad b{color:var(--gs-amber)}
 @media (max-width:767px){.intgrid{grid-template-columns:1fr}.nmrow{grid-template-columns:1fr}.hbaddr{flex-wrap:wrap}.hbaddr .btn{width:100%}}
 
+/* Homebridge pick step. Phone footer sits above the 72px tab bar. */
+.pk{max-width:720px}
+.pk h2{margin:2px 0 8px}
+.pk .sub{font-size:var(--fs-label);line-height:1.5;margin-bottom:20px;max-width:560px}
+.cats{border:1px solid var(--gs-rule);border-radius:14px;overflow:hidden}
+.cat{border-top:1px solid var(--gs-rule)}.cat:first-child{border-top:0}
+.cath{display:grid;grid-template-columns:44px minmax(0,1fr) 44px;align-items:center;gap:8px;min-height:68px;padding:8px 12px 8px 10px}
+.cath:hover{background:var(--gs-surface-2)}
+.pk .cbx.some i{background:var(--gs-teal);border-color:var(--gs-teal)}
+.pk .cbx.some i::after{content:"";width:10px;height:0;border-top:2.5px solid var(--gs-on-teal)}
+.pk .cbx:focus-visible{outline:none}
+.pk .cbx:focus-visible i{box-shadow:0 0 0 2px var(--gs-surface),0 0 0 5px var(--gs-teal)}
+.pk .cbx[disabled]{opacity:.45}
+.catn{display:flex;flex-direction:column;justify-content:center;gap:4px;min-height:52px;min-width:0;background:none;border:0;padding:0 4px;text-align:left;color:var(--gs-text);cursor:pointer;border-radius:8px}
+.catn b{font:600 var(--fs-body) var(--body);line-height:1.3}
+.catn .cnt{font-size:var(--fs-help);color:var(--gs-muted);line-height:1.4}
+.catn .cnt .warnl{color:var(--gs-amber)}
+.catn:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(63,211,182,.30)}
+.exp{width:44px;height:44px;display:flex;align-items:center;justify-content:center;background:none;border:1px solid transparent;border-radius:10px;color:var(--gs-muted);cursor:pointer}
+.exp svg{width:18px;height:18px;transition:transform .15s}
+.exp[aria-expanded=true] svg{transform:rotate(180deg)}
+.exp:hover{background:var(--gs-surface-3);color:var(--gs-text)}
+.exp:focus-visible{outline:none;border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30);color:var(--gs-text)}
+.devs{list-style:none;margin:0;padding:4px 12px 12px 62px;background:var(--gs-bg)}
+.dev{display:grid;grid-template-columns:44px minmax(0,1fr);align-items:center;gap:8px;min-height:56px;border-top:1px solid var(--gs-rule)}
+.dev:first-child{border-top:0}
+.dev .nm{font-size:var(--fs-label);line-height:1.35;color:var(--gs-text)}
+.dev .rm{font-size:var(--fs-help);color:var(--gs-muted);line-height:1.4;margin-top:2px}
+.pkfoot{display:flex;align-items:center;gap:12px;margin-top:20px;padding-top:16px;border-top:1px solid var(--gs-rule)}
+.pkfoot .sum{flex:1;font-size:var(--fs-label);color:var(--gs-text)}
+.pkfoot .sum .hint{display:block;font-size:var(--fs-help);color:var(--gs-muted);margin-top:2px}
+.tip3{display:flex;gap:10px;align-items:flex-start;background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-help);color:var(--gs-muted);line-height:1.5}
+.tip3 .ii{flex:none;width:18px;height:18px;border-radius:50%;border:1.5px solid var(--gs-muted);display:grid;place-items:center;font:600 var(--fs-caps) var(--body);margin-top:1px}
+.pksk{height:68px;border-top:1px solid var(--gs-rule);display:grid;grid-template-columns:44px 1fr;gap:8px;align-items:center;padding:0 12px 0 10px}
+.pksk:first-child{border-top:0}
+.pksk i{display:block;height:12px;border-radius:6px;background:var(--gs-surface-3)}
+.pksk i.b{width:20px;height:20px;margin:0 auto;border-radius:6px}
+.empty{padding:28px 20px;text-align:left}
+.empty b{display:block;font:600 var(--fs-body) var(--body);margin-bottom:6px}
+@media (max-width:767px){
+  .pk{max-width:none}
+  .cath{padding:8px 4px 8px 2px;min-height:72px}
+  .devs{padding:4px 8px 10px 30px}
+  .dev{min-height:60px}
+  .card.pk{margin-bottom:120px}
+  .pkfoot{position:fixed;left:0;right:0;bottom:72px;margin:0;padding:12px 16px 14px;background:var(--gs-bg);border-top:1px solid var(--gs-rule-2);z-index:6;flex-wrap:wrap}
+  .pkfoot .sum{flex-basis:100%}
+  .pkfoot .btn{flex:1;min-height:48px}
+}
+
 /* 0.13.0 wake word dialog: the message area keeps its height so the dialog does not jump */
 .wwmsg{min-height:6.5rem}
 .wwmsg .warnmsg{color:var(--gs-amber)}

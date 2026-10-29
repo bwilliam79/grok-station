@@ -151,5 +151,9 @@ class HomebridgeHttpWarning(unittest.TestCase):
         self.assertIn("unencrypted", readme.split("**0.13.1**", 1)[1].split("**0.13.0**", 1)[0])
 
     def test_pick_step_notes_plugins_as_switches(self):
+        # gs135: the warning is the Switches category count, not a page-level sentence.
         js = open(JS_PATH, encoding="utf-8").read()
-        self.assertIn("Some plugins show locks or garage doors as plain switches", js)
+        fn = _fn(js, "hbCountText")
+        self.assertIn('categoryKey === "switch"', fn)
+        self.assertIn("\\u26a0 check for locks or garage doors", fn)
+        self.assertNotIn("Some plugins show locks or garage doors as plain switches", js)

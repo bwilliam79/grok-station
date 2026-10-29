@@ -4636,6 +4636,160 @@ function clashPhrase(kind, name, src) {
   return "Clashes with bot " + (name || "");
 }
 
+// Homebridge "Pick devices". Categories follow HB_TYPE. Empty categories and unknown types are dropped.
+function hbCategories(rows) {
+  const order = [["light", "Lights"], ["switch", "Switches"], ["outlet", "Outlets"], ["fan", "Fans"], ["tv", "TVs"]];
+  const list = Array.isArray(rows) ? rows : [];
+  const out = [];
+  for (let i = 0; i < order.length; i++) {
+    const key = order[i][0];
+    const group = [];
+    for (let j = 0; j < list.length; j++) {
+      if (list[j] && list[j].type === key) group.push(list[j]);
+    }
+    if (group.length) out.push({key: key, title: order[i][1], rows: group});
+  }
+  return out;
+}
+function hbDefaultPicked(row) {
+  const t = row && row.type;
+  return t === "light" || t === "switch" || t === "outlet";
+}
+// Keeps a choice already stored on the row (Back from Name). Otherwise the default.
+function hbEnsurePicked(row) {
+  if (!row) return false;
+  if (row._picked == null) row._picked = !!hbDefaultPicked(row);
+  return !!row._picked;
+}
+function hbPickedMap(rows) {
+  const map = {};
+  const list = Array.isArray(rows) ? rows : [];
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
+    if (!row || row.uid == null || row.uid === "") continue;
+    map[row.uid] = row._picked == null ? !!hbDefaultPicked(row) : !!row._picked;
+  }
+  return map;
+}
+function hbPickedCount(rows) {
+  const map = hbPickedMap(rows);
+  let n = 0;
+  const cats = hbCategories(rows);
+  for (let i = 0; i < cats.length; i++) {
+    const group = cats[i].rows;
+    for (let j = 0; j < group.length; j++) if (map[group[j].uid]) n++;
+  }
+  return n;
+}
+function hbPickKind(rows) {
+  if (!hbCategories(rows).length) return "empty";
+  return hbPickedCount(rows) > 0 ? "ready" : "none";
+}
+// aria-checked. picked is a uid -> boolean map.
+function hbTriState(rows, picked) {
+  const list = Array.isArray(rows) ? rows : [];
+  let on = 0;
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
+    if (row && picked && picked[row.uid]) on++;
+  }
+  if (!list.length || on === 0) return "false";
+  if (on === list.length) return "true";
+  return "mixed";
+}
+function hbCountText(rows, picked, categoryKey) {
+  const list = Array.isArray(rows) ? rows : [];
+  const n = list.length;
+  let s = 0;
+  for (let i = 0; i < n; i++) {
+    const row = list[i];
+    if (row && picked && picked[row.uid]) s++;
+  }
+  let text = (s > 0 && s < n) ? (s + " of " + n + " selected")
+    : (s === n ? ("All " + n + " selected") : (n + " devices \u00b7 none selected"));
+  if (categoryKey === "switch") text += " \u00b7 \u26a0 check for locks or garage doors";
+  return text;
+}
+function hbCountHtml(rows, picked, categoryKey) {
+  const text = hbCountText(rows, picked, categoryKey);
+  const warn = " \u00b7 \u26a0 check for locks or garage doors";
+  if (categoryKey === "switch" && text.slice(-warn.length) === warn) {
+    return esc(text.slice(0, -warn.length)) + ' \u00b7 <span class="warnl">\u26a0 check for locks or garage doors</span>';
+  }
+  return esc(text);
+}
+// Second line only when the server actually sent a room. It does not today.
+function hbRoomLine(row) {
+  const room = row && row.room;
+  return typeof room === "string" && room.length ? room : "";
+}
+function hbFooterState(selected, kind) {
+  const n = selected | 0;
+  const label = "Continue";
+  if (kind === "loading") return {summary: "Loading devices\u2026", hint: "", disabled: true, label: label};
+  if (kind === "empty") return {summary: "No devices selected", hint: "Nothing to pick yet.", disabled: true, label: label};
+  if (n <= 0) return {summary: "No devices selected", hint: "Pick at least one device to continue.", disabled: true, label: label};
+  return {summary: n === 1 ? "1 device selected" : (n + " devices selected"), hint: "", disabled: false, label: label};
+}
+function hbPickFootHtml(state) {
+  const hint = state && state.hint ? '<span class="hint" id="pkh">' + esc(state.hint) + "</span>" : "";
+  const dis = state && state.disabled ? (state.hint ? ' disabled aria-describedby="pkh"' : " disabled") : "";
+  const summary = state && state.summary ? state.summary : "";
+  const label = state && state.label ? state.label : "Continue";
+  return '<div class="pkfoot" id="hpfoot"><div class="sum" role="status"><b>' + esc(summary) + "</b>" + hint + '</div><button class="btn g" id="hbback" type="button">Back</button><button class="btn p" id="hbnext" type="button"' + dis + ">" + esc(label) + "</button></div>";
+}
+function hbEmptyHtml() {
+  return '<div class="cats"><div class="empty"><b>No devices to add</b><p class="help" style="line-height:1.5">Homebridge didn\u2019t share any lights, switches, outlets, fans or TVs that aren\u2019t already on the station. Add them in Homebridge, then try again.</p><div class="field inline" style="margin-top:14px"><button class="btn" id="hbretry" type="button">Try again</button></div></div></div>';
+}
+function hbPickNoteHtml() {
+  return '<div class="tip3" role="note"><span class="ii" aria-hidden="true">i</span><span>Cameras, doorbells, locks, garage doors and thermostats aren\u2019t listed. You can add more devices later from the Homebridge page.</span></div>';
+}
+function hbPickLoadingHtml() {
+  let rows = "";
+  for (let i = 0; i < 5; i++) {
+    rows += '<div class="pksk"><i class="b"></i><div><i style="width:40%"></i><i style="width:25%;margin-top:8px;height:10px"></i></div></div>';
+  }
+  return '<div class="cats" aria-busy="true">' + rows + '</div><p class="help" role="status" style="margin-top:12px;display:flex;gap:8px;align-items:center"><span class="spin"></span>Getting devices from Homebridge\u2026</p>';
+}
+function hbCbxHtml(state, label, attrs) {
+  const cls = state === "true" ? " on" : state === "mixed" ? " some" : "";
+  const checked = (state === "true" || state === "mixed") ? state : "false";
+  return '<button type="button" class="cbx' + cls + '" role="checkbox" aria-checked="' + checked + '" aria-label="' + esc(label) + '"' + (attrs || "") + "><i></i></button>";
+}
+function hbPickListHtml(rows, picked, open) {
+  const cats = hbCategories(rows);
+  if (!cats.length) return hbEmptyHtml();
+  const chev = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+  let html = '<div class="cats">';
+  for (let i = 0; i < cats.length; i++) {
+    const cat = cats[i];
+    const state = hbTriState(cat.rows, picked);
+    const expanded = !!(open && open[cat.key]);
+    const panel = "d-" + cat.key;
+    html += '<div class="cat"><div class="cath">';
+    html += hbCbxHtml(state, "Select all " + cat.title, ' data-act="all" data-cat="' + cat.key + '" data-k="all-' + cat.key + '"');
+    html += '<button type="button" class="catn" aria-expanded="' + (expanded ? "true" : "false") + '" aria-controls="' + panel + '" data-act="open" data-cat="' + cat.key + '" data-k="name-' + cat.key + '"><b>' + esc(cat.title) + '</b><span class="cnt">' + hbCountHtml(cat.rows, picked, cat.key) + "</span></button>";
+    html += '<button type="button" class="exp" aria-expanded="' + (expanded ? "true" : "false") + '" aria-controls="' + panel + '" aria-label="' + esc((expanded ? "Hide " : "Show ") + cat.title) + '" data-act="open" data-cat="' + cat.key + '" data-k="exp-' + cat.key + '">' + chev + "</button></div>";
+    if (expanded) {
+      html += '<ul class="devs" id="' + panel + '">';
+      for (let j = 0; j < cat.rows.length; j++) {
+        const row = cat.rows[j];
+        const on = !!(picked && row && picked[row.uid]);
+        const name = row && row.name ? row.name : "Device";
+        const room = hbRoomLine(row);
+        const uid = row && row.uid != null ? String(row.uid) : "";
+        html += '<li class="dev">' + hbCbxHtml(on ? "true" : "false", name, ' data-act="one" data-uid="' + esc(uid) + '" data-k="one-' + esc(uid) + '"');
+        html += '<div><div class="nm">' + esc(name) + "</div>";
+        if (room) html += '<div class="rm">' + esc(room) + "</div>";
+        html += "</div></li>";
+      }
+      html += "</ul>";
+    }
+    html += "</div>";
+  }
+  return html + "</div>" + hbPickNoteHtml();
+}
+
 async function pageIntegrations(el) {
   const STEPS = ["Find", "Pick", "Name", "Protect", "Done"];
   let found = [];
@@ -5328,8 +5482,19 @@ async function pageIntegrations(el) {
     if (first && first.status === 403 && first.data && first.data.error === PASSWORD_BAD) return ask();
     return finish(first);
   }
+  function hbPickShell(inner, footHtml) {
+    el.innerHTML = `<div class="card wcard pk" id="hbpick">${hbHead(5, "Pick devices")}
+      <p class="sub">Choose what Grok can turn on and off by voice. Open a category to pick single devices.</p>
+      <div id="hpbody">${inner}</div>
+      ${footHtml}</div>`;
+  }
   async function hbLoadPick(backTo) {
+    const backFn = backTo || (() => hbEnter(hbBase));
+    hbPickShell(hbPickLoadingHtml(), hbPickFootHtml(hbFooterState(0, "loading")));
+    back(backFn);
+    $("#hbback", el).onclick = backFn;
     const r = await api("GET", "/api/integrations/homebridge/accessories");
+    if (!$("#hbpick", el)) return;
     if (!r.ok) {
       const msg = (r.data && r.data.message) || "Homebridge didn't answer.";
       if (r.data && r.data.error === "admin") return hbStopped(r.data.message || msg, [], "Back", list, "We can't use this login");
@@ -5337,58 +5502,71 @@ async function pageIntegrations(el) {
     }
     const rows = (r.data && r.data.accessories) || [];
     const saved = await api("GET", "/api/integrations");
+    if (!$("#hbpick", el)) return;
     const have = {};
     hbOnly((saved.data && saved.data.devices) || []).forEach(d => { if (d.uid) have[d.uid] = true; });
-    hbPick(rows.filter(row => row && row.uid && !have[row.uid] && HB_TYPE[row.type]), backTo || (() => hbEnter(hbBase)));
+    hbPick(rows.filter(row => row && row.uid && !have[row.uid] && HB_TYPE[row.type]), backFn);
   }
   function hbPick(rows, backFn) {
-    const groups = [
-      ["Lights", ["light"]],
-      ["Switches and outlets", ["switch", "outlet"]],
-      ["Fans", ["fan"]],
-      ["TVs", ["tv"]]
-    ];
-    const onPick = {};
-    rows.forEach(row => { onPick[row.uid] = row.type === "light" || row.type === "switch" || row.type === "outlet"; });
-    el.innerHTML = `<div class="card wcard">${hbHead(5, "Pick devices")}
-      <p class="sub">Choose what Grok can turn on and off. Cameras, doorbells, locks, garage doors and thermostats are not listed.</p>
-      <p class="help">Some plugins show locks or garage doors as plain switches. Leave those unchecked if you don't want them voice-controlled.</p>
-      <div id="hprows"></div>
-      <div class="field inline" style="margin-top:8px"><button class="btn g" id="hbback" type="button">Back</button>
-        <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
-    back(backFn);
-    $("#hbback", el).onclick = backFn;
-    const box = $("#hprows", el);
-    const paint = () => {
-      const n = rows.filter(row => onPick[row.uid]).length;
-      const btn = $("#hbnext", el);
-      if (btn) { btn.disabled = n === 0; btn.textContent = n ? "Next · " + n + " picked" : "Next"; }
+    if (!Array.isArray(rows)) rows = [];
+    rows.forEach(hbEnsurePicked);
+    const open = {};
+    const onClick = ev => {
+      const box = ev.currentTarget;
+      const btn = ev.target && ev.target.closest ? ev.target.closest("button") : null;
+      if (!btn || !box.contains(btn)) return;
+      if (btn.id === "hbretry") { hbLoadPick(backFn); return; }
+      const act = btn.getAttribute("data-act");
+      const focusKey = btn.getAttribute("data-k");
+      if (act === "open") {
+        const catKey = btn.getAttribute("data-cat");
+        open[catKey] = !open[catKey];
+        draw(focusKey);
+      } else if (act === "all") {
+        const catKey = btn.getAttribute("data-cat");
+        const cat = hbCategories(rows).filter(c => c.key === catKey)[0];
+        if (!cat) return;
+        const turnOn = hbTriState(cat.rows, hbPickedMap(rows)) !== "true";
+        cat.rows.forEach(row => { row._picked = turnOn; });
+        draw(focusKey);
+      } else if (act === "one") {
+        const uid = btn.getAttribute("data-uid");
+        for (let i = 0; i < rows.length; i++) {
+          if (rows[i] && String(rows[i].uid) === uid) { rows[i]._picked = !rows[i]._picked; break; }
+        }
+        draw(focusKey);
+      }
     };
-    groups.forEach(([title, types]) => {
-      const group = rows.filter(row => types.indexOf(row.type) >= 0);
-      if (!group.length) return;
-      const lab = document.createElement("p");
-      lab.className = "seclab";
-      lab.textContent = title + " · " + group.length;
-      box.appendChild(lab);
-      group.forEach(row => {
-        const line = document.createElement("div");
-        line.className = "drow";
-        const picked = !!onPick[row.uid];
-        line.innerHTML = `<button type="button" class="cbx${picked ? " on" : ""}" role="checkbox" aria-checked="${picked ? "true" : "false"}" aria-label="${esc(row.name || "Device")}"><i></i></button>
-          <div class="dm"><b>${esc(row.name || "Device")}</b><div class="help">${esc(HB_TYPE[row.type] || "")}</div></div>`;
-        box.appendChild(line);
-        const boxBtn = line.querySelector(".cbx");
-        boxBtn.onclick = () => {
-          onPick[row.uid] = !onPick[row.uid];
-          boxBtn.classList.toggle("on", onPick[row.uid]);
-          boxBtn.setAttribute("aria-checked", onPick[row.uid] ? "true" : "false");
-          paint();
-        };
-      });
-    });
-    paint();
-    $("#hbnext", el).onclick = () => hbNames(rows.filter(row => onPick[row.uid]), () => hbPick(rows, backFn));
+    const draw = focusKey => {
+      const inner = hbPickListHtml(rows, hbPickedMap(rows), open);
+      const foot = hbPickFootHtml(hbFooterState(hbPickedCount(rows), hbPickKind(rows)));
+      const body = $("#hpbody", el);
+      if (!$("#hbpick", el) || !body) hbPickShell(inner, foot);
+      else {
+        body.innerHTML = inner;
+        const oldFoot = $("#hpfoot", el);
+        if (oldFoot) oldFoot.outerHTML = foot;
+      }
+      back(backFn);
+      const backBtn = $("#hbback", el);
+      if (backBtn) backBtn.onclick = backFn;
+      const next = $("#hbnext", el);
+      if (next) next.onclick = () => {
+        if (next.disabled) return;
+        hbNames(rows.filter(row => row && row._picked), () => hbPick(rows, backFn));
+      };
+      const box = $("#hpbody", el);
+      if (box && !box._hbPick) {
+        box._hbPick = true;
+        box.addEventListener("click", onClick);
+      }
+      if (!focusKey || !box) return;
+      const nodes = box.querySelectorAll("[data-k]");
+      for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].getAttribute("data-k") === focusKey) { nodes[i].focus(); break; }
+      }
+    };
+    draw();
   }
   async function hbNames(rows, backFn) {
     if (!rows.length) return hbPick(rows, backFn);
