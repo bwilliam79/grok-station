@@ -106,6 +106,16 @@ def manifest_templates(pins_path=PINS):
             if not re.search(r"^file [0-9a-f]{64} " + re.escape(t) + "$", man, re.M)]
 
 
+def manifest_commit_mismatch(pins_path=PINS):
+    """A problem unless deploy-pins commit equals the update line of the manifest at update_commit. The station
+    renders a bot's instructions with the first and the bot with the second (0.13.4-0.13.6 had them differ)."""
+    p = pinned_commits(pins_path)
+    if p.get("manifest update") and p.get("manifest update") == p.get("deploy-pins commit"):
+        return []
+    return ["deploy-pins commit %s is not the manifest's update commit %s"
+            % (p.get("deploy-pins commit", "-")[:12], p.get("manifest update", "-")[:12])]
+
+
 def ancestry(main_ref="origin/main", pins_path=PINS, rev="HEAD"):
     """Problems for any pinned commit that is not an ancestor of main_ref (git merge-base --is-ancestor)."""
     problems = []
@@ -148,6 +158,7 @@ def check(remote=False, rev="HEAD", pins_path=PINS):
             elif hashlib.sha256(data).hexdigest() != want:
                 problems.append(f"{path}: GitHub bytes do not match the pin")
     problems += manifest_templates(pins_path)
+    problems += manifest_commit_mismatch(pins_path)
     return commit, files, problems, notes
 
 

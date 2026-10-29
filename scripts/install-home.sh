@@ -6,7 +6,7 @@
 # Pins below are commit 8320874267da674cd2bb79efc173b8226ba195dc, the 0.11.7 scripts
 # (macOS and Linux). A commit cannot name itself, so the pins name the commit
 # before the pin commit. To re-pin after a release changes these files:
-#   python3 tools/gen-deploy-pins.py "$(git rev-parse origin/main)"
+#   python3 tools/gen-deploy-pins.py --update-commit <commit holding update-manifest.txt>
 # and put the new commit and hashes here.
 #
 # Files land in ~/.local/share/grok-station/bin (mode 0700).

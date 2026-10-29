@@ -656,9 +656,11 @@ class Station(unittest.TestCase):
         self.assertNotIn("pwned", r.stdout)
 
 
-@unittest.skipUnless(os.environ.get("GS_RELEASE_CHECK") == "1", "release check (GS_RELEASE_CHECK=1)")
 class ReleaseManifest(unittest.TestCase):
-    """The pinned update: deploy-pins commit holds gs-update.sh, update_commit holds a manifest that matches git."""
+    """The pinned update: deploy-pins commit holds gs-update.sh, update_commit holds a manifest that matches git.
+
+    0.13.7: runs by default (local git only). The work-tree comparison stays a release check, because between
+    releases the work tree moves ahead of the pinned commit."""
 
     def test_manifest_matches_git(self):
         import importlib.util
@@ -673,6 +675,8 @@ class ReleaseManifest(unittest.TestCase):
             "release " + gum.blob(upd, "VERSION").decode().strip()))
         self.assertIn("release %s\n" % open(os.path.join(ROOT, "VERSION")).read().strip(), have)
         self.assertIn("update %s " % commit, have)  # the next update command equals what the station renders
+        if os.environ.get("GS_RELEASE_CHECK") != "1":
+            return
         for path in gum.FILES + ("scripts/gs-update.sh",):
             self.assertEqual(gum.blob(upd, path), open(os.path.join(ROOT, path), "rb").read(), path)
 
