@@ -382,7 +382,7 @@ class WakeWords(unittest.TestCase):
         ga_wake = ga.wake
         ga.wake = lambda m, p, body=None, timeout=3: (sent.append(body), (202, {"ok": True}))[1]
         try:
-            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 25, "speaker": "spk-old"})
+            st, _ = c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 25, "speaker": "spk-old", "password": GOOD})
         finally:
             ga.wake = ga_wake
         self.assertEqual(st, 202)
@@ -395,10 +395,10 @@ class WakeWords(unittest.TestCase):
         words = {w["name"]: w for w in body["words"]}
         self.assertEqual(words["hey_hank"]["trained_on"], {"trained_at": 3})
         self.assertNotIn("spk-old", json.dumps(body))
-        # The clip count is fixed at 10; a sent count is ignored (the listener is down here, so 503).
-        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": "spk-old"})[0], 503)
+        # The clip count is fixed at 5; a sent count is ignored (the listener is down here, so 503).
+        self.assertEqual(c.req("POST", "/api/enroll", {"phrase": "hey_hank", "count": 5, "speaker": "spk-old", "password": GOOD})[0], 503)
         # "Hey Hank!" is the known word hey_hank, so this re-records it (the listener is down here).
-        st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 25})
+        st, out = c.req("POST", "/api/enroll", {"phrase": "Hey Hank!", "count": 25, "password": GOOD})
         self.assertEqual((st, out.get("id")), (503, "hey_hank"))
         self.assertEqual(open(models_path).read(), before)
 
@@ -894,7 +894,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         self.enroll_up([(202, {"ok": True}), (503, {"error": "wake listener unreachable"})])
         CLOCK[0] = 1_700_000_000
         st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Kitchen!", "count": 25, "persona": "kitchen-bot",
-                                              "speaker": "spk-legacy"})
+                                              "speaker": "spk-legacy", "password": GOOD})
         self.assertEqual(st, 202)
         self.assertEqual(j["id"], "hey_kitchen")
         self.assertEqual(self.sent[-1][0:2], ("POST", "/enroll"))
@@ -917,7 +917,7 @@ class WakePhraseAndStatus(unittest.TestCase):
         st, j = c.req("POST", "/api/enroll", {"phrase": "hey finn", "count": 25, "persona": "grok"})
         self.assertEqual((st, j["error"]), (400, "“Hey Finn” is already a wake word."))
         self.sent.clear()
-        st, j = c.req("POST", "/api/enroll", {"phrase": "okay finn", "count": 25, "persona": "grok"})
+        st, j = c.req("POST", "/api/enroll", {"phrase": "okay finn", "count": 25, "persona": "grok", "password": GOOD})
         self.assertNotEqual(st, 202)
         ov = json.load(open(ov_path))
         self.assertNotIn("okay_finn", ov)  # listener refused: the new mapping is dropped
@@ -2287,7 +2287,7 @@ class DeleteWakeWord(unittest.TestCase):
         try:
             ga.write_json(ga.path("wake-overrides.json"),
                           {"hey_pax": {"persona": "pax", "enabled": False, "hidden": True}}, 0o640)
-            st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Pax", "count": 25, "persona": "nova"})
+            st, j = c.req("POST", "/api/enroll", {"phrase": "Hey Pax", "count": 25, "persona": "nova", "password": GOOD})
             self.assertEqual(st, 202, j)
             self.assertEqual(j.get("id"), "hey_pax")
             row = self.ov()["hey_pax"]
@@ -2414,7 +2414,7 @@ class FewshotEnrollFlow(unittest.TestCase):
               [self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
                self.last("hey_ash", "published", "Ready. It heard 10 of 10 recordings.", False)]
         self.listener(seq)
-        st, j = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        st, j = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "password": GOOD})
         self.assertEqual(st, 202, j)
         ov = json.load(open(self.ov_path))
         self.assertNotIn("enabled", ov["hey_ash"])  # the old off switch is cleared when you record it
@@ -2428,7 +2428,7 @@ class FewshotEnrollFlow(unittest.TestCase):
 
     def test_deleted_word_comes_back_when_recorded(self):
         self.listener([self.last("hey_rhea", "recording", "", True)])
-        st, j = self.c.req("POST", "/api/enroll", {"phrase": "Hey Rhea", "persona": "grok"})
+        st, j = self.c.req("POST", "/api/enroll", {"phrase": "Hey Rhea", "persona": "grok", "password": GOOD})
         self.assertEqual(st, 202, j)
         ov = json.load(open(self.ov_path))
         self.assertNotIn("hidden", ov["hey_rhea"]); self.assertNotIn("enabled", ov["hey_rhea"])
@@ -2447,7 +2447,7 @@ class FewshotEnrollFlow(unittest.TestCase):
         self.assertNotIn("hey_ash", ga.read_enroll_status())
         # recording it again brings it back
         self.listener([self.last("hey_ash", "recording", "", True)])
-        st, _ = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "persona": "grok"})
+        st, _ = self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "persona": "grok", "password": GOOD})
         self.assertEqual(st, 202)
         self.assertNotIn("hey_ash", ga.read_deleted_phrases())
         self.assertEqual(self.status("hey_ash").get("state"), "recording")
@@ -2456,7 +2456,7 @@ class FewshotEnrollFlow(unittest.TestCase):
         msg = "Couldn't build the wake word on the station. Press Record voice to try again."
         self.listener([self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
                        self.last("hey_ash", "failed", msg, False)])
-        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "password": GOOD})
         self.status("hey_ash")
         row = self.status("hey_ash")
         self.assertEqual((row["state"], row["message"]), ("failed", msg))
@@ -2464,7 +2464,7 @@ class FewshotEnrollFlow(unittest.TestCase):
     def test_listener_restart_mid_build_fails_after_a_while(self):
         self.listener([self.last("hey_ash", "training", "Saved. Checking the recordings.", True),
                        {"enrolling": False, "last_enroll": None}])
-        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "password": GOOD})
         self.assertEqual(self.status("hey_ash")["state"], "training")
         self.assertEqual(self.status("hey_ash")["state"], "training")  # restarted, but not stale yet
         CLOCK[0] += ga.ENROLL_STALE_S + 1
@@ -2477,7 +2477,7 @@ class FewshotEnrollFlow(unittest.TestCase):
 
     def test_word_built_by_0_10_0_counts_as_done(self):
         self.listener([self.last("hey_ash", "training", "", True), {"enrolling": False, "last_enroll": None}])
-        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash"})
+        self.c.req("POST", "/api/enroll", {"phrase": "hey_ash", "password": GOOD})
         self.status("hey_ash")
         self.built("hey_ash")  # no built_at: written by 0.10.0
         self.assertIn(self.status("hey_ash")["state"], ("published", "ready"))

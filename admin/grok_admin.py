@@ -613,10 +613,12 @@ def read_display_status(fetch=None, timeout=1.5):
 
 
 def wake(method, p, body=None, timeout=3):
+    """Loopback wake control. Proxies are off so this cannot leave the machine."""
     try:
         req = urllib.request.Request(WAKE_CTL + p, json.dumps(body).encode() if body is not None else None,
                                      {"Content-Type": "application/json"}, method=method)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(req, timeout=timeout) as r:
             return r.status, json.loads(r.read(65536) or b"{}")
     except urllib.error.HTTPError as e:
         try:
@@ -2897,6 +2899,35 @@ def safe_bot(b):
     }
 
 
+def enroll_bot_flags():
+    """Per-bot can_train and online for the Bots page. Fail closed. Never raises.
+
+    can_train is true only after a setup connection test: last_answered_at is a positive int.
+    online is that, and no later last_error_at. A missing relay, bad JSON, or a forged flag is not a yes.
+    """
+    try:
+        got = relay_call("GET", "/admin/bots")
+    except Exception:
+        return {}
+    if not got or got[0] != 200 or not isinstance(got[1], dict):
+        return {}
+    raw = got[1].get("bots")
+    if not isinstance(raw, list):
+        return {}
+    out = {}
+    for item in raw:
+        bot = safe_bot(item)
+        if not bot:
+            continue
+        st = bot.get("status") if isinstance(bot.get("status"), dict) else {}
+        answered = st.get("last_answered_at")
+        can = type(answered) is int and answered > 0
+        err_at = st.get("last_error_at")
+        later = can and type(err_at) is int and err_at > answered
+        out[bot["slug"]] = {"can_train": can, "online": bool(can and not later)}
+    return out
+
+
 HELPER_RELEASE = "0.13.0"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
@@ -4074,11 +4105,47 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(409, {"error": "Hey Grok is built in and can't be deleted."})
         return self.send(*delete_wake_word(name))
 
+    def enroll_open_tile(self, j):
+        """Show the station tile at the prompt stage. Does not record. Step-up required.
+
+        Allow-list is persona, phrase, name, and password. Password is not forwarded.
+        """
+        if not isinstance(j, dict) or set(j) - {"persona", "phrase", "name", "password"}:
+            return self.send(400, {"error": "bad json"})
+        persona = j.get("persona")
+        if not persona_ok(persona):
+            return self.send(400, {"error": "bad persona"})
+        name = j.get("name")
+        if "name" in j:
+            name = clean_name(name) if isinstance(name, str) else None
+            if not name:
+                return self.send(400, {"error": "bad name"})
+        phrase = j.get("phrase")
+        if "phrase" in j:
+            if not isinstance(phrase, str) or not wake_name_ok(phrase):
+                return self.send(400, {"error": "bad phrase"})
+        if not self.need_password(j):
+            return
+        body = {"persona": persona}
+        if name:
+            body["name"] = name
+        if phrase:
+            body["phrase"] = phrase
+        code, out = wake("POST", "/enroll/open-tile", body)
+        if not isinstance(out, dict):
+            out = {}
+        step = self._stepup()
+        if code == 200:
+            return self.send(200, {"ok": True, "stepup_until": step})
+        if code == 409:
+            return self.send(409, {"error": out.get("error") or "The station is busy.", "stepup_until": step})
+        return self.send(503, {"error": "Couldn't reach the station's microphone.", "stepup_until": step})
+
     def api_post_enroll(self, p, q, j):
         if p == "/api/enroll/control":
-            op = j.get("op") if isinstance(j, dict) else None
-            if op not in ("pause", "resume", "discard"):
+            if not isinstance(j, dict) or set(j) != {"op"} or j.get("op") not in ("pause", "resume", "discard"):
                 return self.send(400, {"error": "bad op"})
+            op = j["op"]
             code, out = wake("POST", "/enroll/control", {"op": op})
             if not isinstance(out, dict):
                 out = {}
@@ -4111,6 +4178,8 @@ class Handler(BaseHTTPRequestHandler):
                 out.update(warning=close_warning(close), close_to=close,
                            suggestions=wake_suggestions(name, for_persona=fp))
             return self.send(200, out)
+        if p == "/api/enroll/open-tile":
+            return self.enroll_open_tile(j)
         raw, count = j.get("phrase", ""), ENROLL_REPS  # fixed per session; "Train more" adds another session
         direct = str(raw or "").strip().lower()
         # hey_<bot id> can contain a hyphen or a digit; normalize_phrase would strip those.
@@ -4129,7 +4198,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": err})
             if not isinstance(persona, str) or not persona_allowed(persona):
                 return self.send(400, {"error": "Pick a bot."})
-            save_phrase_persona(mid, persona)
             who = persona
         else:
             who = personas.get(mid) or (ov_mid.get("persona") if persona_ok(str(ov_mid.get("persona") or "")) else None) or "grok"
@@ -4139,8 +4207,10 @@ class Handler(BaseHTTPRequestHandler):
                 who = persona
             elif isinstance(persona, str) and persona and persona != who:
                 return self.send(400, {"error": duplicate_msg(phrase_label(mid))})
-            if mid != BUILTIN_WORD:
-                save_phrase_persona(mid, who)
+        if not self.need_password(j):  # before any save, so a wrong password never starts a recording
+            return
+        if creating or mid != BUILTIN_WORD:
+            save_phrase_persona(mid, who)
         code, out = wake("POST", "/enroll", {"phrase": mid, "count": count, "topup": bool(j.get("topup")),
                                               "persona": who})
         if not isinstance(out, dict):
@@ -4153,7 +4223,7 @@ class Handler(BaseHTTPRequestHandler):
                              had_model=mid in enrolled_phrase_ids())
         elif not creating:
             set_enroll_state(mid, "failed", out.get("error") or "Couldn't start recording.", who)
-        out = {**out, "id": mid}
+        out = {**out, "id": mid, "stepup_until": self._stepup()}
         return self.send(code, out)
 
     def api_get_enroll(self, p, q, j):
@@ -4162,7 +4232,8 @@ class Handler(BaseHTTPRequestHandler):
             live = enroll_live(st)
             return self.send(200, {"words": doc, "buttons": buttons_for(doc),
                                    "level_dbfs": live["level_dbfs"], "session": live["session"],
-                                   "capture": live["capture"], "enrolling": live["enrolling"]})
+                                   "capture": live["capture"], "enrolling": live["enrolling"],
+                                   "bots": enroll_bot_flags()})
         code, st = wake("GET", "/status")
         return self.send(200, enroll_live(st if code == 200 else None))
 

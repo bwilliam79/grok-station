@@ -754,9 +754,10 @@ class Release092UI(unittest.TestCase):
     def test_fixed_five_reps_train_more_and_delete(self):
         self.assertNotIn('id="cnt"', self.js)
         self.assertIn("You’ll say it 5 times", self.js)
-        self.assertIn("of 5. Speak after the chime.", self.js)
+        self.assertIn("of 5. Speak to the station after the chime.", self.js)
         self.assertIn("of 5 more.", self.js)
         self.assertNotIn("of 10. Speak after the chime.", self.js)
+        self.assertNotIn("of 10. Speak to the station after the chime.", self.js)
         self.assertNotIn("of 10 more.", self.js)
         self.assertIn("Train more", self.js)
         self.assertIn("topup: true", self.js)
@@ -1017,7 +1018,10 @@ class Release0113UI(unittest.TestCase):
     def test_training_dialog_has_one_close(self):
         fn = _fn(self.js, "openSetWake")
         self.assertNotIn('id="wwclose"', fn)
-        self.assertNotIn(">Close<", fn)
+        self.assertNotIn("openBot(", fn)
+        self.assertEqual(fn.count(">Close<"), 1)
+        train = fn.split('id="wwtrain"', 1)[1].split("phase = \"recording\"", 1)[0]
+        self.assertIn(">Close<", train)
         self.assertIn('id="wwtrain"', fn)
         self.assertIn(">Cancel<", fn)
         self.assertIn(">Not now<", fn)
@@ -1402,7 +1406,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertNotIn(">Always on<", paint)
         self.assertIn("Built in, always on", paint)
         self.assertIn('class="phrase">“Hey Grok”</span>', paint)
-        self.assertIn("wakeControlHTML(b, word, st, true)", paint)
+        self.assertIn("wakeControlHTML(b, word, st, true, el._botTrain)", paint)
         self.assertIn('class="ww none"></div>', paint)
         wake = _fn(self.js, "wakeControlHTML")
         self.assertIn('aria-label="No wake word">—</span>', wake)

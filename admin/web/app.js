@@ -1415,11 +1415,46 @@ function confirmSheet(opts) {
     close();
   };
 }
-function wakeControlHTML(bot, word, st, list) {
+const TRAIN_OFFLINE = "Offline: can’t reach the bot";
+function trainOfflineTip() { return TRAIN_OFFLINE; }
+function trainPlusSVG() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`;
+}
+function trainBanSVG() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.5 17.5l11-11"/></svg>`;
+}
+function trainOfflineSub() {
+  return `<div class="offsub">${trainBanSVG()}${esc(trainOfflineTip())}</div>`;
+}
+/* Server can_train, or a check that just passed. A live offline result wins. Missing flags stay closed. */
+function botCanTrain(bot, flags) {
+  const live = bot && BOT_CHECKS[bot.slug];
+  const server = flags && bot ? flags[bot.slug] : null;
+  let can = !!(server && server.can_train === true);
+  let on = !!(server && server.online === true);
+  if (live && live.state === "online") { can = true; on = true; }
+  else if (live && live.state === "offline") on = false;
+  if (!can) on = false;
+  return {can: can, on: on};
+}
+function trainCellHTML(bot, on) {
+  const name = (bot && bot.name) || "this bot";
+  const slug = (bot && bot.slug) || "";
+  if (!on) {
+    const tip = "avtip-" + String(slug).replace(/[^a-z0-9-]/gi, "");
+    return `<div class="ww"><button class="btn sm wwtrain" type="button" aria-disabled="true" tabindex="-1" aria-describedby="${esc(tip)}">${trainBanSVG()}Train wake word</button></div>`;
+  }
+  return `<div class="ww"><button class="btn sm wwtrain" type="button" aria-label="Train a wake word for ${esc(name)}" data-train="${esc(slug)}">${trainPlusSVG()}Train wake word</button></div>`;
+}
+function wakeControlHTML(bot, word, st, list, flags) {
   if (st === "training") return `<div class="ww"><span class="pill busy">Training…</span></div>`;
   if (st === "weak") return `<div class="ww"><span class="pill warn">Not good enough yet</span></div>`;
   if (list) {
-    if (!word || !word.has_model) return `<div class="ww none"><span class="dash" aria-label="No wake word">—</span></div>`;
+    if (!word || !word.has_model) {
+      const gate = botCanTrain(bot, flags);
+      if (gate.can) return trainCellHTML(bot, gate.on);
+      return `<div class="ww none"><span class="dash" aria-label="No wake word">—</span></div>`;
+    }
     const label = wordLabel(word);
     const on = !!word.enabled;
     return `<div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase${on ? "" : " muted"}">“${esc(label)}”</span><button class="tog${on ? " on" : ""}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-wtog="${esc(word.name)}" data-wlabel="${esc(label)}"></button></div>`;
@@ -1453,16 +1488,55 @@ function bindWakeToggles(root, el) {
     }
   });
 }
+function focusWake(sheet) {
+  const field = sheet.querySelector("input:not([readonly]), select, textarea");
+  const primary = sheet.querySelector("button.btn.p, button.btn.d");
+  const any = sheet.querySelector(".acts button");
+  const card = sheet.querySelector("[role=dialog]");
+  const target = field || primary || any || card;
+  if (target && target.focus) target.focus();
+}
+function trapTab(sheet) {
+  sheet.addEventListener("keydown", ev => {
+    if (ev.key !== "Tab") return;
+    const nodes = Array.prototype.filter.call(sheet.querySelectorAll("button, input, select, textarea, a[href]"), n => {
+      if (n.disabled || n.getAttribute("aria-disabled") === "true" || n.tabIndex < 0) return false;
+      return n.getClientRects().length > 0;
+    });
+    if (!nodes.length) { ev.preventDefault(); return; }
+    const i = nodes.indexOf(document.activeElement);
+    ev.preventDefault();
+    nodes[ev.shiftKey ? (i <= 0 ? nodes.length - 1 : i - 1) : (i + 1) % nodes.length].focus();
+  });
+}
 function openSetWake(bot, el, d, opts) {
   opts = opts || {};
-  const body = $("#bdbody", d);
-  if (!body) return;
-  if (d._wakeStop) d._wakeStop();
-  let timer = 0, finished = false, toasted = false, sawServer = false;
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  sheet.innerHTML = `<div class="card" role="dialog" aria-modal="true" aria-label="Train a wake word">${dialogX()}<div id="wwbody"></div></div>`;
+  document.body.appendChild(sheet);
+  const body = $("#wwbody", sheet);
+  if (d && d._wakeStop) d._wakeStop();
+  let timer = 0, finished = false, toasted = false, sawServer = false, phase = "prompt";
+  let tileReady = !!(opts.resume || opts.topup);
   const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
-  d._wakeStop = stop;
+  if (d) d._wakeStop = stop;
   let phraseId = opts.phrase || "";
-  const back = () => { finished = true; stop(); openBot(bot, el); };
+  const finish = async () => {
+    finished = true;
+    stop();
+    if (sheet.parentNode) sheet.remove();
+    if (el) await refreshBots(el);
+    const slug = String((bot && bot.slug) || "");
+    if (!/^[a-z0-9-]+$/.test(slug)) return;
+    const row = document.querySelector('.botrow[data-slug="' + slug + '"]');
+    const backBtn = row && row.querySelector("[data-train], [data-wtog]");
+    if (backBtn && backBtn.focus) backBtn.focus();
+  };
+  const leavePrompt = async () => {
+    await api("POST", "/api/enroll/control", {op: "discard"});
+    await finish();
+  };
   let closeOk = false, warnedFor = "";
   const setErr = msg => {
     const box = $("#wwe", body);
@@ -1487,26 +1561,31 @@ function openSetWake(bot, el, d, opts) {
     });
   };
   const showIdle = () => {
+    phase = "prompt";
     body.dataset.sig = "";
     const offline = !!stationOffline;
     const busy = !!(el && el._session);
     const preset = "Hey " + (bot.name || "");
-    body.innerHTML = `<h2 class="h-dialog">Set wake word for ${esc(bot.name || "")}</h2>
+    const who = bot.name || "this bot";
+    body.innerHTML = `<h2 class="h-dialog" id="wwt">Train a wake word for ${esc(bot.name || "")}</h2>
       <p>You’ll say it 5 times at the station. It takes about a minute.</p>
+      <p>You can also start this at the station: say “Hey Grok, train my wake word for ${esc(who)}”.</p>
       <div class="field"><label for="wwphrase">Wake word</label>
         <input class="inp" id="wwphrase" maxlength="48" autocomplete="off" spellcheck="false" value="${esc(preset)}">
         <p class="help">Two or three syllables works best. Avoid words you say a lot.</p></div>
-      <p class="note">Stand where you usually talk to the station. Speak normally. Wait for the chime each time.</p>
+      <div class="stmic"><span aria-hidden="true" style="color:var(--gs-teal)">◉</span><div>Recording uses the <b>station’s microphone</b>, not this device. Stand where you usually talk to the station.</div></div>
       <div id="wwe" class="wwmsg" aria-live="polite"></div>
       ${offline ? `<p class="note">Can’t reach the station.</p>` : busy ? `<p class="note">The station is busy in a conversation. Try again in a minute.</p>` : ""}
-      <div class="acts"><button class="btn p" id="wwstart" type="button"${offline || busy ? " disabled" : ""}>Start recording</button>
-        <button class="btn g" id="wwcancel" type="button">Cancel</button></div>`;
+      <div class="acts"><button class="btn g" id="wwcancel" type="button">Cancel</button>
+        <button class="btn p" id="wwstart" type="button"${offline || busy ? " disabled" : ""}>Start recording</button></div>`;
     const cancel = $("#wwcancel", body);
-    if (cancel) cancel.onclick = back;
+    if (cancel) cancel.onclick = () => { leavePrompt(); };
     const start = $("#wwstart", body);
     if (start) start.onclick = () => begin(false);
+    focusWake(sheet);
   };
   const showError = kind => {
+    phase = "error";
     finished = true;
     stop();
     body.dataset.sig = "";
@@ -1526,15 +1605,21 @@ function openSetWake(bot, el, d, opts) {
       <div class="acts"><button class="btn p" id="wwagain" type="button">Try again</button>
         <button class="btn g" id="wwcancel" type="button">Cancel</button></div>`;
     const again = $("#wwagain", body);
-    if (again) again.onclick = () => { finished = false; if (opts.topup && phraseId) begin(true); else showIdle(); };
+    if (again) again.onclick = () => {
+      finished = false;
+      if (opts.topup && phraseId) begin(true);
+      else if (tileReady) showIdle();
+      else openTile().then(ok => { if (ok && !finished) showIdle(); });
+    };
     const cancel = $("#wwcancel", body);
-    if (cancel) cancel.onclick = back;
+    if (cancel) cancel.onclick = () => { finish(); };
+    focusWake(sheet);
   };
   const paintRow = (row, level, fromServer) => {
     row = row || {};
     const state = row.state || "";
     if (fromServer && (!state || state === "idle")) {
-      if (sawServer) { finished = true; stop(); back(); }
+      if (sawServer) finish();
       return;
     }
     if (fromServer && state) sawServer = true;
@@ -1558,38 +1643,43 @@ function openSetWake(bot, el, d, opts) {
     }
     body.dataset.sig = next;
     if (state === "ready" || state === "published") {
+      phase = "done";
       finished = true;
       stop();
       if (!toasted) { toasted = true; toast(label + " is ready."); }
       const m = String(row.message || "").match(/(\d+) of (\d+)/);
       const note = m ? "It woke on " + m[1] + " of " + m[2] + " test clips. That’s good." : "";
-      body.innerHTML = `<h2 class="h-dialog">${esc(label)} is ready</h2>
+      body.innerHTML = `<h2 class="h-dialog" id="wwt">${esc(label)} is ready</h2>
         <p>Say “${esc(label)}” at the station to try it. It’s on now.</p>
         ${note ? `<p class="note">${esc(note)}</p>` : ""}
-        <div class="acts"><button class="btn p" id="wwdone" type="button">Done</button>
-          <button class="btn" id="wwmore" type="button">Train more</button></div>`;
+        <div class="acts"><button class="btn" id="wwmore" type="button">Train more</button>
+          <button class="btn p" id="wwdone" type="button">Done</button></div>`;
       const done = $("#wwdone", body);
-      if (done) done.onclick = back;
+      if (done) done.onclick = () => { finish(); };
       const more = $("#wwmore", body);
       if (more) more.onclick = () => { finished = false; opts.topup = true; begin(true); };
+      focusWake(sheet);
       return;
     }
     if (state === "failed_quality") {
+      phase = "done";
       finished = true;
       stop();
       const m = String(row.message || "").match(/(\d+) of (\d+)/);
       const heard = m
         ? esc(label) + " woke on " + m[1] + " of " + m[2] + " test clips. It needs " + clipsNeeded(m[2]) + ". Five more recordings should help."
         : esc(label) + " isn't good enough yet. Five more recordings should help.";
-      body.innerHTML = `<h2 class="h-dialog">Not good enough yet</h2>
+      body.innerHTML = `<div class="acon" aria-hidden="true">!</div>
+        <h2 class="h-dialog" id="wwt">Not good enough yet</h2>
         <p>${heard}</p>
         <p class="note">${esc(label)} stays off until it’s ready. Other wake words keep working.</p>
-        <div class="acts"><button class="btn p" id="wwmore" type="button">Train more</button>
-          <button class="btn g" id="wwnot" type="button">Not now</button></div>`;
+        <div class="acts"><button class="btn g" id="wwnot" type="button">Not now</button>
+          <button class="btn p" id="wwmore" type="button">Train more</button></div>`;
       const more = $("#wwmore", body);
       if (more) more.onclick = () => { finished = false; opts.topup = true; begin(true); };
       const notNow = $("#wwnot", body);
-      if (notNow) notNow.onclick = back;
+      if (notNow) notNow.onclick = () => { finish(); };
+      focusWake(sheet);
       return;
     }
     if (state === "failed") {
@@ -1599,30 +1689,38 @@ function openSetWake(bot, el, d, opts) {
       return showError("train");
     }
     if (state === "training" || state === "processing" || state === "uploading") {
+      phase = "training";
       body.innerHTML = `<h2 id="wwtrain" class="h-dialog">Training ${esc(label)}…</h2>
         <p>All 5 recordings are in. This takes a few minutes. You can close this. We’ll let you know.</p>
+        ${clipSquares(5, false, false)}
         ${barHTML(100, true)}
-        <p class="help">Training · about 3 min left</p>`;
+        <p class="help">Training · about 3 min left</p>
+        <div class="acts"><button class="btn" type="button">Close</button></div>`;
+      const closeBtn = body.querySelector(".acts button");
+      if (closeBtn) closeBtn.onclick = () => { finish(); };
+      focusWake(sheet);
       return;
     }
+    phase = "recording";
     const kept = progress ? row.kept : 0;
     const index = progress ? row.index : 1;
     const rejected = !!(recent && recent[0] && recent[0].ok === false);
     const lead = !progress
-      ? "Recording. Speak after the chime."
+      ? "Recording. Speak to the station after the chime."
       : topup
         ? "Recording " + Math.max(1, index) + " of 5 more. The ones you already have are kept."
-        : "Recording " + Math.max(1, index) + " of 5. Speak after the chime.";
+        : "Recording " + Math.max(1, index) + " of 5. Speak to the station after the chime.";
     const grid = progress ? clipSquares(kept, true, rejected) : clipSquares(0, false, false);
     const first = topup ? `<div class="help">Already kept</div>${clipSquares(5, false, false)}<div class="help">5 more</div>` : "";
     const title = topup ? "Train more: say “" + label + "”" : "Say “" + label + "”";
-    body.innerHTML = `<h2 class="h-dialog">${esc(title)}</h2>
+    body.innerHTML = `<h2 class="h-dialog" id="wwt">${esc(title)}</h2>
       <p>${esc(lead)}</p>
       ${first}${grid}
       ${levelMeter(level)}
       ${barHTML(progress ? (kept / 5) * 100 : 0, false)}
-      <div class="acts"><button class="btn" id="wwpause" type="button">Pause</button>
-        <button class="btn g" id="wwstop" type="button">Stop and discard</button></div>`;
+      <p class="vh">At the station you can also <span>say</span> <b>“stop”</b>.</p>
+      <div class="acts"><button class="btn g" id="wwstop" type="button">Stop and discard</button>
+        <button class="btn" id="wwpause" type="button">Pause</button></div>`;
     const pause = $("#wwpause", body);
     if (pause) pause.onclick = async () => {
       const op = pause.dataset.paused === "1" ? "resume" : "pause";
@@ -1633,15 +1731,16 @@ function openSetWake(bot, el, d, opts) {
     };
     const stopBtn = $("#wwstop", body);
     if (stopBtn) stopBtn.onclick = () => confirmSheet({
-      title: "Stop recording?",
+      title: "Stop and discard?",
       text: "The recordings from this session are thrown away. " + label + " stays as it was.",
       action: "Stop and discard",
       go: async () => {
-        const r = await api("POST", "/api/enroll/control", {op: "discard"});
-        if (r && r.ok) back();
-        return r;
+        await api("POST", "/api/enroll/control", {op: "discard"});
+        await finish();
+        return {ok: true};
       }
     });
+    focusWake(sheet);
   };
   const begin = async topup => {
     const field = $("#wwphrase", body);
@@ -1667,7 +1766,28 @@ function openSetWake(bot, el, d, opts) {
       body.dataset.sig = "";
       paintRow({state: "recording", kept: 0, index: 1, recent: [], topup: true}, null);
     }
-    const r = await api("POST", "/api/enroll", payload);
+    let r = await api("POST", "/api/enroll", payload);
+    if (r && r.status === 403) {
+      r = await new Promise(resolve => {
+        askPassword("Start recording?", "Enter the admin password to record this wake word.", "Start", async pw => {
+          payload.password = pw;
+          const again = await api("POST", "/api/enroll", payload);
+          delete payload.password;
+          if (again && again.data) noteStepup(again.data);
+          if (again && again.ok) { resolve(again); return again; }
+          if (again && again.status === 403) return again;
+          resolve(again);
+          return {ok: true};
+        }, () => resolve(null));
+      });
+      if (!r) {
+        // Train more already replaced the dialog with a recording row. Nothing was recorded.
+        if (topup) finish();
+        return;
+      }
+    }
+    if (r && r.data) noteStepup(r.data);
+    if (!r || r.status === 403) return;
     if (r.status === 409) return showError("busy");
     if (r.status === 503 || netDown(r.status)) return showError("mic");
     if (!(r.ok || r.status === 202)) {
@@ -1684,7 +1804,7 @@ function openSetWake(bot, el, d, opts) {
   const poll = async () => {
     stop();
     const tick = async () => {
-      if (finished || !document.body.contains(d)) { stop(); return; }
+      if (finished || !document.body.contains(sheet)) { stop(); return; }
       const s = await api("GET", "/api/enroll/status");
       if (finished) return;
       if (!s.ok && netDown(s.status)) { showError("mic"); return; }
@@ -1695,11 +1815,60 @@ function openSetWake(bot, el, d, opts) {
       else paintRow(row, level, true);
     };
     await tick();
-    if (!finished && document.body.contains(d)) timer = setInterval(() => { tick(); }, 1000);
+    if (!finished && document.body.contains(sheet)) timer = setInterval(() => { tick(); }, 1000);
   };
+  const tileBody = () => {
+    const slug = String((bot && bot.slug) || "");
+    const name = String((bot && bot.name) || slug).replace(/\s+/g, " ").trim().slice(0, 40);
+    const req = {persona: slug};
+    if (name) req.name = name;
+    const phrase = "hey_" + slug;
+    if (/^hey_[a-z][a-z0-9-]{1,23}$/.test(phrase) && phrase !== "hey_grok") req.phrase = phrase;
+    return req;
+  };
+  const postTile = async pw => {
+    const req = tileBody();
+    if (pw !== undefined) req.password = pw;
+    return api("POST", "/api/enroll/open-tile", req);
+  };
+  const openTile = async () => {
+    if (opts.resume || opts.topup) return true;
+    if (stationOffline) { showError("mic"); return false; }
+    let r = await postTile(stepupOpen() ? "" : undefined);
+    if (r && r.status === 403) {
+      r = await new Promise(resolve => {
+        askPassword("Train a wake word?", "Enter the admin password to show this on the station.", "Continue", async pw => {
+          const again = await postTile(pw);
+          if (again && again.data) noteStepup(again.data);
+          if (again && again.ok) { resolve(again); return again; }
+          if (again && again.status === 403) return again;
+          resolve(again);
+          return {ok: true};
+        }, () => resolve(null));
+      });
+      if (!r) { await finish(); return false; }
+    }
+    if (r && r.data) noteStepup(r.data);
+    if (r && r.ok) { tileReady = true; return true; }
+    if (r && r.status === 409) { showError("busy"); return false; }
+    showError("mic");
+    return false;
+  };
+  const onEsc = () => {
+    if (phase === "recording") {
+      const stopBtn = $("#wwstop", sheet);
+      if (stopBtn) stopBtn.click();
+      else finish();
+      return;
+    }
+    if (phase === "prompt") { leavePrompt(); return; }
+    finish();
+  };
+  bindSheet(sheet, onEsc);
+  trapTab(sheet);
   if (opts.resume && phraseId) poll();
   else if (opts.topup && phraseId) begin(true);
-  else showIdle();
+  else openTile().then(ok => { if (ok && !finished) showIdle(); });
 }
 async function displayPanel(el) {
   const g = await api("GET", "/api/settings/display");
@@ -2856,12 +3025,15 @@ function paintBots(el, bots) {
     const star = b.main ? `<span class="mainstar" title="Main bot" aria-label="Main bot">★</span> ` : "";
     const pill = b.main ? ` <span class="pill off mainpill">Main bot</span>` : "";
     const ring = botRing(b);
-    const tip = [check || ring.word, warn].filter(Boolean).join(" · ");
+    const gate = botCanTrain(b, el._botTrain);
+    const trainOff = st !== "training" && st !== "weak" && !(word && word.has_model) && gate.can && !gate.on;
+    const tip = trainOff ? trainOfflineTip() : [check || ring.word, warn].filter(Boolean).join(" · ");
     return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
         <div class="help" title="${esc((b && b.reply_host) || "")}">${esc(repliesFrom(b))}</div>
+        ${trainOff ? trainOfflineSub() : ""}
         ${botStatusSlot(b, finishNotes(b))}</div>
-      ${wakeControlHTML(b, word, st, true)}
+      ${wakeControlHTML(b, word, st, true, el._botTrain)}
       <div class="cfg">${updateRowBtnHTML(b)}<button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
   }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
       <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div>${botStatusSlot({slug: row.key}, "")}</div>
@@ -2893,6 +3065,13 @@ function paintBots(el, bots) {
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
     openBot(bots.filter(x => x.slug === btn.dataset.bot)[0], el);
+  });
+  list.querySelectorAll(".wwtrain").forEach(btn => btn.onclick = ev => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (btn.getAttribute("aria-disabled") === "true") return;
+    const bot = bots.filter(x => x.slug === btn.dataset.train)[0];
+    if (bot) openSetWake(bot, el, null, {});
   });
   list.querySelectorAll("[data-setup]").forEach(b => b.onclick = ev => {
     ev.stopPropagation();
@@ -2960,6 +3139,7 @@ async function refreshBots(el) {
   el._session = !!(s.data && s.data.session);
   el._words = (w.ok && w.data && w.data.words) || el._words || [];
   el._unused = (w.ok && w.data && w.data.unused) || [];
+  el._botTrain = (s.ok && s.data && s.data.bots && typeof s.data.bots === "object" && !Array.isArray(s.data.bots)) ? s.data.bots : {};
   el._bots = (r.data && r.data.bots) || [];
   noteAvatarVersions(el._bots);
   el._imported = (r.data && r.data.imported) || {rows: []};
