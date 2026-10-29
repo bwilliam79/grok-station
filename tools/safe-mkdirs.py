@@ -14,6 +14,7 @@ Usage: safe-mkdirs.py [--mode 0750] [--group GROUP] USER BASE REL [REL ...]   (R
 --put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
 written to a fresh temp name through the directory's descriptor, fchowned, then renamed over the final name in
 that same directory (Nix 0.13.6 L3: root never writes through a path grok could have swapped for a symlink).
+Temp names end in a random suffix (secrets.token_hex), so they can't be predicted and pre-planted.
 
 --replace rewrites the existing regular file BASE/RELDIR/NAME with stdin the same way, keeping that file's owner,
 group and mode (read with fstat on an O_NOFOLLOW descriptor; a symlink or non-regular NAME is refused).
@@ -21,6 +22,7 @@ group and mode (read with fstat on an O_NOFOLLOW descriptor; a symlink or non-re
 BASE itself must be owned by root and not group- or other-writable, checked on its open descriptor (L4).
 """
 import os
+import secrets
 import stat
 import sys
 
@@ -105,16 +107,12 @@ def _walk(base, rel_dir, root_uid):
 
 
 def _tmp_name(name):
-    return ".%s.new.%d" % (name, os.getpid())
+    return ".%s.new.%s" % (name, secrets.token_hex(8))
 
 
 def _write_at(fd, name, data, uid, gid, mode):
     """Write DATA to NAME in directory FD: fresh temp (O_CREAT|O_EXCL|O_NOFOLLOW), fchown, fchmod, rename in FD."""
     tmp = _tmp_name(name)
-    try:
-        os.unlink(tmp, dir_fd=fd)
-    except FileNotFoundError:
-        pass
     out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                   0o600, dir_fd=fd)
     try:

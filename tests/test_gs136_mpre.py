@@ -151,5 +151,32 @@ class Overrides(Base):
         self.assertEqual(open(target).read(), "keep")
 
 
+class RandomTemp(unittest.TestCase):
+    def test_put_temp_name_is_random(self):
+        m = _load()
+        t = tempfile.mkdtemp()
+        try:
+            os.chmod(t, 0o755)
+            os.mkdir(os.path.join(t, "d"))
+            src = os.path.join(t, "f.txt")
+            with open(src, "w") as f:
+                f.write("x")
+            seen = []
+            real = os.rename
+
+            def rec(a, b, **kw):
+                seen.append(a)
+                return real(a, b, **kw)
+            with mock.patch.object(m.os, "rename", rec):
+                for _ in range(2):
+                    m.put(t, "d", [src], os.getuid(), os.getgid(), root_uid=os.getuid())
+            self.assertEqual(len(seen), 2)
+            for n in seen:
+                self.assertRegex(n, r"^\.f\.txt\.new\.[0-9a-f]{16}$")
+            self.assertNotEqual(seen[0], seen[1])
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
