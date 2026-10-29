@@ -1498,6 +1498,7 @@ def _training_read(read16):
 
 PROMPT_TTL_S = 120   # prompt tile with nothing recorded closes on its own (Nix 0.13.5 L2)
 PAUSE_MAX_S = 600    # a pause between clips longer than this discards the session
+TRAIN_MAX_S = 1800   # whole training (prompt plus recording) ends here, however often it is paused and resumed
 _mono = time.monotonic
 
 
@@ -1515,6 +1516,14 @@ def _training_expire():
                 ENROLL_STATE["prompt"] = None
                 ENROLL_STATE["prompt_until"] = None
                 closed = True
+        if ENROLL_STATE.get("busy") and not ENROLL_STATE.get("discard"):
+            until = ENROLL_STATE.get("train_until")
+            if until is not None and now >= until:
+                ENROLL_STATE["discard"] = True
+                ENROLL_STATE["pause"] = False
+                ENROLL_STATE["pause_until"] = None
+                ENROLL_STATE["timed_out"] = True
+                print("enroll training time limit reached; discarding", flush=True)
         if ENROLL_STATE.get("busy") and ENROLL_STATE.get("pause"):
             until = ENROLL_STATE.get("pause_until")
             if until is None or now >= until:
@@ -1745,6 +1754,7 @@ def open_enroll_tile(j):
             return 409, {"error": "enrollment in progress"}
         ENROLL_STATE["prompt"] = {"phrase": phrase or "", "persona": who, "text": say}
         ENROLL_STATE["prompt_until"] = _mono() + PROMPT_TTL_S
+        ENROLL_STATE["train_until"] = _mono() + TRAIN_MAX_S
     _reset_stop_recogniser()
     post_state("enroll", text=say, who=who, heard=f"1/{ENROLL_COUNT}|prompt|")
     return 200, {"ok": True}
@@ -1769,6 +1779,7 @@ def enroll_control(body):
             post = False
         elif op == "resume":
             ENROLL_STATE["pause"] = False
+            ENROLL_STATE["pause_until"] = None
             post = False
         else:
             ENROLL_STATE["discard"] = True
@@ -1845,6 +1856,9 @@ def enroll(req, read16, play):
     _mkdir_0700(os.path.join(ENROLL_DIR, phrase))
     _mkdir_0700(d)
     with _TRAIN_LOCK:
+        # The cap starts once: at the prompt tile if it was up, otherwise now.
+        started = ENROLL_STATE.get("train_until") if ENROLL_STATE.get("prompt") else None
+        ENROLL_STATE["train_until"] = started if started is not None else _mono() + TRAIN_MAX_S
         ENROLL_STATE["prompt"] = None
         ENROLL_STATE["busy"] = True
         ENROLL_STATE["pause"] = False
