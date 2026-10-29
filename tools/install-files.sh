@@ -15,10 +15,14 @@ if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
   install -o grok -g grok -m644 "$S/wake/fewshot.py" /opt/grok-station/wake/fewshot.py.new && mv /opt/grok-station/wake/fewshot.py.new /opt/grok-station/wake/fewshot.py
   install -o grok -g grok -m644 "$S/wake/wait_tone.py" /opt/grok-station/wake/wait_tone.py.new && mv /opt/grok-station/wake/wait_tone.py.new /opt/grok-station/wake/wait_tone.py
   install -o grok -g grok -m644 "$S/wake/stopword.py" /opt/grok-station/wake/stopword.py.new && mv /opt/grok-station/wake/stopword.py.new /opt/grok-station/wake/stopword.py
-  install -d -o grok -g grok /opt/grok-station/wake/models /opt/grok-station/wake/models/enrolled
+  # Not `install -d -o grok`: root would follow a symlink grok planted and chown its target (Nix 0.13.6 M1).
+  python3 -I - grok /opt/grok-station wake/models wake/models/enrolled < "$S/tools/safe-mkdirs.py"
   install -o grok -g grok -m644 "$S/wake/models/fewshot_negatives.npz" /opt/grok-station/wake/models/fewshot_negatives.npz
 fi
-[ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ] && install -d -o grok -g grok /opt/grok-station/wake/lines && install -o grok -g grok -m644 "$S"/wake/lines/*.wav /opt/grok-station/wake/lines/
+if [ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ]; then
+  python3 -I - grok /opt/grok-station wake/lines < "$S/tools/safe-mkdirs.py"
+  install -o grok -g grok -m644 "$S"/wake/lines/*.wav /opt/grok-station/wake/lines/
+fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 install -m644 "$S/admin/gs_routine.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" /opt/grok-station/admin/
 # Every module grok_admin.py imports must be installed next to it (a missing one crash-loops the admin page).

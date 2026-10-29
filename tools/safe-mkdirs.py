@@ -6,7 +6,7 @@ so a symlink grok planted at $O/wake or $O/wake/models would hand grok whatever 
 component is opened with O_NOFOLLOW relative to its parent's descriptor, created if missing, and chowned
 and chmodded through that descriptor. A symlink anywhere on the way is refused and nothing past it is touched.
 
-Usage: safe-mkdirs.py USER BASE REL [REL ...]   (REL like wake/models; mode 0755)
+Usage: safe-mkdirs.py [--mode 0750] USER BASE REL [REL ...]   (REL like wake/models; default mode 0755)
 """
 import os
 import sys
@@ -27,17 +27,21 @@ def _open(name, dir_fd, shown):
         raise Refused("%s is not a plain directory (%s); refusing" % (shown, e.strerror))
 
 
+def _parts(rel):
+    parts = [p for p in rel.split("/") if p]
+    if not parts or any(p in (".", "..") for p in parts):
+        raise Refused("bad path %r" % rel)
+    return parts
+
+
 def mkdirs(base, rels, uid, gid, mode=0o755):
     base = os.path.abspath(base)
     bfd = _open(base, None, base)
     try:
         for rel in rels:
-            parts = [p for p in rel.split("/") if p]
-            if not parts or any(p in (".", "..") for p in parts):
-                raise Refused("bad path %r" % rel)
             fd, shown = os.dup(bfd), base
             try:
-                for p in parts:
+                for p in _parts(rel):
                     shown = os.path.join(shown, p)
                     try:
                         os.mkdir(p, mode, dir_fd=fd)
@@ -54,10 +58,22 @@ def mkdirs(base, rels, uid, gid, mode=0o755):
         os.close(bfd)
 
 
-if __name__ == "__main__":
+def main(argv):
     import pwd
-    pw = pwd.getpwnam(sys.argv[1])
+    mode = 0o755
+    if argv[:1] == ["--mode"]:
+        mode, argv = int(argv[1], 8), argv[2:]
+    if len(argv) < 3:
+        sys.stderr.write(__doc__)
+        return 2
+    pw = pwd.getpwnam(argv[0])
     try:
-        mkdirs(sys.argv[2], sys.argv[3:], pw.pw_uid, pw.pw_gid)
+        mkdirs(argv[1], argv[2:], pw.pw_uid, pw.pw_gid, mode=mode)
     except Refused as e:
-        sys.exit("safe-mkdirs: %s" % e)
+        sys.stderr.write("safe-mkdirs: %s\n" % e)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

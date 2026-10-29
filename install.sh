@@ -165,7 +165,12 @@ st_users() {
   # Late answers are spoken by the wake listener (user grok). voice/ is grok-admin only, so this
   # directory is group grok and setgid: new files stay readable by grok, not by everyone.
   run install -d -o grok-relay -g grok -m 2770 $V/late
-  run install -d -o grok -g grok -m 0750 $V/enroll $V/enroll/inbox
+  # Wake-word upload inbox, grok-owned 0750. Not `install -d -o grok`: root would follow a symlink grok planted
+  # there and chown and chmod its target (Nix 0.13.6 M1).
+  if [ "$DRY" = 1 ]; then echo "+ safe-mkdirs --mode 0750 grok $V enroll/inbox"; else
+    python3 -I - --mode 0750 grok "$V" enroll enroll/inbox < tools/safe-mkdirs.py \
+      || { echo "refusing to set up $V/enroll: a path there is a symlink or not a directory"; return 1; }
+  fi
   # Wi-Fi powersave off when NetworkManager is installed (2 = disabled). Journal cap. Both overwrite the same bytes.
   if [ -d /etc/NetworkManager/conf.d ]; then
     sh_ "printf '%s\n' '[connection]' 'wifi.powersave = 2' > /etc/NetworkManager/conf.d/wifi-powersave-off.conf"
