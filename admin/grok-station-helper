@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """grok-station-helper: the admin page's only privileged path (root via sudo, see admin/sudoers.example).
 Fixed subcommands, input validated here (never trust the caller), JSON on stdin/stdout, secrets never echoed."""
-import configparser, grp, io, json, os, re, shutil, ssl, subprocess, sys, tarfile, tempfile, urllib.request, uuid
+import configparser, grp, io, json, os, re, ssl, subprocess, sys, tempfile, urllib.request, uuid
 
 ENV = {"display": "/etc/grok-station/env", "wake": "/etc/grok-station/wake.env"}
 
@@ -11,7 +11,6 @@ def station_env_owner():
     return 0, grp.getgrnam("grok").gr_gid, 0o640
 TLS = "/etc/grok-station/tls"
 NM_DIR = "/etc/NetworkManager/system-connections"
-REPO = "bwilliam79/grok-station"
 HOTSPOT = "grok-hotspot"
 SETTINGS = {  # section -> {key: (env file, validator)}
     # Dim levels, times, and coordinates are the strings the admin form already normalized
@@ -682,33 +681,6 @@ def restart(what):
     out({"ok": True})
 
 
-def update(sha):
-    """Install a specific commit of the public repo (files only; no apt). The previous files stay on failure."""
-    if not re.fullmatch(r"[0-9a-f]{40}", sha):
-        fail("bad version")
-    d = tempfile.mkdtemp(prefix="gs-update-")
-    try:
-        url = f"https://codeload.github.com/{REPO}/tar.gz/{sha}"
-        with urllib.request.urlopen(url, timeout=60) as r, tarfile.open(fileobj=io.BytesIO(r.read(50 * 1024 * 1024)), mode="r:gz") as t:
-            t.extractall(d, filter="data")
-        src = os.path.join(d, os.listdir(d)[0])
-        for f in ("app/grok_station.py", "wake/grok_wake.py", "admin/grok_admin.py", "admin/grok-station-helper", "tools/grok-station"):
-            if not os.path.isfile(os.path.join(src, f)):
-                fail("update is missing files")
-        run(sys.executable, "-m", "py_compile", os.path.join(src, "app/grok_station.py"), os.path.join(src, "wake/grok_wake.py"),
-            os.path.join(src, "admin/grok_admin.py"), check=True)
-        rc, _ = run("sh", os.path.join(src, "tools/install-files.sh"), src, sha[:7], timeout=120)
-        if rc:
-            fail("install step failed")
-    except SystemExit:
-        raise
-    except Exception:
-        fail("Update failed; the old version is still running.")
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
-    out({"ok": True})
-
-
 def main():
     a = sys.argv[1:]
     if not a:
@@ -760,8 +732,6 @@ def main():
     if cmd == "reboot":
         subprocess.Popen(["systemctl", "reboot"])
         out({"ok": True})
-    if cmd == "update" and len(a) == 2:
-        update(a[1])
     fail("unknown command")
 
 
