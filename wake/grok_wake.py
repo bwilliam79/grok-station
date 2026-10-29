@@ -1431,6 +1431,12 @@ def _training_expire():
         post_state("idle")
 
 
+def training_tile_up():
+    """The training tile is showing: the prompt is waiting or a recording is running."""
+    with _TRAIN_LOCK:
+        return bool(ENROLL_STATE.get("prompt") or ENROLL_STATE.get("busy"))
+
+
 def _prompt_tick():
     """Listener loop: close the prompt tile once its TTL has passed."""
     if ENROLL_STATE.get("prompt") and not ENROLL_STATE.get("busy"):
@@ -2674,7 +2680,13 @@ class Session:
                     elif t in ("done", "timeout", "error"):
                         print(f"relay: {t}", flush=True)
                         if ev.get("local"):
-                            post_state("idle")  # local exit has no audio; do not leave thinking up
+                            if training_tile_up():
+                                # "Train my wake word for <bot>": the relay opened the training tile, then ended
+                                # this session. Leave the tile up and skip the end tone, the same as the Bots
+                                # page button (0.13.7: idle here closed the tile with the hang-up tone).
+                                self._end_played = True
+                            else:
+                                post_state("idle")  # local exit has no audio; do not leave thinking up
                             break
                         if t != "error" and self.turns and not self.t_first_audio:
                             post_state("idle")  # follow-up window closed quietly (silence or "thanks")
