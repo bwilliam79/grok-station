@@ -1719,7 +1719,6 @@ function openSetWake(bot, el, d, opts) {
       ${first}${grid}
       ${levelMeter(level)}
       ${barHTML(progress ? (kept / 5) * 100 : 0, false)}
-      <p class="vh">At the station you can also <span>say</span> <b>“stop”</b>.</p>
       <div class="acts"><button class="btn g" id="wwstop" type="button">Stop and discard</button>
         <button class="btn" id="wwpause" type="button">Pause</button></div>`;
     const pause = $("#wwpause", body);

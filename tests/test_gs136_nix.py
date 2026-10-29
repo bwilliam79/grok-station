@@ -100,7 +100,7 @@ class M1(Base):
         os.makedirs(os.path.join(S, "wake", "lines"))
         os.makedirs(os.path.join(S, "tools"))
         shutil.copy(TOOL, os.path.join(S, "tools", "safe-mkdirs.py"))
-        for n in ("grok_wake.py", "gain.py", "fewshot.py", "wait_tone.py", "stopword.py"):
+        for n in ("grok_wake.py", "gain.py", "fewshot.py", "wait_tone.py"):
             open(os.path.join(S, "wake", n), "w").write("# %s\n" % n)
         open(os.path.join(S, "wake", "models", "fewshot_negatives.npz"), "wb").write(b"npz")
         open(os.path.join(S, "wake", "lines", "a.wav"), "wb").write(b"wav")
@@ -111,7 +111,7 @@ class M1(Base):
         os.makedirs(os.path.join(O, "wake"))
         r = self._sh(self._install_files_wake_block(S, O))
         self.assertEqual(r.returncode, 0, r.stderr)
-        for rel in ("wake/grok_wake.py", "wake/stopword.py", "wake/models/fewshot_negatives.npz", "wake/lines/a.wav"):
+        for rel in ("wake/grok_wake.py", "wake/wait_tone.py", "wake/models/fewshot_negatives.npz", "wake/lines/a.wav"):
             p = os.path.join(O, rel)
             self.assertTrue(os.path.isfile(p) and not os.path.islink(p), rel)
             self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o644, rel)

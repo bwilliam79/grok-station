@@ -279,8 +279,6 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .wwtrain[aria-disabled="true"]::before{display:none}
 .offsub{display:none}
 .stmic{display:flex;gap:10px;align-items:flex-start;background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:12px;font-size:var(--fs-label)}
-.vh{font-size:var(--fs-label);color:var(--gs-muted)}
-.vh b{color:var(--gs-text);font-weight:500}
 .botrow .cfg .btn{min-width:92px}
 .botrow .cfg .lock{width:92px;justify-content:center}
 .cfg{display:flex;justify-content:flex-end;align-items:center;gap:8px}

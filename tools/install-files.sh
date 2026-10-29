@@ -11,7 +11,7 @@ install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
 install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py
 if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
   # Root writes into grok-owned dirs only through safe-mkdirs --put (dir fds, O_NOFOLLOW; Nix 0.13.6 L3).
-  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" "$S/wake/stopword.py" < "$S/tools/safe-mkdirs.py"
+  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" < "$S/tools/safe-mkdirs.py"
   # Not `install -d -o grok`: root would follow a symlink grok planted and chown its target (Nix 0.13.6 M1).
   python3 -I - grok /opt/grok-station wake/models wake/models/enrolled < "$S/tools/safe-mkdirs.py"
   python3 -I - --put grok /opt/grok-station wake/models "$S/wake/models/fewshot_negatives.npz" < "$S/tools/safe-mkdirs.py"

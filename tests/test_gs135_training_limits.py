@@ -9,9 +9,15 @@ from contextlib import redirect_stdout
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 sys.path.insert(0, os.path.join(ROOT, "wake"))
-import test_gs134_stop_word as sw  # noqa: E402
-_zeros = sw._zeros
+import tempfile  # noqa: E402
+
+import numpy as np  # noqa: E402
+
 import grok_wake as gw  # noqa: E402
+
+
+def _zeros(raw=False):
+    return np.zeros(1280, np.int16)
 
 
 class _Clock:
@@ -23,39 +29,48 @@ class _Clock:
 
 
 class TrainingLimits(unittest.TestCase):
-    _use = sw.StopWord._use
+    """0.13.7: no spoken stop. Training ends by sample count, Stop on the tile, or these time limits."""
 
     def setUp(self):
-        sw.StopWord.setUp(self)
+        self.d = tempfile.mkdtemp()
+        self.old_dir = gw.ENROLL_DIR
+        self.state = dict(gw.ENROLL_STATE)
+        gw.ENROLL_DIR = self.d
+        gw.ENROLL_STATE.update(busy=False, pause=False, discard=False, prompt=None)
+        self.post, self.sleep, self.popen = gw.post_state, gw.time.sleep, gw.subprocess.Popen
+        gw.post_state = lambda state=None, **kw: None
+        gw.time.sleep = lambda s: None
+        gw.subprocess.Popen = lambda *a, **k: None
         self.clock = _Clock()
         self.old_mono = gw._mono
         gw._mono = self.clock
 
     def tearDown(self):
         gw._mono = self.old_mono
-        sw.StopWord.tearDown(self)
+        gw.ENROLL_DIR = self.old_dir
+        gw.ENROLL_STATE.clear()
+        gw.ENROLL_STATE.update(self.state)
+        gw.post_state, gw.time.sleep, gw.subprocess.Popen = self.post, self.sleep, self.popen
+        import shutil
+        shutil.rmtree(self.d, ignore_errors=True)
 
     def test_constants(self):
         self.assertEqual(gw.PROMPT_TTL_S, 120)
         self.assertEqual(gw.PAUSE_MAX_S, 600)
 
-    def test_prompt_expires_and_recogniser_stops_being_fed(self):
-        rec = self._use(lambda samples, n: "")
+    def test_prompt_expires_on_the_listener_tick(self):
         posted = []
         gw.post_state = lambda state=None, **kw: posted.append(state)
         buf = io.StringIO()
         with redirect_stdout(buf):
             self.assertEqual(gw.open_enroll_tile({"phrase": "hey_juniper", "persona": "juniper", "name": "Juniper"})[0], 200)
-            gw._feed_prompt_audio(_zeros())
-            fed = rec.feeds
-            self.assertEqual(fed, 1)
+            gw._prompt_tick()
             self.clock.t += gw.PROMPT_TTL_S - 1
-            gw._feed_prompt_audio(_zeros())
-            self.assertEqual(rec.feeds, 2)
+            gw._prompt_tick()
+            self.assertIsNotNone(gw.ENROLL_STATE["prompt"])
             self.clock.t += 2
-            gw._feed_prompt_audio(_zeros())
-            gw._feed_prompt_audio(_zeros())
-        self.assertEqual(rec.feeds, 2)
+            gw._prompt_tick()
+            gw._prompt_tick()
         self.assertIsNone(gw.ENROLL_STATE["prompt"])
         self.assertFalse(gw._training_holding())
         self.assertEqual(posted, ["enroll", "idle"])
@@ -64,7 +79,6 @@ class TrainingLimits(unittest.TestCase):
         self.assertNotIn("juniper", out.lower())
 
     def test_prompt_hold_returns_after_ttl(self):
-        self._use(lambda samples, n: "")
         reads = {"n": 0}
 
         def read16(raw=False):
@@ -82,7 +96,6 @@ class TrainingLimits(unittest.TestCase):
         self.assertLess(reads["n"], 10)
 
     def test_over_cap_pause_discards_clips_and_goes_idle(self):
-        self._use(lambda samples, n: "")
         posted = []
         gw.post_state = lambda state=None, **kw: posted.append(state)
         raw_n = {"n": 0, "after": 0}
@@ -137,7 +150,6 @@ class TrainingCap(TrainingLimits):
         gw.ENROLL_STATE.update(busy=False)
 
     def test_pause_resume_loop_discards_at_the_30_minute_cap(self):
-        self._use(lambda samples, n: "")
         posted = []
         gw.post_state = lambda state=None, **kw: posted.append(state)
         tick = {"n": 0, "cycles": 0}

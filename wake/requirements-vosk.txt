@@ -1,9 +1,0 @@
-# vosk: offline speech recognition so saying stop works during wake-word training; grammar limited to stop, never leaves the station.
-# Exact pins. The five vosk dependencies match what a fresh wake venv resolves for install.sh's st_wake line
-# (2026-10-29), so nothing already in the venv is downgraded (websockets stays at the >=17 line).
-vosk==0.3.44
-cffi==2.1.1
-requests==2.34.2
-srt==3.5.3
-tqdm==4.70.1
-websockets==17.3

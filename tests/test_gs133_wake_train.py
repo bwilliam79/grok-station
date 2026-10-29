@@ -102,27 +102,20 @@ class StaleAndError(unittest.TestCase):
 class StopAndPrompt(unittest.TestCase):
     def setUp(self):
         self.state = dict(gw.ENROLL_STATE)
-        gw.ENROLL_STATE.update(busy=False, pause=False, discard=False, prompt=None, heard_text="")
+        gw.ENROLL_STATE.update(busy=False, pause=False, discard=False, prompt=None)
 
     def tearDown(self):
         gw.ENROLL_STATE.clear()
         gw.ENROLL_STATE.update(self.state)
 
-    def test_stop_discards_and_other_speech_is_ignored(self):
+    def test_spoken_stop_is_gone(self):
+        """0.13.7: no spoken stop. Only the tile's Stop (enroll_control discard) or a time limit ends training."""
+        for name in ("note_training_speech", "training_command", "_poll_training_speech", "_feed_training_audio",
+                     "_training_read", "_STOP"):
+            self.assertFalse(hasattr(gw, name), name)
         gw.ENROLL_STATE["busy"] = True
-        gw.ENROLL_STATE["pause"] = True
-        self.assertIsNone(gw.note_training_speech("louder"))
-        self.assertFalse(gw.ENROLL_STATE["discard"])
-        self.assertTrue(gw.ENROLL_STATE["pause"])
-        self.assertIsNone(gw.note_training_speech("stop the music"))
-        self.assertFalse(gw.ENROLL_STATE["discard"])
-        self.assertEqual(gw.note_training_speech("Hey Grok, stop."), "discard")
+        self.assertEqual(gw.enroll_control({"op": "discard"})[0], 200)
         self.assertTrue(gw.ENROLL_STATE["discard"])
-        self.assertFalse(gw.ENROLL_STATE["pause"])
-        gw.ENROLL_STATE["discard"] = False
-        gw.ENROLL_STATE["heard_text"] = "STOP"
-        self.assertEqual(gw._poll_training_speech(), "discard")
-        self.assertEqual(gw.ENROLL_STATE["heard_text"], "")
 
     def test_open_tile_does_not_create_a_dir_or_log_the_phrase(self):
         d = tempfile.mkdtemp()

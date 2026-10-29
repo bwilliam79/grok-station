@@ -212,65 +212,21 @@ for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py
   run rm -f $O/relay/release.py  # old updater module, no longer used
 }
 
-_vosk_pip() {
-  # A failed install must not fail the station: the tile still works by touch.
-  # Offline first boot already has the image venv; do not print or run pip.
-  if [ "$OFFLINE" = 1 ]; then
-    return 0
+_vosk_remove() {
+  # 0.13.7: the spoken "stop" during training is gone. Remove what 0.13.5 and 0.13.6 installed for it: the
+  # recogniser module, its model folder (as grok, never root, so nothing is followed into or chowned), and the
+  # pip packages only it needed (each kept if anything else still requires it).
+  if [ "$DRY" = 1 ]; then echo "+ remove the 0.13.5 stop-word recogniser (stopword.py, vosk model, vosk/srt/cffi if unused)"; return 0; fi
+  if [ -e "$O/wake/models/vosk-model-small-en-us-0.15" ] || [ -L "$O/wake/models/vosk-model-small-en-us-0.15" ]; then
+    runuser -u grok -- rm -rf --one-file-system -- "$O/wake/models/vosk-model-small-en-us-0.15" || true
   fi
-  if [ "$DRY" = 1 ]; then
-    echo "+ $O/wake/venv/bin/pip install --quiet -r wake/requirements-vosk.txt"
-    return 0
-  fi
-  "$O/wake/venv/bin/pip" install --quiet -r wake/requirements-vosk.txt || echo "stop word: off (on-device recogniser not installed); touch still works"
-}
-
-_vosk_model() {
-  # Online only. Dry run prints the fetch and never the checksum. A bad zip is deleted and the install continues.
-  model=vosk-model-small-en-us-0.15
-  sha=30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498
-  url=https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
-  dir=$O/wake/models/$model
-  if [ "$DRY" = 1 ]; then
-    echo "+ fetch $url and verify sha256 before unzip into $dir"
-    return 0
-  fi
-  if [ "$OFFLINE" = 1 ]; then
-    return 0
-  fi
-  # Already installed: trust it only as a real grok-owned folder with a matching marker. Root never repairs
-  # ownership here (Nix 0.13.5 I2); anything else is reinstalled as grok below.
-  if [ -d "$dir" ] && [ ! -L "$dir" ] && [ "$(stat -c %U "$dir")" = grok ] && [ -f "$dir/.sha256" ] && [ ! -L "$dir/.sha256" ]; then
-    mark=$(tr -d '[:space:]' < "$dir/.sha256" 2>/dev/null || true)
-    if [ "$mark" = "$sha" ]; then
-      return 0
-    fi
-  fi
-  # A symlink or a folder not owned by grok in the way: remove the path itself. rm does not follow the link or
-  # leave this file system, and nothing writes or chowns through it. A grok-owned folder is replaced by the unpack.
-  if [ -L "$dir" ] || { [ -e "$dir" ] && [ "$(stat -c %U "$dir")" != grok ]; }; then
-    rm -rf --one-file-system -- "$dir"
-  fi
-  tmp=$(mktemp 2>/dev/null) || { echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
-  curl -fsSL --max-time 120 -o "$tmp" "$url" || { rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
-  got=$(sha256sum "$tmp" 2>/dev/null | awk 'NR==1 {print $1}') || true
-  if [ "$got" != "$sha" ]; then
-    rm -f "$tmp"
-    echo "stop word: model checksum mismatch; touch still works"
-    return 0
-  fi
-  # Least privilege (Nix 0.13.5 L1): $O/wake/models is grok-owned, so the unpack runs as grok, never root.
-  # Root only verified the SHA above; grok reads a root-owned copy. The script goes in on stdin so grok
-  # does not need to read this clone.
-  zd=$(mktemp -d 2>/dev/null) || { rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
-  # Root keeps $zd (Nix 0.13.5 L1-b): grok only gets group read on the folder and the zip, never ownership.
-  install -d -o root -g grok -m 0750 "$zd" && install -o root -g grok -m 0440 "$tmp" "$zd/model.zip" || { rm -rf "$zd"; rm -f "$tmp"; echo "stop word: off (on-device recogniser not installed); touch still works"; return 0; }
-  # grok writes $dir itself, so it is grok-owned without a chown.
-  if ! runuser -u grok -- python3 - "$zd/model.zip" "$O/wake/models" "$model" "$sha" < tools/vosk-unpack.py; then
-    echo "stop word: off (on-device recogniser not installed); touch still works"
-  fi
-  rm -rf "$zd"
-  rm -f "$tmp"
+  runuser -u grok -- rm -f -- "$O/wake/stopword.py" || true
+  [ -x "$O/wake/venv/bin/pip" ] || return 0
+  for p in vosk srt cffi; do
+    info=$("$O/wake/venv/bin/pip" show "$p" 2>/dev/null) || continue
+    req=$(printf '%s\n' "$info" | sed -n 's/^Required-by: *//p')
+    [ -z "$req" ] && "$O/wake/venv/bin/pip" uninstall --quiet -y "$p" >/dev/null 2>&1 || true
+  done
 }
 
 st_wake() {
@@ -289,7 +245,7 @@ st_wake() {
     requests "websockets>=17"
   run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/stopword.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
   run python3 -I - --put grok "$O" wake/models wake/models/hey_grok.onnx < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).
@@ -326,9 +282,7 @@ PY
         || { echo "refusing to rewrite $V/admin/wake-overrides.json: a path there is a symlink or not a plain file"; return 1; }
     fi
   fi
-  # vosk: offline speech recognition so saying stop works during wake-word training; grammar limited to stop, never leaves the station.
-  _vosk_pip
-  _vosk_model
+  _vosk_remove
 }
 
 st_boot() {  # boot splash and kiosk; hides the blinking console cursor

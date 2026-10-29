@@ -3997,11 +3997,11 @@ def _dashed_ring(surf, cx, cy, outer, width, color, dash, gap):
 
 
 def _enroll_actions(stage):
-    """(id, label, primary, text_only) for the action row. Mid-training also draws Say "stop"."""
+    """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn (never, 0.13.7)."""
     if stage == "prompt":
         return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
     if stage in ("ready", "recording", "quiet", "loud", "saved"):
-        return [("stop", "Stop", False, False)], True
+        return [("stop", "Stop", False, False)], False
     if stage == "passed":
         return [("done", "Done", True, False)], False
     if stage == "failed":
@@ -4087,7 +4087,7 @@ def _draw_progress(surf, L, slot, col_w, stage, i, status):
 def _draw_actions(surf, L, tile, slot, col_w, stage):
     """Buttons in the action slot. Returns nothing; hit rects land in LAST_ENROLL_BUTTONS."""
     global LAST_ENROLL_BUTTONS
-    actions, hint = _enroll_actions(stage)
+    actions, _hint = _enroll_actions(stage)
     px = max(12, zpx(L, 52))
     f = font("display", px)
     bh = min(slot.h, max(24, zpx(L, 104)))
@@ -4120,18 +4120,6 @@ def _draw_actions(surf, L, tile, slot, col_w, stage):
         buttons.append((bid, pygame.Rect(rect)))
         x = rect.right + gap
     LAST_ENROLL_BUTTONS = buttons
-    if not hint:
-        return
-    hint_px = L(36)  # 0.13.2 voice-hint size: 36 spec px, 48 px on the 2560 panel
-    segs = (("Say ", "muted"), ("stop", "phrase"))
-    max_w = max(1, slot.x + col_w - x)
-    hf = font("body", hint_px)
-    hy = by + max(0, (bh - hf.get_height()) // 2)
-    if hf.size(voice_hint_plain(segs))[0] <= max_w:
-        draw_voice_hint(surf, segs, x, hy, px=hint_px, max_w=max_w)
-    else:
-        draw_voice_hint(surf, (("Say", "muted"),), x, hy, px=hint_px, max_w=max_w)
-        draw_voice_hint(surf, (("stop", "phrase"),), x, hy + hf.get_height(), px=hint_px, max_w=max_w)
 
 
 def _draw_enroll_chips(surf, L):
