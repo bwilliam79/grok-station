@@ -32,7 +32,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 5 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, datetime, hashlib, hmac, json, os, queue, re, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
 import wait_tone
 
@@ -1583,7 +1583,6 @@ def sweep_stale_sessions(root=None):
 
     A complete session stays so a later top-up can use it. Nothing is logged by phrase.
     """
-    import shutil
     root = root or ENROLL_DIR
     try:
         root_real = os.path.realpath(root)
@@ -1831,7 +1830,6 @@ def enroll(req, read16, play):
                     read16()
             i += 1
         if ENROLL_STATE.get("discard"):
-            import shutil
             shutil.rmtree(d, ignore_errors=True)
             enroll_stage("cancelled", "Stopped.", phrase, ses)
             print(f"enroll discarded {phrase} session {ses}", flush=True)
@@ -1864,10 +1862,9 @@ def enroll(req, read16, play):
     except Exception as e:
         # Capture ended or a read failed (mic unplugged): never leave the word saying "recording".
         # A partial session is not resumable from a crash here, so it does not stay on disk.
-        print(f"enroll {phrase} stopped: microphone {type(e).__name__}", flush=True)
+        print(f"enroll stopped: microphone {type(e).__name__}", flush=True)
         if (ENROLL_STATE.get("last") or {}).get("stage") == "recording":
             enroll_stage("failed", "The microphone stopped while recording. Press Record voice to try again.", phrase, ses)
-        import shutil
         shutil.rmtree(d, ignore_errors=True)
         post_state("idle")  # take the display out of enroll mode
         raise
@@ -1961,7 +1958,6 @@ def forget_word(name):
 
     Returns (ok, error). Shipped models under models_dir are not touched; the admin hides those.
     """
-    import shutil
     if name == BUILTIN or not wake_name_ok(name):
         return False, "bad name"
     if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:

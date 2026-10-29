@@ -1428,6 +1428,7 @@ function trainOfflineSub() {
 }
 /* Server can_train, or a check that just passed. A live offline result wins. Missing flags stay closed. */
 function botCanTrain(bot, flags) {
+  // live is BOT_CHECKS: "online" only after a passed setup connection test (POST /api/bots/<slug>/test), the same proof server can_train uses.
   const live = bot && BOT_CHECKS[bot.slug];
   const server = flags && bot ? flags[bot.slug] : null;
   let can = !!(server && server.can_train === true);
