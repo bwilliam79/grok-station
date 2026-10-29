@@ -856,23 +856,31 @@ class Release0112UI(unittest.TestCase):
 
     def test_bots_header_and_empty_line(self):
         page = _fn(self.js, "pageBots")
-        head = page.split('id="blist"', 1)[0]
-        self.assertIn('class="btn dg sm" id="revokeall"', head)
+        head = _fn(self.js, "botsHeaderShell")
+        self.assertIn('id="botmore"', head)
+        self.assertIn('aria-label="More bot actions"', head)
         self.assertIn('id="add"', head)
+        self.assertIn('id="avatars"', head)
+        self.assertIn("Refresh avatars", head)
+        self.assertIn('id="revokeall"', head)
+        self.assertIn("Revoke all bots…", head)
+        self.assertIn("All bots up to date", head)
+        self.assertLess(head.index('id="avatars"'), head.index('id="revokeall"'))
         self.assertLess(head.index('id="revokeall"'), head.index('id="add"'))
-        self.assertIn('<button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add"', head)  # 0.12.6
-        self.assertEqual(page.count('id="avatars"'), 1)
-        self.assertEqual(page.count('id="revokeall"'), 1)
-        self.assertEqual(page.count(">Add bot</button>"), 1)
+        self.assertNotIn('class="btn dg sm" id="revokeall"', page)
+        self.assertIn("botsHeaderShell()", page)
+        self.assertIn("revokeAllSheet(el)", page)
         self.assertNotIn('id="addempty"', page)
         self.assertNotIn('class="card emptybot"', page)
         self.assertNotIn('class="ring"', page)
         self.assertNotIn("No other bots yet", self.js)  # 0.12.6: the empty-list line is gone
         self.assertNotIn("emptybot", self.js)
         self.assertNotIn("You can connect other bots from your Grok Bot account.", self.js)
-        self.assertIn('askPassword("Revoke all bots?"', page)
-        self.assertIn("This drops every pinned key. Replies are rejected until a key is paired again.", page)
-        self.assertIn('"Revoke all bots"', page)
+        copy = _fn(self.js, "revokeAllCopy")
+        self.assertIn("replying on the station right away", copy)
+        self.assertIn("Their keys are deleted from your home computer.", copy)
+        self.assertIn("To bring a bot back, connect it again from the Bots page. Grok keeps working.", copy)
+        self.assertIn("Cancel", _fn(self.js, "revokeAllSheet"))
         bots = _fn(self.js, "paintBots")
         self.assertNotIn("emptybot", bots)  # 0.12.6: the empty-list line is gone
 

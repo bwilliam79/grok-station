@@ -55,7 +55,9 @@ console.log(JSON.stringify(res));""")
         body = _fn("openFinishDialog").replace("async ", "") if False else JS.split("async function openFinishDialog", 1)[1].split("\n}\n", 1)[0]
         self.assertIn("finishSendRow(d, finishFind(d._view, opts.slug))", body)
         self.assertIn("finishSendAll(d)", body)
-        self.assertIn('<span id="updall"></span>', JS)
+        self.assertIn('id="updallbtn"', JS)
+        self.assertIn("Update all (", _fn("updateAllBtnHTML"))
+        self.assertIn("Update all (", _fn("botsCalloutHTML"))
 
 
 if __name__ == "__main__":

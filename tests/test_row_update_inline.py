@@ -57,9 +57,11 @@ class RowPage(unittest.TestCase):
     def test_row_and_update_all_do_not_open_the_dialog(self):
         h = JS.split('list.querySelectorAll("[data-upd]")', 1)[1].split("rowUpdatePoll();", 1)[0]
         self.assertIn("rowUpdateStart([btn.dataset.upd])", h)
-        self.assertEqual(h.count("openFinishDialog"), 2)  # each only for a pre-0.11.8 bot that needs a paste
+        self.assertEqual(h.count("openFinishDialog"), 1)  # the row; Update all is the callout
         self.assertIn('row.state === "copy") return openFinishDialog', h)
-        self.assertIn('rows.some(r => r.state === "copy")) openFinishDialog', h)
+        chrome = JS.split("function paintBotCallout", 1)[1].split("function bindBotMenu", 1)[0]
+        self.assertIn('rows.some(r => r.state === "copy")) openFinishDialog({all: true})', chrome)
+        self.assertIn("rowUpdateStart(send)", chrome)
         self.assertIn('api("POST", "/api/finish-update/send"', JS.split("async function rowUpdateSend", 1)[1][:600])
 
 

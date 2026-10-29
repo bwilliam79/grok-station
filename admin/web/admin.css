@@ -263,6 +263,36 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .botsheet{padding:0 22px}
 .seclab{font:500 var(--fs-help) var(--body);letter-spacing:.1em;text-transform:uppercase;color:var(--gs-faint)}
 .bsumrow{margin-bottom:4px}
+.top .r{position:relative}
+.hr{display:flex;align-items:center;gap:10px;position:relative}
+.qs{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-help);color:var(--gs-muted);margin-right:6px}
+.qs .ic{width:16px;height:16px;color:var(--gs-teal);flex:none}
+.qs[hidden]{display:none !important}
+.morebtn{width:44px;height:44px;padding:0;color:var(--gs-text)}
+.morebtn[aria-expanded=true]{border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30)}
+.menu{position:absolute;right:0;top:calc(100% + 8px);z-index:30;width:260px;padding:6px;background:var(--gs-surface-2);border:1px solid var(--gs-field-edge);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.55);list-style:none;margin:0}
+.menu[hidden]{display:none !important}
+.menu .ic{width:16px;height:16px;flex:none}
+.menu li button{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0 12px;background:none;border:0;border-radius:8px;color:var(--gs-text);font:500 var(--fs-label) var(--body);text-align:left;cursor:pointer}
+.menu li button.act{background:var(--gs-surface-3);box-shadow:inset 0 0 0 2px var(--gs-teal)}
+.menu li.sep{height:1px;background:var(--gs-rule-2);margin:6px 4px;list-style:none}
+.menu li button.danger{color:var(--gs-amber)}
+#botcall:empty{display:none}
+.callout{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:14px;border:1px solid var(--gs-rule-2);background:var(--gs-surface)}
+.callout .ic{width:20px;height:20px;flex:none}
+.callout .tx{flex:1;min-width:0}
+.callout .lbl{font-weight:600}
+.callout.amb{background:var(--gs-amber-bg);border-color:#5A4416}
+.callout.amb>.ic{color:var(--gs-amber)}
+.callout.tl>.ic{color:var(--gs-teal)}
+.btn.s2{background:transparent;border-color:var(--gs-teal);color:var(--gs-teal)}
+.cfm{font-size:var(--fs-label);line-height:1.5}
+@media (max-width:767px){
+  .qs{display:none !important}
+  .callout{flex-wrap:wrap}
+  .callout .btn{width:100%;min-height:44px;margin-top:0}
+  .top .hr .btn{margin-top:0;min-height:44px;height:44px}
+}
 .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) minmax(180px,300px) 128px;gap:16px;align-items:center;min-height:76px;padding:14px 0;flex-wrap:nowrap}
 .botrow .avwrap{width:44px;height:44px}
 .botrow .lbl{font:600 var(--fs-body) var(--disp)}

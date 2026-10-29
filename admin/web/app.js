@@ -1295,6 +1295,10 @@ const ICO_LOCK = '<svg class="ico" viewBox="0 0 24 24" width="16" height="16" ar
 const ICO_MICOFF = '<svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 9v2a3 3 0 0 0 5 2M15 10V6a3 3 0 0 0-6 0M12 18v3M5 11a7 7 0 0 0 12 4M4 4l16 16"/></svg>';
 const ICO_TRI = '<svg class="ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4"/></svg>';
 const ICO_CHEV = '<svg class="ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg>';
+const ICO_OK = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M5 8.2l2 2 4-4.4"/></svg>';
+const ICO_ERR = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 1.8l6.6 12H1.4z" stroke-linejoin="round"/><path d="M8 6.5v3.2"/><circle cx="8" cy="11.8" r=".6" fill="currentColor"/></svg>';
+const ICO_KEY = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.7 8.3L13.5 2.5M11.5 4.5l1.5 1.5"/></svg>';
+const ICO_DOTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
 function wordLabel(w) { return (w && w.label) || WORD(w && w.name); }
 function openVoiceStatus(bot, el) { // recording status lives on the bot's Configure drawer
   openBot(bot, el);
@@ -2983,7 +2987,170 @@ function rowUpdateTargets(all, slug) {
   return rows;
 }
 function updateAllBtnHTML() {  // finishBehind counts only bots still in the list
-  return finishBehind(FINISH.view) > 0 ? `<button class="btn sm" id="updallbtn" type="button">Update all</button>` : "";
+  const n = finishBehind(FINISH.view);
+  return n > 0 ? `<button class="btn p sm" id="updallbtn" type="button">Update all (${n})</button>` : "";
+}
+function joinBotNames(names) {
+  const list = (names || []).filter(n => n);
+  if (list.length <= 1) return list[0] || "";
+  if (list.length === 2) return list[0] + " and " + list[1];
+  return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+}
+// rev3: 2+ not set up → Configure all; exactly one → Set up {bot}. Update wins over either.
+// "Not set up" is an imported name that is not a bot yet (pendingTeammates). Not gated on the main bot.
+function botsCalloutKind(opts) {
+  opts = opts || {};
+  const bots = opts.bots || [];
+  const pending = opts.pending || [];
+  const behind = opts.behind || [];
+  if (!bots.length) return "empty";
+  if (behind.length) return "update";
+  if (pending.length >= 2) return "configure";
+  if (pending.length === 1) return "setup";
+  return "none";
+}
+function botsQuietHidden(kind, phone) {
+  return !!phone || kind !== "none";
+}
+function botsHeaderShell() {
+  return `<div class="hr" id="bothdr"><span class="qs" id="botqs" hidden>${ICO_OK}All bots up to date</span>` +
+    `<button class="btn morebtn" id="botmore" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More bot actions">${ICO_DOTS}</button>` +
+    `<ul class="menu" id="botmenu" role="menu" aria-label="More bot actions" hidden>` +
+    `<li role="none"><button role="menuitem" id="avatars" type="button">Refresh avatars</button></li>` +
+    `<li class="sep" role="separator"></li>` +
+    `<li role="none"><button role="menuitem" class="danger" id="revokeall" type="button">${ICO_ERR}Revoke all bots…</button></li>` +
+    `</ul><button class="btn p sm" id="add" type="button">Add bot</button></div>`;
+}
+function botsCalloutHTML(opts) {
+  const kind = botsCalloutKind(opts);
+  const behind = (opts && opts.behind) || [];
+  const pending = (opts && opts.pending) || [];
+  if (kind === "empty") {
+    return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">Add your main bot first</div>` +
+      `<div class="help">You set it up by hand once. Then it can set up the rest.</div></div></div>`;
+  }
+  if (kind === "update") {
+    const n = behind.length;
+    const names = joinBotNames(behind.map(b => b.name || b.slug));
+    return `<div class="callout amb" id="botcallout">${ICO_ERR}<div class="tx"><div class="lbl">${n} bots need an update</div>` +
+      `<div class="help">${esc(names)} · Station routine is out of date. Updates keep their settings.</div></div>` +
+      `<button class="btn p sm" id="updallbtn" type="button">Update all (${n})</button></div>`;
+  }
+  if (kind === "configure" || kind === "setup") {
+    const n = pending.length;
+    const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
+    const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
+    return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
+      `<div class="help">Juniper can send each one its setup message. You review it first.</div></div>` +
+      `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
+  }
+  return "";
+}
+function revokeAllCopy(names) {
+  const list = (names || []).filter(Boolean);
+  const n = list.length;
+  const who = joinBotNames(list);
+  const title = n ? ("Revoke all " + n + (n === 1 ? " bot?" : " bots?")) : "Revoke all bots?";
+  const verb = n === 1 ? "stops" : "stop";
+  const body = (who || "These bots") + " " + verb + " replying on the station right away. Their keys are deleted from your home computer.";
+  const help = "To bring a bot back, connect it again from the Bots page. Grok keeps working.";
+  const action = n ? ("Revoke all " + n + (n === 1 ? " bot" : " bots")) : "Revoke all bots";
+  return {title: title, body: body, help: help, action: action};
+}
+// One not-set-up name uses today's Set up (addBot). There is no bulk Configure-all action to open.
+function openConfigureAll(el) {
+  const pending = pendingTeammates(el);
+  if (pending.length === 1) addBot((el && el._voices) || [], el, {name: pending[0].name});
+}
+function paintBotCallout(el) {
+  const bots = (el && el._bots) || [];
+  const pending = pendingTeammates(el);
+  const behind = bots.filter(b => finishNeedsUpdate(b)).map(b => ({slug: b.slug, name: b.name || b.slug}));
+  const opts = {bots: bots, pending: pending, behind: behind};
+  const host = $("#botcall", el);
+  if (host) {
+    host.innerHTML = botsCalloutHTML(opts);
+    const ub = $("#updallbtn", host);
+    if (ub) ub.onclick = () => {
+      const rows = rowUpdateTargets(true);
+      const send = rows.filter(finishSendable).map(r => r.slug);
+      if (send.length) rowUpdateStart(send);
+      if (rows.some(r => r.state === "copy")) openFinishDialog({all: true});
+    };
+    const cfg = $("#cfgall", host);
+    if (cfg) cfg.onclick = () => openConfigureAll(el);
+  }
+  const qs = document.getElementById("botqs");
+  if (qs) {
+    const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+    qs.hidden = botsQuietHidden(botsCalloutKind(opts), phone);
+  }
+}
+function bindBotMenu() {
+  const more = document.getElementById("botmore");
+  const menu = document.getElementById("botmenu");
+  if (!more || !menu || more._bound) return;
+  more._bound = true;
+  const items = () => Array.prototype.slice.call(menu.querySelectorAll("[role=menuitem]"));
+  const mark = i => { const list = items(); list.forEach((b, n) => b.classList.toggle("act", n === i)); if (list[i]) list[i].focus(); };
+  const close = () => {
+    menu.hidden = true;
+    more.setAttribute("aria-expanded", "false");
+    items().forEach(b => b.classList.remove("act"));
+  };
+  const open = () => { menu.hidden = false; more.setAttribute("aria-expanded", "true"); mark(0); };
+  more.onclick = () => { if (menu.hidden) open(); else { close(); more.focus(); } };
+  more.onkeydown = ev => {
+    if (ev.key === "ArrowDown" || ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); }
+  };
+  menu.onkeydown = ev => {
+    const list = items();
+    let i = list.findIndex(b => b.classList.contains("act"));
+    if (ev.key === "Escape") { ev.preventDefault(); close(); more.focus(); return; }
+    if (ev.key === "ArrowDown") i = (i + 1) % list.length;
+    else if (ev.key === "ArrowUp") i = (i - 1 + list.length) % list.length;
+    else return;
+    ev.preventDefault();
+    mark(i);
+  };
+  const onDoc = ev => {
+    if (!menu.isConnected) { document.removeEventListener("click", onDoc); return; }
+    if (menu.hidden) return;
+    if (more.contains(ev.target) || menu.contains(ev.target)) return;
+    close();
+  };
+  document.addEventListener("click", onDoc);
+}
+function revokeAllSheet(el) {
+  const names = ((el && el._bots) || []).filter(b => b && b.name && !b.builtin && b.slug !== "grok").map(b => b.name);
+  const copy = revokeAllCopy(names);
+  const open = stepupOpen();
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<div class="card wizcard" role="alertdialog" aria-modal="true" aria-label="Revoke all bots">${dialogX()}` +
+    `<h2>${esc(copy.title)}</h2><p class="cfm">${esc(copy.body)}</p>` +
+    `<p class="help" style="margin-top:10px">${esc(copy.help)}</p>` +
+    (open ? "" : `<div class="field"><label for="rvpw">Admin password</label><input class="inp" type="password" id="rvpw" autocomplete="current-password"></div>`) +
+    `<div id="rve"></div><div class="acts"><button class="btn g" type="button" id="rvno">Cancel</button>` +
+    `<button class="btn dg" id="rvgo" type="button">${ICO_ERR}${esc(copy.action)}</button></div></div>`;
+  document.body.appendChild(d);
+  const close = () => d.remove();
+  bindSheet(d, close);
+  const no = $("#rvno", d);
+  if (no) { no.onclick = close; if (no.focus) no.focus(); }
+  const go = $("#rvgo", d);
+  if (go) go.onclick = async () => {
+    const pw = open ? "" : (($("#rvpw", d) && $("#rvpw", d).value) || "");
+    if (!open && !pw) { errBox($("#rve", d), "Enter the admin password."); return; }
+    busyBtn(go, true, "Revoking…");
+    const r = await api("POST", "/api/bots/revoke-all", {password: pw});
+    if (r && r.ok) { close(); toast("All bots revoked."); refreshBots(el); }
+    else {
+      busyBtn(go, false);
+      go.innerHTML = ICO_ERR + esc(copy.action);
+      errBox($("#rve", d), (r && r.data && r.data.error) || "Couldn't do that.");
+    }
+  };
 }
 function finishNotes(b) {
   if (!b || !b.slug) return "";
@@ -3008,6 +3175,7 @@ function paintBots(el, bots) {
   bots = mainFirst(bots || []);
   el._bots = bots;
   paintSummary(el, bots);
+  paintBotCallout(el);
   const pending = pendingTeammates(el);
   const list = $("#blist", el);
   if (!list) return;
@@ -3050,17 +3218,6 @@ function paintBots(el, bots) {
     if (row && row.state === "copy") return openFinishDialog({slug: btn.dataset.upd});
     rowUpdateStart([btn.dataset.upd]);
   });
-  const ua = $("#updall", el);
-  if (ua) {
-    ua.innerHTML = updateAllBtnHTML();
-    const ub = $("#updallbtn", ua);
-    if (ub) ub.onclick = () => {
-      const rows = rowUpdateTargets(true);
-      const send = rows.filter(finishSendable).map(r => r.slug);
-      if (send.length) rowUpdateStart(send);
-      if (rows.some(r => r.state === "copy")) openFinishDialog({all: true});  // only the paste-by-hand bots
-    };
-  }
   rowUpdatePoll();
   list.querySelectorAll("[data-bot]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
@@ -4395,7 +4552,8 @@ async function pageBots(el) {
   const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
   const bots = data.bots || [];
   const slot = $("#topr");
-  if (slot) slot.innerHTML = "";
+  if (slot) slot.innerHTML = botsHeaderShell();
+  bindBotMenu();
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
   el._defaultVoice = data.default_voice || "";
@@ -4408,8 +4566,8 @@ async function pageBots(el) {
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="banner warn" id="bhelperbad"${helperStatusBanner(data) ? "" : " hidden"}><span id="bhelpermsg">${esc(helperStatusBanner(data))}</span> <button class="btn g sm" id="bhelperdismiss" type="button">Hide warning</button></div>
-    <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span>
-      <span class="right inline botacts"><span id="updall"></span><button class="btn dg sm" id="revokeall" type="button">Revoke all bots</button><button class="btn g sm" id="avatars" type="button">Refresh avatars</button><button class="btn p sm" id="add" type="button">Add bot</button></span></div>
+    <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span></div>
+    <div id="botcall"></div>
     <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
     <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist"></div><div id="vere"></div></div>
     <div id="unusedwrap" hidden>
@@ -4430,6 +4588,9 @@ async function pageBots(el) {
   });
   const av = $("#avatars");
   if (av) av.onclick = async () => {
+    const menu = document.getElementById("botmenu"), more = document.getElementById("botmore");
+    if (menu) menu.hidden = true;
+    if (more) more.setAttribute("aria-expanded", "false");
     busyBtn(av, true, "Refreshing…");
     const x = await api("POST", "/api/bots/refresh-avatars", {});
     busyBtn(av, false, "Refresh avatars");
@@ -4440,7 +4601,8 @@ async function pageBots(el) {
   };
   every(3000, () => { if (document.body.contains(el) && $("#blist", el)) refreshBots(el); });
   const openAdd = () => addBot(el._voices || data.voices || [], el);
-  $("#add", el).onclick = openAdd;
+  const addBtn = document.getElementById("add");
+  if (addBtn) addBtn.onclick = openAdd;
   const hdis = $("#bhelperdismiss", el);
   if (hdis) hdis.onclick = async () => {
     const x = await api("POST", "/api/bots/helper-status/dismiss", {});
@@ -4448,12 +4610,13 @@ async function pageBots(el) {
     const hb = $("#bhelperbad", el); if (hb) hb.hidden = true;
     refreshBots(el);
   };
-  const kill = $("#revokeall", el);
-  if (kill) kill.onclick = () => askPassword("Revoke all bots?", "This drops every pinned key. Replies are rejected until a key is paired again.", "Revoke all bots", async pw => {
-    const r = await api("POST", "/api/bots/revoke-all", {password: pw});
-    if (r && r.ok) { toast("All bots revoked."); refreshBots(el); }
-    return r;
-  });
+  const kill = document.getElementById("revokeall");
+  if (kill) kill.onclick = () => {
+    const menu = document.getElementById("botmenu"), more = document.getElementById("botmore");
+    if (menu) menu.hidden = true;
+    if (more) more.setAttribute("aria-expanded", "false");
+    revokeAllSheet(el);
+  };
 }
 const PII_TEXT = "Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. When this is on, replies also block personal info: household names, emails, phones, addresses, IPs, MACs, and host names.";
 async function pagePrivacy(el) {
