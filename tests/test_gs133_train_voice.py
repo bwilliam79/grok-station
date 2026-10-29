@@ -4,12 +4,19 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "relay"))
-import relay
+# Same import-time env as test_relay so a shared relay module stays usable by later tests.
+_TMP = tempfile.mkdtemp()
+os.environ.update(RELAY_TOKEN="test-token", XAI_API_KEY="test-key", ALERT_DIR=os.path.join(_TMP, "none"), PERSONAS_FILE=os.path.join(_TMP, "none.json"), NO_SPEECH="1.0")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "relay"))
+import relay  # noqa: E402
+
+# relay reads its env at import. Drop the cached module so later test files import it with their own env.
+sys.modules.pop("relay", None)
 
 
 _BOTS = [
