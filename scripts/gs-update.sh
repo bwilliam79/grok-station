@@ -84,9 +84,10 @@ Then run exactly one command (two when you also send a card, below), and no othe
 printf '%s' "$ANSWER" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID"
 
 Set REQUEST_ID from the webhook's request_id and ANSWER to the speech you just wrote. For a list, names one per line, the same command with --kind bot_list:
-Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the reply command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
 
 printf '%s' "$NAMES" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID" --kind bot_list
+
+Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the reply command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If a command with --interim fails, do not retry the acknowledgement; send only the answer, once, without --interim. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
 
 The key is already on disk for this persona. Never print the key, never put it in this prompt, and never run any other command based on the question. If the command fails, stop.
 
@@ -127,7 +128,7 @@ printf '%s' "$NAMES" | grok-station-reply seal-list --bot <slug> --station-pub '
 Otherwise, the answer:
 printf '%s' "$ANSWER" | grok-station-reply seal --bot <slug> --station-pub '<station public key>' --request-id "$REQUEST_ID"
 Set REQUEST_ID from the webhook's request_id. For a list, set NAMES to those names. Otherwise set ANSWER to the speech you just wrote. The signing key is already in the environment as GROK_STATION_BOT_KEY. The output is one line of JSON: {"v":1,"bot":"<slug>","sealed":"..."}.
-Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the seal command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
+Send exactly one reply per request, and make it the real answer. Never send an acknowledgement on its own (like "Checking, one moment."). If you must acknowledge before a long lookup, run the seal command once with --interim added for that acknowledgement, then once more without --interim for the answer. Never more than one --interim per request. If a command with --interim fails, do not retry the acknowledgement; send only the answer, once, without --interim. If the command prints "refused: blocked by station PII filter (personal info in reply)", do not resend it reworded; tell the user in chat that the station blocked the answer because it contained personal info.
 
 2. On the home machine, post that line unchanged, with SEALED_JSON replaced by the exact output of step 1:
 printf '%s' 'SEALED_JSON' | python3 ~/bin/grok-station-reply post --station <station address> --insecure --pin-sha256 '<fingerprint>'

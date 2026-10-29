@@ -5181,6 +5181,14 @@ def reply_reason(rej):
     """The reason code a bot may see, or None. Only after the signature and request id checked out."""
     if rej.rid == "-":
         return None
+    # 0.13.0 review: the request must be this bot's own open ask. Some schema rejects carry a well-formed rid
+    # before ownership is checked; without this, a signed bot could end another bot's handoff via _BLOCKED.
+    try:
+        pend = _pending_doc(rej.rid)
+    except Exception:
+        pend = None
+    if not isinstance(pend, dict) or pend.get("request_id") != rej.rid or pend.get("persona") != rej.bot:
+        return None
     if rej.verdict == "lint":
         return rej.reason if rej.reason in ("pii", "secret") else "pii"
     return rej.verdict if rej.verdict in ("schema", "expired", "duplicate") else None
