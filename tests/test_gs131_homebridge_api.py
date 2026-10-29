@@ -324,8 +324,9 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertIs(type(put["body"]["value"]), int)
         HB.requests = []
         # bool-1 was not saved yet. Value in the fake is JSON true.
-        self.c.req("POST", "/api/integrations/homebridge/devices", {"devices": [
-            {"uid": "bool-1", "name": "Bool Light", "aliases": []}]})
+        status, _saved = self.c.req("POST", "/api/integrations/homebridge/devices", {"devices": [
+            {"uid": "bool-1", "name": "Bool Light", "aliases": []}], "password": GOOD})
+        self.assertEqual(status, 200, _saved)  # grace stays closed in this test
         bool_id = next(d["id"] for d in gsi.load()["devices"] if d["uid"] == "bool-1")
         HB.requests = []
         self.assertEqual(self.c.req("POST", "/api/integrations/devices/%s/test" % bool_id, {})[0], 200)
@@ -367,6 +368,15 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(red_w["devices"][0]["host"], "redacted")
         self.assertEqual(red_w["devices"][0]["name"], "w-3f9a")
         self.assertNotIn("homebridge", json.dumps(red_w))
+
+    def test_wrong_stepup_contacts_nothing(self):
+        """Verify checks the admin password before it talks to Homebridge (no login oracle)."""
+        self._grace_off()
+        HB.requests = []
+        status, body = self._verify(stepup="wrong-password")
+        self.assertEqual(status, 403, body)
+        self.assertEqual(HB.requests, [])
+        self.assertFalse(os.path.exists(self.creds))
 
     def test_admin_and_unconfirmed_save_nothing(self):
         self._grace_off()

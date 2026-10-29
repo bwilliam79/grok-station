@@ -551,8 +551,10 @@ XAI_KEY_FILE = "/etc/grok-station/secrets/xai_api_key"
 
 
 def _hb_creds_path():
-    """Absolute path ending in homebridge.json. No '..'. Tests set GS_HOMEBRIDGE_CREDS."""
-    raw = os.environ.get("GS_HOMEBRIDGE_CREDS", "/etc/grok-station/secrets/homebridge.json")
+    """Absolute path ending in homebridge.json. No '..'. Tests set GS_HOMEBRIDGE_CREDS; root ignores it."""
+    raw = "/etc/grok-station/secrets/homebridge.json"
+    if os.geteuid() != 0:
+        raw = os.environ.get("GS_HOMEBRIDGE_CREDS", raw)
     if not isinstance(raw, str) or len(raw) >= 200 or not raw.startswith("/"):
         return None
     parts = raw.split("/")
@@ -593,7 +595,7 @@ def homebridge_set():
         os.close(fd)
     user = pw = None
     try:
-        if os.environ.get("GS_SECRET_SKIP_CHOWN") != "1":
+        if os.geteuid() == 0 or os.environ.get("GS_SECRET_SKIP_CHOWN") != "1":
             try:
                 uid = pwd.getpwnam("grok-relay").pw_uid
                 gid = grp.getgrnam("grok-admin").gr_gid

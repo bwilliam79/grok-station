@@ -117,3 +117,25 @@ class HelperCreds(unittest.TestCase):
             for dirpath, _dirs, files in os.walk(self.tmp):
                 leftovers.extend(files)
             self.assertFalse(any(name.startswith(".hb.") for name in leftovers))
+
+
+class HelperRootIgnoresEnv(unittest.TestCase):
+    """Running as root (via sudo), the helper never takes its path or chown skip from the environment."""
+
+    def test_root_ignores_path_override(self):
+        import importlib.machinery, importlib.util
+        loader = importlib.machinery.SourceFileLoader("gs_helper_root", HELPER)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("gs_helper_root", loader))
+        loader.exec_module(mod)
+        old_env = os.environ.get("GS_HOMEBRIDGE_CREDS")
+        os.environ["GS_HOMEBRIDGE_CREDS"] = "/tmp/elsewhere/homebridge.json"
+        real = mod.os.geteuid
+        try:
+            mod.os.geteuid = lambda: 0
+            self.assertEqual(mod._hb_creds_path(), "/etc/grok-station/secrets/homebridge.json")
+        finally:
+            mod.os.geteuid = real
+            if old_env is None:
+                os.environ.pop("GS_HOMEBRIDGE_CREDS", None)
+            else:
+                os.environ["GS_HOMEBRIDGE_CREDS"] = old_env

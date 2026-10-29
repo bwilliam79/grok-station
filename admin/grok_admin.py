@@ -5198,6 +5198,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": "bad_request"})
         if "stepup" in j and not isinstance(j.get("stepup"), str):
             return self.send(400, {"error": "bad_request"})
+        # Step-up first, so the station is not a login oracle for anyone without the admin password.
+        step = {"password": j["stepup"]} if "stepup" in j else {}
+        if not self.need_password(step):
+            return
         target = gsi.checked_base(j["base"])
         if target is None:
             checks = self._hb_checks(False, False, False)
@@ -5207,9 +5211,6 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             code = 403 if err in ("admin", "unconfirmed") else (401 if err in ("bad_login", "otp_required") else 400)
             return self._hb_fail(code, err, message, checks)
-        step = {"password": j["stepup"]} if "stepup" in j else {}
-        if not self.need_password(step):
-            return
         if not _hb_store(j["username"], j["password"]):
             return self.send(500, {"error": "Couldn't save that."})
         gsi.hb_clear_block()

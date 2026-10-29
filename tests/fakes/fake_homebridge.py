@@ -114,6 +114,8 @@ class FakeHomebridge:
         raw = await request.read()
         body = self._remember(request, raw)
         self.logins += 1
+        if self.mode == "slow":
+            await asyncio.sleep(self.delay)
         if self.mode == "badlogin" or self.login_ok_left == 0:
             return web.json_response({"error": "unauthorized"}, status=401)
         if self.login_ok_left is not None:
