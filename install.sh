@@ -298,12 +298,17 @@ st_wake() {
   # $O/wake/models (never models/enrolled), and an override is kept when an enrolled model of that name exists.
   sh_ "rm -f $O/wake/models/hey_ash.onnx $O/wake/models/hey_jules.onnx $O/wake/models/hey_kai.onnx $O/wake/models/hey_miles.onnx $O/wake/models/hey_piper.onnx $O/wake/models/hey_rhea.onnx"
   if [ "$DRY" = 1 ]; then echo "+ prune retired starter wake words from $V/admin/wake-overrides.json"; else
-    python3 - "$V/admin/wake-overrides.json" "$O/wake/models/enrolled" <<'PY' || true
+    # Read and rewrite without following a symlink: the prune prints the new JSON (nothing when unchanged), and
+    # safe-mkdirs --replace writes it through $V/admin's descriptor (temp O_CREAT|O_EXCL|O_NOFOLLOW, fchown/fchmod
+    # to the old owner and mode, rename in that dir). A planted symlink fails the stage (Nix 0.13.6 M-pre).
+    ov=$(python3 - "$V/admin/wake-overrides.json" "$O/wake/models/enrolled" <<'PY'
 import json, os, sys
 p, enr = sys.argv[1], sys.argv[2]
 old = ["hey_ash", "hey_jules", "hey_kai", "hey_miles", "hey_piper", "hey_rhea"]
 try:
-    ov = json.load(open(p))
+    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd) as f:
+        ov = json.load(f)
 except Exception:
     sys.exit(0)
 if not isinstance(ov, dict):
@@ -313,11 +318,13 @@ gone = [n for n in old if n in ov and not os.path.isfile(os.path.join(enr, n + "
 if gone:
     for n in gone:
         ov.pop(n)
-    st = os.stat(p)
-    with open(p + ".tmp", "w") as f:
-        json.dump(ov, f, indent=1)
-    os.chown(p + ".tmp", st.st_uid, st.st_gid); os.chmod(p + ".tmp", st.st_mode & 0o777); os.replace(p + ".tmp", p)
+    sys.stdout.write(json.dumps(ov, indent=1))
 PY
+) || ov=""
+    if [ -n "$ov" ]; then
+      printf '%s' "$ov" | python3 -I tools/safe-mkdirs.py --replace "$V" admin wake-overrides.json \
+        || { echo "refusing to rewrite $V/admin/wake-overrides.json: a path there is a symlink or not a plain file"; return 1; }
+    fi
   fi
   # vosk: offline speech recognition so saying stop works during wake-word training; grammar limited to stop, never leaves the station.
   _vosk_pip

@@ -91,5 +91,65 @@ class VoiceDirs(Base):
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(self.V, "voice", "x")).st_mode), 0o770)
 
 
+class Overrides(Base):
+    def _block(self):
+        src = _src("install.sh")
+        i = src.index('echo "+ prune retired starter wake words')
+        i = src.rfind("\n", 0, i) + 1
+        body = src[i:src.index("\n  fi\n", src.index("\nPY\n", i)) + 5]
+        return body.replace("python3 -I tools/safe-mkdirs.py", 'python3 "%s"' % self.shim)
+
+    def _setup(self):
+        adm = os.path.join(self.V, "admin")
+        os.mkdir(adm)
+        os.makedirs(os.path.join(self.t, "opt", "wake", "models", "enrolled"))
+        p = os.path.join(adm, "wake-overrides.json")
+        with open(p, "w") as f:
+            json.dump({"hey_ash": {"enabled": False}, "hey_finn": {"enabled": True}}, f)
+        os.chmod(p, 0o640)
+        return adm, p
+
+    def test_prune_still_works(self):
+        adm, p = self._setup()
+        r = self._sh(self._block())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.load(open(p)), {"hey_finn": {"enabled": True}})
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o640)
+        self.assertEqual(sorted(os.listdir(adm)), ["wake-overrides.json"])
+
+    def test_planted_tmp_symlink_not_followed(self):
+        adm, p = self._setup()
+        target = os.path.join(self.victim, "secret")
+        with open(target, "w") as f:
+            f.write("keep")
+        os.symlink(target, p + ".tmp")
+        r = self._sh(self._block())
+        self.assertEqual(open(target).read(), "keep")
+        self.assertEqual(json.load(open(p)), {"hey_finn": {"enabled": True}}, r.stdout + r.stderr)
+
+    def test_planted_target_symlink_not_followed(self):
+        adm, p = self._setup()
+        real = os.path.join(self.victim, "ov.json")
+        os.rename(p, real)
+        os.chmod(real, 0o600)
+        os.symlink(real, p)
+        self._sh(self._block())
+        self.assertEqual(json.load(open(real)), {"hey_ash": {"enabled": False}, "hey_finn": {"enabled": True}})
+        self.assertEqual(stat.S_IMODE(os.stat(real).st_mode), 0o600)
+
+    def test_replace_refuses_symlink(self):
+        m = _load()
+        self.assertTrue(hasattr(m, "replace"))
+        adm, p = self._setup()
+        target = os.path.join(self.victim, "secret")
+        with open(target, "w") as f:
+            f.write("keep")
+        os.unlink(p)
+        os.symlink(target, p)
+        with self.assertRaises(m.Refused):
+            m.replace(self.V, "admin", "wake-overrides.json", b"{}", root_uid=os.getuid())
+        self.assertEqual(open(target).read(), "keep")
+
+
 if __name__ == "__main__":
     unittest.main()

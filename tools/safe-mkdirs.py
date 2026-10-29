@@ -9,14 +9,19 @@ and chmodded through that descriptor. A symlink anywhere on the way is refused a
 Usage: safe-mkdirs.py [--mode 0750] [--group GROUP] USER BASE REL [REL ...]   (REL like wake/models; default mode
        0755, default group USER's primary group)
        safe-mkdirs.py --put USER BASE RELDIR SRC [SRC ...]
+       safe-mkdirs.py --replace BASE RELDIR NAME < NEW-CONTENT
 
 --put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
 written to a fresh temp name through the directory's descriptor, fchowned, then renamed over the final name in
 that same directory (Nix 0.13.6 L3: root never writes through a path grok could have swapped for a symlink).
 
+--replace rewrites the existing regular file BASE/RELDIR/NAME with stdin the same way, keeping that file's owner,
+group and mode (read with fstat on an O_NOFOLLOW descriptor; a symlink or non-regular NAME is refused).
+
 BASE itself must be owned by root and not group- or other-writable, checked on its open descriptor (L4).
 """
 import os
+import stat
 import sys
 
 FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
@@ -83,7 +88,8 @@ def mkdirs(base, rels, uid, gid, mode=0o755, root_uid=None):
         os.close(bfd)
 
 
-def put(base, rel_dir, srcs, uid, gid, mode=0o644, root_uid=None):
+def _walk(base, rel_dir, root_uid):
+    """Open BASE (trusted per L4) and each component of REL_DIR with O_NOFOLLOW; create nothing."""
     base = os.path.abspath(base)
     fd, shown = _open_base(base, root_uid), base
     try:
@@ -92,31 +98,76 @@ def put(base, rel_dir, srcs, uid, gid, mode=0o644, root_uid=None):
             nfd = _open(p, fd, shown)
             os.close(fd)
             fd = nfd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, shown
+
+
+def _tmp_name(name):
+    return ".%s.new.%d" % (name, os.getpid())
+
+
+def _write_at(fd, name, data, uid, gid, mode):
+    """Write DATA to NAME in directory FD: fresh temp (O_CREAT|O_EXCL|O_NOFOLLOW), fchown, fchmod, rename in FD."""
+    tmp = _tmp_name(name)
+    try:
+        os.unlink(tmp, dir_fd=fd)
+    except FileNotFoundError:
+        pass
+    out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                  0o600, dir_fd=fd)
+    try:
+        with os.fdopen(out, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fchown(f.fileno(), uid, gid)
+            os.fchmod(f.fileno(), mode)
+        os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
+    except BaseException:
+        try:
+            os.unlink(tmp, dir_fd=fd)
+        except OSError:
+            pass
+        raise
+
+
+def _check_name(name, shown):
+    if name in ("", ".", "..") or "/" in name:
+        raise Refused("bad file name %r" % shown)
+
+
+def put(base, rel_dir, srcs, uid, gid, mode=0o644, root_uid=None):
+    fd, _ = _walk(base, rel_dir, root_uid)
+    try:
         for src in srcs:
             name = os.path.basename(src)
-            if name in ("", ".", ".."):
-                raise Refused("bad file name %r" % src)
-            tmp = ".%s.new.%d" % (name, os.getpid())
+            _check_name(name, src)
             data = open(src, "rb").read()
-            try:
-                os.unlink(tmp, dir_fd=fd)
-            except FileNotFoundError:
-                pass
-            out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
-                          0o600, dir_fd=fd)
-            try:
-                with os.fdopen(out, "wb") as f:
-                    f.write(data)
-                    f.flush()
-                    os.fchown(f.fileno(), uid, gid)
-                    os.fchmod(f.fileno(), mode)
-                os.rename(tmp, name, src_dir_fd=fd, dst_dir_fd=fd)
-            except BaseException:
-                try:
-                    os.unlink(tmp, dir_fd=fd)
-                except OSError:
-                    pass
-                raise
+            _write_at(fd, name, data, uid, gid, mode)
+    finally:
+        os.close(fd)
+
+
+def replace(base, rel_dir, name, data, root_uid=None):
+    """Rewrite an existing regular file, keeping its owner, group and mode (wake-overrides prune, Nix M-pre)."""
+    _check_name(name, name)
+    fd, shown = _walk(base, rel_dir, root_uid)
+    try:
+        shown = os.path.join(shown, name)
+        try:
+            cur = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0), dir_fd=fd)
+        except OSError as e:
+            if os.path.islink(shown):
+                raise Refused("%s is a symlink; refusing" % shown)
+            raise Refused("%s can't be opened (%s); refusing" % (shown, e.strerror))
+        try:
+            st = os.fstat(cur)
+        finally:
+            os.close(cur)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused("%s is not a regular file; refusing" % shown)
+        _write_at(fd, name, data, st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode))
     finally:
         os.close(fd)
 
@@ -130,6 +181,16 @@ def main(argv):
         pw = pwd.getpwnam(argv[1])
         try:
             put(argv[2], argv[3], argv[4:], pw.pw_uid, pw.pw_gid)
+        except Refused as e:
+            sys.stderr.write("safe-mkdirs: %s\n" % e)
+            return 1
+        return 0
+    if argv[:1] == ["--replace"]:
+        if len(argv) != 4:
+            sys.stderr.write(__doc__)
+            return 2
+        try:
+            replace(argv[1], argv[2], argv[3], sys.stdin.buffer.read())
         except Refused as e:
             sys.stderr.write("safe-mkdirs: %s\n" % e)
             return 1
