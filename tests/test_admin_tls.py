@@ -4,13 +4,11 @@ import hashlib, http.client, json, os, re, socket, ssl, stat, subprocess, sys, t
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 CLI = os.path.join(ROOT, "tools", "grok-station")
-if "ADMIN_STATE_DIR" not in os.environ:  # run alone: same sandbox shape as test_admin
-    T = tempfile.mkdtemp()
-    os.environ.update(ADMIN_STATE_DIR=os.path.join(T, "state"), ADMIN_RUN_DIR=os.path.join(T, "run"))
-    os.makedirs(os.environ["ADMIN_STATE_DIR"]); os.makedirs(os.environ["ADMIN_RUN_DIR"])
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (the one shared admin sandbox; see test_gs137_admin_import_guard)
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 sys.path.insert(0, os.path.join(ROOT, "app"))
-import grok_admin as ga  # noqa: E402
+ga = test_admin.ga
 
 
 def make_cert(d, host):

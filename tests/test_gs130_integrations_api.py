@@ -10,18 +10,9 @@ import hashlib, http.client, io, json, os, shutil, stat, struct, sys, tempfile, 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
-if "grok_admin" not in sys.modules:
-    _own = tempfile.mkdtemp(prefix="gs130-int-")
-    os.environ.setdefault("ADMIN_STATE_DIR", os.path.join(_own, "state"))
-    os.environ.setdefault("ADMIN_RUN_DIR", os.path.join(_own, "run"))
-    os.environ.setdefault("ADMIN_PERSONAS", os.path.join(_own, "personas.json"))
-    os.environ.setdefault("ADMIN_RELAY_ENV", os.path.join(_own, "missing-admin-relay.env"))
-    os.environ.setdefault("ADMIN_WAKE_CTL", "http://127.0.0.1:9")
-    os.makedirs(os.environ["ADMIN_STATE_DIR"], exist_ok=True)
-    os.makedirs(os.environ["ADMIN_RUN_DIR"], exist_ok=True)
-    sys.path.insert(0, os.path.join(ROOT, "admin"))
-
-import grok_admin as ga  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (the one shared admin sandbox; see test_gs137_admin_import_guard)
+ga = test_admin.ga
 import gs_integrations as gsi  # noqa: E402
 
 GOOD = "kitchen table lamp 42"

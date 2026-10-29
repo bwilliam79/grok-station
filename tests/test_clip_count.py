@@ -9,7 +9,9 @@ import json, os, sys, tempfile, unittest, wave
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "admin"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "wake"))
-import grok_admin as ga
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (sets the admin test env before grok_admin is first imported)
+ga = test_admin.ga
 import grok_wake as gw
 
 

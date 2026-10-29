@@ -8,17 +8,13 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if "ADMIN_STATE_DIR" not in os.environ:
-    _isolate = tempfile.mkdtemp(prefix="gs-ver-")
-    os.environ["ADMIN_STATE_DIR"] = os.path.join(_isolate, "state")
-    os.environ["ADMIN_RUN_DIR"] = os.path.join(_isolate, "run")
-    os.makedirs(os.environ["ADMIN_STATE_DIR"])
-    os.makedirs(os.environ["ADMIN_RUN_DIR"])
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (the one shared admin sandbox; see test_gs137_admin_import_guard)
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 _spec = importlib.util.spec_from_file_location("check_version", os.path.join(ROOT, "tools", "check-version.py"))
 check_version = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check_version)
-import grok_admin as ga  # noqa: E402
+ga = test_admin.ga
 
 SEMVER_SH = os.path.join(ROOT, "tools", "semver-order.sh")
 CASES = (

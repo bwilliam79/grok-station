@@ -14,7 +14,9 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "admin"))
-import grok_admin as ga  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (sets the admin test env before grok_admin is first imported)
+ga = test_admin.ga
 import gs_routine  # noqa: E402
 
 PINS = os.path.join(ROOT, "admin", "web", "deploy-pins.js")

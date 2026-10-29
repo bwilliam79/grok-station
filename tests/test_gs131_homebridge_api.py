@@ -9,17 +9,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "admin"))
-if "grok_admin" not in sys.modules:
-    _own = tempfile.mkdtemp(prefix="gs131-hb-")
-    os.environ.setdefault("ADMIN_STATE_DIR", os.path.join(_own, "state"))
-    os.environ.setdefault("ADMIN_RUN_DIR", os.path.join(_own, "run"))
-    os.environ.setdefault("ADMIN_PERSONAS", os.path.join(_own, "personas.json"))
-    os.environ.setdefault("ADMIN_RELAY_ENV", os.path.join(_own, "missing-admin-relay.env"))
-    os.environ.setdefault("ADMIN_WAKE_CTL", "http://127.0.0.1:9")
-    os.makedirs(os.environ["ADMIN_STATE_DIR"], exist_ok=True)
-    os.makedirs(os.environ["ADMIN_RUN_DIR"], exist_ok=True)
-
-import grok_admin as ga  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (the one shared admin sandbox; see test_gs137_admin_import_guard)
+ga = test_admin.ga
 import gs_integrations as gsi  # noqa: E402
 import time  # noqa: E402
 from fakes.fake_homebridge import FakeHomebridge, SlowHeaderServer, bulky_accessories  # noqa: E402

@@ -306,7 +306,9 @@ class Clients(unittest.TestCase):
         sys.path.insert(0, os.path.join(ROOT, "admin"))
         sys.path.insert(0, os.path.join(ROOT, "relay"))
         sys.path.insert(0, os.path.join(ROOT, "app"))
-        import grok_admin as ga
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_admin  # sets the admin test env before grok_admin is first imported
+        ga = test_admin.ga
         import relay
         import grok_station as gs
 
@@ -373,7 +375,9 @@ class Clients(unittest.TestCase):
         sys.path.insert(0, os.path.join(ROOT, "admin"))
         sys.path.insert(0, os.path.join(ROOT, "relay"))
         sys.path.insert(0, os.path.join(ROOT, "app"))
-        import grok_admin as ga
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import test_admin  # sets the admin test env before grok_admin is first imported
+        ga = test_admin.ga
         import relay
         import grok_station as gs
 

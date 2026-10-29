@@ -122,8 +122,9 @@ class Pins(unittest.TestCase):
         self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.7"$')
         self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.7"  #')
         self.assertRegex(manifest, r"(?m)^helper 0\.13\.7$")
-        sys.path.insert(0, os.path.join(ROOT, "admin"))
-        import grok_admin as ga
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        import test_admin  # sets the admin test env before grok_admin is first imported
+        ga = test_admin.ga
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.0"})["out_of_date"])
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.7"})["out_of_date"])
 

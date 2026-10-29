@@ -6,17 +6,10 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if "grok_admin" not in sys.modules:
-    _d = tempfile.mkdtemp(prefix="gs-ulog-")
-    for k, v in (("ADMIN_STATE_DIR", "state"), ("ADMIN_RUN_DIR", "run")):
-        os.environ[k] = os.path.join(_d, v)
-        os.makedirs(os.environ[k])
-    os.environ["ADMIN_VERSION_FILE"] = os.path.join(_d, "VERSION")
-    os.environ["ADMIN_XAI_KEY_FILE"] = os.path.join(_d, "xai")
-    with open(os.environ["ADMIN_VERSION_FILE"], "w") as fh:
-        fh.write("0.1.0\n")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402  (the one shared admin sandbox; see test_gs137_admin_import_guard)
 sys.path.insert(0, os.path.join(ROOT, "admin"))
-import grok_admin as ga  # noqa: E402
+ga = test_admin.ga
 
 
 def _helper():
