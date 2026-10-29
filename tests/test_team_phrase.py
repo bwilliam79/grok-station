@@ -86,10 +86,10 @@ console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#te
     def test_before_import(self):
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": None})
         self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
-        self.assertEqual(r["html"], 'Say <span class="saychip">“Hey Grok, import the rest of my team.”</span> to add your other bots.')
+        self.assertEqual(r["html"], 'Say “<span class="wake">Hey Grok</span>, import the rest of my team.” to add your other bots.')
 
     def test_after_import(self):
-        want = 'Added a bot? Say <span class="saychip">“Hey Grok, update my team list.”</span>'
+        want = 'Added a bot? Say “<span class="wake">Hey Grok</span>, update my team list.”'
         # 0.12.10: an import that found nobody (only the main bot) still invites the import, not the update phrase
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": 1710000000})
         self.assertIn("import the rest of my team", r["html"])

@@ -3691,9 +3691,10 @@ function teamState(el) {
   return mates ? "after" : "before";
 }
 function teamPhraseHtml(state) {
+  const wake = '<span class="wake">Hey Grok</span>, ';
   if (state === "none") return 'No bots yet. Use <button type="button" class="tipadd" id="teamadd">Add bot</button> to connect your main bot.';
-  if (state === "after") return `Added a bot? Say <span class="saychip">“${esc(TEAM_UPDATE_PHRASE)}.”</span>`;
-  return `Say <span class="saychip">“${esc(TEAM_PHRASE)}.”</span> to add your other bots.`;
+  if (state === "after") return `Added a bot? Say “${wake}${esc(TEAM_UPDATE_PHRASE.slice("Hey Grok, ".length))}.”`;
+  return `Say “${wake}${esc(TEAM_PHRASE.slice("Hey Grok, ".length))}.” to add your other bots.`;
 }
 function paintTeam(el) {
   const card = $("#teamcard", el), ph = $("#teamphrase", el);
@@ -4449,7 +4450,7 @@ async function pageIntegrations(el) {
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
   }).join('<span class="sep"> · </span>')}</p>`;
   const back = fn => { const a = $("#iback", el); if (a) a.onclick = ev => { ev.preventDefault(); fn(); }; };
-  const head = (n, title) => `<a href="#integrations" id="iback">‹ Integrations</a>${stepper(n)}<h2>${title}</h2>`;
+  const head = (n, title) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${stepper(n)}<h2>${title}</h2>`;
 
   async function loadNames() {
     bots = [];
@@ -4580,7 +4581,7 @@ async function pageIntegrations(el) {
   }
 
   function manageView(devices) {
-    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>WLED</h2>
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button><h2>WLED</h2>
       <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No lights saved."}</p>
       <div id="mrows"></div>
       <div class="field inline" style="margin-top:16px"><button class="btn p" id="madd" type="button">Add lights</button>
@@ -4795,7 +4796,7 @@ async function pageIntegrations(el) {
       const row = document.createElement("div");
       row.className = "drow";
       row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b>
-        <div class="sayline"><span class="w">Hey Grok</span><span>, turn on ${esc(d.name)}</span></div>
+        <div class="help">“<span class="wake">Hey Grok</span>, turn on ${esc(d.name)}”</div>
         <div class="help" data-st></div></div><button class="btn sm" type="button" data-test>Test</button>`;
       box.appendChild(row);
       row.querySelector("[data-test]").onclick = async () => {
@@ -4815,7 +4816,7 @@ async function pageIntegrations(el) {
     const cls = i + 1 === n ? "on" : i + 1 < n ? "done" : "";
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
   }).join('<span class="sep"> · </span>')}</p>`;
-  const hbHead = (n, title) => `<a href="#integrations" id="iback">‹ Integrations</a>${hbStepper(n)}<h2>${esc(title)}</h2>`;
+  const hbHead = (n, title) => `<button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(n)}<h2>${esc(title)}</h2>`;
   function hbChecks(checks, pending) {
     const byId = {};
     (checks || []).forEach(c => { if (c && c.id) byId[c.id] = !!c.ok; });
@@ -4830,7 +4831,7 @@ async function pageIntegrations(el) {
     return /^https?:\/\/[^/?#]+$/.test(base) ? base + "/users" : "";
   }
   function hbIntro() {
-    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a>${hbStepper(0)}
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button>${hbStepper(0)}
       <h2>Connect Homebridge</h2>
       <p class="lead">Grok Station uses its own Homebridge login that can control devices but can't change Homebridge settings. Setup takes about 3 minutes.</p>
       <ol class="hbsteps"><li>Tell us where Homebridge is.</li>
@@ -5157,7 +5158,7 @@ async function pageIntegrations(el) {
       const row = document.createElement("div");
       row.className = "drow";
       row.innerHTML = `<div class="dm"><b>${esc(d.name)}</b>
-        <div class="sayline"><span class="w">Hey Grok</span><span>, turn on ${esc(d.name)}</span></div>
+        <div class="help">“<span class="wake">Hey Grok</span>, turn on ${esc(d.name)}”</div>
         <div class="help" data-st></div></div><button class="btn sm" type="button" data-test>Test</button>`;
       box.appendChild(row);
       row.querySelector("[data-test]").onclick = async () => {
@@ -5171,7 +5172,7 @@ async function pageIntegrations(el) {
   }
   function hbManage(devices, base) {
     hbBase = base || hbBase;
-    el.innerHTML = `<div class="card wcard"><a href="#integrations" id="iback">‹ Integrations</a><h2>Homebridge</h2>
+    el.innerHTML = `<div class="card wcard"><button type="button" class="btn g back" id="iback">‹ Integrations</button><h2>Homebridge</h2>
       <p class="sub">${devices.length ? esc(String(devices.length)) + " saved" : "No devices saved."}</p>
       <div id="hmrows"></div>
       <div class="field inline" style="margin-top:16px"><button class="btn p" id="hmadd" type="button">Add devices</button>

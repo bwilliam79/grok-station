@@ -487,6 +487,8 @@ p#emptybot{margin:10px 2px 0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
 .sayline{display:flex;align-items:flex-start;gap:10px;margin-top:4px}
 .sayline .w{color:var(--gs-teal);font-weight:600}
+.wake{color:var(--gs-teal);font-weight:600}
+button#iback{height:auto;min-height:44px;text-decoration:none}
 .tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
 .apple{margin-top:16px;padding:12px 14px;border-radius:12px;background:var(--gs-surface);border:1px solid var(--gs-rule);color:var(--gs-muted);font-size:var(--fs-label)}
 .intst.bad{color:var(--gs-amber);background:var(--gs-amber-bg)}

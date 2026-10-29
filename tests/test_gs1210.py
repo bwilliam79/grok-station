@@ -252,12 +252,12 @@ class TeamTip(unittest.TestCase):
                      % (json.dumps(bots), json.dumps(imported)))
 
     def test_only_main_bot_invites_import(self):
-        want = 'Say <span class="saychip">“Hey Grok, import the rest of my team.”</span> to add your other bots.'
+        want = 'Say “<span class="wake">Hey Grok</span>, import the rest of my team.” to add your other bots.'
         self.assertEqual(self._html([{"slug": "rhea", "main": True}], {"rows": [], "updated_at": 1710000000}), want)
         self.assertEqual(self._html([{"slug": "rhea", "main": True}], {"rows": []}), want)
 
     def test_teammates_keep_update_phrase(self):
-        want = 'Added a bot? Say <span class="saychip">“Hey Grok, update my team list.”</span>'
+        want = 'Added a bot? Say “<span class="wake">Hey Grok</span>, update my team list.”'
         self.assertEqual(self._html([{"slug": "rhea", "main": True}, {"slug": "kai"}], {"rows": [], "updated_at": 1}), want)
         self.assertEqual(self._html([{"slug": "rhea", "main": True}], {"rows": [{"name": "Kai"}]}), want)
 
