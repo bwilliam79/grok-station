@@ -4705,8 +4705,9 @@ function hbCountText(rows, picked, categoryKey) {
     const row = list[i];
     if (row && picked && picked[row.uid]) s++;
   }
-  let text = (s > 0 && s < n) ? (s + " of " + n + " selected")
-    : (s === n ? ("All " + n + " selected") : ((n === 1 ? "1 device" : n + " devices") + " \u00b7 none selected"));
+  let text = n === 1 ? ("1 device \u00b7 " + (s ? "selected" : "not selected"))
+    : (s > 0 && s < n) ? (s + " of " + n + " selected")
+    : (s === n ? ("All " + n + " selected") : (n + " devices \u00b7 none selected"));
   if (categoryKey === "switch") text += " \u00b7 \u26a0 check for locks or garage doors";
   return text;
 }
@@ -4721,7 +4722,7 @@ function hbCountHtml(rows, picked, categoryKey) {
 // Second line only when the server actually sent a room. It does not today.
 function hbRoomLine(row) {
   const room = row && row.room;
-  return typeof room === "string" && room.length ? room : "";
+  return typeof room === "string" && room.trim() ? room.trim() : "";
 }
 function hbFooterState(selected, kind) {
   const n = selected | 0;

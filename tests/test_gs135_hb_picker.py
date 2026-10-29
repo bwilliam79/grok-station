@@ -122,7 +122,7 @@ class PickerLogic(unittest.TestCase):
                          "2 devices \u00b7 none selected")
         self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {}, "switch")'),
                          "2 devices \u00b7 none selected" + WARN)
-        self.assertEqual(_run('hbCountText([{uid:"1"}], {}, "tv")'), "1 device \u00b7 none selected")
+        self.assertEqual(_run('hbCountText([{uid:"1"}], {}, "tv")'), "1 device \u00b7 not selected")
         self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {1:true,2:true}, "switch")'),
                          "All 2 selected" + WARN)
         html = _run('hbCountHtml([{uid:"1"},{uid:"2"}], {1:true}, "switch")')
@@ -217,7 +217,7 @@ class PickerLogic(unittest.TestCase):
         self.assertIn('aria-label="Show Switches"', html)
         self.assertIn('aria-label="Select all Outlets"', html)
         self.assertIn('aria-checked="true"', html)
-        self.assertIn("All 1 selected", html)
+        self.assertIn("1 device \u00b7 selected", html)
         self.assertIn("1 of 2 selected", html)
         self.assertIn("aren\u2019t listed", html)
         self.assertNotIn("Garage", html)
@@ -275,3 +275,31 @@ class PickerLogic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PickerNoorAnswers(unittest.TestCase):
+    """Noor's answers (2026-10-29): spec sizes, one-device wording, no empty room line."""
+
+    def test_spec_font_sizes(self):
+        css = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
+        self.assertIn("--fs-cat:16px", css)
+        self.assertIn("--fs-dev:15px", css)
+        self.assertIn(".catn b{font:600 var(--fs-cat) var(--body)", css)
+        self.assertIn(".dev .nm{font-size:var(--fs-dev)", css)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_one_device_wording(self):
+        warn = " \u00b7 \u26a0 check for locks or garage doors"
+        self.assertEqual(_run('hbCountText([{uid:"1"}], {1:true}, "light")'), "1 device \u00b7 selected")
+        self.assertEqual(_run('hbCountText([{uid:"1"}], {}, "tv")'), "1 device \u00b7 not selected")
+        self.assertEqual(_run('hbCountText([{uid:"1"}], {1:true}, "switch")'), "1 device \u00b7 selected" + warn)
+        self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {1:true,2:true}, "light")'), "All 2 selected")
+        self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {1:true}, "light")'), "1 of 2 selected")
+        self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {}, "fan")'), "2 devices \u00b7 none selected")
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_blank_room_leaves_no_line(self):
+        self.assertEqual(_run('hbRoomLine({room:"   "})'), "")
+        html = _run('hbPickListHtml([{uid:"a",type:"light",name:"Porch",room:"  "}], {a:true}, {light:true})')
+        self.assertNotIn('class="rm"', html)
+        self.assertIn('class="nm">Porch</div></div>', html)
