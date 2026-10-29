@@ -4,6 +4,7 @@
 --gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
 --gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
+.botrow{height:104px;}  /* 0.13.1: desktop row height is fixed; the phone query below overrides it */
 @media (max-width:767px){:root{--fs-body:16px}}  /* 16px stops iOS zoom on input focus */
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--gs-bg);color:var(--gs-text);font:var(--fs-body)/1.45 var(--body);-webkit-font-smoothing:antialiased;overflow:hidden;font-variant-numeric:tabular-nums}
@@ -277,6 +278,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .ico.faint{color:var(--gs-faint)}
 .ico.teal{color:var(--gs-teal)}
 .need{color:var(--gs-amber);font-size:var(--fs-help);display:flex;align-items:center;gap:6px;margin-top:4px}
+.bst{height:18px;line-height:18px;display:block;min-width:0;overflow:hidden;color:var(--gs-amber);font-size:var(--fs-help)}
+.bst .bstx{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 a.need{text-decoration:none}
 a.need:hover{text-decoration:underline}
 .mainpill{margin-left:8px}
@@ -325,7 +328,7 @@ a.need:hover{text-decoration:underline}
   .body.bots{padding:16px 16px 96px;max-width:none}
   .phonebar{height:72px}
   .phonebar button{min-height:72px;height:72px;padding:8px 0 18px}
-  .botrow{grid-template-columns:44px minmax(0,1fr) auto;min-height:0;row-gap:8px}
+  .botrow{height:112px;grid-template-columns:44px minmax(0,1fr) auto;min-height:0;row-gap:8px}
   .botrow .ww{grid-column:2;grid-row:2}
   .botrow .cfg{grid-column:3;grid-row:1}
   .botrow .cfg .btn{display:none}

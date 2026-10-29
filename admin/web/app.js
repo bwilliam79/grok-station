@@ -2817,15 +2817,22 @@ function updateAllBtnHTML() {  // finishBehind counts only bots still in the lis
 }
 function finishNotes(b) {
   if (!b || !b.slug) return "";
-  const lines = [];
   if (rowUpdating(b)) return "";  // the spinner says it; the amber note returns only if the update fails
-  // 0.12.13: "unconfirmed" only after a verified post without a version (a pre-0.11.7 helper)
-  if (helperBehind(b)) lines.push(b.helper.state === "unconfirmed" ? "Helper version not confirmed: use Update" : "Helper out of date: use Update");
   const fail = rowFailLine(b);
+  if (fail) return fail;  // failure wins over out of date, so a row never stacks two status lines
+  // 0.12.13: "unconfirmed" only after a verified post without a version (a pre-0.11.7 helper)
+  if (helperBehind(b)) return b.helper.state === "unconfirmed" ? "Helper version not confirmed: use Update" : "Helper out of date: use Update";
   const row = finishFind(FINISH.view, b.slug);
-  if (!fail && row && row.state && row.state !== "done") lines.push("Update available for this bot");
-  return lines.map(t => `<div class="need">${ICO_TRI}${esc(t)}</div>`).join("")
-    + (fail ? `<div class="need" role="alert">${esc(fail)}</div>` : "");
+  if (row && row.state && row.state !== "done") return "Update available for this bot";
+  return "";
+}
+function botStatusSlot(b, text) {
+  // One reserved line on every row. Empty text still emits the element, so height does not change.
+  const msg = arguments.length > 1 ? (text || "") : (finishNotes(b) || "");
+  const slug = b && b.slug ? String(b.slug) : "";
+  const id = "bst-" + slug;
+  const alert = msg.indexOf("Update failed:") === 0 ? ' role="alert"' : "";
+  return `<span class="bst" data-bst="1"${alert}><span class="bstx" title="${esc(msg)}" aria-describedby="${esc(id)}">${esc(msg)}</span><span class="sr" id="${esc(id)}">${esc(msg)}</span></span>`;
 }
 function paintBots(el, bots) {
   bots = mainFirst(bots || []);
@@ -2835,7 +2842,7 @@ function paintBots(el, bots) {
   const list = $("#blist", el);
   if (!list) return;
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
-    <div><div class="lbl">Grok</div><div class="help">Built in, always on</div></div>
+    <div><div class="lbl">Grok</div><div class="help">Built in, always on</div>${botStatusSlot({slug: "grok"}, "")}</div>
     <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase">“Hey Grok”</span></div>
     <div class="cfg"><span class="lock" aria-hidden="true">${ICO_LOCK}</span></div></div>`;
   const rowsHTML = hey + bots.map(b => {
@@ -2852,11 +2859,11 @@ function paintBots(el, bots) {
     return `<div class="botrow" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
         <div class="help" title="${esc((b && b.reply_host) || "")}">${esc(repliesFrom(b))}</div>
-        ${finishNotes(b)}</div>
+        ${botStatusSlot(b, finishNotes(b))}</div>
       ${wakeControlHTML(b, word, st, true)}
       <div class="cfg">${updateRowBtnHTML(b)}<button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button><span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>`;
   }).join("") + pending.map(row => `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
-      <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div></div>
+      <div><div class="lbl">${esc(row.name)}</div><div class="help">Not set up</div>${botStatusSlot({slug: row.key}, "")}</div>
       <div class="ww none"></div>
       <div class="cfg"><button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>
         <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>`).join("");
