@@ -1570,6 +1570,131 @@ def connect_bots(roster, main=""):
     return out
 
 
+def _wake_phrase_ok(name):
+    """Same acceptance as the wake listener's wake_name_ok. hey_grok still matches the letter rule."""
+    if isinstance(name, str) and len(name) <= 32 and re.fullmatch(r"[a-z]+(?:_[a-z]+){1,3}", name):
+        return True
+    return (isinstance(name, str) and name.startswith("hey_")
+            and re.fullmatch(r"[a-z][a-z0-9-]{1,23}", name[4:]) is not None and name[4:] != "grok")
+
+
+def _phrase_for_slug(slug):
+    """hey_<slug> when the listener would accept it. Never hey_grok: that word is built in."""
+    if not isinstance(slug, str) or not slug or slug == "grok":
+        return None
+    phrase = "hey_" + slug
+    if phrase == "hey_grok" or not _wake_phrase_ok(phrase):
+        return None
+    return phrase
+
+
+def _train_target(spoken, bots):
+    """The bot named in the train sentence. A leading "hey " is the wake word, not part of the name."""
+    hit = _connect_target(spoken, bots)
+    if hit:
+        return hit
+    if spoken.startswith("hey "):
+        rest = spoken[4:].strip()
+        if rest:
+            return _connect_target(rest, bots)
+    return None
+
+
+def train_wake_request(text, bots):
+    """Match "Hey Grok, train my wake word for <bot>". None when the sentence is not that request.
+
+    Same cleanup as connect_request. A match is {slug, name, phrase}. phrase is hey_<slug> when
+    that id is legal, and None for Grok so hey_grok is never sent. An unknown name is
+    {slug: "", name: "", phrase: None}: the sentence still must not reach the model, and nothing
+    is recorded.
+    """
+    raw = " ".join(str(text or "").split())
+    if not raw:
+        return None
+    t = raw.lower().replace("\u2019", "'").replace("\u2018", "'")
+    for ch in ",?!.":
+        t = t.replace(ch, " ")
+    t = " ".join(t.split())
+    m = re.match(r"^(?:hey grok )?train my wake word for (.+)$", t)
+    if not m:
+        return None
+    spoken = m.group(1).strip()
+    if spoken.endswith(" please"):
+        spoken = spoken[: -len(" please")].strip()
+    if not spoken:
+        return {"slug": "", "name": "", "phrase": None}
+    bots = [b for b in (bots or []) if isinstance(b, dict)]
+    target = _train_target(spoken, bots)
+    if not target or target.get("missing_main") or not str(target.get("slug") or ""):
+        return {"slug": "", "name": "", "phrase": None}
+    slug = str(target.get("slug") or "")
+    name = " ".join(str(target.get("name") or "").split()) or slug
+    return {"slug": slug, "name": name, "phrase": _phrase_for_slug(slug)}
+
+
+def open_train_tile(hit, post=None):
+    """Ask the listener to show the prompt tile. False when no bot matched, so nothing is posted.
+
+    A listener error does not raise: the turn still ends and nothing is recorded.
+    """
+    if not isinstance(hit, dict) or not hit.get("slug"):
+        return False
+    body = {"persona": str(hit["slug"]), "name": hit.get("name") or str(hit["slug"])}
+    if hit.get("phrase"):
+        body["phrase"] = hit["phrase"]
+    post_wake_open_tile(body, post=post)
+    return True
+
+
+def post_wake_open_tile(body, post=None, opener=None):
+    """Show the prompt tile on the loopback wake control port. Does not record.
+
+    Proxies are off, so a proxy cannot send this off the machine. Timeout is 3 s.
+    The body that leaves is only persona, phrase, and name. hey_grok is never sent.
+    503 on any failure. The phrase is not logged.
+    """
+    if not isinstance(body, dict):
+        return 400
+    if set(body) - {"persona", "phrase", "name"}:
+        return 400
+    allow = {}
+    for key in ("persona", "phrase", "name"):
+        val = body.get(key)
+        if val is None:
+            continue
+        if not isinstance(val, str) or not val.strip():
+            return 400
+        allow[key] = " ".join(val.split()) if key == "name" else val
+    if allow.get("phrase") == "hey_grok":
+        allow.pop("phrase", None)
+    if "persona" not in allow and "phrase" not in allow:
+        return 400
+    if post is not None:
+        try:
+            return int(post(allow))
+        except Exception:
+            return 503
+    try:
+        port = int(E("WAKE_CONTROL_PORT", "8789"))
+    except (TypeError, ValueError):
+        port = 8789
+    if port < 1 or port > 65535:
+        port = 8789
+    data = json.dumps(allow).encode()
+    req = urllib.request.Request(
+        "http://127.0.0.1:%d/enroll/open-tile" % port, data=data,
+        headers={"Content-Type": "application/json"})
+    if opener is None:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(req, timeout=3) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as e:
+        return int(e.code)
+    except Exception:
+        return 503
+
+
 def addressed_persona(text, roster):
     """(slug, remainder) when the utterance addresses grok or a roster persona, else (None, None).
 
@@ -2429,6 +2554,17 @@ async def session(req):
                             st["buf"] = []
                             if st.get("responding") or st.get("xai_active"):
                                 await cancel_response()
+                            await pi.send_json({"type": "done", "local": True})
+                            return "user ended"
+                        # "Train my wake word for <bot>" opens the prompt tile. It does not record,
+                        # and it does not reach the model. "stop" above still ends a normal session.
+                        train = train_wake_request(heard, connect_bots(roster, list_source_slug()))
+                        if train is not None:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            open_train_tile(train)  # no slug: nothing posted. 503 still ends the turn.
+                            log("train wake")  # no phrase, no name
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"
                         # Recipe card commands are station-local. Match before "heard" (that would
