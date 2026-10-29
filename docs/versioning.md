@@ -341,7 +341,7 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 
 ## 0.13.2
 
-Change note (2026-10-29): patch release; installs over 0.13.1. The bot instructions do not change (templates still name release 0.13.1), so bots need no update and the update manifest keeps release 0.13.1.
+Change note (2026-10-29): patch release; installs over 0.13.1. The bot templates name release 0.13.2 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
 
 - **Grok status icon.** The relay icon is gone; a Grok icon takes its slot (right to left: network, Grok, mic, update). Online teal, No internet amber with a slash, Can't reach Grok amber with a "!" badge (relay, service or both), Checking muted with an arrow badge, Dim (network down) muted at 75%. Fail closed: no fresh positive result never shows teal. A probe failure changes the icon only after two in a row, a shown problem holds through a single miss, and one success recovers. Details in [display.md](display.md).
 - **New outbound checks.** From the existing status thread: a TCP connect (no data, no TLS, no DNS) to `GROK_STATION_NET_PROBE` (default `1.1.1.1:443`, then `8.8.8.8:443`), 2 s timeout; then, only when that works, an unauthenticated HTTPS GET to `GROK_STATION_GROK_PROBE_URL` (default `https://api.x.ai/`, https only, no redirects followed, no proxy, at most 1 KB read, 3 s timeout). Any HTTP status under 500 counts as reachable. Every 60 s while online (`GROK_STATION_GROK_POLL`, minimum 30 s), every status poll while checking or in a problem state. Failures log the exception class once; no URL or address is logged.
