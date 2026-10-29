@@ -17,6 +17,10 @@ BLINK_S = 0.4
 MDNS_GROUP = ("224.0.0.251", 5353)
 MAX_BODY = 64 * 1024
 FETCH_TIMEOUT = 3
+# 0.13.4: config-ui-x returns every HAP service and characteristic for /api/accessories. A home with a few dozen
+# plugs, light strips and cameras is well past 64 KB. 2 MB is about 30x a large real list and still bounded memory.
+HB_ACC_MAX_BODY = 2 * 1024 * 1024
+HB_ACC_TIMEOUT = 10  # a 2 MB list from a small Homebridge host can take more than 3 s
 DISCOVER_S = 4.0
 CAPS = ["onoff", "bri", "color", "preset"]
 _META = ipaddress.ip_address("169.254.169.254")
@@ -886,12 +890,15 @@ def checked_base(raw):
     return {"ip": ip, "port": connect, "host": shown, "name": host, "scheme": parts.scheme, "base": stored}
 
 
-def hb_request(base, method, path, payload=None, token=None):
-    """One pinned request. Redirects are not followed. Body cap 64 KB. Timeout 3 s.
+def hb_request(base, method, path, payload=None, token=None, max_body=None, timeout=None):
+    """One pinned request. Redirects are not followed. Body cap 64 KB and timeout 3 s unless the caller
+    passes a larger bounded cap (only the accessory list does, see hb_get_accessories).
 
     Returns {status, json, error}. error is refused, unreachable, cert, redirect, or big. json is a
     dict or list, or None. The token and payload are not logged.
     """
+    max_body = MAX_BODY if max_body is None else max_body
+    timeout = FETCH_TIMEOUT if timeout is None else timeout
     if not isinstance(path, str) or not path.startswith("/") or "\\" in path or any(part == ".." for part in path.split("/")):
         return {"status": 0, "json": None, "error": "refused"}
     target = checked_base(base)
@@ -901,14 +908,14 @@ def hb_request(base, method, path, payload=None, token=None):
     raw = b""
     status = 0
     try:
-        sock = socket.create_connection((str(target["ip"]), target["port"]), FETCH_TIMEOUT)
-        sock.settimeout(FETCH_TIMEOUT)
+        sock = socket.create_connection((str(target["ip"]), target["port"]), timeout)
+        sock.settimeout(timeout)
         if target["scheme"] == "https":
             try:
                 sock = ssl.create_default_context().wrap_socket(sock, server_hostname=target["name"])
             except ssl.SSLError:
                 return {"status": 0, "json": None, "error": "cert"}
-        conn = http.client.HTTPConnection("pin", target["port"], timeout=FETCH_TIMEOUT)
+        conn = http.client.HTTPConnection("pin", target["port"], timeout=timeout)
         conn.sock = sock
         sock = None
         headers = {"Accept": "application/json", "Host": target["host"], "Connection": "close"}
@@ -925,7 +932,7 @@ def hb_request(base, method, path, payload=None, token=None):
             resp.read(1024)
             conn.close()
             return {"status": status, "json": None, "error": "redirect"}
-        raw = resp.read(MAX_BODY + 1)
+        raw = resp.read(max_body + 1)
         conn.close()
     except ssl.SSLError:
         return {"status": 0, "json": None, "error": "cert"}
@@ -937,7 +944,7 @@ def hb_request(base, method, path, payload=None, token=None):
                 sock.close()
             except OSError:
                 pass
-    if len(raw) > MAX_BODY:
+    if len(raw) > max_body:
         return {"status": status, "json": None, "error": "big"}
     obj = None
     if raw:
@@ -948,6 +955,22 @@ def hb_request(base, method, path, payload=None, token=None):
         if isinstance(parsed, (dict, list)):
             obj = parsed
     return {"status": status, "json": obj, "error": None}
+
+
+def hb_get_accessories(base, token):
+    """GET /api/accessories with the larger accessory-list cap and timeout. Same pin, no redirects."""
+    return hb_request(base, "GET", "/api/accessories", token=token, max_body=HB_ACC_MAX_BODY, timeout=HB_ACC_TIMEOUT)
+
+
+def hb_insecure_off(got):
+    """True only for config-ui-x's real answer when insecure mode is off: HTTP 400 naming insecure mode."""
+    if not isinstance(got, dict) or got.get("error") is not None or got.get("status") != 400:
+        return False
+    doc = got.get("json")
+    msg = doc.get("message") if isinstance(doc, dict) else None
+    if isinstance(msg, list):
+        msg = " ".join(m for m in msg if isinstance(m, str))
+    return isinstance(msg, str) and "insecure mode" in msg.lower()
 
 
 def hb_accessories(doc):

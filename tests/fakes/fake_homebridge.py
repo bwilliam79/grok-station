@@ -15,6 +15,18 @@ def jwt_token(exp, marker="TESTHBTOKEN"):
     return part({"alg": "none", "typ": "JWT"}) + "." + part({"exp": exp}) + "." + marker
 
 
+def bulky_accessories(target_bytes):
+    """sample_accessories plus made-up padded plug rows until the JSON is at least target_bytes."""
+    rows = sample_accessories()
+    pad = "x" * 2000
+    n = 0
+    while len(json.dumps(rows)) < target_bytes:
+        n += 1
+        rows.append({"type": "Outlet", "uniqueId": "pad-%d" % n, "serviceName": "Test Plug %d" % n,
+                     "serviceCharacteristics": [{"type": "On", "value": 0, "perms": ["pr", "pw"], "description": pad}]})
+    return rows
+
+
 def sample_accessories():
     """Controllable rows plus the kinds this release must not offer."""
     def row(typ, uid, name, char, value):
@@ -133,6 +145,10 @@ class FakeHomebridge:
         self._remember(request, raw)
         if self.acc_delay:
             await asyncio.sleep(self.acc_delay)
+        if self.acc_status == 400:
+            # config-ui-x accessories.service.js throws BadRequestException when insecure mode is off.
+            return web.json_response({"message": "Homebridge must be running in insecure mode to access accessories.",
+                                      "error": "Bad Request", "statusCode": 400}, status=400)
         if self.acc_status != 200:
             return web.json_response({"error": "no"}, status=self.acc_status)
         if self.wrap:

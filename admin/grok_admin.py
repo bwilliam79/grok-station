@@ -2308,6 +2308,8 @@ HB_ACCESSORIES_MSG = ("Signed in to Homebridge, but it won't share its accessori
                       "with the station until accessory control (insecure mode) is on.")
 HB_SIGNIN_UNREACHABLE_MSG = ("Homebridge stopped answering while signing in. "
                              "The address checked out, so make sure Homebridge is running, then sign in again.")
+# 0.13.4 placeholder: reuses the generic message until Noor supplies copy for the accessory list being too large.
+HB_TOO_LARGE_MSG = "Homebridge didn't answer."
 HB_TWO_STEP_MSG = ("This Homebridge login uses 2-step sign-in. Grok Station needs a login without it, "
                    "so make the grok-station user without 2-step and try again.")
 # Pending Homebridge login, admin process memory only. Never written to disk, never logged.
@@ -5348,14 +5350,19 @@ class Handler(BaseHTTPRequestHandler):
             if _hb_no_http(login):
                 return None, "signin_unreachable", checks, HB_SIGNIN_UNREACHABLE_MSG
             return None, "unreachable", checks, "Homebridge didn't answer."
-        acc = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        acc = gsi.hb_get_accessories(base, token)
         if not (acc["error"] is None and acc["status"] == 200 and isinstance(acc["json"], (dict, list))):
             if acc.get("error") == "cert":
                 return None, "cert", checks, "Homebridge didn't answer."
+            if acc.get("error") == "big":
+                # Over the accessory-list cap. Fail closed; this is not insecure mode.
+                return None, "too_large", checks, HB_TOO_LARGE_MSG
             if acc.get("error") in ("refused", "unreachable") or _hb_no_http(acc):
                 return None, "signin_unreachable", checks, HB_SIGNIN_UNREACHABLE_MSG
-            # Reachable and signed in, but no accessory list (for example insecure mode is off). Not an address problem.
-            return None, "accessories", checks, HB_ACCESSORIES_MSG
+            if gsi.hb_insecure_off(acc):
+                # config-ui-x's own 400 "must be running in insecure mode". Only this shows the accessory-control screen.
+                return None, "accessories", checks, HB_ACCESSORIES_MSG
+            return None, "unreachable", checks, "Homebridge didn't answer."
         checks[1]["ok"] = True
         users = gsi.hb_request(base, "GET", "/api/users", token=token)
         if users["status"] == 200:
@@ -5491,6 +5498,8 @@ class Handler(BaseHTTPRequestHandler):
             gsi.hb_write_block("signin")
             return self.send(401, {"error": "signin", "message": "Homebridge sign-in stopped working."})
         # Verify-flow codes. Once the login is saved, the caller still gets the old "didn't answer" 502.
+        if err == "too_large":
+            return self.send(502, {"error": "too_large", "message": HB_TOO_LARGE_MSG})
         if err in ("accessories", "signin_unreachable"):
             return self.send(502, {"error": "unreachable", "message": "Homebridge didn't answer."})
         if err or not token:
@@ -5502,8 +5511,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(opened, tuple):
             return opened
         base, token = opened
-        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        got = gsi.hb_get_accessories(base, token)
         token = None
+        if got["error"] == "big":
+            token = None
+            return self.send(502, {"error": "too_large", "message": HB_TOO_LARGE_MSG})
         if got["error"] or got["status"] != 200:
             return self.send(502, {"error": "unreachable", "message": "Homebridge didn't answer."})
         rows = []
@@ -5551,8 +5563,11 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(opened, tuple):
             return opened
         base, token = opened
-        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        got = gsi.hb_get_accessories(base, token)
         token = None
+        if got["error"] == "big":
+            token = None
+            return self.send(502, {"error": "too_large", "message": HB_TOO_LARGE_MSG})
         if got["error"] or got["status"] != 200:
             return self.send(502, {"error": "unreachable"})
         live = {row["uid"]: row for row in gsi.hb_accessories(got["json"])}
@@ -5608,7 +5623,10 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(opened, tuple):
             return opened
         base, token = opened
-        got = gsi.hb_request(base, "GET", "/api/accessories", token=token)
+        got = gsi.hb_get_accessories(base, token)
+        if got["error"] == "big":
+            token = None
+            return self.send(502, {"error": "too_large", "message": HB_TOO_LARGE_MSG})
         if got["error"] or got["status"] != 200:
             token = None
             return self.send(502, {"error": "unreachable"})

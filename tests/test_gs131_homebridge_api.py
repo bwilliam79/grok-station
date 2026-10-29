@@ -21,7 +21,7 @@ if "grok_admin" not in sys.modules:
 
 import grok_admin as ga  # noqa: E402
 import gs_integrations as gsi  # noqa: E402
-from fakes.fake_homebridge import FakeHomebridge  # noqa: E402
+from fakes.fake_homebridge import FakeHomebridge, bulky_accessories  # noqa: E402
 
 GOOD = "kitchen table lamp 42"
 SECRET = "hb-secret-pass"
@@ -134,6 +134,8 @@ class HomebridgeAPI(unittest.TestCase):
         self._resolve = gsi.resolve_host
         self._own = gsi.station_addresses
         self._timeout = gsi.FETCH_TIMEOUT
+        self._acc_cap = getattr(gsi, "HB_ACC_MAX_BODY", None)
+        self._acc_timeout = getattr(gsi, "HB_ACC_TIMEOUT", None)
         self._helper = ga.helper
         self._personas = ga.PERSONAS
         gsi.station_addresses = lambda: ["10.0.0.8"]
@@ -160,6 +162,8 @@ class HomebridgeAPI(unittest.TestCase):
         gsi.resolve_host = self._resolve
         gsi.station_addresses = self._own
         gsi.FETCH_TIMEOUT = self._timeout
+        gsi.HB_ACC_MAX_BODY = self._acc_cap
+        gsi.HB_ACC_TIMEOUT = self._acc_timeout
         gsi.checked_base = self._checked
         ga.Handler._hb_check = self._hb_check
         ga.HB_PENDING_TTL = self._pending_ttl
@@ -901,6 +905,7 @@ class HomebridgeAPI(unittest.TestCase):
     def test_accessory_transport_error_stays_signin_unreachable(self):
         self._grace_off()
         gsi.FETCH_TIMEOUT = 0.2
+        gsi.HB_ACC_TIMEOUT = 0.2
         HB.acc_delay = 1.0
         status, body = self._verify()
         self.assertEqual(body.get("error"), "signin_unreachable", body)
@@ -939,6 +944,65 @@ class HomebridgeAPI(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(len(ga.HB_PENDING), 0)
         self.assertEqual(self._retry(pending)[1].get("error"), "pending_gone")
+
+    # 0.13.4: the accessory list has its own larger cap, and only config-ui-x's insecure-mode 400 shows that screen.
+    def test_gs134_accessory_list_over_64kb_verifies(self):
+        self._grace_off()
+        HB.accessories = bulky_accessories(300 * 1024)
+        status, body = self._verify()
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["checks"][1]["ok"])
+        status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(any(r["uid"] == "pad-1" for r in body["accessories"]))
+
+    def test_gs134_settings_cap_stays_64kb(self):
+        HB.mode = "big"
+        status, body = self.c.req("POST", "/api/integrations/homebridge/check-address", {"base": self._base()})
+        self.assertEqual(body.get("error"), "not_homebridge", body)
+
+    def test_gs134_insecure_off_400_still_shows_accessories_screen(self):
+        self._grace_off()
+        HB.accessories = bulky_accessories(300 * 1024)
+        HB.acc_status = 400
+        status, body = self._verify()
+        self.assertEqual((status, body.get("error")), (400, "accessories"), body)
+        self.assertEqual(body.get("message"), ga.HB_ACCESSORIES_MSG)
+        self.assertIsInstance(body.get("pending"), str)
+
+    def test_gs134_list_beyond_cap_is_too_large_not_insecure(self):
+        self._grace_off()
+        HB.accessories = bulky_accessories(2 * 1024 * 1024 + 4096)
+        status, body = self._verify()
+        self.assertEqual(body.get("error"), "too_large", body)
+        self.assertNotIn("pending", body)
+        self.assertNotEqual(body.get("message"), ga.HB_ACCESSORIES_MSG)
+        self._no_homebridge_saved()
+
+    def test_gs134_saved_login_list_beyond_cap_is_too_large(self):
+        self._verify()
+        gsi.HB_ACC_MAX_BODY = 100 * 1024
+        HB.accessories = bulky_accessories(150 * 1024)
+        status, body = self.c.req("GET", "/api/integrations/homebridge/accessories")
+        self.assertEqual((status, body.get("error")), (502, "too_large"), body)
+
+    def test_gs134_accessory_timeout_is_not_insecure(self):
+        self._grace_off()
+        gsi.HB_ACC_TIMEOUT = 0.2
+        HB.acc_delay = 1.0
+        status, body = self._verify()
+        self.assertNotEqual(body.get("error"), "accessories", body)
+        self.assertNotIn("pending", body)
+        self._no_homebridge_saved()
+
+    def test_gs134_other_accessory_status_is_not_insecure(self):
+        self._grace_off()
+        for code in (401, 500):
+            HB.acc_status = code
+            status, body = self._verify()
+            self.assertNotEqual(body.get("error"), "accessories", (code, body))
+            self.assertNotIn("pending", body)
+        self._no_homebridge_saved()
 
     def test_saved_login_accessories_failure_is_still_a_502(self):
         self._verify()
