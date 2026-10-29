@@ -202,7 +202,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 Cloud mode is the default (seal on the cloud computer, post from the home machine):
 
 ```text
-Grok Station instructions, release 0.13.6.
+Grok Station instructions, release 0.13.7.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -258,7 +258,7 @@ Which home computer: if you can run commands on more than one, pick the one that
 Home mode (gs-seal-setup once, then one reply command on the home machine):
 
 ```text
-Grok Station instructions, release 0.13.6.
+Grok Station instructions, release 0.13.7.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -331,8 +331,8 @@ Nothing is moved into place until every file checks out and the key setup succee
 
 `admin/web/deploy-pins.js` pins the commit the script downloads from and the sha256 of each file. A commit cannot name itself, so the pins name the release commit's parent, and that release must not change the pinned files. At ship time:
 
-1. `python3 tools/gen-deploy-pins.py $(git rev-parse origin/main)` on the branch rebased onto `origin/main`.
-2. `python3 tools/check-deploy-pins.py` (each pin matches that commit; HEAD has the same bytes, or the check prints a pending re-pin note).
+1. `python3 tools/gen-deploy-pins.py --update-commit <commit holding scripts/update-manifest.txt>`. The pinned `commit` is read from that manifest's `update` line, never typed in, so the station and the bot render the same instructions. A commit argument is an error.
+2. `python3 tools/check-deploy-pins.py` (each pin matches that commit; `commit` equals the manifest's update commit; HEAD has the same bytes, or the check prints a pending re-pin note).
 3. After the push, `python3 tools/check-deploy-pins.py --remote` (GitHub serves the same bytes).
 
 If a release does change a pinned file, ship it first, then re-pin in the next release. `scripts/install-home.sh` embeds the same commit and hashes as `deploy-pins.js`; update both. In 0.11.0 they name the commit with the macOS and Linux scripts.

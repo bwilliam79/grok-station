@@ -1,4 +1,4 @@
-Grok Station instructions, release 0.13.6.
+Grok Station instructions, release 0.13.7.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
