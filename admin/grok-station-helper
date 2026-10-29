@@ -68,7 +68,10 @@ def station_sounds():
 
 
 def station_gain():
-    """wake/gain.py: device gain defaults. No numpy, so this helper can load it. None if it isn't there."""
+    """wake/gain.py: device gain defaults. No numpy, so this helper can load it. None if it isn't there.
+
+    0.13.7 (Nix M1b): installed, only the root-owned copy /opt/grok-station/gain.py is loaded (tools/install-files.sh
+    puts it there), never $O/wake/gain.py, which grok can edit. The first candidate is the repo checkout (tests)."""
     import importlib.util
     cached = getattr(station_gain, "_mod", None)
     if cached:
@@ -77,7 +80,7 @@ def station_gain():
     here = globals().get("__file__")
     if here:
         cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "wake", "gain.py"))
-    cands.append("/opt/grok-station/wake/gain.py")
+    cands.append("/opt/grok-station/gain.py")
     for p in cands:
         if not p or not os.path.isfile(p):
             continue

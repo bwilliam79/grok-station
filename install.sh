@@ -27,6 +27,7 @@ done
 run() { if [ "$DRY" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 sh_() { if [ "$DRY" = 1 ]; then echo "+ sh -c '$1'"; else sh -c "$1"; fi; }
 O=/opt/grok-station; S=/etc/grok-station/secrets; V=/var/lib/grok-station
+WV=$O/wake-venv   # 0.13.7 (Nix M1): the wake listener's venv, root-owned. grok owns $O/wake, so root never runs code from there
 # Stamp the semantic VERSION. A checkout without that file falls back to a short commit id.
 VER=
 if [ -f VERSION ]; then
@@ -221,12 +222,48 @@ _vosk_remove() {
     runuser -u grok -- rm -rf --one-file-system -- "$O/wake/models/vosk-model-small-en-us-0.15" || true
   fi
   runuser -u grok -- rm -f -- "$O/wake/stopword.py" || true
-  [ -x "$O/wake/venv/bin/pip" ] || return 0
-  for p in vosk srt cffi; do
-    info=$("$O/wake/venv/bin/pip" show "$p" 2>/dev/null) || continue
-    req=$(printf '%s\n' "$info" | sed -n 's/^Required-by: *//p')
-    [ -z "$req" ] && "$O/wake/venv/bin/pip" uninstall --quiet -y "$p" >/dev/null 2>&1 || true
-  done
+  # vosk, srt and cffi lived in the old grok-owned $O/wake/venv, which _old_wake_venv_remove deletes whole; the new
+  # root-owned $WV is built fresh without them. Root never runs that venv's pip (Nix M1).
+}
+
+_root_tree_ok() {  # _root_tree_ok <dir>: the dir and every parent are real dirs, root-owned, not group/other-writable
+  python3 -I - "$1" <<'PY'
+import os, stat, sys
+p = os.path.abspath(sys.argv[1])
+parts = [p]
+while parts[-1] != "/":
+    parts.append(os.path.dirname(parts[-1]))
+for d in parts:
+    try:
+        st = os.lstat(d)
+    except FileNotFoundError:
+        if d == p:
+            continue
+        sys.exit("missing: " + d)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+        sys.exit("not root-owned 0755-or-tighter: " + d)
+PY
+}
+
+_wake_venv() {
+  # Nix M1: root runs pip and python from the wake venv, so it lives in $WV: root-owned 0755, inside root-owned $O,
+  # outside every grok-writable folder. Built once, then reused while $WV/bin/python exists (only root can write
+  # there); the old $O/wake/venv is never copied, run or reused.
+  if [ "$DRY" = 1 ]; then echo "+ check $WV and its parents are root-owned and not group/other-writable"; else
+    _root_tree_ok "$WV" || { echo "refusing to set up $WV: it or a parent is not a root-owned, root-only-writable folder"; return 1; }
+  fi
+  sh_ "[ -x $WV/bin/python ] || python3 -m venv $WV"
+  run chown -h root:root $WV
+  run chmod 0755 $WV
+}
+
+_old_wake_venv_remove() {
+  # After the wake service runs from $WV: delete the old grok-owned venv as grok (rm -rf never follows a symlink,
+  # and as grok it can only remove what grok could already change). Root does not run or traverse it.
+  if [ "$DRY" = 1 ]; then echo "+ runuser -u grok -- rm -rf --one-file-system -- $O/wake/venv"; return 0; fi
+  if [ -e "$O/wake/venv" ] || [ -L "$O/wake/venv" ]; then
+    runuser -u grok -- rm -rf --one-file-system -- "$O/wake/venv" || true
+  fi
 }
 
 st_wake() {
@@ -236,14 +273,14 @@ st_wake() {
     python3 -I - grok "$O" wake wake/models wake/models/enrolled portraits < tools/safe-mkdirs.py \
       || { echo "refusing to set up $O/wake: a path there is a symlink or not a directory"; return 1; }
   fi
-  sh_ "[ -x $O/wake/venv/bin/python ] || python3 -m venv $O/wake/venv"
+  _wake_venv || return 1
   # openwakeword stays --no-deps. These three are exact pins; the rest stay lower bounds so pip
   # never considers ancient candidates (e.g. piwheels' joblib-0.7.0d wheel with an invalid name).
   if [ "$OFFLINE" != 1 ]; then
-  run $O/wake/venv/bin/pip install --quiet --no-deps "openwakeword==0.6.0"
-  run $O/wake/venv/bin/pip install --quiet "onnxruntime==1.31.0" "numpy==2.5.4" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
+  run $WV/bin/pip install --quiet --no-deps "openwakeword==0.6.0"
+  run $WV/bin/pip install --quiet "onnxruntime==1.31.0" "numpy==2.5.4" tqdm "scipy>=1.14.1" "scikit-learn>=1.6" "joblib>=1.4" \
     requests "websockets>=17"
-  run $O/wake/venv/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
+  run $WV/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
   run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
@@ -310,6 +347,7 @@ st_web() {  # admin page (HTTPS) and services
   else  # fresh: everything starts at the reboot, so the setup code shows once, on a clean boot
     run systemctl stop grok-station-admin grok-station grok-station-wake grok-station-relay || true
   fi
+  _old_wake_venv_remove  # the wake unit now starts $WV/bin/python
 }
 
 st_health() {
@@ -326,7 +364,7 @@ st_health() {
   chk() { if "$@" >/dev/null 2>&1; then echo "ok   $*"; else echo "!!   failed: $*"; "$@" 2>&1 | tail -n 5; bad=1; fi; }
   chk $O/relay/venv/bin/python -c 'import aiohttp, nacl'
   chk $O/relay/venv/bin/python -m py_compile $O/relay/relay.py
-  chk $O/wake/venv/bin/python -c 'import openwakeword, onnxruntime, numpy, websockets'
+  chk $WV/bin/python -c 'import openwakeword, onnxruntime, numpy, websockets'
   chk python3 -c 'import pygame, qrcode, cryptography'
   chk python3 -m py_compile /opt/grok-station/grok_station.py /opt/grok-station/dimming.py /opt/grok-station/cards.py /opt/grok-station/admin/grok_admin.py
   if [ "$MODE" = update ]; then

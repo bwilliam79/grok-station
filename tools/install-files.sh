@@ -35,6 +35,20 @@ if [ -d "$S/assets/sounds" ]; then
   install -m644 "$S"/assets/sounds/* /opt/grok-station/assets/sounds/
 fi
 install -m644 "$S/sounds.py" /opt/grok-station/sounds.py
+# 0.13.7 (Nix M1b): the root helper loads gain.py, so it gets a root-owned copy beside sounds.py, never the
+# grok-editable $O/wake/gain.py. /opt/grok-station and every parent must be root-owned and not group/other-writable.
+python3 -I - /opt/grok-station <<'PY' || { echo "refusing to install gain.py: /opt/grok-station or a parent is not a root-owned, root-only-writable folder" >&2; exit 1; }
+import os, stat, sys
+p = sys.argv[1]
+while True:
+    st = os.lstat(p)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+        sys.exit(1)
+    if p == "/":
+        break
+    p = os.path.dirname(p)
+PY
+install -o root -g root -m644 "$S/wake/gain.py" /opt/grok-station/gain.py.new && mv /opt/grok-station/gain.py.new /opt/grok-station/gain.py
 rm -f /opt/grok-station/assets/portraits/grok.png /opt/grok-station/admin/web/assets/grok.png
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/scripts/gs-usb-reset" /usr/local/lib/grok-station/gs-usb-reset.new && mv /usr/local/lib/grok-station/gs-usb-reset.new /usr/local/lib/grok-station/gs-usb-reset

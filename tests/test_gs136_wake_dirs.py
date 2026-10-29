@@ -32,7 +32,7 @@ def _dir_step(shim):
     """st_wake's lines before the venv step, with the owner set to whoever runs the tests."""
     src = open(os.path.join(ROOT, "install.sh")).read()
     body = src[src.index("st_wake() {\n") + len("st_wake() {\n"):]
-    body = body[:body.index('  sh_ "[ -x $O/wake/venv/bin/python ]')]
+    body = body[:body.index('  _wake_venv || return 1')]
     me = getpass.getuser()
     return (body.replace("-o grok -g grok", "").replace(" - grok ", " - %s " % me)
             .replace("tools/safe-mkdirs.py", shim))

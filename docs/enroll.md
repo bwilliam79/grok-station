@@ -49,7 +49,7 @@ upload.
 - **CPU.** Matching costs about 0.05 ms per word per 80 ms frame on a desktop CPU. Expect roughly 0.3 to 0.5 ms on
   a Pi 4 and about twice that on a Pi 3B, so under 1% of a core per word. That's on top of the feature models that
   run for Hey Grok anyway. Building a word took 1.7 s on a desktop, so expect about 10 to 30 s on a Pi. Check on
-  the Pi with `sudo -u grok /opt/grok-station/wake/venv/bin/python /opt/grok-station/wake/grok_wake.py --bench some.wav`.
+  the Pi with `sudo -u grok /opt/grok-station/wake-venv/bin/python /opt/grok-station/wake/grok_wake.py --bench some.wav`.
   A 16 kHz mono recording works, or noise if you give a number of seconds.
 - **Who it works for.** It's tuned to the voice that recorded it. Other people may or may not wake it.
 
