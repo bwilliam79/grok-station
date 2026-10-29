@@ -23,6 +23,7 @@ DEV = "plughw:CARD=Plus,DEV=0"
 class MicResetIcon(unittest.TestCase):
     def setUp(self):
         self._live = dict(gw.LIVE)
+        gw.LIVE["reset_until"] = None  # other test files can leave a hold in the shared dict
 
     def tearDown(self):
         gw.LIVE.clear()
@@ -31,7 +32,8 @@ class MicResetIcon(unittest.TestCase):
     def test_status_payload_has_reset_until(self):
         src = open(os.path.join(os.path.dirname(__file__), "..", "wake", "grok_wake.py"), encoding="utf-8").read()
         self.assertIn('"reset_until": LIVE.get("reset_until")', src)
-        self.assertIsNone(gw.LIVE.get("reset_until"))
+        # Default is None at import. Check the source, not the shared LIVE dict, which other test files mutate.
+        self.assertRegex(src, r'(?m)^LIVE = \{[^\n]*"reset_until": None\}')
 
     def test_planned_reset_keeps_the_icon_ok(self):
         # The card is gone for the re-enumeration, and the open capture's last frame is old.
