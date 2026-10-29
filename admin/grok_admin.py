@@ -573,9 +573,28 @@ def display_status_url():
 
 
 def _fetch_display_status(timeout):
+    """GET the display's localhost /status. Proxies off (as the display probes), at most 8 KB, and one
+    overall deadline of `timeout` seconds for connect plus read, not a per-socket-step timeout."""
+    deadline = time.monotonic() + timeout
     req = urllib.request.Request(display_status_url(), headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        body = json.loads(r.read(8192) or b"{}")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as r:
+        buf = b""
+        while len(buf) < 8192:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("display status deadline")
+            fp = getattr(r, "fp", None)
+            if fp is None:  # http.client closes the body once Content-Length is read
+                break
+            sock = getattr(getattr(fp, "raw", None), "_sock", None)
+            if sock is not None:
+                sock.settimeout(left)
+            chunk = r.read1(8192 - len(buf)) if hasattr(r, "read1") else r.read(8192 - len(buf))
+            if not chunk:
+                break
+            buf += chunk
+    body = json.loads(buf or b"{}")
     return body if isinstance(body, dict) else {}
 
 
