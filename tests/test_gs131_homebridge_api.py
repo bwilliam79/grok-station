@@ -144,6 +144,16 @@ class HomebridgeAPI(unittest.TestCase):
         self.c = _signed_in(ADMIN.port)
         self._close_grace = False
 
+    def test_pending_owner_check_is_type_safe_and_exact(self):
+        row = {"key": "a" * 64}
+        self.assertTrue(ga._hb_pending_owns(row, "a" * 64))
+        self.assertFalse(ga._hb_pending_owns(row, "b" * 64))
+        self.assertFalse(ga._hb_pending_owns(row, "a" * 63))
+        self.assertFalse(ga._hb_pending_owns(row, None))
+        self.assertFalse(ga._hb_pending_owns({"key": None}, "a" * 64))
+        self.assertFalse(ga._hb_pending_owns(None, "a" * 64))
+        self.assertFalse(ga._hb_pending_owns(row, b"a" * 64))
+
     def tearDown(self):
         ga.helper = self._helper
         ga.PERSONAS = self._personas

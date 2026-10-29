@@ -2375,7 +2375,7 @@ def _hb_pending_claim(ident, key):
     with HB_PENDING_LOCK:
         _hb_pending_purge()
         row = HB_PENDING.get(ident)
-        if not isinstance(row, dict) or row.get("key") != key:
+        if not _hb_pending_owns(row, key):
             return None
         row["tries"] = int(row.get("tries") or 0) + 1
         if row["tries"] > HB_PENDING_MAX_TRIES:
@@ -2389,12 +2389,22 @@ def _hb_pending_drop(ident):
         HB_PENDING.pop(ident, None)
 
 
+def _hb_pending_owns(row, key):
+    """Constant-time check that this session's key hash owns the pending row."""
+    if not isinstance(row, dict) or not isinstance(key, str):
+        return False
+    stored = row.get("key")
+    if not isinstance(stored, str):
+        return False
+    return hmac.compare_digest(stored.encode(), key.encode())
+
+
 def _hb_pending_cancel(ident, key):
     """Delete the row only when this session owns it. Expired rows are purged either way."""
     with HB_PENDING_LOCK:
         _hb_pending_purge()
         row = HB_PENDING.get(ident)
-        if isinstance(row, dict) and row.get("key") == key:
+        if _hb_pending_owns(row, key):
             HB_PENDING.pop(ident, None)
 
 
