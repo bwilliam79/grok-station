@@ -122,6 +122,7 @@ class PickerLogic(unittest.TestCase):
                          "2 devices \u00b7 none selected")
         self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {}, "switch")'),
                          "2 devices \u00b7 none selected" + WARN)
+        self.assertEqual(_run('hbCountText([{uid:"1"}], {}, "tv")'), "1 device \u00b7 none selected")
         self.assertEqual(_run('hbCountText([{uid:"1"},{uid:"2"}], {1:true,2:true}, "switch")'),
                          "All 2 selected" + WARN)
         html = _run('hbCountHtml([{uid:"1"},{uid:"2"}], {1:true}, "switch")')

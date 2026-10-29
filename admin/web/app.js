@@ -4706,7 +4706,7 @@ function hbCountText(rows, picked, categoryKey) {
     if (row && picked && picked[row.uid]) s++;
   }
   let text = (s > 0 && s < n) ? (s + " of " + n + " selected")
-    : (s === n ? ("All " + n + " selected") : (n + " devices \u00b7 none selected"));
+    : (s === n ? ("All " + n + " selected") : ((n === 1 ? "1 device" : n + " devices") + " \u00b7 none selected"));
   if (categoryKey === "switch") text += " \u00b7 \u26a0 check for locks or garage doors";
   return text;
 }
