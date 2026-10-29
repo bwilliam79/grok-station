@@ -4508,6 +4508,7 @@ async function pageIntegrations(el) {
   function hbOnly(list) { return (list || []).filter(d => d && d.kind === "homebridge"); }
 
   async function list() {
+    hbPass = "";  // never keep a typed Homebridge password once the flow is left
     const r = await api("GET", "/api/integrations");
     const data = r.ok && r.data ? r.data : {integrations: {}, devices: [], later: []};
     const wled = (data.integrations && data.integrations.wled) || {};
@@ -4528,14 +4529,14 @@ async function pageIntegrations(el) {
     const hbClass = hbStatus === "connected" || hbStatus === "signed_in" ? "ok" : (hbStatus === "admin" || hbStatus === "signin") ? "bad" : "none";
     const hbSub = hbStatus === "admin" ? "This login is an admin. Homebridge control is off."
       : hbStatus === "signin" ? "Homebridge sign-in stopped working."
-      : hbDevices.length ? esc(String(hbDevices.length)) + (hbDevices.length === 1 ? " device" : " devices")
+      : hbDevices.length ? hbDevices.length + (hbDevices.length === 1 ? " device" : " devices")
       : "Lights, switches, plugs and TVs you already have in Homebridge.";
     const hbBtn = hbStatus === "not_set_up" ? `<button class="btn p" id="hbsetup" type="button">Set up</button>`
       : hbStatus === "signin" ? `<button class="btn" id="hbfix" type="button">Fix sign-in</button><button class="btn d" id="hbremove" type="button">Remove</button>`
       : (hbStatus === "connected" || hbStatus === "signed_in") ? `<button class="btn" id="hbmanage" type="button">Manage</button>`
       : `<button class="btn d" id="hbremove" type="button">Remove</button>`;
-    el.innerHTML = `<p class="lead">Control lights on your home network by voice. Everything runs here on the station; nothing goes to the cloud.</p>
-      ${anyDev ? `<div class="row"><button type="button" class="tog${voiceOn ? " on" : ""}" role="switch" id="hvoice" aria-checked="${voiceOn ? "true" : "false"}" aria-label="Voice home control"></button><div><div class="lbl">Voice home control</div><div class="help">Lets anyone who says the wake word turn these devices on or off. Off until you turn it on.</div></div></div><div id="wvoicee"></div>` : ""}
+    el.innerHTML = `<p class="lead">Control lights and other devices on your home network by voice. Everything runs here on the station; nothing goes to the cloud.</p>
+      ${anyDev ? `<div class="row"><button type="button" class="tog${voiceOn ? " on" : ""}" role="switch" id="hvoice" aria-checked="${voiceOn ? "true" : "false"}" aria-label="Voice home control"></button><div><div class="lbl">Voice home control</div><div class="help">Lets anyone who says the wake word control these devices. Off until you turn it on.</div></div></div><div id="wvoicee"></div>` : ""}
       <div class="intgrid">
         <div class="card intcard"><div class="ih"><div><h2>WLED</h2>
           <span class="intst ${ready ? "ok" : "none"}">${ready ? "Connected" : "Not set up"}</span></div></div>
@@ -4543,7 +4544,7 @@ async function pageIntegrations(el) {
           <div class="acts2">${ready ? `<button class="btn" id="wmanage" type="button">Manage</button><button class="btn p" id="wsetup" type="button">Add lights</button>` : `<button class="btn p" id="wsetup" type="button">Set up</button>`}</div></div>
         <div class="card intcard"><div class="ih"><div><h2>Homebridge</h2>
           <span class="intst ${hbClass}">${esc(hbLabel)}</span></div></div>
-          <p class="sub">${hbStatus === "admin" || hbStatus === "signin" ? esc(hbSub) : hbSub}</p>
+          <p class="sub">${esc(hbSub)}</p>
           <div class="acts2">${hbBtn}</div></div>
       </div>
       <div class="seclab" style="margin-top:22px">Later</div>
@@ -4878,7 +4879,6 @@ async function pageIntegrations(el) {
         return errBox($("#hberr", el), msg);
       }
       hbBase = (r.data && r.data.base) || raw;
-      checked = raw;
       $("#hbbase", el).value = hbBase;
       checked = hbBase;
       errBox($("#hberr", el), "");
@@ -4959,7 +4959,7 @@ async function pageIntegrations(el) {
   }
   function hbPassed(checks) {
     el.innerHTML = `<div class="card wcard">${hbHead(4, "Checking the login")}
-      <p class="sub">All three checks passed. Nothing is an admin login.</p>
+      <p class="sub">All three checks passed. This login isn't an admin.</p>
       ${hbChecks(checks, false)}
       <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel</button>
         <span class="right"><button class="btn p" id="hbnext" type="button">Next</button></span></div></div>`;
@@ -4968,7 +4968,7 @@ async function pageIntegrations(el) {
     $("#hbnext", el).onclick = () => hbLoadPick();
   }
   function hbStopped(message, checks, label, again, title) {
-    el.innerHTML = `<div class="card wcard">${hbHead(4, esc(title))}
+    el.innerHTML = `<div class="card wcard">${hbHead(4, title)}
       ${hbChecks(checks, false)}
       <div class="banner warn" role="alert" id="hbstop"><span class="pill warn"><i></i>Needs attention</span> ${esc(message)}</div>
       <div class="field inline" style="margin-top:16px"><button class="btn g" id="hbcancel" type="button">Cancel setup</button>
@@ -4981,7 +4981,7 @@ async function pageIntegrations(el) {
     hbUser = ($("#hbuser", el).value || "").trim();
     hbPass = $("#hbpass", el).value;
     if (!hbUser || hbPass.length < 8) {
-      return errBox($("#hberr", el), "Username or password didn't work.");
+      return errBox($("#hberr", el), "Enter the username and a password of at least 8 characters.");
     }
     const finish = async r => {
       if (r && r.ok) {
@@ -5007,7 +5007,7 @@ async function pageIntegrations(el) {
     const r = await api("GET", "/api/integrations/homebridge/accessories");
     if (!r.ok) {
       const msg = (r.data && r.data.message) || "Homebridge didn't answer.";
-      if (r.data && r.data.error === "admin") return hbStopped(r.data.message || msg, [], "Back", list);
+      if (r.data && r.data.error === "admin") return hbStopped(r.data.message || msg, [], "Back", list, "We can't use this login");
       return hbAddress(hbBase, msg);
     }
     const rows = (r.data && r.data.accessories) || [];

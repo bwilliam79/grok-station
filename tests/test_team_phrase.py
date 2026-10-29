@@ -44,8 +44,8 @@ class TeamPhrase(unittest.TestCase):
         self.assertNotIn("copyphrase", JS)
         self.assertIn("#teamcard.teamtip{display:flex;align-items:center;gap:10px;padding:12px 16px;"
                       "font-size:var(--fs-label);line-height:1.6;color:var(--gs-muted)}", CSS)
-        self.assertIn(".saychip{display:inline-block;white-space:nowrap;color:var(--gs-teal);"
-                      "background:var(--gs-teal-bg);border-radius:var(--gs-radius-pill);padding:2px 8px;font-weight:600}", CSS)
+        # 0.13.1: the chip is gone; the wake word is an inline .wake run (tests/test_gs131_voice_examples.py).
+        self.assertNotIn(".saychip{", CSS)
         self.assertNotIn(".teamsay{", CSS)
         for bad in ("mailbox", "seal"):
             self.assertNotIn(bad, _fn("teamPhraseHtml").lower())

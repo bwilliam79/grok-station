@@ -5,7 +5,7 @@ row grew taller than the others. Failure wins over out of date. The line is one 
 the full text is in title and in a visually hidden element named by aria-describedby. A row with
 no message still has the empty status element, so the structure (and the height) does not change.
 """
-import json, os, shutil, subprocess, unittest
+import json, os, re, shutil, subprocess, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS = os.path.join(ROOT, "admin", "web", "app.js")
@@ -52,7 +52,6 @@ def _render(src, bot, view):
 
 def _tags(html):
     """Start-tag names, in order, so two rows can be compared without their text."""
-    import re
     return re.findall(r"<([a-z0-9]+)\b", html)
 
 
@@ -101,10 +100,9 @@ class BotRowStatus(unittest.TestCase):
         self.assertIn(".bst{height:18px;line-height:18px;", css.replace(" ", ""))
         self.assertIn("white-space:nowrap", css)
         self.assertIn("text-overflow:ellipsis", css)
-        desk = css.split("@media (max-width:767px)")[0]
-        phone = css.split("@media (max-width:767px)", 1)[1]
-        self.assertIn(".botrow{height:104px;", desk.replace(" ", ""))
-        self.assertIn(".botrow{height:112px;", phone.replace(" ", ""))
+        # Desktop: a top-level rule (column 0). Phone: indented inside the max-width:767px block.
+        self.assertRegex(css, r"(?m)^\.botrow\{height:104px[;}]")
+        self.assertRegex(css, r"(?m)^  \.botrow\{height:112px;")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@
 --gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
 --gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
-.botrow{height:104px;}  /* 0.13.1: desktop row height is fixed; the phone query below overrides it */
 @media (max-width:767px){:root{--fs-body:16px}}  /* 16px stops iOS zoom on input focus */
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--gs-bg);color:var(--gs-text);font:var(--fs-body)/1.45 var(--body);-webkit-font-smoothing:antialiased;overflow:hidden;font-variant-numeric:tabular-nums}
@@ -277,6 +276,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .ico{display:inline-flex;flex:none}
 .ico.faint{color:var(--gs-faint)}
 .ico.teal{color:var(--gs-teal)}
+/* 0.13.1: desktop bot rows have one fixed height; the phone query overrides it */
+.botrow{height:104px}
 .need{color:var(--gs-amber);font-size:var(--fs-help);display:flex;align-items:center;gap:6px;margin-top:4px}
 .bst{height:18px;line-height:18px;display:block;min-width:0;overflow:hidden;color:var(--gs-amber);font-size:var(--fs-help)}
 .bst .bstx{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -458,7 +459,6 @@ p#emptybot{margin:10px 2px 0}
 #teamcard.teamtip[hidden]{display:none}
 #teamcard.teamtip p{margin:0;font:inherit;color:inherit}
 #teamcard.teamtip b{font-weight:600;color:var(--gs-text)}
-.saychip{display:inline-block;white-space:nowrap;color:var(--gs-teal);background:var(--gs-teal-bg);border-radius:var(--gs-radius-pill);padding:2px 8px;font-weight:600}
 .tipadd{font:inherit;font-weight:600;color:var(--gs-text);background:none;border:0;padding:0;cursor:pointer;appearance:none}
 .finbtns{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 /* Integrations (0.13.0). */
@@ -485,8 +485,6 @@ p#emptybot{margin:10px 2px 0}
 .nmrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:4px 16px;padding:14px 0;border-top:1px solid var(--gs-rule)}
 .nmrow:first-child{border-top:0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
-.sayline{display:flex;align-items:flex-start;gap:10px;margin-top:4px}
-.sayline .w{color:var(--gs-teal);font-weight:600}
 .wake{color:var(--gs-teal);font-weight:600}
 button#iback{height:auto;min-height:44px;text-decoration:none}
 .tip2{background:var(--gs-surface-2);border-radius:12px;padding:12px 14px;margin-top:16px;font-size:var(--fs-label);color:var(--gs-muted)}
