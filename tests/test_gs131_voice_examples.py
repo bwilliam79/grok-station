@@ -123,3 +123,25 @@ class HomebridgeStopScreen(unittest.TestCase):
         self.assertNotIn("hbHead(4, esc(", js)
         for call in re.findall(r"hbStopped\(([^\n]*)\);", js):
             self.assertRegex(call, r'"We (can\'t use this login|couldn\'t finish the check)"\)?$', call)
+
+
+class HomebridgeHttpWarning(unittest.TestCase):
+    """Nix I1: an http:// Homebridge address is allowed but warned about in the add flow and on the card."""
+
+    def test_http_warning_in_flow_and_card(self):
+        js = open(JS_PATH, encoding="utf-8").read()
+        self.assertIn("function hbHttpWarn(base)", js)
+        fn = js.split("function hbHttpWarn(base)", 1)[1].split("\n  }\n", 1)[0]
+        self.assertIn('/^http:\\/\\//i.test', fn)
+        self.assertIn("unencrypted", fn)
+        self.assertIn("https", fn)
+        for where in ("function hbAddress(", "function hbEnter(", "async function list("):
+            body = js.split(where, 1)[1].split("\n  }\n", 1)[0]
+            with self.subTest(where):
+                self.assertIn("hbHttpWarn(", body)
+        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        self.assertIn("unencrypted", readme.split("**0.13.1**", 1)[1].split("**0.13.0**", 1)[0])
+
+    def test_pick_step_notes_plugins_as_switches(self):
+        js = open(JS_PATH, encoding="utf-8").read()
+        self.assertIn("Some plugins show locks or garage doors as plain switches", js)
