@@ -106,7 +106,7 @@ class GrokBuiltin(unittest.TestCase):
         i_train = src.find("train = train_wake_request(heard, connect_bots(roster, list_source_slug()))")
         block = src[i_train:src.find('return "user ended"', i_train)]
         self.assertIn("play_fixed(plan", block)
-        self.assertEqual(block.count("play_fixed("), 1)
+        self.assertEqual(block.count("play_fixed(plan"), 1)  # the plan line once; a failed start adds its own line
         self.assertIn('if result["enroll"]', block)
         self.assertIn('result.get("hold_s") == 4', block)
         self.assertIn("TTS_REPLY_S", block)
