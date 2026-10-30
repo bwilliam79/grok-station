@@ -23,7 +23,11 @@ def _unlink_regular(dfd, name):
         return False
     if not stat.S_ISREG(st.st_mode):
         return False
-    os.unlink(name, dir_fd=dfd)
+    try:
+        os.unlink(name, dir_fd=dfd)
+    except OSError as e:  # swapped between stat and unlink (e.g. for a folder): skip, never abort install
+        print("rm-stale-train-flow: left %s (%s)" % (name, type(e).__name__), file=sys.stderr)
+        return False
     return True
 
 
