@@ -30,20 +30,16 @@ class TeamPhrase(unittest.TestCase):
         self.assertNotIn("Set up the rest of my team", JS)
 
     def test_card_markup_and_css(self):
-        bsum = JS.index('class="bsumrow')
-        card_at = JS.index('class="card teamtip" id="teamcard"')
-        sheet = JS.index('class="card botsheet"')
-        self.assertLess(bsum, card_at)
-        self.assertLess(card_at, sheet)
-        card = JS[card_at:sheet]
-        self.assertIn('id="teamphrase"', card)
-        self.assertIn('class="ico teal"', card)
-        self.assertNotIn("copyteam", card)
+        # rev3.6 #2: the tip moved from an inline card into the Bots header's Voice tip popover.
+        self.assertNotIn('id="teamcard"', JS)
+        self.assertNotIn("#teamcard", CSS)
+        shell = _fn("botsHeaderShell")
+        self.assertLess(shell.index('id="vtip"'), shell.index('id="botmore"'))  # first in the action group
+        self.assertIn('<p id="teamphrase"></p>', shell)
+        self.assertNotIn("copyteam", shell)
         self.assertNotIn("teamsay", JS)
         self.assertNotIn("teamnote", JS)
         self.assertNotIn("copyphrase", JS)
-        self.assertIn("#teamcard.teamtip{display:flex;align-items:center;gap:10px;padding:12px 16px;"
-                      "font-size:var(--fs-label);line-height:1.6;color:var(--gs-muted)}", CSS)
         # 0.13.1: the chip is gone; the wake word is an inline .wake run (tests/test_gs131_voice_examples.py).
         self.assertNotIn(".saychip{", CSS)
         self.assertNotIn(".teamsay{", CSS)
@@ -63,14 +59,15 @@ const TEAM_PHRASE = {json.dumps(PHRASE)};
 const TEAM_UPDATE_PHRASE = {json.dumps(UPDATE)};
 const esc = s => String(s);
 function mk() {{ return {{hidden: true, innerHTML: "", textContent: ""}}; }}
-const nodes = {{"#teamcard": mk(), "#teamphrase": mk()}};
-const $ = sel => nodes[sel];
+const nodes = {{"vtippop": mk(), "teamphrase": mk()}};
+const document = {{getElementById: id => nodes[id]}};
+function closeVoiceTip() {{}}
 {_fn("teamState")}
 {_fn("teamPhraseHtml")}
 {_fn("paintTeam")}
 paintTeam({{_bots: {json.dumps(bots)}, _imported: {json.dumps(imported)}}});
-console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#teamphrase"].hidden,
-  html: nodes["#teamphrase"].innerHTML}}));
+console.log(JSON.stringify({{card: nodes["vtippop"].hidden, phrase: nodes["teamphrase"].hidden,
+  html: nodes["teamphrase"].innerHTML}}));
 """
         out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, timeout=30)
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -78,14 +75,14 @@ console.log(JSON.stringify({{card: nodes["#teamcard"].hidden, phrase: nodes["#te
 
     def test_no_main_bot_offers_add(self):
         r = self._paint([], [])
-        self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
+        self.assertTrue(r["card"]); self.assertFalse(r["phrase"])  # popover stays closed until Voice tip
         self.assertEqual(r["html"], 'No bots yet. Use <button type="button" class="tipadd" id="teamadd">Add bot</button> to connect your main bot.')
         r = self._paint([{"name": "Kai"}], [])
         self.assertIn("No bots yet.", r["html"])
 
     def test_before_import(self):
         r = self._paint([{"name": "Rhea", "main": True}], {"rows": [], "updated_at": None})
-        self.assertFalse(r["card"]); self.assertFalse(r["phrase"])
+        self.assertTrue(r["card"]); self.assertFalse(r["phrase"])  # popover stays closed until Voice tip
         self.assertEqual(r["html"], 'Say “<span class="wake">Hey Grok</span>, import the rest of my team.” to add your other bots.')
 
     def test_after_import(self):

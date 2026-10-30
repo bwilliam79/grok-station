@@ -23,7 +23,7 @@ def _fn(name):
 
 def _icons():
     lines = []
-    for name in ("ICO_OK", "ICO_ERR", "ICO_KEY", "ICO_DOTS"):
+    for name in ("ICO_OK", "ICO_ERR", "ICO_KEY", "ICO_DOTS", "ICO_WAVE"):
         i = JS.index("const " + name + " = ")
         lines.append(JS[i:JS.index(";\n", i) + 1])
     return "\n".join(lines)
@@ -90,6 +90,7 @@ class BotsHeader(unittest.TestCase):
         self.assertIn('id="botqs"', html)
         self.assertIn('aria-label="More bot actions"', html)
         self.assertIn(">Add bot</button>", html)
+        self.assertLess(html.index('id="vtip"'), html.index('id="botmore"'))  # rev3.6 #2
         self.assertIn("Refresh avatars", html)
         self.assertIn("Revoke all bots…", html)
         self.assertLess(html.index("Refresh avatars"), html.index("Revoke all bots"))

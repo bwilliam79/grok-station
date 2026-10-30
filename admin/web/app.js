@@ -3662,6 +3662,8 @@ function botsQuietHidden(kind, phone) {
 }
 function botsHeaderShell() {
   return `<div class="hr" id="bothdr"><span class="qs" id="botqs" hidden>${ICO_OK}All bots up to date</span>` +
+    `<button class="btn g sm vtipbtn" id="vtip" type="button" aria-expanded="false" aria-controls="vtippop" aria-label="Voice tip: update team list">${ICO_WAVE}<span class="vtl">Voice tip</span></button>` +
+    `<div class="vtippop" id="vtippop" role="dialog" aria-label="Voice tip" hidden><p id="teamphrase"></p></div>` +
     `<button class="btn morebtn" id="botmore" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More bot actions">${ICO_DOTS}</button>` +
     `<ul class="menu" id="botmenu" role="menu" aria-label="More bot actions" hidden>` +
     `<li role="none"><button role="menuitem" id="avatars" type="button">Refresh avatars</button></li>` +
@@ -4882,16 +4884,58 @@ function teamPhraseHtml(state) {
   if (state === "after") return `Added a bot? Say “${wake}${esc(TEAM_UPDATE_PHRASE.slice("Hey Grok, ".length))}.”`;
   return `Say “${wake}${esc(TEAM_PHRASE.slice("Hey Grok, ".length))}.” to add your other bots.`;
 }
+// rev3.6 #2: the team tip lives in the Bots header's Voice tip popover (#vtippop), not an inline card.
 function paintTeam(el) {
-  const card = $("#teamcard", el), ph = $("#teamphrase", el);
+  const card = document.getElementById("vtippop"), ph = document.getElementById("teamphrase");
   if (!card) return;
   const state = teamState(el);
-  card.hidden = false;
   if (ph) { ph.hidden = false; ph.innerHTML = teamPhraseHtml(state); }
   const add = card.querySelector ? card.querySelector("#teamadd") : null;
   if (add) add.onclick = () => {
+    closeVoiceTip(false);
     const btn = document.getElementById("add");
     if (btn && btn.click) btn.click();
+  };
+}
+let voiceTipCloser = null;
+function closeVoiceTip(refocus) {
+  if (voiceTipCloser) voiceTipCloser(refocus);
+}
+// Opens under the button (desktop) or full width under the header (phone, max-width 767px). Esc, a tap
+// outside or the button again close it and focus returns to the button. Phone reuses trapTab and the sheet's z-order.
+function bindVoiceTip() {
+  const btn = document.getElementById("vtip"), pop = document.getElementById("vtippop");
+  if (!btn || !pop) return;
+  btn.onclick = ev => {
+    ev.preventDefault();
+    if (voiceTipCloser) { closeVoiceTip(true); return; }
+    const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+    if (phone) {
+      const hdr = btn.closest ? btn.closest(".top, header") : null;
+      const r = (hdr || btn).getBoundingClientRect();
+      pop.style.setProperty("--vtip-top", Math.round(r.bottom + 8) + "px");
+    }
+    pop.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };
+    const onDown = e => {
+      const t = e.target;
+      if (pop.contains(t) || btn.contains(t)) return;
+      close(false);
+    };
+    const close = refocus => {
+      if (voiceTipCloser !== close) return;
+      voiceTipCloser = null;
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onDown, true);
+      pop.hidden = true;
+      btn.setAttribute("aria-expanded", "false");
+      if (refocus !== false && btn.isConnected) btn.focus();
+    };
+    voiceTipCloser = close;
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onDown, true);
+    if (phone && !pop._trapped) { trapTab(pop); pop._trapped = true; }
   };
 }
 const BOT_ROUTINE = `Grok Station instructions, release 0.13.9.
@@ -5400,8 +5444,10 @@ async function pageBots(el) {
   const data = r.ok ? r.data : {bots: [], voices: [], message: (r.data && r.data.error) || "Can't reach the voice service right now."};
   const bots = data.bots || [];
   const slot = $("#topr");
+  closeVoiceTip(false);
   if (slot) slot.innerHTML = botsHeaderShell();
   bindBotMenu();
+  bindVoiceTip();
   el._voice = (s.data && s.data.buttons) || {};
   el._voices = data.voices || [];
   el._defaultVoice = data.default_voice || "";
@@ -5417,7 +5463,6 @@ async function pageBots(el) {
     <div class="bsumrow inline" hidden><span class="stepup" id="sulock" hidden></span></div>
     <div id="botcall"></div>
     <div id="setuphost"></div>
-    <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
     <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist" role="group" aria-label="Bots"></div><div id="vere"></div></div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>

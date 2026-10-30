@@ -554,10 +554,6 @@ p#emptybot{margin:10px 2px 0}
 .unitin{display:inline-flex;align-items:center;gap:var(--sp-1)}
 .unitin .inp{width:88px}
 .unit{font-size:var(--fs-help);color:var(--gs-muted)}
-#teamcard.teamtip{display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:var(--fs-label);line-height:1.6;color:var(--gs-muted)}
-#teamcard.teamtip[hidden]{display:none}
-#teamcard.teamtip p{margin:0;font:inherit;color:inherit}
-#teamcard.teamtip b{font-weight:600;color:var(--gs-text)}
 .tipadd{font:inherit;font-weight:600;color:var(--gs-text);background:none;border:0;padding:0;cursor:pointer;appearance:none}
 .finbtns{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
 /* Integrations (0.13.0). */
@@ -803,3 +799,16 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 @media (prefers-reduced-motion:reduce){.vnspin{width:auto;height:auto;border:0;border-radius:0;animation:none;vertical-align:baseline}.vnspin::before{content:"\00b7\00b7\00b7"}}
 /* L5 (gs-voice-train rev1.4): pending-row sheet buttons are 44 pt targets */
 #pendpop .btn{min-height:44px;min-width:44px}
+/* rev3.6 #2: Voice tip header button and popover (replaces the inline team tip card). */
+.vtipbtn{height:32px;min-height:32px;color:var(--gs-text)}
+.vtipbtn:hover{background:rgba(255,255,255,.04)}
+.vtipbtn:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}
+.vtipbtn[aria-expanded=true] .ico{color:var(--gs-teal)}
+.vtippop{position:absolute;top:calc(100% + 8px);right:0;width:240px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:12px 14px;box-shadow:0 10px 40px rgba(0,0,0,.45);z-index:12;color:var(--gs-text);font-size:var(--fs-label);line-height:1.5}
+.vtippop[hidden]{display:none}
+.vtippop p{margin:0}
+@media (max-width:767px){
+  .vtipbtn{width:44px;height:44px;min-height:44px;padding:0}
+  .vtipbtn .vtl{display:none}
+  .vtippop{position:fixed;left:0;right:0;top:var(--vtip-top,64px);width:auto;border-radius:0 0 12px 12px}
+}
