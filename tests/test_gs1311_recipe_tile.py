@@ -2,8 +2,11 @@
 
 Geometry is the SPEC's 2560×1706 panel. Sample dishes are invented.
 """
+import asyncio
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 
@@ -396,6 +399,342 @@ class StopAndClose(unittest.TestCase):
         self.assertTrue(gw.alarm_repeat_due(3540, 3480))
         self.assertFalse(gw.alarm_repeat_due(3600, 3540))
         self.assertFalse(gw.alarm_repeat_due(4000, 3540))
+
+
+def _long_step():
+    text = ("Chop the herbs and fold them into the warm orzo with lemon, garlic, and a spoon of oil "
+            "until the pan looks glossy and the orzo is tender. Serve. more words here to pad.")
+    return text[:160]
+
+
+class ReviewFixes(unittest.TestCase):
+    def setUp(self):
+        self.old_chips = list(gs.TIMER_CHIPS)
+        self.old_epoch = gs.TIMER_EPOCH
+        self.old_order = list(gs.RECIPE_RAIL_ORDER)
+        self.old_slide = dict(gs._RAIL_SLIDE)
+        self.old_motion = os.environ.get("GROK_STATION_REDUCE_MOTION")
+        gs.TIMER_EPOCH = EPOCH
+        gs.TIMER_CHIPS[:] = []
+        os.environ.pop("GROK_STATION_REDUCE_MOTION", None)
+
+    def tearDown(self):
+        gs.TIMER_CHIPS[:] = self.old_chips
+        gs.TIMER_EPOCH = self.old_epoch
+        gs.RECIPE_RAIL_ORDER[:] = self.old_order
+        gs._RAIL_SLIDE.clear()
+        gs._RAIL_SLIDE.update(self.old_slide)
+        if self.old_motion is None:
+            os.environ.pop("GROK_STATION_REDUCE_MOTION", None)
+        else:
+            os.environ["GROK_STATION_REDUCE_MOTION"] = self.old_motion
+
+    def _record_font(self, match):
+        seen = []
+        real = gs.font
+
+        def wrapped(kind, px):
+            inner = real(kind, px)
+
+            class Recording:
+                def render(self, text, *args, **kwargs):
+                    if match(kind, int(px), str(text)):
+                        seen.append(str(text))
+                    return inner.render(text, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(inner, name)
+
+            return Recording()
+
+        return seen, wrapped, real
+
+    def test_long_step_is_ellipsized_on_the_last_full_line(self):
+        step = _long_step()
+        self.assertEqual(len(step), 160)
+        L = gs.Layout(*PANEL)
+        body_px = gs.recipe_px(L, 112)
+        seen, wrapped, real = self._record_font(lambda kind, px, text: kind == "display" and px == body_px)
+        gs.font = wrapped
+        try:
+            surf = pygame.Surface(PANEL)
+            card = dict(RECIPE, steps=[step, "Serve warm."], step=1)
+            gs.draw_feed(surf, L, NOW, card)
+        finally:
+            gs.font = real
+        f = real("display", body_px)
+        gap = gs.recipe_px(L, 8)
+        box_h = gs.recipe_px(L, 828)
+        fit = 0
+        while (fit + 1) * f.get_height() + fit * gap <= box_h:
+            fit += 1
+        self.assertGreater(len(gs.wrap(f, step, 1040)), fit)
+        self.assertEqual(len(seen), fit)
+        self.assertTrue(seen[-1].endswith("\u2026"), seen)
+
+    def test_ringing_name_fits_the_slot_and_keeps_is_done(self):
+        L = gs.Layout(*PANEL)
+        wide = "W" * 24
+        done_px = gs.recipe_px(L, 46)
+        seen, wrapped, real = self._record_font(
+            lambda kind, px, text: kind == "display" and px == done_px and "is done" in text)
+        gs.font = wrapped
+        gs.TIMER_CHIPS[:] = [_timer("aaaa01", wide, -1, 60, ringing=True)]
+        try:
+            surf = pygame.Surface(PANEL)
+            gs.draw_feed(surf, L, NOW, dict(RECIPE))
+        finally:
+            gs.font = real
+        self.assertEqual(len(seen), 1, seen)
+        line = seen[0]
+        self.assertTrue(line.endswith(" is done"), line)
+        self.assertIn("\u2026", line)
+        slot = gs.LAST_RECIPE_FRAME["slots"][0]
+        room = slot.w - gs.recipe_px(L, 48)
+        self.assertLessEqual(real("display", done_px).size(line)[0], room)
+
+    def test_ringing_slot_draws_a_200px_amber_ring(self):
+        calls = []
+        real = gs._paint_countdown_ring
+
+        def wrap(diameter, fraction, color, pulse):
+            calls.append((int(diameter), float(fraction), color))
+            return real(diameter, fraction, color, pulse)
+
+        gs._paint_countdown_ring = wrap
+        gs.TIMER_CHIPS[:] = [_timer("aaaa01", "orzo", -1, 60, ringing=True)]
+        try:
+            surf = pygame.Surface(PANEL)
+            gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+        finally:
+            gs._paint_countdown_ring = real
+        want = gs.recipe_px(gs.Layout(*PANEL), 200)
+        self.assertIn((want, 1.0, gs.AMBER), calls)
+
+    def test_hint_stop_and_banner_share_recipe_scale(self):
+        size = (1920, 1200)
+        L = gs.Layout(*size)
+        hints = []
+        real_hint = gs.draw_voice_hint
+
+        def wrap(surface, segments, x, y, px=36, max_w=None):
+            hints.append(int(px))
+            return real_hint(surface, segments, x, y, px=px, max_w=max_w)
+
+        banner_px = []
+        real_font = gs.font
+
+        def font(kind, px):
+            inner = real_font(kind, px)
+
+            class Recording:
+                def render(self, text, *args, **kwargs):
+                    if kind == "display" and "timer is done" in str(text):
+                        banner_px.append(int(px))
+                    return inner.render(text, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(inner, name)
+
+            return Recording()
+
+        gs.draw_voice_hint = wrap
+        gs.font = font
+        gs.TIMER_CHIPS[:] = [_timer("aaaa01", "orzo", -1, 60, ringing=True)]
+        try:
+            surf = pygame.Surface(size)
+            gs.draw_feed(surf, L, NOW, dict(RECIPE))
+        finally:
+            gs.draw_voice_hint = real_hint
+            gs.font = real_font
+        self.assertGreaterEqual(len(hints), 2)  # recipe hint and Say "stop"
+        self.assertTrue(all(px == gs.recipe_px(L, 48) for px in hints), hints)
+        self.assertEqual(banner_px, [gs.recipe_px(L, 54)])
+
+    def test_slide_repaint_is_faster_than_the_idle_tick(self):
+        gs._RAIL_SLIDE.clear()
+        gs._RAIL_SLIDE.update(sig=None, t0=0.0, before={}, positions=None)
+        gs._slide_offsets({"aaaa01": 0}, False, [216, 639, 1062])
+        gs._slide_offsets({"aaaa01": 1}, False, [216, 639, 1062])
+        self.assertTrue(gs.rail_slide_running())
+        self.assertEqual(gs.feed_frame_gap(True, False, False), 0.12)
+        self.assertEqual(gs.feed_frame_gap(False, False, False), 0.9)
+        self.assertEqual(gs.feed_frame_gap(True, False, True), 0.9)
+        gs._RAIL_SLIDE["t0"] = time.monotonic() - 1
+        self.assertFalse(gs.rail_slide_running())
+
+    def test_closing_or_opening_a_recipe_resets_the_slide(self):
+        gs.RECIPE_FEED_OPEN = True
+        gs.RECIPE_RAIL_ORDER[:] = ["stale"]
+        gs._RAIL_SLIDE.clear()
+        gs._RAIL_SLIDE.update(sig=(("stale", 0),), t0=1.0, before={"stale": 1}, positions={"stale": 0})
+        gs.arm_recipe_screen(False)
+        self.assertEqual(gs.RECIPE_RAIL_ORDER, [])
+        self.assertIsNone(gs._RAIL_SLIDE.get("positions"))
+        self.assertFalse(gs.RECIPE_FEED_OPEN)
+        gs.RECIPE_RAIL_ORDER[:] = ["stale"]
+        gs.arm_recipe_screen(True)
+        self.assertEqual(gs.RECIPE_RAIL_ORDER, [])
+        self.assertTrue(gs.RECIPE_FEED_OPEN)
+
+
+class ToneDriver(unittest.TestCase):
+    def setUp(self):
+        self.saved = (dict(gw.TIMERS), gw.play_file, gw.configured_wav, gw.LIVE.get("session"), gw.LIVE.get("play"))
+        gw.TIMERS.clear()
+        gw.LIVE["session"] = False
+        gw.LIVE["play"] = "dummy"
+        self.calls = []
+        gw.configured_wav = lambda key: "alarm.wav"
+        gw.play_file = lambda dev, path, block=False: self.calls.append(bool(block))
+
+    def tearDown(self):
+        saved, play, wav, session, dev = self.saved
+        gw.TIMERS.clear()
+        gw.TIMERS.update(saved)
+        gw.play_file = play
+        gw.configured_wav = wav
+        gw.LIVE["session"] = session
+        gw.LIVE["play"] = dev
+
+    def _ring(self, tid, elapsed, last=0.0):
+        now_m = 5000.0
+        gw.TIMERS[tid] = {"label": "orzo", "ringing": True, "tone_mono": now_m - elapsed, "tone_at": last,
+                          "due": 1, "mono_due": 1}
+        return now_m
+
+    def test_a_missed_gap_jumps_to_the_latest_mark(self):
+        now_m = self._ring("aaaa01", 65)
+        gw._tone_repeats(now_m)
+        self.assertEqual(self.calls, [False])
+        self.assertEqual(gw.TIMERS["aaaa01"]["tone_at"], 60.0)
+
+    def test_one_nonblocking_tone_covers_every_ringing_timer(self):
+        now_m = 5000.0
+        for i, tid in enumerate(("aaaa01", "aaaa02", "aaaa03")):
+            gw.TIMERS[tid] = {"label": "orzo", "ringing": True, "tone_mono": now_m - 15, "tone_at": 0.0,
+                              "due": 1, "mono_due": 1}
+        gw._tone_repeats(now_m)
+        self.assertEqual(self.calls, [False])
+        self.assertTrue(all(gw.TIMERS[tid]["tone_at"] == 10.0 for tid in ("aaaa01", "aaaa02", "aaaa03")))
+
+
+def _ensure_relay():
+    os.environ.setdefault("RELAY_TOKEN", "test-token")
+    os.environ.setdefault("XAI_API_KEY", "test-key")
+    os.environ.setdefault("NO_SPEECH", "1.0")
+    os.environ.setdefault("ALERT_DIR", os.path.join(tempfile.gettempdir(), "gs1311-alerts"))
+    os.environ.setdefault("PERSONAS_FILE", os.path.join(tempfile.gettempdir(), "gs1311-personas.json"))
+    sys.path.insert(0, os.path.join(ROOT, "relay"))
+    import relay
+    return relay
+
+
+class RelayPath(unittest.IsolatedAsyncioTestCase):
+    async def _drive(self, transcript, timers, recipe_post=None):
+        from aiohttp import web, WSMsgType
+        from aiohttp.test_utils import TestClient, TestServer
+        relay = _ensure_relay()
+        relay.stats["busy"] = 0
+        posted = []
+        real_post = relay.post_recipe_cmd
+        real_tts = relay.tts_pcm
+
+        async def no_tts(*args, **kwargs):
+            return None
+
+        def post(cmd):
+            posted.append(cmd)
+            if recipe_post is None:
+                return {"ok": False}
+            return recipe_post(cmd)
+
+        relay.post_recipe_cmd = post
+        relay.tts_pcm = no_tts
+        state = os.path.join(tempfile.mkdtemp(), "timers.json")
+        os.environ["GROK_TIMER_STATE"] = state
+        xapp = web.Application()
+
+        async def xai(req):
+            s = web.WebSocketResponse()
+            await s.prepare(req)
+            armed = True
+            async for m in s:
+                if m.type != WSMsgType.TEXT:
+                    continue
+                ev = json.loads(m.data)
+                if ev.get("type") == "session.update":
+                    await s.send_json({"type": "session.updated"})
+                elif ev.get("type") == "input_audio_buffer.clear":
+                    armed = True
+                elif ev.get("type") == "input_audio_buffer.append" and armed:
+                    armed = False
+                    await s.send_json({"type": "input_audio_buffer.speech_started"})
+                    await s.send_json({"type": "input_audio_buffer.speech_stopped"})
+                    await s.send_json({"type": "response.created"})
+                    await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
+                                       "transcript": transcript})
+                    await s.send_json({"type": "response.done"})
+            return s
+
+        xapp.router.add_get("/rt", xai)
+        xs = TestServer(xapp)
+        client = ws = mic = None
+        events = []
+        try:
+            await xs.start_server()
+            relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
+            rapp = web.Application()
+            rapp.router.add_get("/ws", relay.session)
+            client = TestClient(TestServer(rapp))
+            await client.start_server()
+            params = {"timers": json.dumps(timers)}
+            ws = await client.ws_connect("/ws", headers={"Authorization": "Bearer test-token"}, params=params)
+
+            async def pump():
+                while not ws.closed:
+                    await ws.send_bytes(b"\0\0" * 1920)
+                    await asyncio.sleep(0.05)
+
+            mic = asyncio.create_task(pump())
+            async for msg in ws:
+                if msg.type != WSMsgType.TEXT:
+                    continue
+                ev = json.loads(msg.data)
+                events.append(ev)
+                if ev.get("type") in ("turn_done", "done", "timeout", "error"):
+                    break
+        finally:
+            relay.post_recipe_cmd = real_post
+            relay.tts_pcm = real_tts
+            if mic:
+                mic.cancel()
+            if ws is not None and not ws.closed:
+                await ws.close()
+            if client is not None:
+                await client.close()
+            await xs.close()
+            relay.stats["busy"] = 0
+        return events, posted
+
+    async def test_session_stop_clears_a_ringing_timer(self):
+        timers = [{"id": "aaaa01", "label": "orzo", "left": 0, "ringing": True, "duration": 60}]
+        events, posted = await self._drive("stop", timers)
+        cancels = [e for e in events if e.get("type") == "timer_cancel"]
+        self.assertEqual([e.get("id") for e in cancels], ["aaaa01"])
+        replies = [e.get("text") for e in events if e.get("type") == "reply"]
+        self.assertIn("Stopped Orzo.", replies)
+        self.assertEqual(posted, [])
+
+    async def test_session_dismiss_with_nothing_ringing_drops_the_chip(self):
+        timers = [{"id": "aaaa04", "label": "rice", "left": 90, "ringing": False, "duration": 90}]
+
+        def recipe_post(cmd):
+            return {"ok": True, "say": "", "closed": False, "bot": "juniper", "step": 1}
+
+        events, posted = await self._drive("dismiss", timers, recipe_post=recipe_post)
+        self.assertEqual(posted, ["dismiss"])
+        self.assertFalse(any(e.get("type") == "timer_cancel" for e in events))
 
 
 if __name__ == "__main__":

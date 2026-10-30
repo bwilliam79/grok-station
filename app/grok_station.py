@@ -3313,22 +3313,34 @@ def recipe_frame(L):
     }
 
 
-def ease_out(u):
-    """cubic-bezier(.2, 0, 0, 1). 0 at the start, 1 at the end."""
-    u = 0.0 if u < 0 else (1.0 if u > 1 else float(u))
-
+def _bezier_ease(u):
+    """One sample of cubic-bezier(.2, 0, 0, 1). Used only to fill the lookup table."""
     def bez(t, a, b):
         omt = 1.0 - t
         return 3 * omt * omt * t * a + 3 * omt * t * t * b + t * t * t
 
     lo, hi = 0.0, 1.0
-    for _ in range(30):
+    for _ in range(24):
         mid = (lo + hi) / 2.0
         if bez(mid, 0.2, 0.0) < u:
             lo = mid
         else:
             hi = mid
     return bez((lo + hi) / 2.0, 0.0, 1.0)
+
+
+_EASE = tuple(_bezier_ease(i / 32.0) for i in range(33))
+
+
+def ease_out(u):
+    """cubic-bezier(.2, 0, 0, 1), from the table above. 0 at the start, 1 at the end."""
+    if u <= 0:
+        return 0.0
+    if u >= 1:
+        return 1.0
+    x = float(u) * 32.0
+    i = int(x)
+    return _EASE[i] + (_EASE[i + 1] - _EASE[i]) * (x - i)
 
 
 def rail_translate(before, after, elapsed_ms, reduced, slot_ys):
@@ -3447,6 +3459,8 @@ def recipe_rail(timers, epoch, order=None):
             "id": tid,
             "title": title,
             "text": "0:00" if ringing else fmt_timer_clock(left),
+            # TODO: a recipe timer linked to its step should say "From step 3" here.
+            # Skipped in 0.13.11 with the spoken offer and step-text time detection.
             "source": "Set by voice",
             "done": f"{title} is done",
             "fraction": 1.0 if ringing else round(_timer_fraction(t, left), 4),
@@ -3486,12 +3500,48 @@ def recipe_rail(timers, epoch, order=None):
 
 
 RECIPE_RAIL_ORDER = []
+RECIPE_FEED_OPEN = False
 _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
+# Recipe paint results. Same LAST_* pattern as the other screens, kept in one block.
 LAST_RECIPE_FRAME = None
 LAST_RECIPE_RAIL = None
 LAST_RECIPE_COPY = []
 LAST_BANNER_TEXT = ""
 SLOT_STOP_SEGMENTS = (("Say ", "muted"), ("stop", "phrase"))
+
+
+def arm_recipe_screen(showing):
+    """Drop rail order and the re-pack slide when a recipe opens or closes.
+
+    Both are process globals. Left alone, the next recipe's first frame slides in from the previous one.
+    """
+    global RECIPE_FEED_OPEN, RECIPE_RAIL_ORDER, _RAIL_SLIDE
+    showing = bool(showing)
+    if showing == RECIPE_FEED_OPEN:
+        return
+    RECIPE_RAIL_ORDER = []
+    _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
+    RECIPE_FEED_OPEN = showing
+
+
+def rail_slide_running(now=None):
+    """True during the 240 ms re-pack, and only when something actually changed slot."""
+    before = _RAIL_SLIDE.get("before") or {}
+    positions = _RAIL_SLIDE.get("positions")
+    if positions is None or before == positions or reduce_motion():
+        return False
+    t0 = _RAIL_SLIDE.get("t0") or 0.0
+    elapsed = ((time.monotonic() if now is None else now) - t0) * 1000.0
+    return elapsed < 240.0
+
+
+def feed_frame_gap(sliding, ringing, reduced):
+    """Seconds between repaints. A slide or a ringing pulse needs a frame inside the 240 ms move."""
+    if reduced:
+        return 0.9
+    if sliding or ringing:
+        return 0.12
+    return 0.9
 
 
 def sync_recipe_order(timers):
@@ -3587,6 +3637,28 @@ def _pulse_glow(surf, rect, pulse):
     surf.blit(shade, (rect.left - spread, rect.top - spread))
 
 
+def _ringing_done_line(title, width, face):
+    """'<Name> is done', with the name ellipsized so the whole line fits the slot. ' is done' stays whole."""
+    suffix = " is done"
+    if face.size(title + suffix)[0] <= width:
+        return title + suffix
+    return ellipsize(face, title, max(1, width - face.size(suffix)[0])) + suffix
+
+
+def fitted_step_lines(lines, face, width, height, gap):
+    """Lines that fit in the step box, whole lines only. A cut-off step ellipsizes the last one shown."""
+    line_h = face.get_height()
+    if line_h <= 0 or height < line_h or not lines:
+        return []
+    n = 0
+    while n < len(lines) and (n + 1) * line_h + n * gap <= height:
+        n += 1
+    shown = list(lines[:n])
+    if n < len(lines) and shown:
+        shown[-1] = ellipsize(face, shown[-1], width)
+    return shown
+
+
 def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     """One rail slot. Empty slots stay dashed; only slot 1 says "No timers"."""
     global LAST_RECIPE_COPY
@@ -3594,6 +3666,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     if slot.get("kind") == "empty":
         _dashed_rect(surf, RULE2, rect, max(1, recipe_px(L, 3)), recipe_px(L, 14), recipe_px(L, 10))
         if index == 0:
+            slot["label"] = "No timers"
             LAST_RECIPE_COPY.append("No timers")
             icon = _clock_icon(recipe_px(L, 64), RECIPE_FAINT)
             label = font("body", recipe_px(L, 40)).render("No timers", True, RECIPE_FAINT)
@@ -3627,12 +3700,19 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
         pygame.draw.rect(surf, AMBER, rect, max(1, recipe_px(L, 8)), border_radius=rad)
         if reduced:
             _static_outline(surf, rect, AMBER, recipe_px(L, 10), recipe_px(L, 6))
+        d = recipe_px(L, 200)
+        ring, _pad = _paint_countdown_ring(d, 1.0, AMBER, 0.0 if reduced else pulse)
+        ring_at = ring.get_rect(midtop=(rect.centerx, rect.top + recipe_px(L, 16)))
+        surf.blit(ring, ring_at)
         bell = _bell_icon(recipe_px(L, 72), AMBER)
-        surf.blit(bell, (rect.centerx - bell.get_width() // 2, rect.top + recipe_px(L, 48)))
-        done = font("display", recipe_px(L, 46)).render(slot.get("done") or "", True, AMBER)
-        LAST_RECIPE_COPY.append(slot.get("done") or "")
-        surf.blit(done, (rect.centerx - done.get_width() // 2, rect.centery - done.get_height() // 2))
-        hint_px = L(36)
+        surf.blit(bell, bell.get_rect(center=ring_at.center))
+        done_px = recipe_px(L, 46)
+        done_font = font("display", done_px)
+        done_text = _ringing_done_line(slot.get("title") or "", rect.w - recipe_px(L, 48), done_font)
+        done = done_font.render(done_text, True, AMBER)
+        LAST_RECIPE_COPY.append(done_text)
+        surf.blit(done, (rect.centerx - done.get_width() // 2, ring_at.bottom + recipe_px(L, 8)))
+        hint_px = recipe_px(L, 48)
         draw_voice_hint(surf, SLOT_STOP_SEGMENTS, rect.left + recipe_px(L, 28),
                         rect.bottom - recipe_px(L, 28) - font("body", hint_px).get_height(),
                         px=hint_px, max_w=rect.w - recipe_px(L, 56))
@@ -3665,8 +3745,6 @@ def _paint_recipe_rail(surf, L, frame, epoch=None):
     now = pinned if pinned is not None else time.time()
     order = sync_recipe_order(TIMER_CHIPS)
     rail = recipe_rail(TIMER_CHIPS, now, order)
-    if rail["slots"][0].get("kind") == "empty":
-        rail["slots"][0] = dict(rail["slots"][0], label="No timers")
     LAST_RECIPE_RAIL = rail
     reduced = reduce_motion()
     ys = [frame["slots"][i].y for i in range(3)]
@@ -3764,26 +3842,22 @@ def draw_recipe(surf, L, card):
     pygame.draw.rect(surf, LISTENING, (track.left, track.top, min(fill, track.w), track.h), border_radius=recipe_px(L, 8))
     text_box = pygame.Rect(sx, track.bottom + recipe_px(L, 36), col, recipe_px(L, 828))
     text_box = text_box.clip(stp)
-    surf.set_clip(text_box)
+    frame["step_text"] = text_box
     body_px = recipe_px(L, 112)
     f = font("display", body_px)
-    lines = wrap(f, card["steps"][step_n - 1], col)
+    gap = recipe_px(L, 8)
+    lines = fitted_step_lines(wrap(f, card["steps"][step_n - 1], col), f, col, text_box.h, gap)
+    surf.set_clip(text_box)
     ty = text_box.top
-    for i, line in enumerate(lines):
-        if ty > text_box.bottom:
+    for line in lines:
+        img = f.render(line, True, TEXT)
+        if ty + img.get_height() > text_box.bottom:
             break
-        shown = line if f.size(line)[0] <= col else ellipsize(f, line, col)
-        if i == len(lines) - 1 or ty + f.get_height() * 2 <= text_box.bottom:
-            img = f.render(shown, True, TEXT)
-        else:
-            img = f.render(ellipsize(f, shown, col), True, TEXT)
         surf.blit(img, (sx, ty))
-        ty += img.get_height() + recipe_px(L, 8)
-        if ty > text_box.bottom:
-            break
+        ty += img.get_height() + gap
     surf.set_clip(prev)
     hint = frame["hint"]
-    hint_px = L(36)
+    hint_px = recipe_px(L, 48)
     hy = hint.top + max(0, (hint.h - font("body", hint_px).get_height()) // 2)
     draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, hint.left, hy, px=hint_px, max_w=hint.w)
     _paint_recipe_rail(surf, L, frame)
@@ -5345,6 +5419,7 @@ def main():
         sd = setup["doc"]
         if sd:  # until setup is done this is the idle screen and the screen on wake (voice is off)
             LAST_TIMER_RECT = None
+            arm_recipe_screen(False)
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
@@ -5368,6 +5443,7 @@ def main():
         if tile_card:
             view_card = tile_card
         view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
+        arm_recipe_screen(view == "feed")
         ph = phase_now() if thinking() else 1.0
         if view == "session" and isinstance(msg, dict) and msg.get("state") == "enroll":
             disp.show(draw_enroll, now, msg, ph, wx, fade=fade, snapshot=snapshot)
@@ -5453,9 +5529,10 @@ def main():
             return
         now = time.time()
         on_timers = last_key and last_key[0] == "timers"
-        # The recipe rail pulses at 1 Hz too. Reduced motion is a static outline, so it can stay on the second tick.
-        fast_ring = any_timer_ringing() and not reduce_motion() and last_key and last_key[0] in ("timers", "feed")
-        gap = 0.12 if fast_ring else 0.9
+        on_feed = last_key and last_key[0] == "feed"
+        # A re-pack is 240 ms. Reduced motion stays on the slow tick; a slide or a ringing pulse does not.
+        gap = feed_frame_gap(bool(on_feed and rail_slide_running()),
+                             bool((on_feed or on_timers) and any_timer_ringing()), reduce_motion())
         if now - strip_at < gap:
             return
         strip_at = now
@@ -5515,8 +5592,10 @@ def main():
         if TIMER_CHIPS and not setup["doc"] and not (last_key and last_key[0] == "night"):
             on_timers = last_key and last_key[0] == "timers"
             on_recipe = last_key and last_key[0] == "feed"
-            if (on_timers or on_recipe) and any_timer_ringing() and not reduce_motion():
-                wait = min(wait, 0.12)  # amber pulse is 1 Hz; a few frames show the swell
+            gap = feed_frame_gap(bool(on_recipe and rail_slide_running()),
+                                 bool((on_recipe or on_timers) and any_timer_ringing()), reduce_motion())
+            if gap < 0.5:
+                wait = min(wait, gap)  # slide or amber pulse: a few frames inside 240 ms
             else:
                 delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss steps together
                 if delay < 0.05:

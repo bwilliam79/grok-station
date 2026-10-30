@@ -639,7 +639,7 @@ def _fold_utt(text):
 
 
 def _title_name(label):
-    """First letter only: the spoken stop line uses "Garlic bread", not "Garlic Bread"."""
+    """First letter only. Twin of grok_station.recipe_name; this process cannot import the display."""
     text = " ".join(str(label or "timer").split())[:24]
     return (text[:1].upper() + text[1:]) if text else "Timer"
 

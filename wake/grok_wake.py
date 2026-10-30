@@ -717,8 +717,34 @@ def alarm_repeat_due(elapsed, last):
     return elapsed + 1e-9 >= nxt
 
 
+def catchup_mark(last, elapsed):
+    """Latest repeat mark at or before elapsed, and after last. None when nothing new is due.
+
+    A gap (a conversation, a blocked tick) jumps here once. It does not walk the missed marks one step at a time.
+    """
+    try:
+        last = float(last)
+        elapsed = float(elapsed)
+    except (TypeError, ValueError):
+        return None
+    if not elapsed > last or elapsed < 10 or elapsed >= 3600:
+        return None
+    if elapsed <= 120:
+        mark = float(int(elapsed // 10) * 10)
+    elif elapsed < 180:
+        mark = 120.0
+    else:
+        mark = 120.0 + float(int((elapsed - 120) // 60) * 60)
+    if mark <= last or mark >= 3600:
+        return None
+    return mark
+
+
 def _tone_repeats(now_m):
-    """Replay the alarm on the schedule above. The spoken notice stays the first ring only."""
+    """One alarm for the tick, however many timers are due. Does not wait for playback.
+
+    Each due timer's mark jumps to the latest scheduled time at or before now, so a missed gap is not replayed.
+    """
     due = []
     with TIMERS_LOCK:
         for k, v in list(TIMERS.items()):
@@ -730,18 +756,17 @@ def _tone_repeats(now_m):
             last = v.get("tone_at")
             if isinstance(last, bool) or not isinstance(last, (int, float)):
                 last = 0.0
-            elapsed = float(now_m) - float(started)
-            if alarm_repeat_due(elapsed, last):
-                step = 10.0 if float(last) < 120 else 60.0
-                due.append((k, float(last) + step))
+            mark = catchup_mark(last, float(now_m) - float(started))
+            if mark is not None:
+                due.append((k, mark))
     if not due:
         return
     dev = LIVE.get("play")
     wav = configured_wav("ALARM_SOUND")
-    for k, mark in due:
-        if dev and wav:
-            play_file(dev, wav, block=True)
-        with TIMERS_LOCK:
+    if dev and wav:
+        play_file(dev, wav, block=False)
+    with TIMERS_LOCK:
+        for k, mark in due:
             cur = TIMERS.get(k)
             if isinstance(cur, dict):
                 cur["tone_at"] = mark
