@@ -3045,7 +3045,7 @@ function botsCalloutHTML(opts) {
   if (kind === "update") {
     const n = behind.length;
     const names = joinBotNames(behind.map(b => b.name || b.slug));
-    return `<div class="callout amb" id="botcallout">${ICO_ERR}<div class="tx"><div class="lbl">${n} bots need an update</div>` +
+    return `<div class="callout amb" id="botcallout">${ICO_ERR}<div class="tx"><div class="lbl">${n === 1 ? "1 bot needs an update" : n + " bots need an update"}</div>` +
       `<div class="help">${esc(names)} · Station routine is out of date. Updates keep their settings.</div></div>` +
       `<button class="btn p sm" id="updallbtn" type="button">Update all (${n})</button></div>`;
   }

@@ -46,7 +46,7 @@ class HoldSetupCallout(unittest.TestCase):
     def test_other_callouts_keep_their_order(self):
         self.assertIn("Add your main bot first", _html([], [{"name": "Otto"}, {"name": "Pip"}]))
         upd = _html(MAIN, [{"name": "Otto"}, {"name": "Pip"}], BEHIND)
-        self.assertIn("1 bots need an update", upd)
+        self.assertIn("1 bot needs an update", upd)
         self.assertIn('id="updallbtn"', upd)
         self.assertEqual(_html(MAIN, []), "")
 
