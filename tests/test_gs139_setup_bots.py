@@ -908,10 +908,6 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReviewOwnerEscaped(unittest.TestCase):
     """The owner name is escaped in the on-screen steps, like the bot name and computer."""
 
@@ -924,3 +920,8 @@ class ReviewOwnerEscaped(unittest.TestCase):
         blob = " ".join(json.loads(out.stdout))
         self.assertNotIn("<img", blob)
         self.assertIn("&lt;img src=x", blob)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
