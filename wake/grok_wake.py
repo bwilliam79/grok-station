@@ -58,7 +58,6 @@ train_flow = _load_train_flow()
 voice_train_plan = train_flow.voice_train_plan
 train_steps = train_flow.train_steps
 silent_clip = train_flow.silent_clip
-command_during = train_flow.command_during
 mic_stopped_line = train_flow.mic_stopped_line
 CANCEL_SAY = train_flow.CANCEL_SAY
 
@@ -1823,19 +1822,16 @@ def enroll(req, read16, play):
             show(i, "ready")
             for _ in range(int(LEAD_S / 0.08)):
                 read16()
-                command_during("lead", None)
             if i == 1:
                 for num in (3, 2, 1):
                     if ENROLL_STATE.get("discard"):
                         break
                     show(i, "count", str(num))
-                    command_during("count", None)
                     for _ in range(int(1.0 / 0.08)):
                         read16()
             if ENROLL_STATE.get("discard"):
                 break
             show(i, "recording")
-            command_during("recording", None)  # this window's samples stay in the clip
             raw = capture_enroll_clip(read16, play)
             clipped = is_clipped(raw)  # judged on the mic signal before software gain
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
@@ -1853,7 +1849,6 @@ def enroll(req, read16, play):
                     break
                 for _ in range(int(RETRY_S / 0.08)):
                     read16()
-                    command_during("gap", None)
                 continue
             if clipped or clip is None:
                 silent = 0
@@ -1864,7 +1859,6 @@ def enroll(req, read16, play):
                 _note_clip(i, sent, why, why, bool(prior), n)
                 for _ in range(int(RETRY_S / 0.08)):
                     read16()
-                    command_during("gap", None)
                 if tries >= 3 * n:
                     break
                 continue
@@ -1877,11 +1871,9 @@ def enroll(req, read16, play):
                 show(i, "saved", "next")
                 for _ in range(int(1.0 / 0.08)):
                     read16()
-                    command_during("gap", None)
                 show(i, "saved")
                 for _ in range(int((RETRY_S - 1.0) / 0.08)):
                     read16()
-                    command_during("gap", None)
             i += 1
         if ENROLL_STATE.get("silent_stop"):
             msg = ENROLL_STATE.pop("silent_stop")

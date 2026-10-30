@@ -96,13 +96,6 @@ def silent_clip(streak, bot):
     return {"action": "retry", "say": QUIET_SAY}
 
 
-def command_during(window, text):
-    """A recording window is never a command. The lead, countdown and gap are the same read."""
-    if window in ("recording", "gap", "lead", "count", "countdown"):
-        return None
-    return text
-
-
 def mic_stopped_line(bot):
     who = " ".join(str(bot or "").split()) or "the bot"
     return ("The microphone stopped while recording. "

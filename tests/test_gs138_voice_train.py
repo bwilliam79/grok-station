@@ -9,6 +9,7 @@ from a recording window is not a command.
 import inspect
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wake"))
@@ -78,18 +79,72 @@ class VoiceStart(unittest.TestCase):
             "Stopped. Say 'Hey Grok, train my wake word for Juniper' to try again.")
         self.assertEqual(gw.silent_clip(1, "Juniper")["action"], "retry")
 
-    def test_recording_window_audio_is_not_a_command(self):
-        said = "Hey Grok, train my wake word for Juniper"
-        self.assertIsNone(gw.command_during("recording", said))
-        self.assertIsNone(gw.command_during("recording", "Hey Grok, stop"))
-        # The 1.5 s gap is still inside enroll's capture read, so it is not a command either.
-        self.assertIsNone(gw.command_during("gap", "Hey Grok, stop"))
-        self.assertIsNone(gw.command_during("count", "stop"))
-        src = inspect.getsource(gw.enroll)
-        self.assertIn('command_during("recording"', src)
+    def test_enroll_never_scores_and_the_relay_ends(self):
+        """A recording window is not a command because enroll owns the mic.
+
+        scores() and Detector.feed never run during enroll. The relay speaks the
+        plan, posts the enrollment, and ends the session. It does not keep the turn
+        open for the model. command_during is not a gate: nothing calls it.
+        """
+        flow = open(os.path.join(os.path.dirname(gw.train_flow.__file__), "train_flow.py"), encoding="utf-8").read()
+        enroll_src = inspect.getsource(gw.enroll)
+        self.assertNotIn("def command_during", flow)
+        self.assertNotIn("command_during(", enroll_src)
+        self.assertNotIn("command_during(", inspect.getsource(gw.main))
+        self.assertFalse(hasattr(gw, "command_during"))
+
+        fed = []
+        old = (gw.scores, gw.Detector.feed, gw.post_state, gw.subprocess.Popen, gw.ENROLL_DIR,
+               gw.time.sleep, gw.ENROLL_STATE.get("last"), gw.ENROLL_STATE.get("busy"))
+        gw.scores = lambda *a, **k: fed.append("scores") or {}
+        gw.Detector.feed = lambda self, sc: fed.append("feed")
+        gw.post_state = lambda *a, **k: None
+        gw.subprocess.Popen = lambda *a, **k: None
+        gw.ENROLL_DIR = tempfile.mkdtemp()
+        gw.time.sleep = lambda s: None
+        gw.ENROLL_STATE["busy"] = False
+        gw.ENROLL_STATE["last"] = None
+
+        def read16(raw=False):
+            return gw.np.zeros(1280, gw.np.int16)
+
+        try:
+            gw.enroll({"phrase": "hey_juniper", "persona": "juniper", "count": 5, "voice": True}, read16, "default")
+        finally:
+            (gw.scores, gw.Detector.feed, gw.post_state, gw.subprocess.Popen, gw.ENROLL_DIR,
+             gw.time.sleep) = old[:6]
+            gw.ENROLL_STATE["last"] = old[6]
+            gw.ENROLL_STATE["busy"] = old[7]
+        self.assertEqual(fed, [])
+
         handle = inspect.getsource(gw.main)
-        self.assertLess(handle.find("enroll("), handle.find("scores("))
-        self.assertNotIn("train_wake_request", src)
+        enroll_at = handle.find("enroll(")
+        back = handle.find("return None", enroll_at)
+        self.assertLess(enroll_at, back)
+        self.assertLess(back, handle.find("sc = scores(", back))
+        self.assertLess(back, handle.find("det.feed(", back))
+
+        relay_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "relay")
+        sys.path.insert(0, relay_dir)
+        os.environ.setdefault("RELAY_TOKEN", "test-token")
+        os.environ.setdefault("XAI_API_KEY", "test-key")
+        already = "relay" in sys.modules
+        import relay
+        if not already:
+            self.addCleanup(sys.modules.pop, "relay", None)
+        plan = gw.voice_train_plan(JUNIPER, has_model=False)
+        result = relay.train_session_result(plan)
+        self.assertEqual(result["end"], "user ended")
+        self.assertEqual(result["done"], {"type": "done", "local": True})
+        self.assertEqual(result["enroll"]["phrase"], "hey_juniper")
+        self.assertEqual(result["enroll"]["voice"], True)
+        src = open(relay.__file__, encoding="utf-8").read()
+        i_train = src.find("train = train_wake_request(heard, connect_bots(roster, list_source_slug()))")
+        block = src[i_train:src.find("taken = recipe_taken(", i_train)]
+        self.assertIn("train_session_result(", block)
+        self.assertLess(block.find("post_wake_enroll("), block.find('return "user ended"'))
+        self.assertLess(block.find("train_session_result("), block.find("post_wake_enroll("))
+        self.assertNotIn("conversation.item", block)
 
 
 if __name__ == "__main__":

@@ -1704,6 +1704,20 @@ def _train_flow():
     return mod
 
 
+def train_session_result(plan):
+    """What one train plan does to this session.
+
+    Speak `say` when it is non-empty, post `enroll` when recording begins, then
+    end. The turn does not stay open for the model, so audio from the recording
+    window is never a command.
+    """
+    plan = plan if isinstance(plan, dict) else {}
+    say = str(plan.get("say") or "").strip()
+    body = plan.get("enroll")
+    enroll = body if plan.get("begin") and isinstance(body, dict) else None
+    return {"say": say, "enroll": enroll, "done": {"type": "done", "local": True}, "end": "user ended"}
+
+
 def wake_phrase_ready(phrase, opener=None):
     """True when the listener's status already lists this phrase. A miss is not trained."""
     if not isinstance(phrase, str) or not phrase:
@@ -2729,10 +2743,11 @@ async def session(req):
                             if st.get("responding") or st.get("xai_active"):
                                 await cancel_response()
                             plan = _train_flow().voice_train_plan(train, wake_phrase_ready(train.get("phrase")))
-                            if isinstance(plan, dict) and str(plan.get("say") or "").strip():
+                            result = train_session_result(plan)
+                            if result["say"]:
                                 voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
                                 await play_fixed(plan["say"], voice, TTS_SHORT_S)
-                            if isinstance(plan, dict) and plan.get("begin") and plan.get("enroll"):
+                            if result["enroll"]:
                                 post_wake_enroll(plan["enroll"])
                             log("train wake")  # no phrase, no name
                             await pi.send_json({"type": "done", "local": True})
