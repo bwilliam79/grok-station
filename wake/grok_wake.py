@@ -1968,7 +1968,7 @@ def enroll(req, read16, play):
             enroll_stage("failed", mic_stopped_line(label), phrase, ses)
         shutil.rmtree(d, ignore_errors=True)
         if train_flow is not None and (ENROLL_STATE.get("last") or {}).get("stage") == "failed":
-            post_state("notice", text=train_flow.mic_stopped_station_line(label))  # leaves enroll mode
+            post_state("notice", text=train_flow.mic_stopped_station_line(persona_name(persona)))  # leaves enroll mode
         else:
             post_state("idle")  # take the display out of enroll mode
         raise

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "relay"))
 import train_flow as tf  # noqa: E402
 
 VOICE_STOP = "Stopped. Say 'Hey Grok, train my wake word for Juniper' to try again."
-MIC_STATION = "The microphone stopped while recording. Say 'Hey Grok, train my wake word for Juniper' to try again."
+MIC_STATION = 'The microphone stopped while recording. Say "Hey Grok, train my wake word for Juniper" to try again.'
 MIC_ADMIN = ("The microphone stopped while recording. "
              "Say 'Hey Grok, train my wake word for Juniper' or press Record voice to try again.")
 
@@ -43,7 +43,7 @@ class StationLines(unittest.TestCase):
         wake = _src("wake/grok_wake.py")
         self.assertIn('ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])', wake)
         self.assertIn('post_state("notice", text=station_msg)', wake)
-        self.assertIn('post_state("notice", text=train_flow.mic_stopped_station_line(label))', wake)
+        self.assertIn('post_state("notice", text=train_flow.mic_stopped_station_line(persona_name(persona)))', wake)
 
     def test_station_renderer_never_says_record_voice(self):
         self.assertNotIn("Record voice", _src("app/grok_station.py"))

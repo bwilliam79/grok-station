@@ -117,4 +117,4 @@ def mic_stopped_station_line(bot):
     """The station tile after a mic stop. Record voice is an admin-dialog string (rev1.3 copy deck)."""
     who = " ".join(str(bot or "").split()) or "the bot"
     return ("The microphone stopped while recording. "
-            "Say 'Hey Grok, train my wake word for %s' to try again." % who)
+            "Say \"Hey Grok, train my wake word for %s\" to try again." % who)  # rev1.4 deck, <bot> = display name
