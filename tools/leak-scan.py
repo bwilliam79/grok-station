@@ -22,9 +22,8 @@ import sys
 #   else ~/.config/grok-station/leak-terms (mode 0600, never committed).
 # Missing list: warning locally, failure in CI (fail closed).
 TERMS_FILE = os.environ.get("LEAK_TERMS_FILE") or os.path.expanduser("~/.config/grok-station/leak-terms")
-# Hostname rule kept in the repo: whole word or dotted hostname piece only,
-# so package names such as libgl1-mesa-dri pass.
-WORDS = {"mesa"}
+# Whole-word / dotted-hostname-piece rule set (currently empty; mechanism kept).
+WORDS = set()
 
 
 def load_terms():

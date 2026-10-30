@@ -86,8 +86,22 @@ class TermTests(unittest.TestCase):
 
     def test_real_terms_clean_text(self):
         self.assertFalse(hit("the home machine relays replies to the station"))
-        self.assertTrue(ls.term_hit("ssh mesa.local", set()))
-        self.assertFalse(ls.term_hit("libgl1-mesa-dri", set()))
+
+    def test_retired_mesa_rule_no_longer_flags(self):
+        # G2: Brandon retired every mesa rule (Oct 30); Nix ruled the repo word rule dropped.
+        self.assertEqual(ls.WORDS, set())
+        for line in ("ssh mesa.local", "mesa", "libgl1-mesa-dri"):
+            self.assertFalse(ls.term_hit(line, set()), line)
+        self.assertEqual(run("ssh mesa.local\n").returncode, 0)
+
+    def test_word_rule_mechanism_kept(self):
+        # The whole-word / dotted-piece mechanism stays: a word passed in still flags, a package name doesn't.
+        self.assertTrue(ls.term_hit("ssh quux.local", set(), words={"quux"}))
+        self.assertFalse(ls.term_hit("libgl1-quux-dri", set(), words={"quux"}))
+
+    def test_inline_allow_still_refused_for_email(self):
+        # A bare 'leak-guard: allow' on the line does not excuse a personal email.
+        self.assertEqual(run("leak-guard: allow a@gmail.com\n").returncode, 1)
 
 
 class RuleTests(unittest.TestCase):
