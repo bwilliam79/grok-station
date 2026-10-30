@@ -3870,7 +3870,7 @@ def enroll_copy(phrase, i, n, stage, extra):
         return "Try again", "I didn't hear it. Again after the chime.", MUTED, f"{i} of {n}" if n else clip, bar
     if stage == "saved":
         if n and i >= n and extra != "next":
-            return "Saved. Checking the recordings.", "", MUTED, f"{i} of {n}", 1.0
+            return "Saved. Checking the recordings.", "", MUTED, None, 1.0  # the deck: this line only, 4 s
         sub = "Next" if extra == "next" and i < n else ""
         return f"{i} of {n} saved", sub, MUTED, f"{i} of {n}" if n else None, i / n if n else None
     if stage == "uploaded":
@@ -4323,12 +4323,15 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     prog = pygame.Rect(col_x, tile.y + zpx(L, 521) + shift, col_w, max(1, zpx(L, 88)))
     LAST_ENROLL_PROGRESS = pygame.Rect(prog)
     surf.set_clip(prog.clip(tile))
-    _draw_progress(surf, L, prog, col_w, stage, i, status)
+    # The success tile (last clip saved) shows only its line: no progress, no quiet hint (rev1.3 copy deck).
+    success = stage == "saved" and n and i >= n and extra != "next"
+    if not success:
+        _draw_progress(surf, L, prog, col_w, stage, i, status)
     act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
     _draw_actions(surf, L, tile, act, col_w, stage)
-    if stage in _QUIET_HINT_STAGES:
+    if stage in _QUIET_HINT_STAGES and not success:
         _draw_quiet_hint(surf, L, act, col_w)
     surf.set_clip(prev)
     _draw_enroll_chips(surf, L)

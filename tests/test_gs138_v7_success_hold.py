@@ -58,7 +58,7 @@ class SuccessHold(unittest.TestCase):
         self.assertEqual(gs.state_hold("enroll", False, "4/5|saved|next"), 30)
         self.assertEqual(gs.state_hold("enroll", False, "0/5|passed|"), 10)
         head, sub, _color, status, _bar = gs.enroll_copy("Juniper", 5, 5, "saved", "")
-        self.assertEqual((head, sub, status), (SUCCESS, "", "5 of 5"))
+        self.assertEqual((head, sub, status), (SUCCESS, "", None))  # L1: no stale progress line
         self.assertEqual(gs.enroll_copy("Juniper", 4, 5, "saved", "next")[0], "4 of 5 saved")
         seen = []
         real = gs.font
