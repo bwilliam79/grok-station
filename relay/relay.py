@@ -3876,14 +3876,17 @@ def updates_pause_reply(heard, st, now=None):
     return action, UPDATES_PAUSE_SAY[action]
 
 
-# Same words the admin UI uses when the station doesn't answer (app.js offline notes).
-STATION_UNREACHABLE_SAY = "Can't reach the station."
+# Spoken when the station didn't accept the request: say what didn't happen (Noor; matches "I couldn't reach {name}.").
+STATION_UNREACHABLE_SAY = {
+    "pause": "I couldn't reach the station, so updates aren't paused.",
+    "resume": "I couldn't reach the station, so updates are still paused.",
+}
 
 
 def updates_pause_send(pause_hit, post=None):
     """POST updates_pause; "Updates paused/resumed." only when the station accepted it (200)."""
     status = post_station_show({"v": 1, "op": "updates_pause", "on": pause_hit[0] == "pause"}, post=post)
-    return pause_hit[1] if status == 200 else STATION_UNREACHABLE_SAY
+    return pause_hit[1] if status == 200 else STATION_UNREACHABLE_SAY[pause_hit[0]]
 
 
 def offer_missed_say(out):

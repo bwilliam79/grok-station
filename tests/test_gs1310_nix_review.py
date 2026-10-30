@@ -35,13 +35,20 @@ class UpdatesPauseConfirmsOnlyOnAccept(unittest.TestCase):
         for status in (503, 401, 500):
             out = self.say(status)
             self.assertNotEqual(out, "Updates paused.")
-            self.assertEqual(out, "Can't reach the station.")
+            self.assertEqual(out, "I couldn't reach the station, so updates aren't paused.")
+
+    def test_unreachable_resume_says_still_paused(self):
+        for status in (503, 401, 500):
+            out = self.say(status, "resume")
+            self.assertNotEqual(out, "Updates resumed.")
+            self.assertEqual(out, "I couldn't reach the station, so updates are still paused.")
 
     def test_turn_uses_the_checked_send(self):
         src = open(os.path.join(ROOT, "relay", "relay.py")).read()
         self.assertNotRegex(src, r'post_station_show, \{"v": 1, "op": "updates_pause"')
 
-    def test_wording_is_existing_admin_copy(self):
+    def test_admin_ui_copy_unchanged(self):
+        # Noor: spoken lines say what didn't happen; the admin UI keeps its own copy.
         js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
         self.assertIn("Can't reach the station.", js)
 
