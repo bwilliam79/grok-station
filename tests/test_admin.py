@@ -1091,6 +1091,10 @@ class StepUp(unittest.TestCase):
     URL, KEY = Bots.URL, Bots.KEY
 
     def setUp(self):
+        # P7: grace tests write update-settings.json in the shared state dir; put it back so a later test
+        # (test_update_flow's session round trip) never inherits password_grace_min 0.
+        sp = ga._settings_path()
+        self._settings = open(sp, "rb").read() if os.path.exists(sp) else None
         self._clock = CLOCK[0]
         CLOCK[0] = 9 * 3600 + 50 * 60  # 09:50; a window opened now closes at 10:00
         self.c = signed_in()
@@ -1109,6 +1113,13 @@ class StepUp(unittest.TestCase):
     def tearDown(self):
         ga.relay_call = self._rc
         CLOCK[0] = self._clock
+        sp = ga._settings_path()
+        if self._settings is None:
+            if os.path.exists(sp):
+                os.remove(sp)
+        else:
+            with open(sp, "wb") as fh:
+                fh.write(self._settings)
 
     def _save(self, password=GOOD):
         body = {"url": self.URL, "key": self.KEY}
