@@ -270,5 +270,17 @@ class N6EditButtonHeight(unittest.TestCase):
         self.assertRegex(m.group(1), r"display:inline-(flex|block)")
 
 
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class N7MainBodyCapital(unittest.TestCase):
+    def test_fallback_is_capitalised_at_sentence_start(self):
+        got = _run("setupCopy('your main bot', 'Otto').mainBody")
+        self.assertEqual(got, "Your main bot needs the latest station instructions before it can pass setup to other bots.")
+        named = _run("setupCopy('Juniper', 'Otto')")
+        self.assertTrue(named["mainBody"].startswith("Juniper needs"))
+        # Mid-sentence uses stay lowercase.
+        self.assertIn("what your main bot passes on", _run("setupCopy('your main bot', 'Otto').intro"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3033,7 +3033,7 @@ function setupCopy(main, bot) {
     again: "Still can't reach " + main + ".",
     testLink: "Test " + main + "'s connection",
     mainTitle: "Update " + main + " first",
-    mainBody: main + " needs the latest station instructions before it can pass setup to other bots.",
+    mainBody: (main === "your main bot" ? "Your main bot" : main) + " needs the latest station instructions before it can pass setup to other bots.",
     mainBtn: "Update " + main,
     block: "Update " + main + " first",
     stuck: "No OK card yet?"
