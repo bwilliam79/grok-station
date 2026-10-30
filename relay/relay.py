@@ -2747,6 +2747,29 @@ async def session(req):
                                 await cancel_response()
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"
+                        # "stop" / "dismiss timer" / "stop the timer" clear every ringing timer.
+                        # Bare "dismiss" clears the one that ended first, before a recipe chip.
+                        cleared = station_tools.clear_ringing_utterance(heard, st.get("timers"), timer_clock.now())
+                        if cleared:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            for pi_msg in cleared["messages"]:
+                                await pi.send_json(pi_msg)
+                            now_t = timer_clock.now()
+                            station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            if cleared.get("say"):
+                                await play_fixed(cleared["say"], voice, TTS_REPLY_S)
+                            st["release_model"] = not persona_routed(st["persona"])
+                            log("timer dismiss")  # no names
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         # "Train my wake word for <bot>" speaks the intro and queues recording.
                         # It does not reach the model. "stop" above still ends a normal session.
                         # Words inside the later recording window are not commands: enroll owns the mic.
@@ -2964,9 +2987,9 @@ async def session(req):
                             for tid in dropped:  # hour-late: the station would drop it quietly; free the slot there too
                                 await pi.send_json({"type": "timer_cancel", "id": tid})
                             out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
-                            # card or timer message; a failed tool sends nothing. Log the name and verdict only.
-                            if out.get("ok") and isinstance(to_pi, dict) and to_pi.get("type") in ("card", "timer_set", "timer_cancel"):
-                                await pi.send_json(to_pi)
+                            # card or timer message; a failed tool sends nothing. stop-all is one message per timer.
+                            for pi_msg in station_tools.pi_timer_messages(to_pi):
+                                await pi.send_json(pi_msg)
                             if due_changed or dropped or (ev.get("name") in ("set_timer", "cancel_timer", "extend_timer") and out.get("ok")):
                                 station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
                             log(f"tool {ev['name']} ok={out.get('ok')}")  # name and verdict only

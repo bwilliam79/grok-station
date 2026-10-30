@@ -95,7 +95,8 @@ SPECS = [
         ("seconds",)),
     _fn("list_timers", "List running and ringing timers. Index 1 is the one ringing, or the one finishing soonest."),
     _fn("cancel_timer", "Cancel a running timer or dismiss one that is ringing. Match by name "
-        "(pasta, the pasta timer) or by index (1, second). With no name, stop dismisses the ringing timer, or the only one.",
+        "(pasta, the pasta timer) or by index (1, second). stop, dismiss timer, and stop the timer "
+        "dismiss every ringing timer at once. With no name otherwise, dismiss the ringing timer, or the only one.",
         {"label": {"type": "string", "description": "Name, index, or stop. Omit to dismiss the ringing timer or the only one."},
          "index": {"type": "integer", "description": "1-based index from list_timers. Optional."}}),
     _fn("extend_timer", "Add time to a timer by name or index. A ringing timer starts running again.",
@@ -623,8 +624,88 @@ def list_timers(timers, now):
     return {"ok": True, "timers": out}
 
 
+_ALL_RINGING = ("stop", "stop the timer", "dismiss timer", "dismiss the timer")
+
+
+def _fold_utt(text):
+    """Same folding as a recipe command: case, a leading hey-name, and a trailing please."""
+    t = str(text or "").replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    t = " ".join(t.casefold().split())
+    t = re.sub(r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?)[, ]+", "", t).strip()
+    t = t.strip(" \t.!?")
+    if t.endswith(" please"):
+        t = t[: -len(" please")].strip(" \t.!?")
+    return t
+
+
+def _title_name(label):
+    """First letter only: the spoken stop line uses "Garlic bread", not "Garlic Bread"."""
+    text = " ".join(str(label or "timer").split())[:24]
+    return (text[:1].upper() + text[1:]) if text else "Timer"
+
+
+def stopped_say(names):
+    """Grok's confirmation. "Stopped Orzo, Garlic bread and Timer." """
+    names = [str(n) for n in names if str(n).strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"Stopped {names[0]}."
+    if len(names) == 2:
+        return f"Stopped {names[0]} and {names[1]}."
+    return "Stopped " + ", ".join(names[:-1]) + " and " + names[-1] + "."
+
+
+def _ringing_rows(timers, now):
+    """Ringing timers, earliest deadline first. note_due runs inside live_rows."""
+    return [(k, t) for k, t in live_rows(timers, now) if isinstance(t, dict) and t.get("ringing")]
+
+
+def clear_ringing_utterance(text, timers, now):
+    """Dismiss ringing timers from a whole utterance.
+
+    "stop", "dismiss timer", and "stop the timer" clear every ringing timer.
+    Bare "dismiss" clears the one that ended first (a recipe chip waits until none are ringing).
+    "clear that" and a dismiss with nothing ringing return None so the chip path still runs.
+    Running timers stay.
+    """
+    if not isinstance(timers, dict):
+        return None
+    utt = _fold_utt(text)
+    if utt not in _ALL_RINGING and utt != "dismiss":
+        return None
+    ringing = _ringing_rows(timers, now)
+    if not ringing:
+        return None
+    picked = ringing if utt in _ALL_RINGING else ringing[:1]
+    ids, names, messages = [], [], []
+    for k, t in picked:
+        ids.append(k)
+        names.append(_title_name(t.get("label")))
+        messages.append({"type": "timer_cancel", "id": k})
+        timers.pop(k, None)
+    return {"ids": ids, "messages": messages, "say": stopped_say(names), "all": utt in _ALL_RINGING}
+
+
+def pi_timer_messages(to_pi):
+    """One Pi message, or the list a stop-all cancel returns."""
+    msgs = to_pi if isinstance(to_pi, list) else ([to_pi] if isinstance(to_pi, dict) else [])
+    return [m for m in msgs if isinstance(m, dict) and m.get("type") in ("card", "timer_set", "timer_cancel")]
+
+
 def cancel_timer(args, timers, now):
-    hits, err = resolve_timer(args if isinstance(args, dict) else {}, timers, now)
+    args = args if isinstance(args, dict) else {}
+    if _fold_utt(args.get("label")) in _ALL_RINGING:
+        ringing = _ringing_rows(timers, now)
+        if len(ringing) > 1:
+            raw, names, messages = [], [], []
+            for k, t in ringing:
+                raw.append(t.get("label") or "timer")
+                names.append(_title_name(t.get("label")))
+                messages.append({"type": "timer_cancel", "id": k})
+                timers.pop(k, None)
+            return {"ok": True, "cancelled": raw, "say": stopped_say(names)}, messages
+    hits, err = resolve_timer(args, timers, now)
     tid, bad, _ = _one_hit(hits, timers, err)
     if bad:
         return bad, None

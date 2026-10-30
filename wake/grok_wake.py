@@ -676,6 +676,8 @@ def _ring_one(k, v):
             dropped = True
         else:
             cur["ringing"] = True
+            cur["tone_mono"] = time.monotonic()
+            cur["tone_at"] = 0.0
             timers_save()
             dropped = False
     if dropped:
@@ -695,15 +697,66 @@ def _ring_one(k, v):
                 timers_save()
 
 
+def alarm_repeat_due(elapsed, last):
+    """True when a ringing timer should chime again.
+
+    The ring itself is the tone at elapsed 0 (`last` 0). Then every 10 s through 2 minutes,
+    then every 60 s. Nothing at or after the one-hour drop.
+    """
+    try:
+        elapsed = float(elapsed)
+        last = float(last)
+    except (TypeError, ValueError):
+        return False
+    if elapsed >= 3600 or not elapsed > last:
+        return False
+    step = 10.0 if last < 120 else 60.0
+    nxt = last + step
+    if nxt >= 3600:
+        return False
+    return elapsed + 1e-9 >= nxt
+
+
+def _tone_repeats(now_m):
+    """Replay the alarm on the schedule above. The spoken notice stays the first ring only."""
+    due = []
+    with TIMERS_LOCK:
+        for k, v in list(TIMERS.items()):
+            if not isinstance(v, dict) or not v.get("ringing"):
+                continue
+            started = v.get("tone_mono")
+            if isinstance(started, bool) or not isinstance(started, (int, float)):
+                continue
+            last = v.get("tone_at")
+            if isinstance(last, bool) or not isinstance(last, (int, float)):
+                last = 0.0
+            elapsed = float(now_m) - float(started)
+            if alarm_repeat_due(elapsed, last):
+                step = 10.0 if float(last) < 120 else 60.0
+                due.append((k, float(last) + step))
+    if not due:
+        return
+    dev = LIVE.get("play")
+    wav = configured_wav("ALARM_SOUND")
+    for k, mark in due:
+        if dev and wav:
+            play_file(dev, wav, block=True)
+        with TIMERS_LOCK:
+            cur = TIMERS.get(k)
+            if isinstance(cur, dict):
+                cur["tone_at"] = mark
+
+
 def timers_tick():
-    """One pass: clear finished rings, start due ones when the speaker is free."""
+    """One pass: clear finished rings, start due ones when the speaker is free, then repeat the tone."""
     _expire_rings(time.time())
     with TIMERS_LOCK:
         due = [(k, dict(v)) for k, v in TIMERS.items() if not v.get("ringing") and _timer_left(v) <= 0]
-    if not due or LIVE["session"] or not LIVE["play"]:
-        return
-    for k, v in due:
-        _ring_one(k, v)
+    if due and not LIVE["session"] and LIVE["play"]:
+        for k, v in due:
+            _ring_one(k, v)
+    if not LIVE["session"] and LIVE["play"]:
+        _tone_repeats(time.monotonic())
 
 
 def timers_loop():
