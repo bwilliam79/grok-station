@@ -4079,6 +4079,8 @@ def _enroll_actions(stage):
         return [("done", "Done", True, False)], False
     if stage == "failed":
         return [("more", "Record 5 more", True, False), ("dismiss", "Not now", False, True)], False
+    if stage in ("queued", "uploaded", "custom"):  # plain text, auto-close only: the station has no touch input
+        return [], False
     return [("close", "Close", False, False)], False
 
 
