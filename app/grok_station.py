@@ -2360,9 +2360,12 @@ def state_event(j):
     heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
     who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
+    raw_hold = j.get("hold_s")
+    # Only an exact 4 s hold is honored, and only for the built-in Grok line. Anything else is a normal hold.
+    hold_s = 4 if (not isinstance(raw_hold, bool) and isinstance(raw_hold, (int, float)) and raw_hold == 4) else None
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
             "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
-            "speech": speech}
+            "speech": speech, "hold_s": hold_s}
 
 
 def speech_progress(raw):
@@ -3882,12 +3885,15 @@ def enroll_copy(phrase, i, n, stage, extra):
     return f"Say {q}" if phrase else "Wake word setup", extra, MUTED, clip if n else None, bar
 
 
-def state_hold(state, done, heard=""):
+def state_hold(state, done, heard="", hold_s=None):
     """Seconds a voice state stays up.
 
     A finished reply (done) keeps REPLY_HOLD. Passed, uploaded and error enrollment screens hold 10 s.
     Every other enrollment stage keeps the 30 s cap in VOICE_HOLDS.
+    hold_s 4 is only the built-in Grok wake-word line: it does not use the notice or reply holds.
     """
+    if hold_s == 4:
+        return 4
     if done:
         return REPLY_HOLD
     if state == "enroll":
@@ -4994,7 +5000,7 @@ def main():
                 tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
-                hold = state_hold(ev.state, bool(ev.done), getattr(ev, "heard", "") or "")
+                hold = state_hold(ev.state, bool(ev.done), getattr(ev, "heard", "") or "", getattr(ev, "hold_s", None))
                 new = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 kept = merge_card(msg.get("card") if msg else None, getattr(ev, "has_card", False), getattr(ev, "card", None), bool(ev.done))
                 if kept:

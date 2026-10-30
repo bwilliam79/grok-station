@@ -2606,6 +2606,7 @@ class Session:
     def run(self):
         from websockets.sync.client import connect
         player, out, t0 = None, [], time.time()
+        builtin_hold = False  # the built-in Grok line: notice for 4 s, not a reply hold and not idle
         try:
             for attempt in (1, 2):  # one retry: a cold mDNS lookup can stall the first connect
                 try:
@@ -2769,6 +2770,12 @@ class Session:
                                 # this session. Leave the tile up and skip the end tone, the same as the Bots
                                 # page button (0.13.7: idle here closed the tile with the hang-up tone).
                                 self._end_played = True
+                            elif ev.get("hold_s") == 4 and str(ev.get("text") or "").strip():
+                                # Grok's wake word is built in. Show that one line for 4 s. Do not go idle
+                                # and do not replace it with the finished-reply hold after playback.
+                                builtin_hold = True
+                                self.reply = str(ev.get("text") or "").strip()
+                                self.state("notice", text=self.reply, hold_s=4)
                             else:
                                 post_state("idle")  # local exit has no audio; do not leave thinking up
                             break
@@ -2779,7 +2786,6 @@ class Session:
                         elif t == "error":
                             self.state("error", text="Can’t reach Grok right now.")
                         break
-            self.feeding = False
             self.t1_card = None  # session over: the card goes (the relay records an undecided read-back as declined)
             if player:
                 player.stdin.close()
@@ -2787,7 +2793,9 @@ class Session:
                 self._release_reply()
                 player = None
                 self.stop_speech_clock()
-                self.state("speaking", heard=self.heard, text=self.reply or "…", done=True)
+                if not builtin_hold:
+                    self.state("speaking", heard=self.heard, text=self.reply or "…", done=True)
+            self.feeding = False
             print(f"session over in {time.time() - t0:.1f}s", flush=True)
         except Exception as e:
             print(f"session failed: {type(e).__name__}", flush=True)

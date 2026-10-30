@@ -9,6 +9,8 @@ RETRY_S = 1.5
 CANCEL_SAY = "Stopped. Nothing new was saved."
 QUIET_SAY = "I didn't hear it. Again after the chime."
 COUNT_CAPTION = "Recording in 3…"
+GROK_BUILTIN_SAY = ("Grok's wake word is built in and can't be trained. "
+                    "Say a bot's name to train its wake word.")
 
 
 def wake_speak_label(phrase, name=""):
@@ -29,8 +31,8 @@ def wake_speak_label(phrase, name=""):
 def voice_train_plan(hit, has_model=False):
     """What one train sentence does. A matched phrase starts at get-ready, not the prompt tile.
 
-    An unknown name is spoken and does not open a tile. Grok has no trainable phrase,
-    so that sentence does not record and does not wait on Start.
+    An unknown name is spoken and does not open a tile. Grok's wake word is built in:
+    that sentence is spoken once, shown for 4 s, and does not record.
     """
     hit = hit if isinstance(hit, dict) else {}
     slug = str(hit.get("slug") or "")
@@ -40,7 +42,10 @@ def voice_train_plan(hit, has_model=False):
         who = spoken or "that"
         return {"begin": False, "phase": None, "say": "I don't have a bot called %s." % who,
                 "enroll": None, "tile": False}
-    if not phrase or phrase == "hey_grok":
+    if slug == "grok" or phrase == "hey_grok":
+        return {"begin": False, "phase": None, "say": GROK_BUILTIN_SAY,
+                "enroll": None, "tile": False, "hold_s": 4}
+    if not phrase:
         return {"begin": False, "phase": None, "say": "", "enroll": None, "tile": False}
     label = wake_speak_label(phrase, hit.get("name"))
     topup = bool(has_model)

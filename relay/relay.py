@@ -1715,7 +1715,12 @@ def train_session_result(plan):
     say = str(plan.get("say") or "").strip()
     body = plan.get("enroll")
     enroll = body if plan.get("begin") and isinstance(body, dict) else None
-    return {"say": say, "enroll": enroll, "done": {"type": "done", "local": True}, "end": "user ended"}
+    out = {"say": say, "enroll": enroll, "done": {"type": "done", "local": True}, "end": "user ended"}
+    # Only the built-in Grok line holds for 4 s. A normal train turn still ends with the two-key done.
+    if plan.get("hold_s") == 4 and say and not enroll:
+        out["hold_s"] = 4
+        out["done"] = {"type": "done", "local": True, "hold_s": 4, "text": say}
+    return out
 
 
 def wake_phrase_ready(phrase, opener=None):
@@ -2746,11 +2751,17 @@ async def session(req):
                             result = train_session_result(plan)
                             if result["say"]:
                                 voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
-                                await play_fixed(plan["say"], voice, TTS_SHORT_S)
+                                # The built-in Grok sentence is longer than a 6 s filler. One speak, no enroll.
+                                cap = TTS_REPLY_S if result.get("hold_s") == 4 else TTS_SHORT_S
+                                await play_fixed(plan["say"], voice, cap)
                             if result["enroll"]:
                                 post_wake_enroll(plan["enroll"])
                             log("train wake")  # no phrase, no name
-                            await pi.send_json({"type": "done", "local": True})
+                            done = {"type": "done", "local": True}
+                            if result.get("hold_s") == 4:
+                                done["hold_s"] = 4
+                                done["text"] = result["say"]
+                            await pi.send_json(done)
                             return "user ended"
                         # Recipe card commands are station-local. Match before "heard" (that would
                         # show thinking) and before any bot route or model reply. No card: fall through.
