@@ -741,6 +741,40 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 .vnfix.ok{border-color:rgba(63,211,182,.4)}
 .vnfix.ok .vnwarn{color:#3FD3B6}
 .vnchip.bad{box-shadow:inset 0 0 0 1px #F5C04A}
+.setl{list-style:none;margin:0;padding:0}
+.setl>li{border-bottom:1px solid var(--gs-rule);padding:12px 4px}
+.setl>li:last-child{border-bottom:0}
+.setr{display:grid;grid-template-columns:44px minmax(0,1fr) auto auto;gap:14px;align-items:center}
+.disc{display:inline-flex;align-items:center;gap:6px;min-height:38px;padding:0 12px;border-radius:10px;border:1px solid transparent;background:none;color:var(--gs-text);font:500 var(--fs-help) var(--body);cursor:pointer}
+.disc:hover{background:var(--gs-surface-2)}
+.disc:focus-visible{outline:3px solid var(--gs-teal);outline-offset:2px}
+.sendc2{display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:150px}
+.sendc2 .btn[aria-disabled="true"]{opacity:.55;cursor:not-allowed}
+.racts{display:flex;gap:8px;justify-content:flex-end}
+.steps{margin:12px 0 4px 58px;padding:14px 18px 14px 36px;background:var(--gs-bg);border:1px solid var(--gs-rule-2);border-radius:12px;font-size:var(--fs-help);line-height:1.6}
+.steps mark{background:var(--gs-teal-bg);color:var(--gs-teal);border-bottom:2px solid var(--gs-teal);padding:0 3px;border-radius:3px}
+.stnote{margin:6px 0 0 58px;font-size:var(--fs-help);color:var(--gs-muted)}
+.tlnk{font:inherit;color:var(--gs-teal);text-decoration:underline;background:none;border:0;padding:0 4px;cursor:pointer}
+.tlnk:focus-visible{outline:3px solid var(--gs-teal);outline-offset:2px}
+.schip{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-help);margin-top:2px}
+.schip .ic{width:16px;height:16px;flex:none}
+.schip.mut{color:var(--gs-muted)}
+.schip.lav{color:var(--gs-lavender)}
+.schip.amb{color:var(--gs-amber)}
+.schip.teal{color:var(--gs-teal)}
+.prog{color:var(--gs-muted);font-size:var(--fs-help);margin:0 0 8px}
+.pststeps{margin:8px 0 12px 1.2em;font-size:var(--fs-help);line-height:1.5}
+#setupcard{margin-top:12px}
+@media (max-width:767px){
+  .setr{grid-template-columns:44px minmax(0,1fr)}
+  .setr .disc,.setr .sendc2{grid-column:1/-1}
+  .setr .disc{min-height:44px;border-color:var(--gs-rule-2)}
+  .sendc2{align-items:stretch;min-width:0}
+  .sendc2 .btn,.racts .btn{min-height:44px;flex:1}
+  .steps{margin-left:0}
+  .stnote{margin-left:0}
+  .steps .tlnk{display:inline-block;min-height:44px;line-height:44px}
+}
 .vnspin{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gs-spin .8s linear infinite;box-sizing:border-box}
 @media (prefers-reduced-motion:reduce){.vnspin{width:auto;height:auto;border:0;border-radius:0;animation:none;vertical-align:baseline}.vnspin::before{content:"\00b7\00b7\00b7"}}
 /* L5 (gs-voice-train rev1.4): pending-row sheet buttons are 44 pt targets */

@@ -3354,7 +3354,7 @@ def _last4(token):
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-seeded", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
-                  "update-reply", "update-bad"}
+                  "update-reply", "update-bad", "setup-ask", "setup-fail"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
 _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too large",
                415: "unsupported media type", 422: "lint", 429: "too many"}
@@ -5916,6 +5916,49 @@ async def voice_show(req):
     return web.json_response({"ok": True})
 
 
+async def admin_setup_relay(req):
+    """Post one bot's setup text to the main bot's saved webhook. The main bot relays it.
+
+    Same signed webhook call as an update ask: Bearer token, handoff.payload, no redirect, 10s.
+    Does not create a persona, a pending reply, or a second bot record, and does not wait for an answer.
+    The question is not logged.
+    """
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if not isinstance(body, dict) or set(body) - {"actor", "slug", "message"} or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    slug = body.get("slug")
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
+    message = body.get("message")
+    if not isinstance(message, str) or not (1 <= len(message) <= 4000) or "\x00" in message:
+        return web.json_response({"error": "bad request"}, status=400)
+    ent = current_webhooks().get(slug)
+    if not ent:
+        return web.json_response({"error": "not configured"}, status=400)
+    now = time.time()
+    rid = handoff.new_request_id()
+    reply_by = datetime.datetime.fromtimestamp(
+        now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # clean() drops newline controls, which would glue "yes." to "2." A space keeps each numbered step.
+    question = message.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+    posted = dict(handoff.payload(rid, slug, question, reply_by, cap=4000))
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+            async with http.post(ent["url"], json=posted, allow_redirects=False,
+                                 headers={"Authorization": "Bearer " + ent["token"]}) as resp:
+                ok = 200 <= resp.status < 300
+    except Exception:
+        ok = False
+    if not ok:
+        audit(body.get("actor"), slug, "setup-fail", "-")
+        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    audit(body.get("actor"), slug, "setup-ask", "-")
+    return web.json_response({"ok": True}, status=202)
+
+
 async def admin_cards_get(req):
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -5944,6 +5987,7 @@ async def admin_cards_put(req):
 ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
     web.post("/admin/bots/revoke-all", admin_revoke_all),
+    web.post("/admin/bots/setup-relay", admin_setup_relay),
     web.get("/admin/bots/imported", admin_imported_get),
     web.post("/admin/bots/import", admin_import_post),
     web.delete("/admin/bots/imported/{key}", admin_imported_delete),

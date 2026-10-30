@@ -266,15 +266,18 @@ class _Wire(dict):
 
 
 def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False, kind="", release="",
-            commit=""):
+            commit="", cap=None):
     """Webhook body v1: v, request_id, persona, the cleaned question, reply_by. test only when asked.
 
     include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
     ["tier_max"] returns the tier argument (default 0) and is not on the wire.
     kind is sent for a list request (bot_list) or a picture ask (avatar). Answer webhooks omit it.
+    cap raises the question limit for one caller (setup steps). It is not a wire field. Anything other than
+    an int from 1 to 4000 keeps the default Q_MAX so existing asks stay 500 characters.
     """
     del include_avatar
-    body = {"v": 1, "request_id": rid, "persona": bot, "question": clean(question, Q_MAX),
+    limit = cap if type(cap) is int and 1 <= cap <= 4000 else Q_MAX
+    body = {"v": 1, "request_id": rid, "persona": bot, "question": clean(question, limit),
             "reply_by": str(reply_by_iso or "")}
     if test:
         body["test"] = True

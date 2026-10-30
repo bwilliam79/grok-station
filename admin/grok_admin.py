@@ -3607,6 +3607,294 @@ def update_check_loop():
         run_update_check()
 
 
+# Set up bots (0.13.9). One station file, mode 0600. The outbound text is kept so a resend is the same bytes.
+# It is not returned to the browser and not written to the audit line.
+SETUP_STUCK_S = 300
+SETUP_MSG_MAX = 4000
+SETUP_FILE = "setup-bots.json"
+_SETUP_STATUSES = ("not_set_up", "sent", "waiting", "failed", "cancelled", "connected")
+_SETUP_LOCK = threading.Lock()
+_SETUP_INFLIGHT = set()
+_WAKE_RE = re.compile(r"[A-Za-z][A-Za-z '’-]*")
+
+
+def clean_wake(raw):
+    """A wake phrase for the setup draft. Letters, spaces and apostrophes, up to 40. Not a wake-word model."""
+    if not isinstance(raw, str):
+        return None
+    t = " ".join(raw.split())
+    if not t or len(t) > 40 or _WAKE_RE.fullmatch(t) is None:
+        return None
+    return t
+
+
+def setup_message(name, wake, computer):
+    """The four steps the main bot passes on. Step 2 names the existing routine so a resend does not create a second."""
+    computer = computer or ""
+    lines = [
+        "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
+        'If you already have a routine whose instructions start with "Grok Station instructions", update that one. '
+        "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on the owner's "
+        "home computer (%s)." % computer,
+        "Reply on the station as %s. Your wake word is %s." % (name, wake),
+        "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
+        "The owner copies them into the station himself.",
+    ]
+    return "\n".join("%d. %s" % (i, line) for i, line in enumerate(lines, 1))
+
+
+def setup_check_body(j, allowed):
+    """None when j is an object whose keys are all allowed. Rejects unknown fields."""
+    if not isinstance(j, dict) or set(j) - set(allowed):
+        return "bad request"
+    return None
+
+
+def _setup_blank():
+    return {"name": "", "wake": "", "computer": "", "status": "not_set_up", "sent_at": 0, "fails": 0, "message": ""}
+
+
+def _setup_row(doc, slug):
+    rows = doc.setdefault("rows", {})
+    row = rows.get(slug)
+    if not isinstance(row, dict):
+        row = _setup_blank()
+        rows[slug] = row
+    if row.get("status") not in _SETUP_STATUSES:
+        row["status"] = "not_set_up"
+    if type(row.get("sent_at")) is not int:
+        row["sent_at"] = 0
+    if type(row.get("fails")) is not int:
+        row["fails"] = 0
+    if not isinstance(row.get("message"), str):
+        row["message"] = ""
+    if not isinstance(row.get("name"), str):
+        row["name"] = ""
+    if not isinstance(row.get("wake"), str):
+        row["wake"] = ""
+    if not isinstance(row.get("computer"), str):
+        row["computer"] = ""
+    return row
+
+
+def setup_public(doc, now):
+    """Browser view. The setup message is omitted. stuck is Sent for SETUP_STUCK_S seconds with no OK card."""
+    now = time.time() if now is None else now
+    rows = {}
+    src = doc.get("rows") if isinstance(doc, dict) else None
+    for slug, row in (src or {}).items():
+        if not slug_ok(slug) or not isinstance(row, dict):
+            continue
+        status = row.get("status") if row.get("status") in _SETUP_STATUSES else "not_set_up"
+        sent = row.get("sent_at") if type(row.get("sent_at")) is int else 0
+        fails = row.get("fails") if type(row.get("fails")) is int else 0
+        rows[slug] = {
+            "name": row.get("name") or "",
+            "wake": row.get("wake") or "",
+            "computer": row.get("computer") or "",
+            "status": status,
+            "sent_at": sent,
+            "fails": fails,
+            "stuck": bool(status == "sent" and sent > 0 and (now - sent) >= SETUP_STUCK_S),
+        }
+    hint = doc.get("hint") if isinstance(doc, dict) else None
+    if not (isinstance(hint, dict) and hint.get("name")):
+        hint_out = None
+    else:
+        hint_out = {"name": hint["name"], "dismissed": hint.get("dismissed") is True}
+    return {"rows": rows, "hint": hint_out}
+
+
+def setup_load():
+    raw = read_json(path(SETUP_FILE), {})
+    doc = {"rows": {}, "hint": None}
+    if not isinstance(raw, dict):
+        return doc
+    rows = raw.get("rows") if isinstance(raw.get("rows"), dict) else {}
+    for slug, row in rows.items():
+        if not slug_ok(slug) or not isinstance(row, dict):
+            continue
+        status = row.get("status") if row.get("status") in _SETUP_STATUSES else "not_set_up"
+        name = clean_name(row.get("name")) or ""
+        wake = clean_wake(row.get("wake")) or ""
+        host = row.get("computer")
+        computer = host if isinstance(host, str) and (host == "" or host_name_ok(host)) else ""
+        sent = row.get("sent_at")
+        sent = sent if type(sent) is int and 0 <= sent <= 4000000000 else 0
+        fails = row.get("fails")
+        fails = fails if type(fails) is int and 0 <= fails <= 1000 else 0
+        msg = row.get("message")
+        message = msg if isinstance(msg, str) and "\x00" not in msg and len(msg) <= SETUP_MSG_MAX else ""
+        doc["rows"][slug] = {"name": name, "wake": wake, "computer": computer, "status": status,
+                             "sent_at": sent, "fails": fails, "message": message}
+    hint = raw.get("hint")
+    if isinstance(hint, dict):
+        hname = clean_name(hint.get("name"))
+        if hname:
+            doc["hint"] = {"name": hname, "dismissed": hint.get("dismissed") is True}
+    return doc
+
+
+def setup_store(doc):
+    write_json(path(SETUP_FILE), {"rows": doc.get("rows") or {}, "hint": doc.get("hint")}, 0o600)
+
+
+def setup_merge(doc, slug):
+    """Reload under the lock and write only this slug plus the hint, so two bots do not clobber each other."""
+    with _SETUP_LOCK:
+        disk = setup_load()
+        if slug:
+            row = (doc.get("rows") or {}).get(slug)
+            if isinstance(row, dict):
+                disk.setdefault("rows", {})[slug] = row
+        if isinstance(doc, dict) and "hint" in doc:
+            disk["hint"] = doc.get("hint")
+        setup_store(disk)
+
+
+def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, poster,
+               name, wake, computer, add_bot=None, save=None):
+    """Send one bot's setup through the main bot's webhook. Safe to repeat.
+
+    Never calls add_bot and never creates a station bot record. A second call while the first is
+    still posting returns the current state and does not post. The message frozen on the first
+    attempt is the message resent, including Retry and Send setup again.
+    """
+    del add_bot
+    if not isinstance(doc, dict) or type(now) not in (int, float):
+        return 400, {"error": "bad request"}
+    if not slug_ok(slug) or not isinstance(known, (set, list, tuple, frozenset, dict)) or slug not in known:
+        return 404, {"error": "not found"}
+    if main_slug and slug == main_slug:
+        return 400, {"error": "bad request"}
+    who = main_name if isinstance(main_name, str) and main_name else "the main bot"
+    if main_outdated:
+        return 409, {"error": "Update %s first" % who}
+    if computer in ("", None):
+        chost = ""
+    else:
+        chost = clean_host(computer)
+        if chost is None:
+            return 400, {"error": HOST_BAD}
+    cname = clean_name(name) if name else ""
+    cwake = clean_wake(wake) if wake else ""
+    with _SETUP_LOCK:
+        if slug in _SETUP_INFLIGHT:
+            return 200, {"ok": True, "inflight": True, "setup": setup_public(doc, now)}
+        row = _setup_row(doc, slug)
+        if not row.get("name"):
+            if not cname:
+                return 400, {"error": "bad request"}
+            row["name"] = cname
+        if not row.get("wake"):
+            if not cwake:
+                return 400, {"error": "bad request"}
+            row["wake"] = cwake
+        if not row.get("computer") and chost:
+            row["computer"] = chost
+        msg = row.get("message") or ""
+        if not msg:
+            msg = setup_message(row["name"], row["wake"], row.get("computer") or "")
+            if len(msg) > SETUP_MSG_MAX:
+                return 400, {"error": "bad request"}
+            row["message"] = msg
+        _SETUP_INFLIGHT.add(slug)
+        message = msg
+    ok = False
+    try:
+        ok = callable(poster) and poster(message) is True
+    except Exception:
+        ok = False
+    finally:
+        with _SETUP_LOCK:
+            _SETUP_INFLIGHT.discard(slug)
+            if ok:
+                row["status"] = "sent"
+                row["sent_at"] = int(now)
+                row["fails"] = 0
+            else:
+                row["status"] = "failed"
+                row["fails"] = (row.get("fails") if type(row.get("fails")) is int else 0) + 1
+            doc.setdefault("rows", {})[slug] = row
+    if callable(save):
+        save(doc)
+    view = setup_public(doc, now)
+    if ok:
+        return 200, {"ok": True, "setup": view}
+    return 502, {"error": "Couldn't reach %s" % who, "setup": view}
+
+
+def setup_draft(doc, slug, *, known, now, name=None, wake=None, computer=None):
+    """Edit the highlighted parts. Does not rename the bot, change its wake model, or rewrite a frozen message."""
+    if not isinstance(doc, dict):
+        return 400, {"error": "bad request"}
+    if not slug_ok(slug) or not isinstance(known, (set, list, tuple, frozenset, dict)) or slug not in known:
+        return 404, {"error": "not found"}
+    row = _setup_row(doc, slug)
+    if row.get("status") in ("sent", "waiting"):
+        return 409, {"error": "That setup was already sent."}
+    if name is not None:
+        got = clean_name(name)
+        if not got:
+            return 400, {"error": "Type a name."}
+        row["name"] = got
+    if wake is not None:
+        got = clean_wake(wake)
+        if not got:
+            return 400, {"error": "Type a wake word."}
+        row["wake"] = got
+    if computer is not None:
+        got = clean_host(computer)
+        if got is None:
+            return 400, {"error": HOST_BAD}
+        row["computer"] = got
+    return 200, {"ok": True, "setup": setup_public(doc, now)}
+
+
+def setup_connected(doc, slug, *, known, has_webhook, now, name=""):
+    """Record that this station's own connection test passed. Does not create a bot record."""
+    if not isinstance(doc, dict):
+        return 400, {"error": "bad request"}
+    if not slug_ok(slug) or not isinstance(known, (set, list, tuple, frozenset, dict)) or slug not in known:
+        return 404, {"error": "not found"}
+    if not has_webhook:
+        return 409, {"error": "Save the webhook first."}
+    row = _setup_row(doc, slug)
+    if name and not row.get("name"):
+        got = clean_name(name)
+        if got:
+            row["name"] = got
+    row["status"] = "connected"
+    label = row.get("name") or (clean_name(name) or "")
+    if not label:
+        label = slug
+    doc["hint"] = {"name": label, "dismissed": False}
+    return 200, {"ok": True, "setup": setup_public(doc, now)}
+
+
+def setup_dismiss_hint(doc, now):
+    if not isinstance(doc, dict):
+        return 400, {"error": "bad request"}
+    hint = doc.get("hint")
+    if isinstance(hint, dict) and hint.get("name"):
+        doc["hint"] = {"name": hint["name"], "dismissed": True}
+    return 200, {"ok": True, "setup": setup_public(doc, now)}
+
+
+def setup_transition(doc, slug, status, now=None):
+    """Store waiting or cancelled. Not an HTTP route: no authenticated bot ingress reports those states."""
+    if status not in ("waiting", "cancelled") or not slug_ok(slug) or not isinstance(doc, dict):
+        raise ValueError("status")
+    now = time.time() if now is None else now
+    row = _setup_row(doc, slug)
+    row["status"] = status
+    return setup_public(doc, now)
+
+
+def bots_setup_field():
+    return setup_public(setup_load(), time.time())
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "grok-station-admin"
     protocol_version = "HTTP/1.1"
@@ -4456,6 +4744,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_post_bots(self, p, q, j):
         if p == "/api/bots/import":
             return self.bots_import()
+        if p == "/api/bots/setup-send":
+            return self.bots_setup_send(j)
+        if p == "/api/bots/setup-draft":
+            return self.bots_setup_draft(j)
+        if p == "/api/bots/setup-connected":
+            return self.bots_setup_connected(j)
+        if p == "/api/bots/setup-hint":
+            return self.bots_setup_hint(j)
         if p == "/api/bots/refresh-avatars":
             return self.bots_refresh_avatars()
         if p == "/api/bots/revoke-all":
@@ -4523,6 +4819,130 @@ class Handler(BaseHTTPRequestHandler):
     def _stepup(self):
         return AUTH.stepup_until(self.cookie("gs_session"))
 
+    def _setup_ctx(self):
+        """Bots the station already knows, plus pending imported names. None when the relay is down."""
+        got = relay_call("GET", "/admin/bots")
+        if got is None or got[0] != 200 or not isinstance(got[1], dict):
+            return None
+        data = got[1]
+        bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
+        imported = safe_imported(data.get("imported"))
+        src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
+        known, names, hosts, configured = set(), {}, {}, set()
+        for b in bots:
+            known.add(b["slug"])
+            names[b["slug"]] = b["name"]
+            hosts[b["slug"]] = b.get("reply_host") or ""
+            if (b.get("webhook") or {}).get("configured"):
+                configured.add(b["slug"])
+        for row in imported.get("rows") or []:
+            if row.get("state") != "new":
+                continue
+            sid = bot_id_from_name(row.get("name"))
+            if not sid or sid in names:
+                continue
+            known.add(sid)
+            names[sid] = row["name"]
+        outdated = False
+        try:
+            pub = data.get("station_pub")
+            pub = "".join(pub.split()) if box_pub_ok(pub) else ""
+            view = finish_rows(bots, station_base(), tls_info()["fingerprint"], pub)
+            if src:
+                for group in view.get("computers") or []:
+                    for row in group.get("bots") or []:
+                        if row.get("slug") == src and row.get("state") != "done":
+                            outdated = True
+        except Exception:
+            print("admin: setup finish check failed", flush=True)
+        return {"known": known, "main": src, "main_name": names.get(src) or "", "outdated": outdated,
+                "names": names, "hosts": hosts, "configured": configured}
+
+    def bots_setup_send(self, j):
+        if setup_check_body(j, ("slug",)):
+            return self.send(400, {"error": "bad request"})
+        slug = j.get("slug")
+        if not slug_ok(slug):
+            return self.send(400, {"error": "bad request"})
+        ctx = self._setup_ctx()
+        if ctx is None:
+            return self.bots_unconfigured()
+        if slug not in ctx["known"]:
+            return self.send(404, {"error": "not found"})
+        doc = setup_load()
+        row = (doc.get("rows") or {}).get(slug) or {}
+        name = row.get("name") or ctx["names"].get(slug) or ""
+        wake = row.get("wake") or ("Hey " + name if name else "")
+        computer = row.get("computer") or ""
+        if not computer:
+            computer = ctx["hosts"].get(ctx["main"]) or ctx["hosts"].get(slug) or ""
+
+        def poster(message):
+            main = ctx["main"]
+            if not main:
+                return False
+            got = relay_call("POST", "/admin/bots/setup-relay",
+                             {"actor": RELAY_ACTOR, "slug": main, "message": message}, timeout=15)
+            return bool(got and got[0] in (200, 202))
+
+        code, body = setup_send(
+            doc, slug, known=ctx["known"], main_slug=ctx["main"], main_name=ctx["main_name"],
+            main_outdated=ctx["outdated"], now=time.time(), poster=poster, name=name, wake=wake,
+            computer=computer, add_bot=None, save=(lambda d: setup_merge(d, slug)))
+        if code in (200, 502) and not (isinstance(body, dict) and body.get("inflight")):
+            audit(slug, "setup-send" if code == 200 else "setup-fail")
+        return self.send(code, body)
+
+    def bots_setup_draft(self, j):
+        if setup_check_body(j, ("slug", "name", "wake", "computer")):
+            return self.send(400, {"error": "bad request"})
+        if not any(k in j for k in ("name", "wake", "computer")):
+            return self.send(400, {"error": "bad request"})
+        slug = j.get("slug")
+        if not slug_ok(slug):
+            return self.send(400, {"error": "bad request"})
+        ctx = self._setup_ctx()
+        if ctx is None:
+            return self.bots_unconfigured()
+        if slug not in ctx["known"]:
+            return self.send(404, {"error": "not found"})
+        doc = setup_load()
+        code, body = setup_draft(
+            doc, slug, known=ctx["known"], now=time.time(),
+            name=j.get("name") if "name" in j else None,
+            wake=j.get("wake") if "wake" in j else None,
+            computer=j.get("computer") if "computer" in j else None)
+        if code == 200:
+            setup_merge(doc, slug)
+        return self.send(code, body)
+
+    def bots_setup_connected(self, j):
+        if setup_check_body(j, ("slug",)):
+            return self.send(400, {"error": "bad request"})
+        slug = j.get("slug")
+        if not slug_ok(slug):
+            return self.send(400, {"error": "bad request"})
+        ctx = self._setup_ctx()
+        if ctx is None:
+            return self.bots_unconfigured()
+        if slug not in ctx["known"]:
+            return self.send(404, {"error": "not found"})
+        doc = setup_load()
+        code, body = setup_connected(
+            doc, slug, known=ctx["known"], has_webhook=slug in ctx["configured"], now=time.time(),
+            name=ctx["names"].get(slug) or "")
+        if code == 200:
+            setup_merge(doc, slug)
+        return self.send(code, body)
+
+    def bots_setup_hint(self, j):
+        if setup_check_body(j, ("dismiss",)) or j.get("dismiss") is not True:
+            return self.send(400, {"error": "bad request"})
+        doc = setup_load()
+        code, body = setup_dismiss_hint(doc, time.time())
+        setup_merge(doc, None)
+        return self.send(code, body)
+
     def bots_list(self):
         drop_stale_guest()
         got = relay_call("GET", "/admin/bots")
@@ -4534,6 +4954,7 @@ class Handler(BaseHTTPRequestHandler):
                                    "stats": stats_view(None), "list_source": "", "routed": [],
                                    "imported": empty_imported(),
                                    "station_address": station_base(),
+                                   "setup": bots_setup_field(),
                                "fingerprint": tls_info()["fingerprint"]})
         status, data = got
         if status != 200:
@@ -4558,6 +4979,7 @@ class Handler(BaseHTTPRequestHandler):
                                "helper_status_unreadable": data.get("helper_status_unreadable") is True,
                                "update_status_unsaved": data.get("update_status_unsaved") is True,
                                "station_address": station_base(),
+                               "setup": bots_setup_field(),
                                "fingerprint": tls_info()["fingerprint"]})
 
     def bots_imported(self):

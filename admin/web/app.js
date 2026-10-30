@@ -1299,6 +1299,10 @@ const ICO_OK = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentC
 const ICO_ERR = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 1.8l6.6 12H1.4z" stroke-linejoin="round"/><path d="M8 6.5v3.2"/><circle cx="8" cy="11.8" r=".6" fill="currentColor"/></svg>';
 const ICO_KEY = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.7 8.3L13.5 2.5M11.5 4.5l1.5 1.5"/></svg>';
 const ICO_DOTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
+const ICO_DASH = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke-dasharray="3 2.4"/></svg>';
+const ICO_CLOCK = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.4 1.6"/></svg>';
+const ICO_PULSE = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg>';
+const ICO_SLASH = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M4.2 11.8l7.6-7.6"/></svg>';
 function wordLabel(w) { return (w && w.label) || WORD(w && w.name); }
 function openVoiceStatus(bot, el) { // recording status lives on the bot's Configure drawer
   openBot(bot, el);
@@ -3010,17 +3014,454 @@ function joinBotNames(names) {
   if (list.length === 2) return list[0] + " and " + list[1];
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
 }
-// rev3 kinds: 2+ not set up → "configure"; exactly one → "setup" (0.13.8 renders neither). Update wins over either.
+// Set up bots (0.13.9). One list for one bot or many. Strings match the rev3.2 copy table.
+const SETUP_STUCK_S = 300;
+function setupCopy(main, bot) {
+  main = main || "your main bot";
+  bot = bot || "this bot";
+  return {
+    title: "Set up bots",
+    intro: "Each bot gets its own setup. Open Setup steps to read exactly what " + main + " passes on.",
+    note: "Send setup passes these steps to " + bot + " through " + main + ". Highlighted parts are only for " + bot + ".",
+    sent: "Sent to " + main + " to pass on",
+    sentSub: bot + "'s OK card should appear in its chat in about a minute",
+    waiting: "Waiting for your OK in " + bot + "'s chat",
+    connected: "Connected · Updates off",
+    hintTitle: bot + " connected. Updates are off.",
+    hintBody: "Turn on Updates in a bot's row to see it on the station.",
+    already: "Already connected",
+    cancelled: "You cancelled in " + bot + "'s chat",
+    fail: "Couldn't reach " + main,
+    failSub: bot + "'s setup wasn't sent. Check that " + main + "'s computer is on, then try again.",
+    again: "Still can't reach " + main + ".",
+    testLink: "Test " + main + "'s connection",
+    mainTitle: "Update " + main + " first",
+    mainBody: main + " needs the latest station instructions before it can pass setup to other bots.",
+    mainBtn: "Update " + main,
+    block: "Update " + main + " first",
+    stuck: "No OK card yet?"
+  };
+}
+function setupStuck(row, now) {
+  if (!row || row.status !== "sent") return false;
+  const sent = Number(row.sent_at) || 0;
+  if (!sent) return false;
+  const t = now == null ? Date.now() / 1000 : now;
+  return (t - sent) >= SETUP_STUCK_S;
+}
+function setupDomId(prefix, row) {
+  const name = row && row.name ? String(row.name) : "";
+  const safe = /^[A-Za-z0-9-]+$/.test(name) ? name : ((row && row.slug) || "bot");
+  return prefix + safe;
+}
+function setupMark(text, field, disabled) {
+  return "<mark>" + esc(text) + '</mark> <button type="button" class="tlnk" data-edit="' + field + '"' +
+    (disabled ? " disabled" : "") + ">Edit</button>";
+}
+function setupSteps(row) {
+  const name = (row && row.name) || "";
+  const wake = (row && row.wake) || ("Hey " + name);
+  const computer = (row && row.computer) || "";
+  const off = !!(row && row.editDisabled);
+  return [
+    "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on the owner\'s home computer (' + setupMark(computer, "computer", off) + ").",
+    "Reply on the station as " + setupMark(name, "name", off) + ". Your wake word is " + setupMark(wake, "wake", off) + ".",
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. The owner copies them into the station himself."
+  ];
+}
+function setupMessage(row) {
+  const name = (row && row.name) || "";
+  const wake = (row && row.wake) || ("Hey " + name);
+  const computer = (row && row.computer) || "";
+  const lines = [
+    "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on the owner\'s home computer (' + computer + ").",
+    "Reply on the station as " + name + ". Your wake word is " + wake + ".",
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. The owner copies them into the station himself."
+  ];
+  return lines.map((line, i) => (i + 1) + ". " + line).join("\n");
+}
+function setupIcon(kind) {
+  if (kind === "clock") return ICO_CLOCK;
+  if (kind === "pulse") return ICO_PULSE;
+  if (kind === "ok") return ICO_OK;
+  if (kind === "err") return ICO_ERR;
+  if (kind === "slash") return ICO_SLASH;
+  return ICO_DASH;
+}
+function setupRowModel(row, opts) {
+  row = row || {};
+  opts = opts || {};
+  const main = opts.mainName || "your main bot";
+  const bot = row.name || "this bot";
+  const copy = setupCopy(main, bot);
+  const status = row.status || "not_set_up";
+  const now = opts.now == null ? Date.now() / 1000 : opts.now;
+  const stuck = status === "sent" && setupStuck(row, now);
+  const fails = Number(row.fails) || 0;
+  const blocked = !!opts.sendBlocked;
+  const quiet = status === "connected" || status === "already";
+  let icon = "dash", text = "Not set up", sub = "", again = "", colour = "mut";
+  const actions = [];
+  if (status === "not_set_up") {
+    actions.push({act: "send", label: "Send setup", primary: true, blocked: blocked});
+  } else if (status === "sent") {
+    icon = "clock"; text = copy.sent; colour = "lav";
+    sub = stuck ? copy.stuck : copy.sentSub;
+    if (stuck) actions.push({act: "again", label: "Send setup again", primary: false, blocked: blocked});
+  } else if (status === "waiting") {
+    icon = "pulse"; text = copy.waiting; colour = "amb";
+    actions.push({act: "open", label: "Open Grok Bot", primary: false, blocked: false});
+    actions.push({act: "paste", label: "Paste values", primary: true, blocked: false});
+  } else if (status === "failed") {
+    icon = "err"; text = copy.fail; colour = "amb";
+    sub = copy.failSub;
+    if (fails >= 2) again = copy.again;
+    actions.push({act: "retry", label: "Retry", primary: true, blocked: blocked});
+  } else if (status === "cancelled") {
+    icon = "slash"; text = copy.cancelled; colour = "amb";
+    actions.push({act: "again", label: "Send setup again", primary: false, blocked: blocked});
+  } else if (status === "connected") {
+    icon = "ok"; text = copy.connected; colour = "teal";
+  } else {
+    icon = "ok"; text = copy.already; colour = "teal";
+  }
+  return {
+    status: status, icon: icon, text: text, sub: sub, again: again, colour: colour,
+    disclose: !quiet, editDisabled: status === "sent" || status === "waiting",
+    actions: actions, sendBlocked: blocked && actions.some(a => a.blocked),
+    stepsId: setupDomId("steps-", row), hintId: setupDomId("bh-", row),
+    note: copy.note, testLink: copy.testLink, block: copy.block, stuck: stuck
+  };
+}
+function setupRowHTML(row, opts) {
+  row = row || {};
+  opts = opts || {};
+  const m = setupRowModel(row, opts);
+  const expanded = !!opts.expanded;
+  const letter = esc(String((row.name || row.slug || "?").trim().slice(0, 1).toUpperCase() || "?"));
+  const chip = '<div class="schip ' + m.colour + '" role="status">' + setupIcon(m.icon) + "<span>" + esc(m.text) + "</span></div>";
+  let disc = "";
+  if (m.disclose) {
+    disc = '<button class="disc" type="button" data-slug="' + esc(row.slug || "") + '" aria-expanded="' +
+      (expanded ? "true" : "false") + '" aria-controls="' + esc(m.stepsId) + '">Setup steps ' +
+      (expanded ? "\u25b4" : "\u25be") + "</button>";
+  }
+  let acts = "";
+  m.actions.forEach(a => {
+    const cls = a.primary ? "btn p sm" : "btn sm";
+    let extra = ' data-act="' + a.act + '" data-slug="' + esc(row.slug || "") + '"';
+    if (a.blocked) extra += ' aria-disabled="true" aria-describedby="' + esc(m.hintId) + '"';
+    acts += '<button class="' + cls + '" type="button"' + extra + ">" + esc(a.label) + "</button>";
+  });
+  if (m.sendBlocked) acts += '<div class="help" id="' + esc(m.hintId) + '">' + esc(m.block) + "</div>";
+  let sub = "";
+  if (m.sub) sub += '<div class="help">' + esc(m.sub) + "</div>";
+  if (m.again) {
+    sub += '<div class="help">' + esc(m.again) + ' <button type="button" class="tlnk" data-act="maintest" data-slug="' +
+      esc(row.slug || "") + '">' + esc(m.testLink) + "</button></div>";
+  }
+  let steps = "";
+  if (expanded && m.disclose) {
+    const parts = setupSteps(Object.assign({}, row, {editDisabled: m.editDisabled}));
+    steps = '<ol class="steps" id="' + esc(m.stepsId) + '">' + parts.map(p => "<li>" + p + "</li>").join("") +
+      '</ol><p class="stnote">' + esc(m.note) + "</p>";
+  }
+  return '<div class="setr">' +
+    '<span class="avwrap" data-slug="' + esc(row.slug || "") + '"><span class="monoav">' + letter + "</span></span>" +
+    '<div><div class="lbl">' + esc(row.name || "") + "</div>" + chip + "</div>" +
+    disc + '<div class="sendc2">' + acts + sub + "</div></div>" + steps;
+}
+function setupListHTML(rows, opts) {
+  opts = opts || {};
+  const main = opts.mainName || "your main bot";
+  const intro = setupCopy(main, "bot").intro;
+  const expanded = opts.expanded;
+  const items = (rows || []).map(row => {
+    const on = expanded === true || !!(expanded && row && expanded[row.slug]);
+    return "<li>" + setupRowHTML(row, Object.assign({}, opts, {expanded: on})) + "</li>";
+  }).join("");
+  return '<div class="card" id="setupcard"><h2>Set up bots</h2><p class="prog" role="status">' + esc(intro) +
+    '</p><ul class="setl">' + items + "</ul></div>";
+}
+function setupMainComputer(el) {
+  const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
+  return (main && main.reply_host) || "";
+}
+function setupListVisible(el) {
+  if (el && el._setupOpen) return true;
+  const rows = (el && el._setup && el._setup.rows) || {};
+  return Object.keys(rows).some(slug => {
+    const st = rows[slug] && rows[slug].status;
+    return st === "sent" || st === "waiting" || st === "failed" || st === "cancelled" || st === "connected";
+  });
+}
+function setupListRows(el) {
+  const bots = (el && el._bots) || [];
+  const stored = (el && el._setup && el._setup.rows) || {};
+  const mainComputer = setupMainComputer(el);
+  const out = [], seen = {};
+  bots.forEach(b => {
+    if (!b || !b.slug || b.slug === "grok" || b.main || b.builtin) return;
+    seen[b.slug] = true;
+    const draft = stored[b.slug] || {};
+    const st = draft.status || "not_set_up";
+    const inflow = st === "sent" || st === "waiting" || st === "failed" || st === "cancelled" || st === "connected";
+    const configured = !!(b.webhook && b.webhook.configured);
+    const name = draft.name || b.name || b.slug;
+    out.push({
+      slug: b.slug, name: name, wake: draft.wake || ("Hey " + name),
+      computer: draft.computer || b.reply_host || mainComputer || "",
+      status: (configured && !inflow) ? "already" : st,
+      sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured
+    });
+  });
+  pendingTeammates(el).forEach(row => {
+    const slug = botIdFromName(row.name);
+    if (!slug || seen[slug]) return;
+    seen[slug] = true;
+    const draft = stored[slug] || {};
+    const name = draft.name || row.name;
+    out.push({
+      slug: slug, name: name, wake: draft.wake || ("Hey " + name),
+      computer: draft.computer || mainComputer || "",
+      status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
+      configured: false, pending: true
+    });
+  });
+  return out;
+}
+function openSetupBots(el) {
+  if (!el) return;
+  el._setupOpen = true;
+  paintSetupList(el);
+}
+function openGrokBot() { window.location.href = "grokbot://"; }
+function openMainTest(el) {
+  const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
+  if (!main) return;
+  openBot(main, el);
+  const tab = document.getElementById("tab-conn");
+  if (tab) tab.click();
+  const test = document.getElementById("test");
+  if (test && !test.disabled) test.click();
+}
+async function setupDismissHint(el) {
+  const r = await api("POST", "/api/bots/setup-hint", {dismiss: true});
+  if (!r.ok) return toast((r.data && r.data.error) || "Couldn't hide that.", "bad");
+  if (r.data && r.data.setup) el._setup = r.data.setup;
+  else if (el._setup && el._setup.hint) el._setup.hint.dismissed = true;
+  paintBotCallout(el);
+}
+async function setupSend(row, el, btn) {
+  if (!row || !btn || btn.getAttribute("aria-disabled") === "true" || btn.disabled) return;
+  const act = btn.getAttribute("data-act");
+  busyBtn(btn, true, act === "retry" ? "Retrying\u2026" : "Sending\u2026");
+  const r = await api("POST", "/api/bots/setup-send", {slug: row.slug});
+  if (r.data && r.data.setup) el._setup = r.data.setup;
+  if (r.status === 409) {
+    toast((r.data && r.data.error) || "Update the main bot first.", "bad");
+    refreshFinishChrome();
+  } else if (!r.ok && !(r.data && r.data.setup)) {
+    toast((r.data && r.data.error) || ("Couldn't reach " + ((el && el._bots || []).filter(b => b && b.main)[0] || {}).name || "the main bot") + ".", "bad");
+  }
+  if (el && document.body.contains(el)) {
+    if ($("#blist", el)) refreshBots(el);
+    else paintSetupList(el);
+  }
+}
+function setupEdit(row, el, field, btn) {
+  if (!row || !btn || btn.disabled) return;
+  if (row.status === "sent" || row.status === "waiting") return;
+  const input = document.createElement("input");
+  input.className = "inp";
+  input.maxLength = 40;
+  input.setAttribute("aria-label", field === "wake" ? "Wake word" : field === "computer" ? "Computer name" : "Name");
+  input.value = row[field] || "";
+  btn.replaceWith(input);
+  input.focus();
+  input.onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } };
+  input.onblur = async () => {
+    const body = {slug: row.slug};
+    body[field] = input.value;
+    const r = await api("POST", "/api/bots/setup-draft", body);
+    if (r.ok && r.data && r.data.setup) el._setup = r.data.setup;
+    else toast((r.data && r.data.error) || "Couldn't save that.", "bad");
+    paintSetupList(el);
+  };
+}
+function paintSetupList(el) {
+  const host = $("#setuphost", el);
+  if (!host) return;
+  if (!setupListVisible(el)) { host.innerHTML = ""; return; }
+  const main = ((el._bots || []).filter(b => b && b.main)[0]);
+  const rows = setupListRows(el);
+  host.innerHTML = setupListHTML(rows, {
+    mainName: (main && main.name) || "your main bot",
+    sendBlocked: !!(main && finishNeedsUpdate(main)),
+    expanded: el._setupExpanded || {},
+    now: Date.now() / 1000
+  });
+  host.querySelectorAll(".disc").forEach(btn => btn.onclick = () => {
+    const slug = btn.getAttribute("data-slug");
+    el._setupExpanded = el._setupExpanded || {};
+    el._setupExpanded[slug] = btn.getAttribute("aria-expanded") !== "true";
+    paintSetupList(el);
+  });
+  host.querySelectorAll("[data-act]").forEach(btn => btn.onclick = () => {
+    if (btn.getAttribute("aria-disabled") === "true") return;
+    const row = rows.filter(r => r.slug === btn.getAttribute("data-slug"))[0];
+    const act = btn.getAttribute("data-act");
+    if (act === "maintest") return openMainTest(el);
+    if (act === "open") return openGrokBot();
+    if (act === "paste") return openPasteValues(row, el);
+    setupSend(row, el, btn);
+  });
+  host.querySelectorAll("[data-edit]").forEach(btn => btn.onclick = () => {
+    const slugNode = btn.closest("li") && btn.closest("li").querySelector("[data-slug]");
+    const row = rows.filter(r => r.slug === (slugNode && slugNode.getAttribute("data-slug")))[0];
+    setupEdit(row, el, btn.getAttribute("data-edit"), btn);
+  });
+  setupArmStuck(el);
+}
+function setupArmStuck(el) {
+  // Station clock only: repaint when the next Sent row crosses 5 minutes. Not a failure.
+  if (!el) return;
+  if (el._setupTimer) { clearTimeout(el._setupTimer); el._setupTimer = 0; }
+  const rows = (el._setup && el._setup.rows) || {};
+  const now = Date.now() / 1000;
+  let wait = 0;
+  Object.keys(rows).forEach(slug => {
+    const row = rows[slug];
+    if (!row || row.status !== "sent" || !(Number(row.sent_at) > 0)) return;
+    const left = Number(row.sent_at) + SETUP_STUCK_S - now;
+    if (left <= 0) return;
+    if (!wait || left < wait) wait = left;
+  });
+  if (!wait) return;
+  el._setupTimer = setTimeout(() => {
+    el._setupTimer = 0;
+    if (document.body.contains(el)) paintSetupList(el);
+  }, Math.min(Math.ceil(wait * 1000) + 50, 2147483647));
+}
+function openPasteValues(row, el) {
+  if (!row) return;
+  closeFloats();
+  const bot = ((el && el._bots) || []).filter(b => b && b.slug === row.slug)[0];
+  const saved = !!(bot && bot.webhook && bot.webhook.configured);
+  const name = row.name || "this bot";
+  const d = document.createElement("div");
+  d.className = "sheet";
+  d.innerHTML = `<form class="card wizcard" role="dialog" aria-label="Connect ${esc(name)}" autocomplete="off">${dialogX()}
+    <h2>Connect ${esc(name)}</h2>
+    <p class="sub">${esc(name)} created its routine. Copy three values from its routine panel. They never go through chat.</p>
+    <ol class="pststeps"><li>In Grok Bot, open ${esc(name)}'s routine panel (right sidebar). <button type="button" class="tlnk" id="pstchat">Open ${esc(name)}'s chat</button></li>
+      <li>Copy each value and paste it below.</li></ol>
+    <div class="field"${saved ? " hidden" : ""}><label for="psturl">Webhook URL</label><input class="inp" id="psturl" type="url" inputmode="url" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="512"></div>
+    <div class="field"${saved ? " hidden" : ""}><label for="pstkey">Webhook key</label><input class="inp" id="pstkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400"> <span class="help" id="pstkeym" hidden>Pasted</span></div>
+    <div class="field"${saved ? " hidden" : ""}><label for="pstpub">Public key</label><input class="inp" id="pstpub" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="120"> <span class="help" id="pstpubm" hidden>Pasted</span></div>
+    ${saved ? '<p class="note">Pasted</p>' : ""}
+    <div class="field"><label for="psthost">Computer name</label><input class="inp" id="psthost" autocomplete="off" spellcheck="false" maxlength="40" value="${esc(row.computer || "")}">
+      <p class="help">Prefilled from the setup message. Checked during the test.</p></div>
+    <p class="note">Keys stay on your home computer.</p>
+    <div id="pste"></div>
+    <div class="field inline"><button class="btn p" id="pstsave" type="submit" disabled>Save and test</button><button class="btn g" type="button" id="pstlater">Later</button></div></form>`;
+  document.body.appendChild(d);
+  let saving = false, testTimer = null;
+  const close = () => { if (testTimer) clearInterval(testTimer); d.remove(); };
+  $("#pstlater", d).onclick = ev => { ev.preventDefault(); close(); };
+  $("#pstchat", d).onclick = () => openGrokBot();
+  bindSheet(d, close);
+  const sync = () => {
+    const url = $("#psturl", d) ? $("#psturl", d).value.trim() : "";
+    const key = $("#pstkey", d) ? $("#pstkey", d).value : "";
+    const pub = $("#pstpub", d) ? $("#pstpub", d).value.trim() : "";
+    const host = $("#psthost", d).value.trim();
+    if ($("#pstkeym", d)) $("#pstkeym", d).hidden = !key;
+    if ($("#pstpubm", d)) $("#pstpubm", d).hidden = !pub;
+    $("#pstsave", d).disabled = saving || !((saved || (url && key && pub)) && host);
+  };
+  ["psturl", "pstkey", "pstpub", "psthost"].forEach(id => { const n = $("#" + id, d); if (n) n.oninput = sync; });
+  sync();
+  const fail = (r, fallback) => { errBox($("#pste", d), (r && r.data && r.data.error) || fallback); return r; };
+  const run = async pw => {
+    if (saving) return {ok: false};
+    saving = true;
+    sync();
+    try {
+      const host = $("#psthost", d).value.trim();
+      const slug = row.slug;
+      if (!bot) {
+        const body = {name: row.name, slug: slug, reply_host: host};
+        if (pw) body.password = pw;
+        const created = await api("POST", "/api/bots", body);
+        body.password = "";
+        if (!(created.ok || created.status === 409)) return fail(created, "Couldn't add that bot.");
+      } else if ((bot.reply_host || "") !== host) {
+        const patched = await api("PATCH", "/api/bots/" + encodeURIComponent(slug), {reply_host: host});
+        if (!patched.ok) return fail(patched, "Couldn't save the computer name.");
+      }
+      if (!saved) {
+        const url = $("#psturl", d).value.trim(), key = $("#pstkey", d).value, pub = $("#pstpub", d).value.trim();
+        const why = webhookProblem(url, key);
+        if (why) { errBox($("#pste", d), why); return {ok: false}; }
+        if (!pubKeyOk(pub)) { errBox($("#pste", d), "That public key isn't valid."); return {ok: false}; }
+        const kb = {public_key: pub}; if (pw) kb.password = pw;
+        const kr = await api("PUT", "/api/bots/" + encodeURIComponent(slug) + "/key", kb);
+        kb.public_key = ""; kb.password = "";
+        if (!kr.ok) return fail(kr, "Couldn't save the public key.");
+        const wb = {url: url, key: key}; if (pw) wb.password = pw;
+        const wr = await api("PUT", "/api/bots/" + encodeURIComponent(slug) + "/webhook", wb);
+        wb.key = ""; wb.password = "";
+        $("#psturl", d).value = ""; $("#pstkey", d).value = ""; $("#pstpub", d).value = "";
+        if (!wr.ok) return fail(wr, "Couldn't save the webhook.");
+      }
+      const started = await api("POST", "/api/bots/" + encodeURIComponent(slug) + "/test", {});
+      if (!started.ok || !started.data || !started.data.test_id) return fail(started, "Couldn't start the test.");
+      const tid = started.data.test_id;
+      const result = await new Promise(resolve => {
+        const t0 = Date.now();
+        testTimer = setInterval(async () => {
+          const g = await api("GET", "/api/bots/" + encodeURIComponent(slug) + "/test/" + encodeURIComponent(tid));
+          const st = g.data && g.data.state;
+          if (g.ok && st === "ok") { clearInterval(testTimer); resolve(g.data); return; }
+          if (g.ok && st === "waiting" && Date.now() - t0 < 30000) return;
+          clearInterval(testTimer);
+          resolve((g.data && g.data.state) ? g.data : {state: "failed", error: (g.data && g.data.error) || "No answer"});
+        }, 1500);
+      });
+      if (result.state !== "ok") { $("#pste", d).innerHTML = testResultHTML(result); return {ok: false}; }
+      const done = await api("POST", "/api/bots/setup-connected", {slug: slug});
+      if (!done.ok) return fail(done, "The test passed, but the row didn't update.");
+      if (done.data && done.data.setup) el._setup = done.data.setup;
+      close();
+      refreshBots(el);
+      return {ok: true};
+    } finally { saving = false; if (document.body.contains(d)) sync(); }
+  };
+  d.querySelector("form").onsubmit = ev => {
+    ev.preventDefault();
+    const go = pw => run(pw);
+    if (stepupOpen()) go("").then(r => { if (r && r.status === 403) askPassword("Save and test?", "Enter the admin password to save this connection.", "Save and test", go); });
+    else askPassword("Save and test?", "Enter the admin password to save this connection.", "Save and test", go);
+  };
+}
+// rev3: 2+ not set up → Configure all; exactly one → Set up {bot}. Update wins over either.
+// rev3 kinds: 2+ not set up → "configure"; exactly one → "setup". Update wins over either.
 // "Not set up" is an imported name that is not a bot yet (pendingTeammates). Not gated on the main bot.
+// Update {main} first wins over the update callout, which wins over Configure all, which wins over the updates hint.
 function botsCalloutKind(opts) {
   opts = opts || {};
   const bots = opts.bots || [];
   const pending = opts.pending || [];
   const behind = opts.behind || [];
   if (!bots.length) return "empty";
+  if (opts.mainOutdated) return "main";
   if (behind.length) return "update";
   if (pending.length >= 2) return "configure";
   if (pending.length === 1) return "setup";
+  if (opts.updatesHint) return "updates";
   return "none";
 }
 function botsQuietHidden(kind, phone) {
@@ -3042,6 +3483,13 @@ function botsCalloutHTML(opts) {
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">Add your main bot first</div>` +
       `<div class="help">You set it up by hand once. Then it can set up the rest.</div></div></div>`;
   }
+  if (kind === "main") {
+    const main = (opts && opts.mainName) || "your main bot";
+    const copy = setupCopy(main, "bot");
+    return `<div class="callout amb" id="botcallout">${ICO_ERR}<div class="tx"><div class="lbl">${esc(copy.mainTitle)}</div>` +
+      `<div class="help">${esc(copy.mainBody)}</div></div>` +
+      `<button class="btn p sm" id="updmain" type="button">${esc(copy.mainBtn)}</button></div>`;
+  }
   if (kind === "update") {
     const n = behind.length;
     const names = joinBotNames(behind.map(b => b.name || b.slug));
@@ -3049,7 +3497,21 @@ function botsCalloutHTML(opts) {
       `<div class="help">${esc(names)} · Station routine is out of date. Updates keep their settings.</div></div>` +
       `<button class="btn p sm" id="updallbtn" type="button">Update all (${n})</button></div>`;
   }
-  // 0.13.8: "configure" and "setup" render nothing. 0.13.9 restores that callout with its "Set up bots" list.
+  if (kind === "configure" || kind === "setup") {
+    const n = pending.length;
+    const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
+    const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
+    return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
+      `<div class="help">Juniper can send each one its setup message. You review it first.</div></div>` +
+      `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
+  }
+  if (kind === "updates") {
+    const who = (opts && opts.hintName) || "The bot";
+    const copy = setupCopy("your main bot", who);
+    return `<div class="callout tl" id="botcallout">${ICO_OK}<div class="tx"><div class="lbl">${esc(copy.hintTitle)}</div>` +
+      `<div class="help">${esc(copy.hintBody)}</div></div>` +
+      `<button class="btn g sm" id="hintx" type="button">Dismiss</button></div>`;
+  }
   return "";
 }
 function revokeAllCopy(names) {
@@ -3063,11 +3525,21 @@ function revokeAllCopy(names) {
   const action = n ? ("Revoke all " + n + (n === 1 ? " bot" : " bots")) : "Revoke all bots";
   return {title: title, body: body, help: help, action: action};
 }
+// Configure all (2+) and Set up {bot} (exactly one) both open the same Set up bots list.
+function openConfigureAll(el) {
+  if (pendingTeammates(el).length) openSetupBots(el);
+}
 function paintBotCallout(el) {
   const bots = (el && el._bots) || [];
   const pending = pendingTeammates(el);
   const behind = bots.filter(b => finishNeedsUpdate(b)).map(b => ({slug: b.slug, name: b.name || b.slug}));
-  const opts = {bots: bots, pending: pending, behind: behind};
+  const main = bots.filter(b => b && b.main)[0];
+  const hint = el && el._setup && el._setup.hint;
+  const opts = {bots: bots, pending: pending, behind: behind,
+    mainOutdated: !!(main && finishNeedsUpdate(main)),
+    mainName: (main && main.name) || "",
+    updatesHint: !!(hint && hint.name && !hint.dismissed),
+    hintName: (hint && hint.name) || ""};
   const host = $("#botcall", el);
   if (host) {
     host.innerHTML = botsCalloutHTML(opts);
@@ -3078,6 +3550,16 @@ function paintBotCallout(el) {
       if (send.length) rowUpdateStart(send);
       if (rows.some(r => r.state === "copy")) openFinishDialog({all: true});
     };
+    const cfg = $("#cfgall", host);
+    if (cfg) cfg.onclick = () => openConfigureAll(el);
+    const um = $("#updmain", host);
+    if (um && main) um.onclick = () => {
+      const row = finishFind(FINISH.view, main.slug);
+      if (row && row.state === "copy") return openFinishDialog({slug: main.slug});
+      rowUpdateStart([main.slug]);
+    };
+    const hx = $("#hintx", host);
+    if (hx) hx.onclick = () => setupDismissHint(el);
   }
   const qs = document.getElementById("botqs");
   if (qs) {
@@ -3276,6 +3758,7 @@ function paintBots(el, bots) {
   el._bots = bots;
   paintSummary(el, bots);
   paintBotCallout(el);
+  paintSetupList(el);
   const pending = pendingTeammates(el);
   const list = $("#blist", el);
   if (!list) return;
@@ -3335,7 +3818,7 @@ function paintBots(el, bots) {
   list.querySelectorAll("[data-setup]").forEach(b => b.onclick = ev => {
     ev.stopPropagation();
     const row = pending.filter(r => r.key === b.dataset.setup)[0];
-    if (row) addBot(el._voices || [], el, {name: row.name});
+    if (row) openSetupBots(el);
   });
   list.querySelectorAll("[data-remove]").forEach(b => b.onclick = ev => {
     ev.stopPropagation();
@@ -3446,6 +3929,7 @@ async function refreshBots(el) {
   el._bots = (r.data && r.data.bots) || [];
   noteAvatarVersions(el._bots);
   el._imported = (r.data && r.data.imported) || {rows: []};
+  el._setup = (r.data && r.data.setup) || el._setup || {rows: {}, hint: null};
   applyBotMeta(el, r.data);
   const voiceSel = document.getElementById("bvoice");
   const voiceDirty = !!(voiceSel && voiceSel.value !== (voiceSel.dataset.saved || ""));
@@ -4714,6 +5198,7 @@ async function pageBots(el) {
     <div class="banner warn" id="bhelperbad"${helperStatusBanner(data) ? "" : " hidden"}><span id="bhelpermsg">${esc(helperStatusBanner(data))}</span> <button class="btn g sm" id="bhelperdismiss" type="button">Hide warning</button></div>
     <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span></div>
     <div id="botcall"></div>
+    <div id="setuphost"></div>
     <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
     <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist"></div><div id="vere"></div></div>
     <div id="unusedwrap" hidden>
@@ -4722,6 +5207,7 @@ async function pageBots(el) {
       <p class="help">The station doesn’t listen for these. Delete them to free space, or set one again from a bot’s Configure.</p></div>
     <p class="note" id="rttall"></p>`;
   applyBotMeta(el, data);
+  el._setup = data.setup || {rows: {}, hint: null};
   noteAvatarVersions(bots);
   paintBots(el, bots);
   if (r.ok) noteStepup(data);

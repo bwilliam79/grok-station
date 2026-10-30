@@ -147,7 +147,8 @@ class NoFinishButton(unittest.TestCase):
         calls = [m.start() for m in re.finditer(r"openFinishDialog\(", JS)]
         defs = JS.index("async function openFinishDialog(")
         uses = [c for c in calls if c != defs + len("async function ")]
-        self.assertEqual(len(uses), 2)
+        # Row Update, Update all, and Update {main} first. Each is still the copy-state paste dialog.
+        self.assertEqual(len(uses), 3)
         for c in uses:
             self.assertIn('"copy"', JS[c - 200:c])
 

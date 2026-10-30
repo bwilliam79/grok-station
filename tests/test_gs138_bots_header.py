@@ -107,6 +107,23 @@ class BotsHeader(unittest.TestCase):
         self.assertEqual(one["title"], "Revoke all 1 bot?")
         self.assertIn("Otto stops replying", one["body"])
 
+    def test_configure_all_button_opens_the_setup_list(self):
+        # Retired behaviour: one pending name opened addBot, and two or more did nothing.
+        # Both the Configure all callout and Set up {bot} now open the same Set up bots list.
+        extra = """
+        function pendingTeammates() { return PENDING; }
+        function openSetupBots(el) { OPENED = el; }
+        let PENDING = [];
+        let OPENED = null;
+        """
+        one = _run("((PENDING = [{name: 'Otto'}]), openConfigureAll({tag: 'one'}), OPENED)", extra)
+        self.assertEqual(one, {"tag": "one"})
+        two = _run("((PENDING = [{name: 'Otto'}, {name: 'Pip'}]), openConfigureAll({tag: 'two'}), OPENED)", extra)
+        self.assertEqual(two, {"tag": "two"})
+        src = _fn("paintBotCallout")
+        self.assertIn("openConfigureAll(el)", src)
+        self.assertIn('id="cfgall"', _fn("botsCalloutHTML"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -274,8 +274,10 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn('id="lsrc"', js)
         self.assertIn("b.main", _fn(js, "paintBots"))
         self.assertIn("bot.main ?", js)  # no Set as Main Bot on the current main bot
+        # "Dismiss" used to be banned with the retired imported-list card. The updates-off hint
+        # (Set up bots, fo-06) uses that button label, so only the old dismiss error stays banned.
         for gone in ("Imported bots", "Get list now", "Already set up", "Not on the last list", ">New<",
-                     "function paintImported", 'id="imported"', "Nothing in the list is run", "Dismiss",
+                     "function paintImported", 'id="imported"', "Nothing in the list is run",
                      "Couldn't dismiss that.", "No names yet", "No list yet"):
             self.assertNotIn(gone, js, gone)
         for text in ("Not set up", ">Set up<", ">Remove</button>", "Copy team setup message", ">Team setup<",
