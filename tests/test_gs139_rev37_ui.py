@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Noor rev3.7 admin UI (0.13.9 QA at 77ba820) and the Sign out everywhere row (Nix B3).
+"""Noor rev3.7 admin UI (0.13.9 QA at 77ba820).
 
 Pure helpers run under node; wiring is checked in the source. Each test failed on 77ba820.
 """
@@ -56,43 +56,15 @@ class SessionModeLabel(unittest.TestCase):
         self.assertFalse(_run(names, "stepupOpen()", pre + "S.stepupUntil = Date.now() / 1000 - 5;"))
 
 
-class SignOutEverywhereUI(unittest.TestCase):
-    @NODE
-    def test_row_and_sheet_copy(self):
-        row = _run(["signOutAllHTML"], "signOutAllHTML()")
-        self.assertIn("Ends every admin sign-in, including this one. You'll need your password to get back in.", row)
-        self.assertIn('id="soego" type="button">Sign out everywhere\u2026</button>', row)
-        sheet = _run(["signOutAllSheetHTML"], "signOutAllSheetHTML()")
-        self.assertIn(">Sign out of every device?<", sheet)
-        self.assertIn("Every browser signed in to this station's admin page will need the password again.", sheet)
-        self.assertIn('data-close>Cancel</button>', sheet)
-        self.assertIn('class="btn soeok" type="button" data-soe>Sign out everywhere</button>', sheet)
-        self.assertIn('class="soeerr" id="soee"', sheet)  # reserved space for the error
+class NoSignOutEverywhere(unittest.TestCase):
+    """Removed by the owner (2026-10-30): the sidebar Sign out is enough. A password change or reset ends other sessions."""
 
-    def test_wiring_and_styles(self):
-        body = _fn("openSignOutAll")
-        self.assertIn('wrap.id = "pendpop"', body)
-        self.assertIn('api("POST", "/api/logout-all"', body)
-        self.assertIn('"Signing out\\u2026"', body)
-        self.assertIn("go.disabled = true", body)
-        self.assertIn("Couldn't sign out. Try again.", body)
-        self.assertIn("ICO_ERR", body)
-        self.assertIn('S.signinNote = "Signed out everywhere."', body)
-        self.assertIn("cancel.focus()", body)  # Cancel has default focus
-        self.assertIn('ev.key === "Escape"', body)
-        self.assertIn("btn.focus()", body)  # Esc or Cancel returns focus to the row button
-        self.assertIn("trapTab(pop)", body)
-        sysp = _fn("pageSystem")
-        sec = sysp[sysp.index('sysGroup("g-sec"'):sysp.index('sysGroup("g-trouble"')]
-        self.assertTrue(sec.rstrip().endswith("${signOutAllHTML()}`, false) +"), sec[-120:])
-        self.assertIn('openSignOutAll(soe)', sysp)
-        self.assertIn("S.signinNote", _fn("loginScreen"))
-        self.assertNotIn("Log out", _fn("botsHeaderShell"))
-        self.assertIn(".soebtn{min-height:32px;height:32px}", CSS)
-        self.assertIn(".soebtn:focus-visible,.soeok:focus-visible{outline:2px solid var(--gs-teal)", CSS)
-        self.assertIn(".soeok{border:1px solid var(--gs-amber)", CSS)
-        self.assertIn(".soebtn{width:100%;height:44px;min-height:44px}", CSS)
-        self.assertIn(".soeerr{min-height:22px", CSS)
+    def test_row_and_sheet_are_gone(self):
+        for gone in ("signOutAll", "soego", "logout-all", "Sign out everywhere", "signinNote", "Signed out everywhere"):
+            self.assertNotIn(gone, JS)
+        for gone in (".soe", "soepop", "#lnote"):
+            self.assertNotIn(gone, CSS)
+        self.assertIn('<a href="#" id="out">Sign out</a>', JS)
 
 
 class VoiceTip(unittest.TestCase):

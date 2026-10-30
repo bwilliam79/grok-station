@@ -18,6 +18,15 @@ SHA = "4915427d34633848f41448c563eb0543c3bce44a"
 class Flow(unittest.TestCase):
     def setUp(self):
         self._helper, self._remote, self._ver = ga.helper, ga.REMOTE_MAIN, ga.VERSION_FILE
+        # Nix L3: other files leave password_grace_min and sessions in the shared state dir; start clean.
+        sp = ga._settings_path()
+        self._settings = open(sp, "rb").read() if os.path.exists(sp) else None
+        doc = ga.read_json(sp, {})
+        if isinstance(doc, dict) and "password_grace_min" in doc:
+            doc.pop("password_grace_min")
+            ga.write_json(sp, doc)
+        self._sessions = dict(ga.AUTH.sessions)
+        ga.AUTH.sessions.clear()
         self.ver_path = os.path.join(tempfile.mkdtemp(prefix="gs-verfile-"), "VERSION")
         ga.VERSION_FILE = self.ver_path
         self.calls = []
@@ -36,6 +45,15 @@ class Flow(unittest.TestCase):
 
     def tearDown(self):
         ga.helper, ga.REMOTE_MAIN, ga.VERSION_FILE = self._helper, self._remote, self._ver
+        sp = ga._settings_path()
+        if self._settings is None:
+            if os.path.exists(sp):
+                os.remove(sp)
+        else:
+            with open(sp, "wb") as fh:
+                fh.write(self._settings)
+        ga.AUTH.sessions.clear()
+        ga.AUTH.sessions.update(self._sessions)
 
     def _at(self, version):
         ga.REMOTE_MAIN = lambda: {"version": version, "sha": SHA}

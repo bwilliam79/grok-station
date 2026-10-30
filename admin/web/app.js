@@ -291,7 +291,6 @@ async function boot() {
   S.state = r.data;
   noteStepup(r.data);
   if (!r.data.signed_in) return r.data.setup_required ? codeScreen() : loginScreen();
-  S.signinNote = "";
   if (r.data.wizard && !r.data.wizard.done) return wizard(r.data.wizard.step || 2);
   shell();
 }
@@ -360,7 +359,7 @@ function loginScreen() {  // 01b + 01c
     <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 class="h-auth">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
     <div class="field"><label for="p">Password</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" type="password" id="p" autocomplete="current-password" required>
       <button type="button" class="btn g sm" id="show">Show</button></div></div>
-    <div id="e"></div>${S.signinNote ? `<p class="note ok" id="lnote" role="status">${esc(S.signinNote)}</p>` : ""}<div class="field"><button class="btn p" id="go">Sign in</button></div>
+    <div id="e"></div><div class="field"><button class="btn p" id="go">Sign in</button></div>
     <p class="note"><a href="#" id="forgot">Forgot your password?</a></p>
     <div id="help" hidden class="banner off" style="display:block;margin-top:10px">
       <p>Reset needs the station itself. Either way only the password is wiped; your other settings stay.</p>
@@ -5676,8 +5675,7 @@ async function pageSystem(el) {
     <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
       ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
     <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>
-    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>
-    ${signOutAllHTML()}`, false) +
+    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>`, false) +
     sysGroup("g-trouble", "Troubleshooting", "Logs, restart voice", `
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><label for="lp">Log</label><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <label for="ls">Time range</label><select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
@@ -5696,8 +5694,6 @@ async function pageSystem(el) {
     if (r.ok) { attn($("#pe", el), ""); markSaved(); toast("Password changed. Other devices are signed out."); }
     else { markUnsaved(); attn($("#pe", el), (r.data && r.data.error) || "Couldn't save that."); }
   };
-  const soe = $("#soego", el);
-  if (soe) soe.onclick = () => openSignOutAll(soe);
   const s = (await api("GET", "/api/system")).data || {};
   const storedGrace = s.password_grace_min;
   const remembered = graceView(storedGrace).minutes;
@@ -5792,62 +5788,6 @@ async function pageSystem(el) {
       if (r.ok) { d.remove(); toast("Rebooting. This page reconnects when it's back."); } else errBox($("#re", d), r.data.error);
     };
   };
-}
-// rev3.7 (Nix B3): Sign out everywhere, last row of System > Password and security. Ends every admin
-// session on the server (POST /api/logout-all), this one too. The sidebar Sign out link stays this-browser-only.
-function signOutAllHTML() {
-  return `<div class="card soecard" id="soe"><h2>Sign out everywhere</h2>` +
-    `<p class="help">Ends every admin sign-in, including this one. You'll need your password to get back in.</p>` +
-    `<div class="field"><button class="btn soebtn" id="soego" type="button">Sign out everywhere\u2026</button></div></div>`;
-}
-function signOutAllSheetHTML() {
-  return `<div class="scrim" data-soe-scrim="1"></div><div class="pop soepop" role="dialog" aria-modal="true" aria-labelledby="soet" tabindex="-1">` +
-    `<h3 id="soet">Sign out of every device?</h3>` +
-    `<p>Every browser signed in to this station's admin page will need the password again.</p>` +
-    `<div class="soeerr" id="soee" aria-live="polite"></div>` +
-    `<div class="acts"><button class="btn" type="button" data-close>Cancel</button>` +
-    `<button class="btn soeok" type="button" data-soe>Sign out everywhere</button></div></div>`;
-}
-function openSignOutAll(btn) {
-  closePendingSheet();
-  const wrap = document.createElement("div");
-  wrap.id = "pendpop";
-  wrap.innerHTML = signOutAllSheetHTML();
-  document.body.appendChild(wrap);
-  const pop = wrap.querySelector(".pop");
-  const cancel = wrap.querySelector("[data-close]");
-  const go = wrap.querySelector("[data-soe]");
-  const onKey = ev => {
-    if (!wrap.isConnected) { document.removeEventListener("keydown", onKey); return; }
-    if (ev.key === "Escape") { ev.preventDefault(); close(); }
-  };
-  const close = () => {
-    document.removeEventListener("keydown", onKey);
-    if (wrap.parentNode) wrap.remove();
-    if (btn && btn.isConnected && btn.focus) btn.focus();
-  };
-  wrap.querySelector(".scrim").onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
-  cancel.onclick = close;
-  go.onclick = async () => {
-    go.disabled = true;
-    go.textContent = "Signing out\u2026";
-    $("#soee").innerHTML = "";
-    const r = await api("POST", "/api/logout-all", {});
-    if (r && r.ok) {
-      document.removeEventListener("keydown", onKey);
-      if (wrap.parentNode) wrap.remove();
-      S.signinNote = "Signed out everywhere.";
-      location.hash = "";
-      boot();
-      return;
-    }
-    go.disabled = false;
-    go.textContent = "Sign out everywhere";
-    $("#soee").innerHTML = `<p class="ferr" role="alert">${ICO_ERR}Couldn't sign out. Try again.</p>`;
-  };
-  document.addEventListener("keydown", onKey);
-  trapTab(pop);
-  cancel.focus();
 }
 function pageMore(el) {
   const items = [["xai", "xAI API"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"], ["integrations", "Integrations"]];

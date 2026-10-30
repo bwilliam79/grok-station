@@ -1098,6 +1098,8 @@ class StepUp(unittest.TestCase):
         self._clock = CLOCK[0]
         CLOCK[0] = 9 * 3600 + 50 * 60  # 09:50; a window opened now closes at 10:00
         self.c = signed_in()
+        ga.store_password_grace_min(10)  # Nix L3: never inherit another file's grace setting
+        ga.AUTH.sessions = {k: v for k, v in ga.AUTH.sessions.items() if k == ga.AUTH._key(self.c.jar["gs_session"])}
         self._rc = ga.relay_call
         def fake(method, path, payload=None, timeout=10):
             if path == "/admin/bots" and method == "GET":

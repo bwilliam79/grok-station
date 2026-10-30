@@ -49,6 +49,7 @@ CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # no 0/O, 1/I
 MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
+SESSION_MAX = 20  # newest admin sessions kept, by last seen (Nix L1)
 SESSION_COOKIE_FOREVER = 400 * 86400  # "session" grace: the cookie lives until logout (browsers cap Max-Age near 400 days)
 STEPUP_TTL = 600  # default grace (password_grace_min=10); the open window uses the setting, and later requests do not move it
 GRACE_MAX = 120
@@ -169,7 +170,7 @@ class Auth:
                 self._load_note.append(("skip-num", type(exp).__name__, type(seen).__name__, _is_num(exp), _is_num(seen),
                                         isinstance(exp, bool), isinstance(seen, bool)))
                 continue
-            if not session_mode() and (exp < t or t - seen > IDLE_TTL):
+            if (exp < t or t - seen > IDLE_TTL) if not session_mode() else t - seen > SESSION_COOKIE_FOREVER:
                 self._load_note.append("skip-stale")
                 continue
             item = {"exp": float(exp), "seen": float(seen)}
@@ -287,8 +288,17 @@ class Auth:
         t = secrets.token_urlsafe(32)
         t0 = now()
         self.sessions[hashlib.sha256(t.encode()).hexdigest()] = {"exp": t0 + SESSION_TTL, "seen": t0, "sid": secrets.token_hex(4)}
+        self._prune(t0)
         self._save_sessions()
         return t
+
+    def _prune(self, t):
+        """Nix L1: drop sessions not seen for 400 days, then keep the newest SESSION_MAX by last seen."""
+        for k in [k for k, r in self.sessions.items() if not isinstance(r, dict) or t - r.get("seen", 0) > SESSION_COOKIE_FOREVER]:
+            self.sessions.pop(k, None)
+        if len(self.sessions) > SESSION_MAX:
+            keep = sorted(self.sessions, key=lambda k: self.sessions[k].get("seen", 0), reverse=True)[:SESSION_MAX]
+            self.sessions = {k: self.sessions[k] for k in keep}
 
     def _key(self, token):
         return hashlib.sha256(token.encode()).hexdigest() if token else None
@@ -297,7 +307,7 @@ class Auth:
         if not isinstance(rec, dict):
             return False
         if session_mode():  # owner-accepted (Nix ruling): a "session" sign-in ends only at logout, password change or reset
-            return True
+            return t - rec.get("seen", 0) <= SESSION_COOKIE_FOREVER  # or after 400 days unused (Nix L1)
         return rec.get("exp", 0) >= t and t - rec.get("seen", 0) <= IDLE_TTL
 
     def valid(self, token):
@@ -397,13 +407,6 @@ class Auth:
         if key in self.sessions:
             self.sessions.pop(key, None)
             self._save_sessions()
-
-    def logout_all(self):
-        """Sign out everywhere: drop every server-side session, including the caller's."""
-        n = len(self.sessions)
-        self.sessions.clear()
-        self._save_sessions()
-        return n
 
     def change_password(self, old, new):
         with LOCK:
@@ -4236,15 +4239,6 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", "", 0)])
 
     # -- signed in
-    def api_post_logout_all(self, p, q, j):
-        """POST /api/logout-all: end every admin sign-in, this one too. Same guard, session and header checks as other POSTs."""
-        if p != "/api/logout-all":
-            return self.send(404, {"error": "not found"})
-        sid = AUTH.session_public_id(self.cookie("gs_session"))
-        n = AUTH.logout_all()
-        print(f"audit persona=- action=logout-all sessions={n} session={sid} last4=- time={int(now())}", flush=True)
-        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", "", 0)])
-
     def api_post_password(self, p, q, j):
         why = AUTH.change_password(j.get("old"), j.get("new"))
         if why:
