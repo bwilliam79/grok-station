@@ -112,6 +112,7 @@ class BotsHeader(unittest.TestCase):
         # Both the Configure all callout and Set up {bot} now open the same Set up bots list.
         extra = """
         function pendingTeammates() { return PENDING; }
+        function setupUnconnected() { return PENDING; }
         function openSetupBots(el) { OPENED = el; }
         let PENDING = [];
         let OPENED = null;
