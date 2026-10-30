@@ -258,17 +258,19 @@ class SetupSend(unittest.TestCase):
         self.assertEqual(self.messages[0], self.messages[1])
         self.assertGreater(len(self.messages[0]), 500)
         self.assertIn('start with "Grok Station instructions"', self.messages[0])
-        self.assertIn("Don't create a second", self.messages[0])
+        self.assertIn("don't create a second", self.messages[0])
         self.assertIn("the station owner copies them into the station.", self.messages[0])
-        # The webhook cleaner drops newline controls. The relay sends spaces so "yes." does not glue to "2."
+        self.assertNotIn("\n", self.messages[0])
+        self.assertIn("yes. Step 2: If you already", self.messages[0])
+        # The webhook cleaner drops newline controls. The relay still sends spaces before the payload.
         wire = handoff.payload("ab" * 8, "juniper", self.messages[0].replace("\n", " "),
                                "2026-10-29T00:00:00Z", cap=4000)["question"]
         bare = handoff.payload("ab" * 8, "juniper", self.messages[0],
                                "2026-10-29T00:00:00Z", cap=4000)["question"]
-        self.assertIn("yes. 2. If you already", wire)
+        self.assertIn("yes. Step 2: If you already", wire)
         self.assertIn("the station owner copies them into the station.", wire)
         self.assertGreater(len(wire), 500)
-        self.assertNotIn("yes. 2.", bare)
+        self.assertEqual(bare, wire)
         relay_fn = RELAY[RELAY.index("async def admin_setup_relay"):RELAY.index("async def admin_cards_get")]
         self.assertLess(relay_fn.index('replace("\\n", " ")'), relay_fn.index("handoff.payload("))
         self.assertEqual(self.added, [])
@@ -543,6 +545,33 @@ class Rev33Owner(unittest.TestCase):
                     f.write(raw)
             elif os.path.isfile(auth):
                 os.remove(auth)
+
+
+class Rev33WebhookLine(unittest.TestCase):
+    """The webhook message is one Step N line. The on-screen preview stays an ordered list."""
+
+    def test_webhook_text_is_one_line_and_preview_stays_a_list(self):
+        row = dict(OTTO, owner="Sam")
+        text = _run("setupMessage(%s)" % json.dumps(row))
+        self.assertNotIn("\n", text)
+        self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"))
+        self.assertRegex(text, r"^Step 1: .+\. Step 2: .+\. Step 3: .+\. Step 4: .+\.$")
+        self.assertEqual(text.count("Step "), 4)
+        self.assertIn("Step 1: Show Sam a confirm card in this chat, and only go ahead if Sam says yes. Step 2:", text)
+        self.assertIn("and don't create a second; otherwise create a webhook-triggered routine", text)
+        self.assertIn("on Sam's home computer (Office computer). Step 3:", text)
+        self.assertIn("Step 3: Reply on the station as Otto; your wake word is Hey Otto. Step 4:", text)
+        self.assertTrue(text.endswith("and Sam copies them into the station."))
+        steps = _run("setupSteps(%s)" % json.dumps(row))
+        self.assertEqual(steps[0], "Show Sam a confirm card in this chat. Only go ahead if Sam says yes.")
+        self.assertNotIn("Step 1:", " ".join(steps))
+        collapsed = _html(row)
+        self.assertIn('aria-expanded="false"', collapsed)
+        self.assertNotIn("<ol", collapsed)
+        opened = _html(row, expanded=True)
+        self.assertIn("<ol", opened)
+        self.assertEqual(opened.count("<li>"), 4)
+        self.assertIn("Only go ahead if Sam says yes.", opened)
 
 
 if __name__ == "__main__":

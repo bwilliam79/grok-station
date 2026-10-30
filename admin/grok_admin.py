@@ -3656,20 +3656,20 @@ def setup_owner_label(owner=None):
 
 
 def setup_message(name, wake, computer, owner=None):
-    """The four steps the main bot passes on. Step 2 names the existing routine so a resend does not create a second."""
+    """One line the main bot passes on. Each step ends with a period. Step 2 updates an existing routine."""
     computer = computer or ""
     who = setup_owner_label(owner)
     poss = who + "'s"
-    lines = [
-        "Show %s a confirm card in this chat. Only go ahead if %s says yes." % (who, who),
-        'If you already have a routine whose instructions start with "Grok Station instructions", update that one. '
-        "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on %s "
+    steps = [
+        "Show %s a confirm card in this chat, and only go ahead if %s says yes." % (who, who),
+        'If you already have a routine whose instructions start with "Grok Station instructions", update that one '
+        "and don't create a second; otherwise create a webhook-triggered routine called \"Grok Station\" on %s "
         "home computer (%s)." % (poss, computer),
-        "Reply on the station as %s. Your wake word is %s." % (name, wake),
-        "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
-        "%s copies them into the station." % who,
+        "Reply on the station as %s; your wake word is %s." % (name, wake),
+        "Keep the webhook URL and key in your routine panel, don't send them in any chat, and %s copies them "
+        "into the station." % who,
     ]
-    return "\n".join("%d. %s" % (i, line) for i, line in enumerate(lines, 1))
+    return " ".join("Step %d: %s" % (i, line) for i, line in enumerate(steps, 1))
 
 
 def setup_check_body(j, allowed):

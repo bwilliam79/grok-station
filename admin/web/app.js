@@ -3081,13 +3081,13 @@ function setupMessage(row) {
   const computer = (row && row.computer) || "";
   const who = setupOwnerLabel(row && row.owner);
   const poss = who + "'s";
-  const lines = [
-    "Show " + who + " a confirm card in this chat. Only go ahead if " + who + " says yes.",
-    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on ' + poss + " home computer (" + computer + ").",
-    "Reply on the station as " + name + ". Your wake word is " + wake + ".",
-    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. " + who + " copies them into the station."
+  const steps = [
+    "Show " + who + " a confirm card in this chat, and only go ahead if " + who + " says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one and don\'t create a second; otherwise create a webhook-triggered routine called "Grok Station" on ' + poss + " home computer (" + computer + ").",
+    "Reply on the station as " + name + "; your wake word is " + wake + ".",
+    "Keep the webhook URL and key in your routine panel, don't send them in any chat, and " + who + " copies them into the station."
   ];
-  return lines.map((line, i) => (i + 1) + ". " + line).join("\n");
+  return steps.map((line, i) => "Step " + (i + 1) + ": " + line).join(" ");
 }
 function setupIcon(kind) {
   if (kind === "clock") return ICO_CLOCK;
