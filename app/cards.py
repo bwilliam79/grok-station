@@ -709,14 +709,26 @@ def _team(doc):
     return out
 
 
+def _dish_name(value):
+    """Optional recipe field. Title case, 16 characters. "orzo" and "ORZO" are schema errors."""
+    text = escape_text(value, 16)
+    for word in text.split(" "):
+        if not word[0].isupper() or any(ch.isupper() for ch in word[1:]):
+            raise CardError("schema")
+    return text
+
+
 def _recipe(card):
-    _keys(card, {"type", "v", "title", "servings", "ingredients", "steps", "step"},
+    _keys(card, {"type", "v", "title", "servings", "ingredients", "steps", "step", "dish"},
           {"type", "v", "title", "servings", "ingredients", "steps", "step"})
     steps = _list(card.get("steps"), 1, 12, 160, escape_text)
-    return {"type": "recipe", "v": 1, "title": escape_text(card.get("title"), 60),
-            "servings": _int(card.get("servings"), 1, 48),
-            "ingredients": _list(card.get("ingredients"), 1, 12, 48, escape_text),
-            "steps": steps, "step": _int(card.get("step"), 1, len(steps))}
+    out = {"type": "recipe", "v": 1, "title": escape_text(card.get("title"), 60),
+           "servings": _int(card.get("servings"), 1, 48),
+           "ingredients": _list(card.get("ingredients"), 1, 12, 48, escape_text),
+           "steps": steps, "step": _int(card.get("step"), 1, len(steps))}
+    if "dish" in card:
+        out["dish"] = _dish_name(card.get("dish"))
+    return out
 
 
 def _sports(card):
@@ -1005,6 +1017,20 @@ LAST_STEP_LINE = "That's the last step."
 FIRST_STEP_LINE = "That's the first step."
 
 
+def fold_utterance(text):
+    """Case, apostrophes, a leading "hey <name>", and one trailing "please"."""
+    t = unicodedata.normalize("NFKC", str(text or ""))
+    t = t.replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    t = " ".join(t.casefold().split())
+    if not t:
+        return ""
+    t = re.sub(r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?)[, ]+", "", t).strip()
+    t = t.strip(" \t.!?")
+    if t.endswith(" please"):
+        t = t[: -len(" please")].strip(" \t.!?")
+    return t
+
+
 def recipe_utterance(text):
     """A recipe-card command, or None.
 
@@ -1013,16 +1039,95 @@ def recipe_utterance(text):
     Anything else, including a question that contains "next", is None so it
     still goes to the bot.
     """
-    t = unicodedata.normalize("NFKC", str(text or ""))
-    t = t.replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
-    t = " ".join(t.casefold().split())
+    t = fold_utterance(text)
     if not t:
         return None
-    t = re.sub(r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?)[, ]+", "", t).strip()
-    t = t.strip(" \t.!?")
-    if t.endswith(" please"):
-        t = t[: -len(" please")].strip(" \t.!?")
     return _RECIPE_PHRASES.get(t)
+
+
+_TIME_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+    "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_TIME_RE = re.compile(
+    r"\b(\d{1,4}|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|"
+    r"forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[ \t-]+)(minutes|minute|mins|min|hours|hour|hrs|hr)\b",
+    re.IGNORECASE)
+_OFFER_YES = frozenset({"yes", "yeah", "yep", "sure", "okay", "ok", "please", "do it", "set it"})
+_OFFER_NO = frozenset({"no", "nope", "no thanks", "not now"})
+OFFER_NO_SAY = "Okay."
+
+
+def timer_source(raw):
+    """{recipe_id, step} or None. The id is a card id; step is 1..12."""
+    if not isinstance(raw, dict):
+        return None
+    rid, step = raw.get("recipe_id"), raw.get("step")
+    if not isinstance(rid, str) or not CARD_ID.fullmatch(rid):
+        return None
+    if type(step) is not int or not 1 <= step <= 12:
+        return None
+    return {"recipe_id": rid, "step": step}
+
+
+def step_time(text):
+    """First time in a step, or None. Hours are stored as minutes for the offer sentence.
+
+    "10 minutes", "20 min", "1 hour", and "twenty minutes" match. A later time in the
+    same step is ignored.
+    """
+    match = _TIME_RE.search(str(text or ""))
+    if not match:
+        return None
+    raw = match.group(1).casefold()
+    n = int(raw) if raw.isdigit() else _TIME_WORDS.get(raw)
+    if not n or n < 1:
+        return None
+    unit = match.group(2).casefold()
+    if unit.startswith("h"):
+        seconds, minutes = n * 3600, n * 60
+    else:
+        seconds, minutes = n * 60, n
+    if seconds > 86400:
+        return None
+    return {"start": match.start(), "end": match.end(), "seconds": seconds, "minutes": minutes}
+
+
+def build_timer_offer(text, dish, step):
+    """Spoken offer for a step that mentions a time, or None."""
+    hit = step_time(text)
+    if not hit or type(step) is not int:
+        return None
+    n = hit["minutes"]
+    if isinstance(dish, str) and dish.strip():
+        say = f"Want a {n}-minute timer for the {dish.strip().casefold()}?"
+        label = dish.strip()
+    else:
+        say = f"Want a {n}-minute timer for this step?"
+        label = f"Step {step}"
+    return {"say": say, "minutes": n, "seconds": hit["seconds"], "label": label}
+
+
+def timer_set_say(name, minutes):
+    """'Orzo timer set for 10 minutes.'"""
+    n = int(minutes)
+    unit = "minute" if n == 1 else "minutes"
+    return f"{name} timer set for {n} {unit}."
+
+
+def offer_answer(text):
+    """'yes', 'no', or None. The whole utterance, folded the same way as a recipe command."""
+    folded = fold_utterance(text)
+    if folded in _OFFER_YES:
+        return "yes"
+    if folded in _OFFER_NO:
+        return "no"
+    return None
 
 
 def apply_recipe_command(deck, cmd, now):
@@ -1069,8 +1174,11 @@ def apply_recipe_command(deck, cmd, now):
         it["step_at"] = now
         if it.get("idle_at") is not None:
             it["idle_at"] = min(it["expires"], now + RECIPE_IDLE_S)
-        return {"ok": True, "closed": False, "bot": bot, "id": cid, "step": step,
-                "say": say, "title": card.get("title") or ""}
+        out = {"ok": True, "closed": False, "bot": bot, "id": cid, "step": step,
+               "say": say, "title": card.get("title") or ""}
+        if card.get("dish"):
+            out["dish"] = card["dish"]
+        return out
 
 
 class Deck:

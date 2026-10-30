@@ -363,6 +363,9 @@ def _persist_timer(v):
             out["ring_until"] = time.time() + (v["ring_mono"] - time.monotonic())
         elif isinstance(v.get("ring_until"), (int, float)) and not isinstance(v.get("ring_until"), bool):
             out["ring_until"] = v["ring_until"]
+    src = _timer_source(v.get("source"))
+    if src:
+        out["source"] = src
     return out
 
 
@@ -379,6 +382,9 @@ def _anchor_timer(v, now_w, now_m):
         if isinstance(until, (int, float)) and not isinstance(until, bool):
             rec["ring_until"] = float(until)
             rec["ring_mono"] = now_m + (float(until) - now_w)
+    src = _timer_source(v.get("source"))
+    if src:
+        rec["source"] = src
     return rec
 
 
@@ -427,6 +433,21 @@ def _clean_timer_label(s):
     return " ".join(re.sub(r"[^\w '\-]", " ", str(s or "")).split())[:24] or "timer"
 
 
+_CARD_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def _timer_source(raw):
+    """{recipe_id, step} or None. Same shape the relay stores and the recipe rail reads."""
+    if not isinstance(raw, dict):
+        return None
+    rid, step = raw.get("recipe_id"), raw.get("step")
+    if not isinstance(rid, str) or not _CARD_ID.fullmatch(rid):
+        return None
+    if type(step) is not int or not 1 <= step <= 12:
+        return None
+    return {"recipe_id": rid, "step": step}
+
+
 def timer_rows():
     """Full timer list for the display. Ringing chips sort first, then soonest deadline.
 
@@ -444,6 +465,9 @@ def timer_rows():
             dur = v.get("duration")
             if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
                 row["duration"] = float(dur)
+            src = _timer_source(v.get("source"))
+            if src:
+                row["source"] = src
             rows.append(row)
     rows.sort(key=lambda r: (not r["ringing"], r["ends_at_epoch"]))
     return rows
@@ -454,8 +478,31 @@ def post_timers():
     post_state(timers=timer_rows())
 
 
+def _stamp_source(rec, ev):
+    src = _timer_source(ev.get("source"))
+    if src:
+        rec["source"] = src
+    return rec
+
+
 def timer_event(ev):
-    """timer_set / timer_cancel from the relay. Labels are cleaned again here."""
+    """timer_set / timer_cancel from the relay. Labels are cleaned again here.
+
+    A stop-all cancel carries ids and posts the list once, so the recipe rail re-packs in one slide.
+    """
+    if ev.get("type") == "timer_cancel" and isinstance(ev.get("ids"), list):
+        changed = False
+        with TIMERS_LOCK:
+            for raw in ev["ids"]:
+                tid = str(raw)
+                if re.fullmatch(r"[a-z0-9]{4,12}", tid) and TIMERS.pop(tid, None):
+                    changed = True
+            if changed:
+                timers_save()
+                print("timer cancelled", flush=True)
+        if changed:
+            post_timers()
+        return
     tid = str(ev.get("id", ""))
     if not re.fullmatch(r"[a-z0-9]{4,12}", tid):
         return
@@ -468,14 +515,16 @@ def timer_event(ev):
             room = tid in TIMERS or len(TIMERS) < MAX_STATION_TIMERS
             if isinstance(sec, int) and not isinstance(sec, bool) and room and sec == 0:
                 now_w, now_m = time.time(), time.monotonic()
-                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": now_w, "mono_due": now_m,
-                               "duration": 1, "ringing": True, "ring_until": now_w + RING_HOLD,
-                               "ring_mono": now_m + RING_HOLD}
+                TIMERS[tid] = _stamp_source(
+                    {"label": _clean_timer_label(ev.get("label")), "due": now_w, "mono_due": now_m,
+                     "duration": 1, "ringing": True, "ring_until": now_w + RING_HOLD,
+                     "ring_mono": now_m + RING_HOLD}, ev)
                 changed = True
                 print("timer ringing", flush=True)
             elif isinstance(sec, int) and not isinstance(sec, bool) and room and 1 <= sec <= 86400:
-                TIMERS[tid] = {"label": _clean_timer_label(ev.get("label")), "due": time.time() + sec,
-                               "mono_due": time.monotonic() + sec, "duration": sec}
+                TIMERS[tid] = _stamp_source(
+                    {"label": _clean_timer_label(ev.get("label")), "due": time.time() + sec,
+                     "mono_due": time.monotonic() + sec, "duration": sec}, ev)
                 changed = True
                 print("timer set", flush=True)
         elif TIMERS.pop(tid, None):
@@ -509,6 +558,9 @@ def timers_query():
             dur = v.get("duration")
             if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
                 item["duration"] = int(round(dur))
+            src = _timer_source(v.get("source"))
+            if src:
+                item["source"] = src
             items.append(item)
     return urllib.parse.quote(json.dumps(items, separators=(",", ":"))) if items else ""
 
@@ -2859,6 +2911,12 @@ class Session:
                         self.play_cue(decode_cue_audio(ev))
                     elif t in ("timer_set", "timer_cancel"):
                         timer_event(ev)
+                    elif t == "recipe_caption":
+                        text = " ".join(str(ev.get("text") or "").split())[:160]
+                        sec = ev.get("seconds")
+                        sec = float(sec) if not isinstance(sec, bool) and isinstance(sec, (int, float)) and sec > 0 else 0
+                        post_state(recipe_caption=text, recipe_caption_s=sec)
+                        print("recipe caption", flush=True)
                     elif t == "card":
                         card = take_card(ev)
                         if not card:

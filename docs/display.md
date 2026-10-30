@@ -30,7 +30,9 @@ The station's localhost `/status` adds `grok` with `state` and `cause` only. No 
 
 Voice hints on a recipe step, a ringing timer, and the calendar footer are one style: body text at L(36), which is 48 px on the 2560×1706 panel. "Say" and the connective words are muted. A spoken phrase is in the text colour, inside curly quotes. On the calendar, "Next:" is muted and the event is text colour, not quoted.
 
-On a recipe the hint is one row under all three columns (x 128, y 1494, w 2304, h 84 at 2560×1706). It always reads Say "next step" · "previous step" · "close recipe", including on step 1. It does not list timer phrases. "previous step" on step 1 still says "That's the first step".
+On a recipe the hint is one row under all three columns (x 128, y 1494, w 2304, h 84 at 2560×1706). It always reads Say "next step" · "previous step" · "close recipe", including on step 1. It does not list timer phrases. "previous step" on step 1 still says "That's the first step". When Juniper offers a timer, that sentence replaces the hint until the answer or the 8 second window ends, then the hint comes back. The same row does not change size.
+
+A time in the step ("10 minutes", "20 min", "1 hour", "twenty minutes") is drawn in teal with a dotted underline. The first time in the step is the one that counts. It turns muted while a timer from that step is running or ringing, and teal again when that timer is gone. The link is the timer's source, `{recipe_id, step}`, not its name. Closing the recipe clears the offer caption. The step card does not get wider.
 
 ## Supported range
 

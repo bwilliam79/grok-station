@@ -40,7 +40,7 @@ The card itself is at most 4096 bytes of JSON. `v` must be the integer 1. Any ot
 
 | Type | Fields |
 |---|---|
-| `recipe` | `title` (60), `servings` 1..48, `ingredients` 1..12 of 48, `steps` 1..12 of 160, `step` 1..len(steps) |
+| `recipe` | `title` (60), `servings` 1..48, `ingredients` 1..12 of 48, `steps` 1..12 of 160, `step` 1..len(steps), optional `dish` (16, title case, for example `Orzo`) |
 | `sports` | `league` (24), `home` and `away` teams, `home_score` and `away_score` 0..999, `status` `live`\|`final`\|`scheduled`\|`delayed`, `period` (16), `schedule` 0..4 of `{label` 48, `when` 24}` |
 | `calendar` | `date` `YYYY-MM-DD`, `events` 0..8 of `{time` 16, `title` 48}`. The display shows five rows. The first is next (teal), then a summary line |
 | `home` | `title` (24), `items` 1..6 of `{label` 32, `value` 24, optional `trend` `up`\|`down}` |

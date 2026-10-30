@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.parse
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -45,10 +46,12 @@ def setUpModule():
     pygame.font.init()
 
 
-def _timer(tid, label, left, duration=None, ringing=False):
+def _timer(tid, label, left, duration=None, ringing=False, source=None):
     rec = {"id": tid, "label": label, "ends_at_epoch": EPOCH + left, "ringing": ringing}
     if duration is not None:
         rec["duration"] = duration
+    if source is not None:
+        rec["source"] = source
     return rec
 
 
@@ -211,7 +214,7 @@ class Rail(unittest.TestCase):
         self.assertEqual(dy["aaaa03"], ys[2] - ys[1])
         self.assertEqual(len(dy), 3)  # one slide for everything that remains
 
-    def test_a_listed_timer_that_rings_takes_slot_3(self):
+    def test_a_ringing_timer_in_the_rest_is_promoted(self):
         order = ["aaaa01", "aaaa02", "aaaa03", "aaaa04"]
         timers = [
             _timer("aaaa01", "orzo", 500, 600),
@@ -220,9 +223,10 @@ class Rail(unittest.TestCase):
             _timer("aaaa04", "Timer 2", -1, 60, ringing=True),
         ]
         rail = gs.recipe_rail(timers, EPOCH, order)
-        self.assertEqual(rail["slots"][2]["kind"], "ringing")
-        self.assertEqual(rail["slots"][2]["id"], "aaaa04")
-        self.assertEqual(rail["slots"][2]["done"], "Timer 2 is done")
+        self.assertEqual(rail["slots"][0]["kind"], "ringing")
+        self.assertEqual(rail["slots"][0]["id"], "aaaa04")
+        self.assertEqual(rail["slots"][0]["done"], "Timer 2 is done")
+        self.assertEqual(rail["slots"][2]["kind"], "more")
 
     def test_empty_rail_says_no_timers_only_in_slot_1(self):
         rail = gs.recipe_rail([], EPOCH)
@@ -346,8 +350,8 @@ class StopAndClose(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(set(timers), {"aaaa04"})
         self.assertEqual(timers["aaaa04"]["label"], "rice")
-        ids = [m["id"] for m in msg]
-        self.assertEqual(ids, ["aaaa01", "aaaa02", "aaaa03"])
+        self.assertEqual(msg["type"], "timer_cancel")
+        self.assertEqual(msg["ids"], ["aaaa01", "aaaa02", "aaaa03"])
         self.assertEqual(out["say"], "Stopped Orzo, Garlic bread and Timer.")
         again = T.clear_ringing_utterance("stop the timer", timers, now + 1)
         self.assertIsNone(again)
@@ -735,6 +739,556 @@ class RelayPath(unittest.IsolatedAsyncioTestCase):
         events, posted = await self._drive("dismiss", timers, recipe_post=recipe_post)
         self.assertEqual(posted, ["dismiss"])
         self.assertFalse(any(e.get("type") == "timer_cancel" for e in events))
+
+
+SRC = {"recipe_id": "orzo01", "step": 3}
+
+
+def _four_rest_ringing():
+    """Oldest order puts both ringing timers in the overflow."""
+    order = ["aaaa01", "aaaa02", "aaaa03", "aaaa04"]
+    timers = [
+        _timer("aaaa01", "orzo", 500, 600),
+        _timer("aaaa02", "garlic bread", 400, 400),
+        _timer("aaaa03", "rice", -30, 60, ringing=True),
+        _timer("aaaa04", "beans", -5, 60, ringing=True),
+    ]
+    return order, timers
+
+
+def _five_three_ringing():
+    order = ["aaaa01", "aaaa02", "aaaa03", "aaaa04", "aaaa05"]
+    timers = [
+        _timer("aaaa01", "orzo", 500, 600),
+        _timer("aaaa02", "garlic bread", 200, 300),
+        _timer("aaaa03", "rice", -40, 60, ringing=True),
+        _timer("aaaa04", "beans", -20, 60, ringing=True),
+        _timer("aaaa05", "brisket", -5, 60, ringing=True),
+    ]
+    return order, timers
+
+
+class Rev4Rail(unittest.TestCase):
+    def setUp(self):
+        self.old_chips = list(gs.TIMER_CHIPS)
+        self.old_epoch = gs.TIMER_EPOCH
+        self.old_order = list(gs.RECIPE_RAIL_ORDER)
+        self.old_slide = dict(gs._RAIL_SLIDE)
+        self.old_open = gs.RECIPE_FEED_OPEN
+        gs.TIMER_EPOCH = EPOCH
+        gs.TIMER_CHIPS[:] = []
+        gs.RECIPE_RAIL_ORDER[:] = []
+        gs._RAIL_SLIDE.clear()
+        gs._RAIL_SLIDE.update(sig=None, t0=0.0, before={}, positions=None)
+
+    def tearDown(self):
+        gs.TIMER_CHIPS[:] = self.old_chips
+        gs.TIMER_EPOCH = self.old_epoch
+        gs.RECIPE_RAIL_ORDER[:] = self.old_order
+        gs._RAIL_SLIDE.clear()
+        gs._RAIL_SLIDE.update(self.old_slide)
+        gs.RECIPE_FEED_OPEN = self.old_open
+
+    def test_two_ringing_in_the_rest_take_the_first_slots(self):
+        order, timers = _four_rest_ringing()
+        rail = gs.recipe_rail(timers, EPOCH, order)
+        self.assertEqual(rail["slots"][0]["kind"], "ringing")
+        self.assertEqual(rail["slots"][0]["id"], "aaaa03")  # ended first
+        self.assertEqual(rail["slots"][1]["kind"], "ringing")
+        self.assertEqual(rail["slots"][1]["id"], "aaaa04")
+        more = rail["slots"][2]
+        self.assertEqual(more["kind"], "more")
+        self.assertNotEqual(more.get("treatment"), "ringing")
+        self.assertEqual(more["label"], "+2 more")
+        self.assertEqual([r["id"] for r in more["rows"]], ["aaaa02", "aaaa01"])  # soonest first
+        self.assertTrue(all(tid in rail["positions"] for tid in order))
+        self.assertEqual(rail["banner_names"], ["Rice", "Beans"])
+
+    def test_three_ringing_put_the_rest_in_an_amber_more_slot(self):
+        order, timers = _five_three_ringing()
+        rail = gs.recipe_rail(timers, EPOCH, order)
+        self.assertEqual([s["id"] for s in rail["slots"][:2]], ["aaaa03", "aaaa04"])
+        self.assertTrue(all(s["kind"] == "ringing" for s in rail["slots"][:2]))
+        more = rail["slots"][2]
+        self.assertEqual(more["kind"], "more")
+        self.assertEqual(more.get("treatment"), "ringing")
+        self.assertEqual(more["label"], "+3 more")
+        self.assertEqual(more["n"], 3)
+        self.assertEqual([r["id"] for r in more["rows"]], ["aaaa05", "aaaa02", "aaaa01"])
+        self.assertEqual(more["rows"][0]["done"], "Brisket · done")
+        self.assertTrue(more["rows"][0]["ringing"])
+        self.assertFalse(more["rows"][1]["ringing"])
+        for tid in order:
+            self.assertIn(tid, rail["positions"])
+        rings = []
+        real = gs._paint_countdown_ring
+
+        def wrap(diameter, fraction, color, pulse):
+            rings.append(int(diameter))
+            return real(diameter, fraction, color, pulse)
+
+        gs._paint_countdown_ring = wrap
+        gs.RECIPE_RAIL_ORDER[:] = list(order)
+        gs.TIMER_CHIPS[:] = [dict(t) for t in timers]
+        try:
+            surf = pygame.Surface(PANEL)
+            gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+        finally:
+            gs._paint_countdown_ring = real
+        slot = gs.LAST_RECIPE_FRAME["slots"][2]
+        self.assertEqual(len(rings), 2)  # full bell rings on slots 1 and 2 only
+        fill = surf.get_at((slot.left + 48, slot.top + 16))
+        edge = surf.get_at((slot.left + 4, slot.centery))
+        self.assertEqual((fill.r, fill.g, fill.b), (gs.ALERT_FILL.r, gs.ALERT_FILL.g, gs.ALERT_FILL.b))
+        self.assertEqual((edge.r, edge.g, edge.b), (gs.AMBER.r, gs.AMBER.g, gs.AMBER.b))
+        self.assertIn("Brisket · done", gs.LAST_RECIPE_COPY)
+
+    def test_a_later_timer_that_rings_is_promoted(self):
+        order = ["aaaa01", "aaaa02", "aaaa03", "aaaa04"]
+        running = [
+            _timer("aaaa01", "orzo", 500, 600),
+            _timer("aaaa02", "garlic bread", 400, 400),
+            _timer("aaaa03", "rice", 120, 180),
+            _timer("aaaa04", "beans", 300, 300),
+        ]
+        before = gs.recipe_rail(running, EPOCH, order)
+        self.assertEqual(before["slots"][0]["id"], "aaaa01")
+        self.assertEqual(before["slots"][1]["id"], "aaaa02")
+        self.assertEqual(before["positions"]["aaaa04"], 2)
+        promoted = [dict(t) for t in running]
+        promoted[3]["ringing"] = True
+        promoted[3]["ends_at_epoch"] = EPOCH - 5
+        after = gs.recipe_rail(promoted, EPOCH, order)
+        self.assertEqual(after["slots"][0]["id"], "aaaa04")
+        self.assertEqual(after["slots"][0]["kind"], "ringing")
+        self.assertEqual(after["slots"][1]["id"], "aaaa01")
+        self.assertEqual(after["positions"]["aaaa04"], 0)
+        ys = [216, 639, 1062]
+        dy = gs.rail_translate(before["positions"], after["positions"], 0, False, ys)
+        self.assertEqual(dy["aaaa04"], ys[2] - ys[0])  # one slide, from the more pile up to slot 1
+        self.assertEqual(dy["aaaa03"], 0)  # the other overflow timer stays put
+        self.assertEqual(set(dy), set(order))
+
+    def test_stop_repacks_every_ringing_timer_in_one_slide(self):
+        order, timers = _five_three_ringing()
+        gs.RECIPE_RAIL_ORDER[:] = list(order)
+        gs.TIMER_CHIPS[:] = [dict(t) for t in timers]
+        surf = pygame.Surface(PANEL)
+        gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+        self.assertFalse(gs.rail_slide_running())
+        gs.TIMER_CHIPS[:] = [t for t in gs.TIMER_CHIPS if not t.get("ringing")]
+        gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+        self.assertTrue(gs.rail_slide_running())
+        self.assertEqual([s.get("id") for s in gs.LAST_RECIPE_RAIL["slots"]], ["aaaa01", "aaaa02", None])
+        now = 1000.0
+        book = _book([
+            ("aaaa01", "orzo", -30, True),
+            ("aaaa02", "garlic bread", -10, True),
+            ("aaaa03", "timer", -1, True),
+            ("aaaa04", "rice", 90, False),
+        ], now)
+        cleared = T.clear_ringing_utterance("stop", book, now)
+        self.assertEqual(len(cleared["messages"]), 1)
+        self.assertEqual(cleared["messages"][0]["ids"], ["aaaa01", "aaaa02", "aaaa03"])
+        self.assertEqual(set(book), {"aaaa04"})
+        saved = (dict(gw.TIMERS), gw.post_timers, gw.timers_save)
+        gw.TIMERS.clear()
+        posts = []
+        gw.post_timers = lambda: posts.append(gw.timer_rows())
+        gw.timers_save = lambda: None
+        try:
+            for tid, label in (("aaaa01", "orzo"), ("aaaa02", "garlic bread"), ("aaaa03", "timer"), ("aaaa04", "rice")):
+                gw.TIMERS[tid] = {"label": label, "due": 1, "mono_due": 1, "duration": 60,
+                                  "ringing": tid != "aaaa04"}
+            gw.timer_event({"type": "timer_cancel", "ids": ["aaaa01", "aaaa02", "aaaa03"]})
+        finally:
+            timers_saved, post, save = saved
+            gw.TIMERS.clear()
+            gw.TIMERS.update(timers_saved)
+            gw.post_timers = post
+            gw.timers_save = save
+        self.assertEqual(len(posts), 1)
+        self.assertEqual([r["id"] for r in posts[0]], ["aaaa04"])
+
+
+class Rev4Dish(unittest.TestCase):
+    def test_dish_is_optional_title_case_and_names_the_timer(self):
+        plain = cards.validate_card(dict(RECIPE))
+        self.assertNotIn("dish", plain)
+        named = cards.validate_card(dict(RECIPE, dish="Orzo"))
+        self.assertEqual(named["dish"], "Orzo")
+        self.assertEqual(cards.validate_card(dict(RECIPE, dish="Garlic Bread"))["dish"], "Garlic Bread")
+        for bad in ("orzo", "ORZO", "Garlic bread", "x" * 17, ""):
+            with self.assertRaises(cards.CardError):
+                cards.validate_card(dict(RECIPE, dish=bad))
+        hit = cards.step_time("Boil the orzo for 10 minutes, then rest 5 minutes.")
+        self.assertEqual(hit["seconds"], 600)
+        self.assertEqual(hit["minutes"], 10)
+        self.assertEqual(cards.step_time("Rest 20 min.")["seconds"], 1200)
+        self.assertEqual(cards.step_time("Bake 1 hour.")["seconds"], 3600)
+        self.assertEqual(cards.step_time("Simmer twenty minutes.")["minutes"], 20)
+        self.assertIsNone(cards.step_time("Fold in the herbs."))
+        self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", "Orzo", 3)["say"],
+                         "Want a 10-minute timer for the orzo?")
+        self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", None, 3)["say"],
+                         "Want a 10-minute timer for this step?")
+        self.assertEqual(cards.build_timer_offer("Bake 1 hour.", None, 2)["say"],
+                         "Want a 60-minute timer for this step?")
+        self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", "Orzo", 3)["label"], "Orzo")
+        self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", None, 3)["label"], "Step 3")
+        self.assertEqual(cards.timer_set_say("Orzo", 10), "Orzo timer set for 10 minutes.")
+        for word in ("yes", "Yeah.", "yep", "sure", "okay", "OK", "please", "do it", "set it",
+                     "hey juniper, yes please"):
+            self.assertEqual(cards.offer_answer(word), "yes", word)
+        for word in ("no", "nope", "no thanks", "not now"):
+            self.assertEqual(cards.offer_answer(word), "no", word)
+        self.assertIsNone(cards.offer_answer("next step"))
+        self.assertIsNone(cards.offer_answer("yes please set a timer for the soup"))
+
+    def test_source_round_trips_and_reads_from_step(self):
+        now = 1000.0
+        timers = {}
+        out, msg = T.set_timer({"seconds": 600, "label": "Orzo", "source": dict(SRC)}, timers, now)
+        self.assertTrue(out["ok"])
+        self.assertEqual(msg["source"], SRC)
+        self.assertEqual(msg["label"], "Orzo")
+        self.assertEqual(timers[msg["id"]]["source"], SRC)
+        path = os.path.join(tempfile.mkdtemp(), "timers.json")
+        self.assertTrue(T.save_timer_state(path, timers, now, wall_now=1_700_000_000))
+        loaded = T.load_timer_state(path, 1_700_000_000)
+        self.assertEqual(loaded[msg["id"]]["source"], SRC)
+        restored = T.restore_timers(path, now, 1_700_000_000)
+        handed = T.timer_restore_messages(restored, now)
+        self.assertEqual(handed[0]["source"], SRC)
+        voice, voice_msg = T.set_timer({"seconds": 300, "label": "pasta"}, {}, now)
+        self.assertTrue(voice["ok"])
+        self.assertNotIn("source", voice_msg)
+        chip = _timer("bbbb01", "Orzo", 600, 600, source=dict(SRC))
+        rail = gs.recipe_rail([chip], EPOCH, ["bbbb01"])
+        self.assertEqual(rail["slots"][0]["title"], "Orzo")
+        self.assertEqual(rail["slots"][0]["source"], "From step 3")
+        step = _timer("bbbb02", "Step 2", 100, 120, source={"recipe_id": "orzo01", "step": 2})
+        self.assertEqual(gs.recipe_rail([step], EPOCH)["slots"][0]["source"], "From step 2")
+        self.assertEqual(gs.recipe_rail([step], EPOCH)["slots"][0]["title"], "Step 2")
+        self.assertEqual(gs.recipe_rail([_timer("bbbb03", "pasta", 50, 60)], EPOCH)["slots"][0]["source"],
+                         "Set by voice")
+        cleaned = gs.clean_timers([{"id": "bbbb01", "label": "Orzo", "ends_at_epoch": EPOCH + 10,
+                                    "ringing": False, "source": dict(SRC), "nope": 1}])
+        self.assertEqual(cleaned[0]["source"], SRC)
+        saved = (dict(gw.TIMERS), gw.post_timers, gw.TIMERS_FILE)
+        wake_path = os.path.join(tempfile.mkdtemp(), "wake-timers.json")
+        gw.TIMERS.clear()
+        gw.TIMERS_FILE = wake_path
+        gw.post_timers = lambda: None
+        try:
+            gw.timer_event({"type": "timer_set", "id": "bbbb01", "seconds": 600, "label": "Orzo", "source": dict(SRC)})
+            self.assertEqual(gw.TIMERS["bbbb01"]["source"], SRC)
+            self.assertEqual(gw.timer_rows()[0]["source"], SRC)
+            parsed = T.parse_timers(urllib.parse.unquote(gw.timers_query()), now)
+            self.assertEqual(parsed["bbbb01"]["source"], SRC)
+            gw.timers_save()
+            with open(wake_path) as f:
+                disk = json.load(f)
+            self.assertEqual(disk["bbbb01"]["source"], SRC)
+        finally:
+            book, post, old_file = saved
+            gw.TIMERS.clear()
+            gw.TIMERS.update(book)
+            gw.post_timers = post
+            gw.TIMERS_FILE = old_file
+
+
+class Rev4Highlight(unittest.TestCase):
+    def setUp(self):
+        self.old_chips = list(gs.TIMER_CHIPS)
+        self.old_epoch = gs.TIMER_EPOCH
+        self.old_shown = getattr(gs, "RECIPE_SHOWN", None)
+        self.old_open = gs.RECIPE_FEED_OPEN
+        gs.TIMER_EPOCH = EPOCH
+        gs.TIMER_CHIPS[:] = []
+        gs.RECIPE_SHOWN = {"id": "orzo01", "step": 1}
+
+    def tearDown(self):
+        gs.TIMER_CHIPS[:] = self.old_chips
+        gs.TIMER_EPOCH = self.old_epoch
+        gs.RECIPE_SHOWN = self.old_shown
+        gs.RECIPE_FEED_OPEN = self.old_open
+        if hasattr(gs, "RECIPE_CAPTION"):
+            gs.RECIPE_CAPTION = None
+
+    def _card(self):
+        return dict(RECIPE, step=1, steps=["Boil the orzo for 10 minutes.", "Fold in the herbs.", "Serve warm."])
+
+    def _colors(self, card=None):
+        card = card or self._card()
+        surf = pygame.Surface(PANEL)
+        gs.draw_feed(surf, gs.Layout(*PANEL), NOW, card)
+        box = gs.LAST_RECIPE_FRAME["step_text"]
+        L = gs.Layout(*PANEL)
+        face = gs.font("display", gs.recipe_px(L, 112))
+        text = card["steps"][0]
+        hit = cards.step_time(text)
+        sx = gs.LAST_RECIPE_FRAME["step"].left + gs.recipe_px(L, 64)
+        gap = gs.recipe_px(L, 8)
+        spans = gs._step_spans(face, text, box.w)
+        ink = dots = 0
+        right = box.left
+        ty = box.top
+        for line, a, b in spans:
+            y_ink = ty + face.get_ascent() // 2
+            if hit and line == text[a:b]:
+                lo, hi = max(hit["start"], a), min(hit["end"], b)
+                if lo < hi:
+                    frag_at = lo - a
+                    frag = line[frag_at:frag_at + (hi - lo)]
+                    ox = face.size(line[:frag_at])[0]
+                    fw = face.size(frag)[0]
+                    y_line = ty + face.get_height() - 3
+                    for x in range(sx + ox + 1, sx + ox + fw - 1, 2):
+                        if not box.collidepoint(x, y_ink):
+                            continue
+                        c = surf.get_at((x, y_ink))
+                        if c.g > 160 and c.g > c.r + 20:
+                            ink += 1
+                        d = surf.get_at((x, min(y_line, box.bottom - 1)))
+                        if d.g > 160 and d.g > d.r + 20:
+                            dots += 1
+            for x in range(sx, min(sx + face.size(line)[0] + 1, box.right)):
+                c = surf.get_at((x, y_ink))
+                if c.r > 40 or c.g > 40:
+                    right = max(right, x)
+            ty += face.get_height() + gap
+        return ink, dots, right, face.size(text)[0]
+
+    def test_time_is_teal_until_that_steps_timer_exists(self):
+        ink, dots, right, width = self._colors()
+        self.assertGreater(ink, 8)
+        self.assertGreater(dots, 4)  # dotted, not a solid bar: gaps keep this modest but present
+        self.assertLess(right, gs.LAST_RECIPE_FRAME["step_text"].left + width + gs.LAST_RECIPE_FRAME["step"].left)
+        gs.TIMER_CHIPS[:] = [_timer("bbbb01", "pasta", 400, 600, source={"recipe_id": "other", "step": 1})]
+        other_ink, _, other_right, _ = self._colors()
+        self.assertGreater(other_ink, 8)  # a different recipe does not mute
+        self.assertEqual(other_right, right)
+        gs.TIMER_CHIPS[:] = [_timer("bbbb01", "Orzo", 400, 600, source={"recipe_id": "orzo01", "step": 1})]
+        muted_ink, _, muted_right, _ = self._colors()
+        self.assertEqual(muted_ink, 0)
+        self.assertEqual(muted_right, right)
+        gs.TIMER_CHIPS[:] = [_timer("bbbb01", "Orzo", -5, 600, ringing=True,
+                                    source={"recipe_id": "orzo01", "step": 1})]
+        ring_ink, _, _, _ = self._colors()
+        self.assertEqual(ring_ink, 0)
+        gs.TIMER_CHIPS[:] = []
+        again, _, _, _ = self._colors()
+        self.assertGreater(again, 8)
+        gs.RECIPE_FEED_OPEN = True
+        gs.RECIPE_CAPTION = {"text": "Want a 10-minute timer for the orzo?", "until": 10**12}
+        gs.arm_recipe_screen(False)
+        self.assertIsNone(gs.RECIPE_SHOWN)
+        self.assertIsNone(gs.RECIPE_CAPTION)
+
+    def test_offer_caption_replaces_the_hint_until_it_clears(self):
+        gs.apply_recipe_caption("Want a 10-minute timer for the orzo?", 8, now=time.monotonic())
+        calls = []
+        real = gs.draw_voice_hint
+
+        def wrap(surface, segments, x, y, px=36, max_w=None):
+            calls.append(list(segments))
+            return real(surface, segments, x, y, px=px, max_w=max_w)
+
+        seen = []
+        real_font = gs.font
+
+        def font(kind, px):
+            inner = real_font(kind, px)
+
+            class Recording:
+                def render(self, text, *a, **k):
+                    seen.append(str(text))
+                    return inner.render(text, *a, **k)
+
+                def __getattr__(self, name):
+                    return getattr(inner, name)
+
+            return Recording()
+
+        gs.draw_voice_hint = wrap
+        gs.font = font
+        try:
+            surf = pygame.Surface(PANEL)
+            gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+            self.assertIn("Want a 10-minute timer for the orzo?", seen)
+            self.assertEqual(gs.LAST_RECIPE_FRAME["hint"], pygame.Rect(128, 1494, 2304, 84))
+            gs.apply_recipe_caption("", 0)
+            gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
+        finally:
+            gs.draw_voice_hint = real
+            gs.font = real_font
+        self.assertEqual(calls[-1], list(gs.RECIPE_HINT_SEGMENTS))
+
+
+class Rev4Offer(unittest.IsolatedAsyncioTestCase):
+    async def _turns(self, lines, recipe_for, *, silence=False):
+        from aiohttp import web, WSMsgType
+        from aiohttp.test_utils import TestClient, TestServer
+        relay = _ensure_relay()
+        relay.stats["busy"] = 0
+        posted = []
+        pending = list(lines)
+        real_post = relay.post_recipe_cmd
+        real_tts = relay.tts_pcm
+
+        async def no_tts(*args, **kwargs):
+            return None
+
+        def post(cmd):
+            posted.append(cmd)
+            return recipe_for(cmd, len(posted))
+
+        relay.post_recipe_cmd = post
+        relay.tts_pcm = no_tts
+        os.environ["GROK_TIMER_STATE"] = os.path.join(tempfile.mkdtemp(), "timers.json")
+        xapp = web.Application()
+
+        async def xai(req):
+            s = web.WebSocketResponse()
+            await s.prepare(req)
+            armed = True
+            async for m in s:
+                if m.type != WSMsgType.TEXT:
+                    continue
+                ev = json.loads(m.data)
+                if ev.get("type") == "session.update":
+                    await s.send_json({"type": "session.updated"})
+                elif ev.get("type") == "input_audio_buffer.clear":
+                    armed = True
+                elif ev.get("type") == "input_audio_buffer.append" and armed and pending:
+                    armed = False
+                    heard = pending.pop(0)
+                    await s.send_json({"type": "input_audio_buffer.speech_started"})
+                    await s.send_json({"type": "input_audio_buffer.speech_stopped"})
+                    await s.send_json({"type": "response.created"})
+                    await s.send_json({"type": "conversation.item.input_audio_transcription.completed",
+                                       "transcript": heard})
+                    await s.send_json({"type": "response.done"})
+            return s
+
+        xapp.router.add_get("/rt", xai)
+        xs = TestServer(xapp)
+        client = ws = mic = None
+        events = []
+        try:
+            await xs.start_server()
+            relay.URL = str(xs.make_url("/rt")).replace("http", "ws")
+            rapp = web.Application()
+            rapp.router.add_get("/ws", relay.session)
+            client = TestClient(TestServer(rapp))
+            await client.start_server()
+            ws = await client.ws_connect("/ws", headers={"Authorization": "Bearer test-token"},
+                                         params={"timers": "[]"})
+
+            async def pump():
+                while not ws.closed:
+                    await ws.send_bytes(b"\0\0" * 1920)
+                    await asyncio.sleep(0.05)
+
+            mic = asyncio.create_task(pump())
+            turn_done = 0
+            async for msg in ws:
+                if msg.type != WSMsgType.TEXT:
+                    continue
+                ev = json.loads(msg.data)
+                events.append(ev)
+                if ev.get("type") == "turn_done":
+                    turn_done += 1
+                    if silence or turn_done >= len(lines):
+                        if silence:
+                            await ws.send_json({"type": "listening"})
+                        else:
+                            break
+                    else:
+                        await ws.send_json({"type": "listening"})
+                elif ev.get("type") in ("done", "timeout", "error"):
+                    break
+        finally:
+            relay.post_recipe_cmd = real_post
+            relay.tts_pcm = real_tts
+            if mic:
+                mic.cancel()
+            if ws is not None and not ws.closed:
+                await ws.close()
+            if client is not None:
+                await client.close()
+            await xs.close()
+            relay.stats["busy"] = 0
+        return events, posted
+
+    def _step(self, cmd, n):
+        if cmd == "repeat":
+            return {"ok": True, "say": "Boil the orzo for 10 minutes.", "closed": False,
+                    "bot": "juniper", "id": "orzo01", "step": 1, "dish": "Orzo"}
+        if n == 1:
+            return {"ok": True, "say": "Boil the orzo for 10 minutes.", "closed": False,
+                    "bot": "juniper", "id": "orzo01", "step": 1, "dish": "Orzo"}
+        return {"ok": True, "say": "Fold in the herbs.", "closed": False,
+                "bot": "juniper", "id": "orzo01", "step": 2, "dish": "Orzo"}
+
+    def _replies(self, events):
+        return [e.get("text") for e in events if e.get("type") == "reply"]
+
+    async def test_yes_sets_the_timer_before_the_model(self):
+        events, posted = await self._turns(["next step", "yes"], self._step)
+        replies = self._replies(events)
+        self.assertIn("Want a 10-minute timer for the orzo?", replies)
+        self.assertIn("Orzo timer set for 10 minutes.", replies)
+        sets = [e for e in events if e.get("type") == "timer_set"]
+        self.assertEqual(len(sets), 1)
+        self.assertEqual(sets[0]["label"], "Orzo")
+        self.assertEqual(sets[0]["seconds"], 600)
+        self.assertEqual(sets[0]["source"], {"recipe_id": "orzo01", "step": 1})
+        self.assertFalse(any(e.get("type") == "heard" for e in events))
+        self.assertEqual(posted, ["next"])
+
+    async def test_no_says_okay_and_repeat_offers_again_until_a_timer_exists(self):
+        events, posted = await self._turns(["next step", "no thanks", "repeat that step"], self._step)
+        replies = self._replies(events)
+        self.assertEqual(replies.count("Want a 10-minute timer for the orzo?"), 2)
+        self.assertIn("Okay.", replies)
+        self.assertFalse(any(e.get("type") == "timer_set" for e in events))
+        self.assertEqual(posted, ["next", "repeat"])
+        events, posted = await self._turns(["next step", "yes", "repeat"], self._step)
+        replies = self._replies(events)
+        self.assertEqual(replies.count("Want a 10-minute timer for the orzo?"), 1)
+        self.assertIn("Orzo timer set for 10 minutes.", replies)
+
+    async def test_another_command_cancels_the_offer_and_silence_says_nothing(self):
+        events, posted = await self._turns(["next step", "next step"], self._step)
+        replies = self._replies(events)
+        self.assertIn("Want a 10-minute timer for the orzo?", replies)
+        self.assertIn("Fold in the herbs.", replies)
+        self.assertNotIn("Okay.", replies)
+        self.assertEqual(posted, ["next", "next"])
+        self.assertFalse(any(e.get("type") == "timer_set" for e in events))
+        events, _posted = await self._turns(["next step"], self._step, silence=True)
+        replies = self._replies(events)
+        self.assertIn("Want a 10-minute timer for the orzo?", replies)
+        self.assertNotIn("Okay.", replies)
+        captions = [e for e in events if e.get("type") == "recipe_caption"]
+        self.assertTrue(any(e.get("text") == "Want a 10-minute timer for the orzo?" for e in captions))
+        self.assertTrue(any(e.get("text") == "" for e in captions))
+
+    async def test_without_a_dish_the_offer_names_this_step(self):
+        def recipe_for(cmd, n):
+            return {"ok": True, "say": "Simmer twenty minutes.", "closed": False,
+                    "bot": "juniper", "id": "soup01", "step": 2}
+
+        events, _posted = await self._turns(["next step", "sure"], recipe_for)
+        replies = self._replies(events)
+        self.assertIn("Want a 20-minute timer for this step?", replies)
+        self.assertIn("Step 2 timer set for 20 minutes.", replies)
+        sets = [e for e in events if e.get("type") == "timer_set"]
+        self.assertEqual(sets[0]["label"], "Step 2")
+        self.assertEqual(sets[0]["source"], {"recipe_id": "soup01", "step": 2})
+        self.assertEqual(sets[0]["seconds"], 1200)
 
 
 if __name__ == "__main__":

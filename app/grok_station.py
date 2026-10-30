@@ -2362,7 +2362,14 @@ def state_event(j):
     card = clean_card(j.get("card")) if has_card else None
     timers = clean_timers(j.get("timers")) if "timers" in j else None
     speech = speech_progress(j.get("speech"))
-    if not has_state and card is None and timers is None and speech is None:
+    has_caption = "recipe_caption" in j
+    caption, caption_s = "", 0
+    if has_caption:
+        caption = " ".join(str(j.get("recipe_caption") or "").split())[:160]
+        raw_s = j.get("recipe_caption_s")
+        if not isinstance(raw_s, bool) and isinstance(raw_s, (int, float)) and raw_s > 0:
+            caption_s = float(raw_s)
+    if not has_state and card is None and timers is None and speech is None and not has_caption:
         raise ValueError("nothing to apply")
     heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
@@ -2372,7 +2379,7 @@ def state_event(j):
     hold_s = 4 if (not isinstance(raw_hold, bool) and isinstance(raw_hold, (int, float)) and raw_hold == 4) else None
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
             "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
-            "speech": speech, "hold_s": hold_s}
+            "speech": speech, "hold_s": hold_s, "has_caption": has_caption, "caption": caption, "caption_s": caption_s}
 
 
 def speech_progress(raw):
@@ -2481,6 +2488,9 @@ def clean_timers(items):
             dur = None
         if dur is not None:
             rec["duration"] = float(dur)
+        src = cards.timer_source(t.get("source"))
+        if src:
+            rec["source"] = src
         out.append(rec)
         seen.add(tid)
     return out
@@ -3422,11 +3432,20 @@ def _timer_fraction(timer, left):
     return 1.0 if left > 0 else 0.0
 
 
-def recipe_rail(timers, epoch, order=None):
-    """Three fixed slots. Oldest first. Past three, slot 3 is "+N more" (soonest first, 3 rows).
+def _source_line(timer):
+    """'From step N' when the timer carries a recipe source, otherwise 'Set by voice'."""
+    src = cards.timer_source((timer or {}).get("source"))
+    if src:
+        return f"From step {src['step']}"
+    return "Set by voice"
 
-    A listed timer that is ringing takes slot 3 with the ringing treatment. Banner names are every
-    ringing timer in end order (earliest deadline first).
+
+def recipe_rail(timers, epoch, order=None):
+    """Three fixed slots. Ringing timers first, in end order, then running timers, oldest first.
+
+    With more than three timers and two or fewer ringing, slot 3 is "+N more" (soonest first, 3 rows).
+    With more than two ringing, slots 1 and 2 stay full ringing slots and slot 3 is "+N more" in the
+    ringing treatment. A ringing timer is always on the rail. Banner names stay in end order.
     """
     rows = [t for t in (timers or []) if isinstance(t, dict) and t.get("id")]
     by_id = {}
@@ -3459,48 +3478,61 @@ def recipe_rail(timers, epoch, order=None):
             "id": tid,
             "title": title,
             "text": "0:00" if ringing else fmt_timer_clock(left),
-            # TODO: a recipe timer linked to its step should say "From step 3" here.
-            # Skipped in 0.13.11 with the spoken offer and step-text time detection.
-            "source": "Set by voice",
+            "source": _source_line(t),
             "done": f"{title} is done",
             "fraction": 1.0 if ringing else round(_timer_fraction(t, left), 4),
             "aria": timer_aria(title, 0 if ringing else left),
         }
 
+    def more_rows(ordered):
+        out = []
+        for tid in ordered[:3]:
+            t = by_id[tid]
+            title = slot_title(t)
+            if is_ringing(t):
+                out.append({"id": tid, "title": title, "text": "0:00", "done": f"{title} · done", "ringing": True})
+            else:
+                out.append({"id": tid, "title": title, "text": fmt_timer_clock(max(0.0, left_of(t))), "ringing": False})
+        return out
+
+    ringing = sorted((tid for tid in ids if is_ringing(by_id[tid])), key=end_key)
+    running = [tid for tid in ids if not is_ringing(by_id[tid])]
     slots = [{"kind": "empty"}, {"kind": "empty"}, {"kind": "empty"}]
     if len(ids) <= 3:
-        for i, tid in enumerate(ids):
+        for i, tid in enumerate(ringing + running):
             slots[i] = ring_slot(tid)
+    elif len(ringing) > 2:
+        slots[0] = ring_slot(ringing[0])
+        slots[1] = ring_slot(ringing[1])
+        rest_run = sorted(running, key=lambda tid: (left_of(by_id[tid]), ids.index(tid)))
+        slots[2] = {
+            "kind": "more", "treatment": "ringing", "n": len(ids) - 2,
+            "label": f"+{len(ids) - 2} more",
+            "rows": more_rows(ringing[2:] + rest_run),
+        }
     else:
-        slots[0] = ring_slot(ids[0])
-        slots[1] = ring_slot(ids[1])
-        rest = ids[2:]
-        ringing_rest = [tid for tid in rest if is_ringing(by_id[tid])]
-        if ringing_rest:
-            slots[2] = ring_slot(min(ringing_rest, key=end_key))
-        else:
-            soonest = sorted(rest, key=end_key)[:3]
-            slots[2] = {
-                "kind": "more",
-                "n": len(rest),
-                "label": f"+{len(rest)} more",
-                "rows": [{"id": tid, "title": slot_title(by_id[tid]), "text": fmt_timer_clock(max(0.0, left_of(by_id[tid])))}
-                         for tid in soonest],
-            }
-    ringing_ids = sorted((tid for tid in ids if is_ringing(by_id[tid])), key=end_key)
+        show = ringing + running
+        slots[0] = ring_slot(show[0])
+        slots[1] = ring_slot(show[1])
+        rest = sorted(show[2:], key=end_key)
+        slots[2] = {"kind": "more", "n": len(show) - 2, "label": f"+{len(show) - 2} more", "rows": more_rows(rest)}
     positions = {}
     for i, slot in enumerate(slots):
         if slot.get("kind") in ("ring", "ringing") and slot.get("id"):
             positions[slot["id"]] = i
-    if len(ids) > 3:
-        for tid in ids[2:]:
-            positions.setdefault(tid, 2)
-    return {"order": ids, "slots": slots, "banner_names": [recipe_name(by_id[tid].get("label")) for tid in ringing_ids],
+        for row in slot.get("rows") or []:
+            if row.get("id"):
+                positions[row["id"]] = i
+    for tid in ids:
+        positions.setdefault(tid, 2)
+    return {"order": ids, "slots": slots, "banner_names": [recipe_name(by_id[tid].get("label")) for tid in ringing],
             "positions": positions}
 
 
 RECIPE_RAIL_ORDER = []
 RECIPE_FEED_OPEN = False
+RECIPE_SHOWN = None  # {"id", "step"} of the recipe on screen, cleared when it closes
+RECIPE_CAPTION = None  # offer sentence in the hint row, {"text", "until"}
 _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
 # Recipe paint results. Same LAST_* pattern as the other screens, kept in one block.
 LAST_RECIPE_FRAME = None
@@ -3515,13 +3547,52 @@ def arm_recipe_screen(showing):
 
     Both are process globals. Left alone, the next recipe's first frame slides in from the previous one.
     """
-    global RECIPE_FEED_OPEN, RECIPE_RAIL_ORDER, _RAIL_SLIDE
+    global RECIPE_FEED_OPEN, RECIPE_RAIL_ORDER, RECIPE_SHOWN, RECIPE_CAPTION, _RAIL_SLIDE
     showing = bool(showing)
     if showing == RECIPE_FEED_OPEN:
         return
     RECIPE_RAIL_ORDER = []
+    RECIPE_SHOWN = None
+    RECIPE_CAPTION = None
     _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
     RECIPE_FEED_OPEN = showing
+
+
+def apply_recipe_caption(text, seconds, now=None):
+    """Show the offer sentence in the hint row, or clear it. `now` is monotonic seconds."""
+    global RECIPE_CAPTION
+    now = time.monotonic() if now is None else now
+    text = " ".join(str(text or "").split())[:160]
+    if not text or not seconds:
+        RECIPE_CAPTION = None
+        return
+    RECIPE_CAPTION = {"text": text, "until": float(now) + float(seconds)}
+
+
+def recipe_caption_text(now=None):
+    cap = RECIPE_CAPTION
+    if not isinstance(cap, dict) or not cap.get("text"):
+        return None
+    now = time.monotonic() if now is None else now
+    if now >= float(cap.get("until") or 0):
+        return None
+    return cap["text"]
+
+
+def _step_timer_live(card):
+    """True when a running or ringing timer is sourced to this recipe step. Names do not count."""
+    shown = RECIPE_SHOWN if isinstance(RECIPE_SHOWN, dict) else None
+    rid = shown.get("id") if shown and shown.get("id") else None
+    if not rid and isinstance(card, dict) and isinstance(card.get("id"), str):
+        rid = card.get("id")
+    step = card.get("step") if isinstance(card, dict) else None
+    if not rid or type(step) is not int:
+        return False
+    for t in TIMER_CHIPS:
+        src = t.get("source") if isinstance(t, dict) else None
+        if isinstance(src, dict) and src.get("recipe_id") == rid and src.get("step") == step:
+            return True
+    return False
 
 
 def rail_slide_running(now=None):
@@ -3645,6 +3716,53 @@ def _ringing_done_line(title, width, face):
     return ellipsize(face, title, max(1, width - face.size(suffix)[0])) + suffix
 
 
+def _step_spans(face, text, width):
+    """Wrapped lines as (text, start, end) into `text`. Same breaks as wrap() for single spaces."""
+    words = list(re.finditer(r"\S+", text or ""))
+    if not words:
+        return []
+    lines, cur, start, end = [], "", 0, 0
+    for match in words:
+        word = match.group()
+        trial = word if not cur else cur + " " + word
+        if face.size(trial)[0] <= width or not cur:
+            if not cur:
+                start = match.start()
+            cur, end = trial, match.end()
+        else:
+            lines.append((cur, start, end))
+            cur, start, end = word, match.start(), match.end()
+    if cur:
+        lines.append((cur, start, end))
+    return lines
+
+
+def _fitted_spans(spans, face, width, height, gap):
+    """Whole lines that fit. A cut-off step ellipsizes the last line shown."""
+    line_h = face.get_height()
+    if line_h <= 0 or height < line_h or not spans:
+        return []
+    n = 0
+    while n < len(spans) and (n + 1) * line_h + n * gap <= height:
+        n += 1
+    shown = list(spans[:n])
+    if n < len(spans) and shown:
+        text, a, b = shown[-1]
+        shown[-1] = (ellipsize(face, text, width), a, b)
+    return shown
+
+
+def _dotted_hline(surf, color, x, y, width, thick, dash):
+    """A dotted underline. The dash length is `dash`; gaps are the same. Nothing is added to the text width."""
+    gap = max(1, dash)
+    pos = 0
+    h = max(1, thick)
+    while pos < width:
+        run = min(dash, width - pos)
+        surf.fill(color, pygame.Rect(int(x + pos), int(y), max(1, int(run)), h))
+        pos += dash + gap
+
+
 def fitted_step_lines(lines, face, width, height, gap):
     """Lines that fit in the step box, whole lines only. A cut-off step ellipsizes the last one shown."""
     line_h = face.get_height()
@@ -3676,15 +3794,33 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
             surf.blit(label, (rect.centerx - label.get_width() // 2, y + icon.get_height() + recipe_px(L, 12)))
         return
     if slot.get("kind") == "more":
-        pygame.draw.rect(surf, SURFACE, rect, border_radius=rad)
-        pygame.draw.rect(surf, RULE, rect, max(1, recipe_px(L, 3)), border_radius=rad)
+        ringing_style = slot.get("treatment") == "ringing"
+        if ringing_style:
+            pygame.draw.rect(surf, ALERT_FILL, rect, border_radius=rad)
+            pygame.draw.rect(surf, AMBER, rect, max(1, recipe_px(L, 8)), border_radius=rad)
+            head_color = AMBER
+        else:
+            pygame.draw.rect(surf, SURFACE, rect, border_radius=rad)
+            pygame.draw.rect(surf, RULE, rect, max(1, recipe_px(L, 3)), border_radius=rad)
+            head_color = TEXT
         y = rect.top + recipe_px(L, 34)
-        head = font("display", recipe_px(L, 52)).render(slot.get("label") or "", True, TEXT)
+        head = font("display", recipe_px(L, 52)).render(slot.get("label") or "", True, head_color)
         LAST_RECIPE_COPY.append(slot.get("label") or "")
         surf.blit(head, (rect.left + recipe_px(L, 28), y))
         y += head.get_height() + recipe_px(L, 16)
         name_f = font("body", recipe_px(L, 36))
         for row in slot.get("rows") or []:
+            if row.get("ringing"):
+                bell = _bell_icon(recipe_px(L, 28), AMBER)
+                done = row.get("done") or f"{row.get('title') or ''} · done"
+                line = name_f.render(done, True, AMBER)
+                LAST_RECIPE_COPY.append(done)
+                if y + max(line.get_height(), bell.get_height()) > rect.bottom - recipe_px(L, 16):
+                    break
+                surf.blit(bell, (rect.left + recipe_px(L, 28), y + max(0, (line.get_height() - bell.get_height()) // 2)))
+                surf.blit(line, (rect.left + recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10), y))
+                y += max(line.get_height(), bell.get_height()) + recipe_px(L, 8)
+                continue
             line = name_f.render(f"{row['title']}  {row['text']}", True, MUTED)
             if y + line.get_height() > rect.bottom - recipe_px(L, 16):
                 break
@@ -3846,20 +3982,40 @@ def draw_recipe(surf, L, card):
     body_px = recipe_px(L, 112)
     f = font("display", body_px)
     gap = recipe_px(L, 8)
-    lines = fitted_step_lines(wrap(f, card["steps"][step_n - 1], col), f, col, text_box.h, gap)
+    step_body = card["steps"][step_n - 1]
+    lines = _fitted_spans(_step_spans(f, step_body, col), f, col, text_box.h, gap)
+    hit = cards.step_time(step_body)
+    mark = MUTED if _step_timer_live(card) else LISTENING
     surf.set_clip(text_box)
     ty = text_box.top
-    for line in lines:
+    for line, a, b in lines:
         img = f.render(line, True, TEXT)
         if ty + img.get_height() > text_box.bottom:
             break
         surf.blit(img, (sx, ty))
+        if hit and line == step_body[a:b]:
+            lo, hi = max(hit["start"], a), min(hit["end"], b)
+            if lo < hi:
+                frag_at = lo - a
+                frag = line[frag_at:frag_at + (hi - lo)]
+                if frag:
+                    ox = f.size(line[:frag_at])[0]
+                    surf.blit(f.render(frag, True, mark), (sx + ox, ty))
+                    thick = max(1, recipe_px(L, 6))
+                    _dotted_hline(surf, mark, sx + ox, ty + img.get_height() - thick, f.size(frag)[0], thick, thick)
         ty += img.get_height() + gap
     surf.set_clip(prev)
     hint = frame["hint"]
     hint_px = recipe_px(L, 48)
     hy = hint.top + max(0, (hint.h - font("body", hint_px).get_height()) // 2)
-    draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, hint.left, hy, px=hint_px, max_w=hint.w)
+    caption = recipe_caption_text()
+    if caption:
+        cap = font("body", hint_px).render(caption, True, TEXT)
+        surf.set_clip(hint)
+        surf.blit(cap, (hint.left, hy))
+        surf.set_clip(prev)
+    else:
+        draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, hint.left, hy, px=hint_px, max_w=hint.w)
     _paint_recipe_rail(surf, L, frame)
 
 
@@ -5426,6 +5582,7 @@ def main():
         night = night_face(now)
         t_now = time.time()
         view_card = None
+        page = None
         if not thinking() and not msg and not night:
             page = deck().current(t_now)
             if page and page["card"]["type"] in TILE_TYPES:
@@ -5444,6 +5601,12 @@ def main():
             view_card = tile_card
         view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
         arm_recipe_screen(view == "feed")
+        if view == "feed" and isinstance(view_card, dict) and view_card.get("type") == "recipe":
+            rid = TILE.get("id") if tile_card else (page.get("id") if isinstance(page, dict) else None)
+            if not rid and isinstance(view_card.get("id"), str):
+                rid = view_card.get("id")
+            global RECIPE_SHOWN
+            RECIPE_SHOWN = {"id": rid, "step": view_card.get("step")} if rid else RECIPE_SHOWN
         ph = phase_now() if thinking() else 1.0
         if view == "session" and isinstance(msg, dict) and msg.get("state") == "enroll":
             disp.show(draw_enroll, now, msg, ph, wx, fade=fade, snapshot=snapshot)
@@ -5618,6 +5781,8 @@ def main():
         if setup["doc"] and ev.type in (STATE, SHOW, FEED):
             continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
+            if getattr(ev, "has_caption", False):
+                apply_recipe_caption(getattr(ev, "caption", ""), getattr(ev, "caption_s", 0))
             if getattr(ev, "speech", None) is not None and tele is not None:
                 tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
@@ -5692,6 +5857,8 @@ def main():
                         pass  # chips are stored and drawn the next time the idle clock is painted
                     else:
                         paint(snapshot=not msg)
+            elif getattr(ev, "has_caption", False) and last_key and last_key[0] == "feed":
+                paint(snapshot=False)
             continue
         if ev.type == FEED:
             if getattr(ev, "recipe_closed", False):
