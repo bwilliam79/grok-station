@@ -3381,14 +3381,16 @@ function openPendingSheet(row, el) {
   const wrap = document.createElement("div");
   wrap.id = "pendpop";
   wrap.innerHTML = `<div class="scrim"></div><div class="pop" role="dialog" aria-modal="true" aria-label="${esc(name)}">` +
-    `<h3>${esc(name)}</h3><div class="acts"><button class="btn g" type="button" data-remove="${esc(pend)}">Remove</button></div></div>`;
+    `<h3 tabindex="-1">${esc(name)}</h3><div class="acts"><button class="btn" type="button" data-close>Close</button>` +
+    `<button class="btn g" type="button" data-remove="${esc(pend)}">Remove</button></div></div>`;
   document.body.appendChild(wrap);
   const close = () => { if (wrap.parentNode) wrap.remove(); if (row.isConnected && row.focus) row.focus(); };
   wrap.querySelector(".scrim").onclick = close;
+  wrap.querySelector("[data-close]").onclick = close;
   wrap.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } });
   const rm = wrap.querySelector("[data-remove]");
   rm.onclick = () => { close(); removePending(pend, el); };
-  rm.focus();
+  wrap.querySelector("h3").focus();
 }
 function saveRowVoice(sel, bot, el) {
   if (!bot || !sel) return;

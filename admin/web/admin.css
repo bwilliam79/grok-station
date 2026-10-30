@@ -739,3 +739,5 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 .vnchip.bad{box-shadow:inset 0 0 0 1px #F5C04A}
 .vnspin{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gs-spin .8s linear infinite;box-sizing:border-box}
 @media (prefers-reduced-motion:reduce){.vnspin{width:auto;height:auto;border:0;border-radius:0;animation:none;vertical-align:baseline}.vnspin::before{content:"\00b7\00b7\00b7"}}
+/* L5 (gs-voice-train rev1.4): pending-row sheet buttons are 44 pt targets */
+#pendpop .btn{min-height:44px;min-width:44px}
