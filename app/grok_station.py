@@ -2361,7 +2361,7 @@ def state_event(j):
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
     who = persona_names().get(name_key(j.get("who") or VOICE_NAME), (VOICE_NAME, "grok"))[0]
     raw_hold = j.get("hold_s")
-    # Only an exact 4 s hold is honored, and only for the built-in Grok line. Anything else is a normal hold.
+    # Only an exact 4 s hold is honored (the built-in Grok line, a failed enroll start). Anything else is a normal hold.
     hold_s = 4 if (not isinstance(raw_hold, bool) and isinstance(raw_hold, (int, float)) and raw_hold == 4) else None
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
             "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
@@ -3890,7 +3890,7 @@ def state_hold(state, done, heard="", hold_s=None):
 
     A finished reply (done) keeps REPLY_HOLD. Passed, uploaded and error enrollment screens hold 10 s.
     Every other enrollment stage keeps the 30 s cap in VOICE_HOLDS.
-    hold_s 4 is only the built-in Grok wake-word line: it does not use the notice or reply holds.
+    hold_s 4 is the built-in Grok wake-word line or a failed enroll start: it does not use the notice or reply holds.
     """
     if hold_s == 4:
         return 4

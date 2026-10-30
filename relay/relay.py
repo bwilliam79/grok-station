@@ -2762,6 +2762,7 @@ async def session(req):
                                 # The built-in Grok sentence is longer than a 6 s filler. One speak, no enroll.
                                 cap = TTS_REPLY_S if result.get("hold_s") == 4 else TTS_SHORT_S
                                 await play_fixed(plan["say"], voice, cap)
+                            fail_say = ""
                             if result["enroll"]:
                                 fail_say = enroll_start_failed_say(post_wake_enroll(plan["enroll"]))
                                 if fail_say:
@@ -2772,6 +2773,11 @@ async def session(req):
                             if result.get("hold_s") == 4:
                                 done["hold_s"] = 4
                                 done["text"] = result["say"]
+                            if fail_say:
+                                # Same 4 s tile line as the built-in Grok notice. Nothing was recorded;
+                                # Record voice on the Bots page is unchanged, so the user can try again.
+                                done["hold_s"] = 4
+                                done["text"] = fail_say
                             await pi.send_json(done)
                             return "user ended"
                         # Recipe card commands are station-local. Match before "heard" (that would
