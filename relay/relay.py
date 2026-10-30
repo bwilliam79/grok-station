@@ -995,7 +995,7 @@ async def ask_bot_list(http):
     nonce = secrets.token_urlsafe(24)
     now = time.time()
     reply_at = now + botreply.REPLY_BY_S
-    deadline = now + REPLY_WAIT
+    deadline = time.monotonic() + REPLY_WAIT  # a wall-clock step can't cut or stretch the wait
     try:
         reply_by = datetime.datetime.fromtimestamp(reply_at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
@@ -1017,13 +1017,13 @@ async def ask_bot_list(http):
         log(f"handoff {rid} agent={slug} via=list http={status} post_ms={(time.monotonic() - t_post) * 1000:.0f}")
         if not ok:
             return None, "post-failed"
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             got, bad = _take_list_file(rid, slug, nonce)
             if bad:
                 return None, bad
             if got:
                 return got, "ok"
-            await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
+            await asyncio.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
         return None, "timeout"
     finally:
         handoff.remove_pending(PENDING_DIR, rid)
@@ -1092,7 +1092,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
     # reply_by and the pending file both stay open for ANSWER_BY_S (~3 min), not the old 60 s / 2 min.
     # The spoken wait is still REPLY_WAIT, so a test can shorten it without closing the accept window.
     reply_at = now + ANSWER_BY_S
-    deadline = now + REPLY_WAIT
+    deadline = time.monotonic() + REPLY_WAIT  # a wall-clock step can't cut or stretch the wait
     posted_ok, parked, sent = False, False, False
     try:
         if cancel is not None and cancel.is_set():
@@ -1134,7 +1134,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
             await on_wait()
         t_wait = time.monotonic()
         said_checking = False
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             if cancel is not None and cancel.is_set():
                 return None, "cancelled"
             info = {}
@@ -1185,7 +1185,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                     raise
                 except Exception:
                     pass
-            await asyncio.sleep(min(0.5, max(0.05, deadline - time.time())))
+            await asyncio.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
         _record_rtt(bot, timeout=True)
         log(f"handoff {rid} agent={bot} length={len(q)} verdict=timeout wait_ms={(time.monotonic() - t_wait) * 1000:.0f}")
         alert("handoff-timeout", "grok-station relay: handoff timed out", f"request_id={rid} agent={bot} verdict=timeout")
