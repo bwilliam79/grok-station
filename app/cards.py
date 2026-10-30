@@ -1586,18 +1586,22 @@ def update_slots(needs, others, step, slots=UPD_SLOTS):
 
 
 def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
-    """'Updates · 2–3 of 4' over the whole set; never names a type (Noor rev2). '' when nothing rotates."""
-    pinned = len(update_slots(needs, [], step, slots)) if needs else 0
+    """'Updates · 1–3 of 4': the range always spans the tiles on screen (Noor band rev2 fix).
+
+    Never names a type. '' when everything fits. Pinned Needs you count as the first positions.
+    """
     total = len(needs) + len(others)
     if total <= slots:
         return ""
-    free = slots - min(len(needs), 2)
+    shown = len(update_slots(needs, others, step, slots))
+    pinned = min(len(needs), 2)
+    free = slots - pinned
     if len(needs) > 2 or free <= 0 or not others:
-        lo, hi = 1, pinned
+        hi = shown
     else:
         start = (step * free) % len(others)
-        lo = pinned + start + 1
-        hi = pinned + min(len(others), start + free)
+        hi = min(total, pinned + start + free)
+    lo = max(1, hi - shown + 1)
     text = f"Updates \u00b7 {lo}\u2013{hi} of {total}" if hi > lo else f"Updates \u00b7 {lo} of {total}"
     return ("Paused \u00b7 " + text) if paused else text
 
