@@ -1174,7 +1174,7 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                 if info.get("n") == 1 and not test:
                     # 0.13.0: a first answer may be followed by one more reply (an unmarked acknowledgement that
                     # was taken as the answer). Keep the request open briefly; a follow-up is spoken as a late line.
-                    _park_late(rid, bot, q, nonce, min(reply_at, time.time() + FOLLOWUP_S))
+                    _park_late(rid, bot, q, nonce, min(reply_at, time.time() + FOLLOWUP_S), followup=True)
                     parked = True
                 return text, "ok"
             if not said_checking and on_still is not None and time.monotonic() - t_wait >= CHECKING_AFTER_S:
@@ -2141,12 +2141,15 @@ def _nonce_ok(expected, got):
     return hmac.compare_digest(expected, got)
 
 
-def _park_late(rid, bot, question, nonce, hard_at):
-    """Remember an ask whose session closed before the answer. The pending file stays."""
+def _park_late(rid, bot, question, nonce, hard_at, followup=False):
+    """Remember an ask whose session closed before the answer. The pending file stays.
+
+    followup marks the 0.13.0 window after an answer was already spoken (FOLLOWUP_S). It is not waiting on
+    an answer, so it never holds a card (bq-0018)."""
     with _LATE_LOCK:
         _LATE[rid] = {"rid": rid, "bot": bot, "name": _display_name(bot), "question": question,
                       "nonce": nonce, "hard_at": float(hard_at), "text": None, "card": None,
-                      "queue_until": None, "arrived_at": None}
+                      "queue_until": None, "arrived_at": None, "followup": bool(followup)}
 
 
 def late_hold_show(show):
@@ -2156,7 +2159,9 @@ def late_hold_show(show):
         return False
     with _LATE_LOCK:
         for slot in _LATE.values():
-            if slot.get("bot") == bot:
+            # bq-0018: a follow-up window comes after an answer the station already spoke. A card sent then
+            # goes to the station now; holding it lost it when no follow-up came.
+            if slot.get("bot") == bot and not slot.get("followup"):
                 slot["card"] = show
                 return True
     return False

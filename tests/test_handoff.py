@@ -301,6 +301,22 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Tacos", line); self.assertNotIn("dinner", line)
         print("\nLOG", line)
 
+    async def test_gs1312_bq0018_card_after_a_spoken_answer_reaches_the_station(self):
+        """bq-0018 (fails before the fix): a bot answers, the station speaks it, then the bot posts its recipe card
+        (the routine says "after the spoken reply"). The 0.13.0 follow-up park (FOLLOWUP_S) is a _LATE slot for the
+        same bot, so voice_show's late_hold_show() swallows the card into it. No follow-up comes, the slot expires,
+        and the card is never posted. This is the main bot relaying a Jules recipe (0.13.10 tests 3 and 4)."""
+        jules_recipe = {"bot": "jules", "op": "put", "id": "orzo", "v": 1, "priority": 10, "ttl_s": 3600,
+                        "card": {"v": 1, "type": "recipe", "title": "Lemon herb orzo", "servings": 4,
+                                 "ingredients": ["orzo"], "steps": ["Boil the orzo."], "step": 1}}
+        async with ClientSession() as http:
+            text, verdict = await relay.ask_teammate(http, "jules", "a recipe for dinner?")
+        self.assertEqual(verdict, "ok")
+        rid = self.calls[0]["request_id"]
+        self.addCleanup(relay._LATE.pop, rid, None)
+        held = relay.late_hold_show(jules_recipe)
+        self.assertFalse(held, "the card after a spoken answer was held in the follow-up slot instead of shown")
+
     async def test_post_failure_not_retried_and_counted(self):
         self.mode = "fail"
         relay._limits.gap_s = 30.0                                    # gap is opt-in (HANDOFF_GAP_S)
