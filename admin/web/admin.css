@@ -865,7 +865,13 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 #vtipwrap{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
 #vtipwrap .scrim,#vtipwrap .pop{pointer-events:auto}
 #vtipwrap .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:11}
-#vtipwrap .vtipsheet{position:fixed;left:0;right:0;width:auto;top:auto}
+#vtipwrap .vtipsheet{position:fixed;left:0;right:0;width:auto;max-width:none;top:auto}
 #vtipwrap .vtipsheet:focus{outline:none}
 #vtipwrap .vtipx{display:flex;margin-top:14px}
 #vtipwrap .vtipx .btn{width:100%;min-height:44px}
+/* Noor 0.13.9 re-check B-E */
+@media (max-width:767px){#cfgall{min-height:44px}}
+.btn:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}
+#out{display:inline-block;padding:4px 0;min-height:24px}
+#bothdr{position:relative}
+.vtippop{right:0;left:auto;max-width:min(240px,calc(100vw - 32px))}

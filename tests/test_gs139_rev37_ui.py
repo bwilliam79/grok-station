@@ -143,6 +143,9 @@ class SetupListToggle(unittest.TestCase):
         pend = [{"slug": "a", "name": "A"}, {"slug": "b", "name": "B"}]
         base = {"bots": [{"slug": "m"}], "pending": pend}
         html = lambda o: _run(self.NAMES, "botsCalloutHTML(%s)" % json.dumps(dict(base, **o)))
+        # Noor re-check A: before any send the button only opens; once the list is open it is hidden.
+        self.assertNotIn('id="cfgall"', html({"everSent": False, "listOpen": True}))
+        self.assertIn("2 bots not connected", html({"everSent": False, "listOpen": True}))
         first = html({"everSent": False, "listOpen": False})
         self.assertIn('aria-expanded="false">Configure all</button>', first)
         self.assertIn('aria-controls="setuphost"', first)
@@ -155,6 +158,13 @@ class SetupListToggle(unittest.TestCase):
         self.assertIn("setupNeedsOwner(", vis)
         self.assertIn("S.setupChoice = !setupListVisible(el)", _fn("paintBotCallout"))
         self.assertNotIn("_setupOpen", JS)
+
+    def test_recheck_styles(self):  # Noor re-check B-E
+        self.assertIn("@media (max-width:767px){#cfgall{min-height:44px}}", CSS)
+        self.assertIn(".btn:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}", CSS)
+        self.assertIn("#out{display:inline-block;padding:4px 0;min-height:24px}", CSS)
+        self.assertIn(".vtippop{right:0;left:auto;max-width:min(240px,calc(100vw - 32px))}", CSS)
+        self.assertIn("if (!setupEverSent(el)) openConfigureAll(el);", _fn("paintBotCallout"))
 
     def test_unused_setup_message_removed(self):  # Nix (a)
         self.assertIsNone(re.search(r"\nfunction setupMessage\(", JS))

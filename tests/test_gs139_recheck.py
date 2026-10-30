@@ -235,14 +235,14 @@ class R6CalloutCountsSetupList(unittest.TestCase):
         self.assertIn("Hide list", txt)
         fresh = _callout(_fixture(setup={"_none": {}}))
         self.assertIn("4 bots not connected", fresh)
-        self.assertIn("Configure all", fresh)
+        self.assertNotIn("Configure all", fresh)  # Noor re-check A: list already open, nothing sent: no button
 
     def test_singular_uses_same_count(self):
         txt = _callout(_fixture(imported=(), setup={"pip": {"status": "connected"}}))
         self.assertIn("1 bot not connected", txt)
         self.assertIn("Hide list", txt)
         fresh = _callout(_fixture(imported=(), setup={"pip": {"status": "not_set_up"}}))
-        self.assertIn("Configure all", fresh)  # nothing sent yet: the label opens the list
+        self.assertNotIn("Configure all", fresh)  # nothing sent and the list is open: no button
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")

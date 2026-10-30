@@ -58,9 +58,10 @@ class FailedNote(unittest.TestCase):
         self.assertEqual(who, "Juniper")
         self.assertEqual(note, "Say 'Hey Grok, train my wake word for Juniper' to try again.")
 
-    def test_no_persona_still_names_the_phrase(self):
+    def test_no_persona_names_the_word_without_hey(self):
         self._draw({"from": gs.VOICE_NAME, "voice": True, "state": "enroll", "text": "“Hey Nova”", "heard": "2/5|failed|"})
-        self.assertEqual(self.seen[-1][1], "Hey Nova")
+        self.assertEqual(self.seen[-1][1], "Nova")  # Noor 0.13.9 F: no "Hey " before the name
+        self.assertEqual(self.seen[-1][2], "Say 'Hey Grok, train my wake word for Nova' to try again.")
 
 
 if __name__ == "__main__":

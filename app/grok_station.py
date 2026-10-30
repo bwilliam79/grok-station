@@ -4285,8 +4285,13 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     who = msg.get("from") or VOICE_NAME
     hit = persona_names().get(name_key(who))
     label = hit[0] if hit else who
+    spoken = label
     if label == VOICE_NAME:
         label = phrase or label
+        # Built-in voice with no named bot: the restart line says "for Nova", not "for Hey Nova" (Noor 0.13.9 F).
+        spoken = re.sub(r"^hey\s+", "", label, flags=re.I) or label
+    else:
+        spoken = label
     draw_idle(surf, L, now, wx or _ENROLL_WX, home_band=False)
     tile = enroll_tile_rect(L)
     LAST_ENROLL_RECT = tile
@@ -4322,7 +4327,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     surf.blit(ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
     head, sub, scolor, status, _bar = enroll_copy(phrase, i, n, stage, extra)
     if stage == "stopped":
-        sub = f"Say 'Hey Grok, train my wake word for {label}' to try again."
+        sub = f"Say 'Hey Grok, train my wake word for {spoken}' to try again."
     hf = font("display", _fit_px_step("display", head, col_w, zpx(L, 128), zpx(L, 96), zpx(L, 8)))
     # Descent is negative. Ascent minus descent is the line box, and it does not depend on the string.
     head_h = max(1, hf.get_ascent() - hf.get_descent())
@@ -4353,7 +4358,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
-    _draw_actions(surf, L, tile, act, col_w, stage, label)
+    _draw_actions(surf, L, tile, act, col_w, stage, spoken)
     if stage in _QUIET_HINT_STAGES and not success:
         _draw_quiet_hint(surf, L, act, col_w)
     surf.set_clip(prev)

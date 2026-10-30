@@ -3698,13 +3698,17 @@ function botsCalloutHTML(opts) {
     const n = pending.length;
     // rev3.7: before any bot has been sent setup the button opens the list ("Configure all" / "Set up {bot}");
     // after that it toggles it ("Show list" / "Hide list").
+    // Noor re-check A: while nothing has been sent, the button only opens the list and is hidden once it is open.
     const open = !!(opts && opts.listOpen);
-    const label = !(opts && opts.everSent) ? (n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""))) : (open ? "Hide list" : "Show list");
+    const sent = !!(opts && opts.everSent);
+    const label = !sent ? (n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""))) : (open ? "Hide list" : "Show list");
+    const btn = !sent && open ? "" :
+      `<button class="btn s2 sm" id="cfgall" type="button" aria-controls="setuphost" aria-expanded="${open ? "true" : "false"}">${esc(label)}</button>`;
     const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
     const who = (opts && opts.mainName) || "Your main bot";
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
       `<div class="help">${esc(who)} can send ${n > 1 ? "each one" : esc(pending[0].name || "it")} its setup message. You review it first.</div></div>` +
-      `<button class="btn s2 sm" id="cfgall" type="button" aria-controls="setuphost" aria-expanded="${open ? "true" : "false"}">${esc(label)}</button></div>`;
+      btn + `</div>`;
   }
   if (kind === "updates") {
     const who = (opts && opts.hintName) || "The bot";
@@ -3758,11 +3762,13 @@ function paintBotCallout(el) {
     };
     const cfg = $("#cfgall", host);
     if (cfg) cfg.onclick = () => {
-      if (!setupEverSent(el) && !setupListVisible(el)) openConfigureAll(el);
+      if (!setupEverSent(el)) openConfigureAll(el);  // opens only; the button is then hidden
       else { S.setupChoice = !setupListVisible(el); paintSetupList(el); }
       paintBotCallout(el);
       const again = $("#cfgall", el);
+      const first = $("#setuphost button", el);
       if (again) again.focus();
+      else if (first) first.focus();
     };
     const um = $("#updmain", host);
     if (um && main) um.onclick = () => {
