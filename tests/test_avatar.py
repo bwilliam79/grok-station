@@ -74,6 +74,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.snap.update(HELPER_FILE=r.HELPER_FILE, key_mode_of=r.key_mode_of, helper_asked=dict(r._helper_asked))
         r.HELPER_FILE = os.path.join(self.tmp, "helpers.json")
         r._helper_asked.clear()
+        r._helper_reset_state()  # helper status cached by an earlier test (any order) must not leak in
+        self.addCleanup(r._helper_reset_state)
         self.snap.update(UPDATES_FILE=r.UPDATES_FILE)
         r.UPDATES_FILE = os.path.join(self.tmp, "updates.json")
         r._update_asked.clear(); r._update_bad.clear()
@@ -106,7 +108,8 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         self.signer = SigningKey.generate()
         self.assertTrue(botreply.pin_key(
             r.bot_keys_path(), "jules", base64.b64encode(bytes(self.signer.verify_key)).decode()))
-        r._limits = handoff.Limits(os.path.join(self.tmp, "limits.json"), r.today)
+        # NI3: a fresh limits file in its own temp folder for every test, whatever ran before.
+        r._limits = handoff.Limits(os.path.join(tempfile.mkdtemp(dir=self.tmp), "limits.json"), r.today)
         r._policy.update(mtime=None, pii=True)
         r.VOICES.clear()
         r.VOICES.update({"ara", "luna"})

@@ -132,6 +132,8 @@ class Cards(unittest.TestCase):
         self.assertIsNone(card)
 
     def test_weather_card_has_no_place(self):
+        self.addCleanup(setattr, T, "UNITS", T.UNITS)
+        T.UNITS = "fahrenheit"  # another test may have left the station on celsius
         j = json.loads(json.dumps(SAMPLE))
         j.update(latitude=41.88, longitude=-87.63, timezone="America/Chicago", place="the kitchen")
         card = T.weather_card(j)
