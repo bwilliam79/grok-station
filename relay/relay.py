@@ -2755,7 +2755,13 @@ async def session(req):
                             st["buf"] = []
                             if st.get("responding") or st.get("xai_active"):
                                 await cancel_response()
-                            plan = _train_flow().voice_train_plan(train, wake_phrase_ready(train.get("phrase")))
+                            try:
+                                plan = _train_flow().voice_train_plan(train, wake_phrase_ready(train.get("phrase")))
+                            except RuntimeError:
+                                # train_flow missing or untrusted: Noor's fixed failed-start line (spoken once,
+                                # 4 s tile), never a crash. It takes the same path as the built-in Grok line.
+                                log("train wake start failed")
+                                plan = {"begin": False, "say": ENROLL_START_FAILED, "enroll": None, "hold_s": 4}
                             result = train_session_result(plan)
                             voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
                             if result["say"]:
