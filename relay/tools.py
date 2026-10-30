@@ -95,7 +95,8 @@ SPECS = [
         ("seconds",)),
     _fn("list_timers", "List running and ringing timers. Index 1 is the one ringing, or the one finishing soonest."),
     _fn("cancel_timer", "Cancel a running timer or dismiss one that is ringing. Match by name "
-        "(pasta, the pasta timer) or by index (1, second). With no name, stop dismisses the ringing timer, or the only one.",
+        "(pasta, the pasta timer) or by index (1, second). stop, dismiss timer, and stop the timer "
+        "dismiss every ringing timer at once. With no name otherwise, dismiss the ringing timer, or the only one.",
         {"label": {"type": "string", "description": "Name, index, or stop. Omit to dismiss the ringing timer or the only one."},
          "index": {"type": "integer", "description": "1-based index from list_timers. Optional."}}),
     _fn("extend_timer", "Add time to a timer by name or index. A ringing timer starts running again.",
@@ -353,6 +354,19 @@ _ORDINALS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixt
 _LEADING_REF = re.compile(r"^(?:please\s+)?(?:stop|dismiss|cancel|clear|end|silence)(?:\s+|$)")
 _ARTICLE = re.compile(r"^(?:the|a|an|my)\s+")
 _ID_RE = re.compile(r"[a-z0-9]{4,12}")
+_CARD_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+
+
+def timer_source(raw):
+    """{recipe_id, step} or None. Twin of cards.timer_source; this process does not import the display."""
+    if not isinstance(raw, dict):
+        return None
+    rid, step = raw.get("recipe_id"), raw.get("step")
+    if not isinstance(rid, str) or not _CARD_ID.fullmatch(rid):
+        return None
+    if type(step) is not int or not 1 <= step <= 12:
+        return None
+    return {"recipe_id": rid, "step": step}
 
 
 def timer_state_path():
@@ -399,8 +413,12 @@ def parse_timers(raw, now):
         dur = t.get("duration")
         if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
             dur = max(left, 1.0)
-        out[t["id"]] = {"label": clean_label(t.get("label")), "due": now + max(0.0, left),
-                        "duration": float(dur), "ringing": ringing}
+        rec = {"label": clean_label(t.get("label")), "due": now + max(0.0, left),
+               "duration": float(dur), "ringing": ringing}
+        src = timer_source(t.get("source"))
+        if src:
+            rec["source"] = src
+        out[t["id"]] = rec
     return out
 
 
@@ -608,8 +626,15 @@ def set_timer(args, timers, now):
         return {"ok": False, "error": "Eight timers are already running."}, None
     label = _stored_label(args.get("label") if isinstance(args, dict) else None, timers)
     tid = secrets.token_hex(3)
-    timers[tid] = {"label": label, "due": now + sec, "duration": sec, "ringing": False}
-    return {"ok": True, "label": label, "length": say_left(sec)}, {"type": "timer_set", "id": tid, "seconds": sec, "label": label}
+    rec = {"label": label, "due": now + sec, "duration": sec, "ringing": False}
+    source = timer_source(args.get("source") if isinstance(args, dict) else None)
+    if source:
+        rec["source"] = source
+    timers[tid] = rec
+    msg = {"type": "timer_set", "id": tid, "seconds": sec, "label": label}
+    if source:
+        msg["source"] = source
+    return {"ok": True, "label": label, "length": say_left(sec)}, msg
 
 
 def list_timers(timers, now):
@@ -623,8 +648,92 @@ def list_timers(timers, now):
     return {"ok": True, "timers": out}
 
 
+_ALL_RINGING = ("stop", "stop the timer", "dismiss timer", "dismiss the timer")
+
+
+def _fold_utt(text):
+    """Same folding as a recipe command: case, a leading hey-name, and a trailing please."""
+    t = str(text or "").replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    t = " ".join(t.casefold().split())
+    t = re.sub(r"^(?:hey [a-z0-9][a-z0-9' -]{0,40}?)[, ]+", "", t).strip()
+    t = t.strip(" \t.!?")
+    if t.endswith(" please"):
+        t = t[: -len(" please")].strip(" \t.!?")
+    return t
+
+
+def _title_name(label):
+    """First letter only. Twin of grok_station.recipe_name; this process cannot import the display."""
+    text = " ".join(str(label or "timer").split())[:24]
+    return (text[:1].upper() + text[1:]) if text else "Timer"
+
+
+def stopped_say(names):
+    """Grok's confirmation. "Stopped Orzo, Garlic bread and Timer." """
+    names = [str(n) for n in names if str(n).strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"Stopped {names[0]}."
+    if len(names) == 2:
+        return f"Stopped {names[0]} and {names[1]}."
+    return "Stopped " + ", ".join(names[:-1]) + " and " + names[-1] + "."
+
+
+def _ringing_rows(timers, now):
+    """Ringing timers, earliest deadline first. note_due runs inside live_rows."""
+    return [(k, t) for k, t in live_rows(timers, now) if isinstance(t, dict) and t.get("ringing")]
+
+
+def clear_ringing_utterance(text, timers, now):
+    """Dismiss ringing timers from a whole utterance.
+
+    "stop", "dismiss timer", and "stop the timer" clear every ringing timer.
+    Bare "dismiss" clears the one that ended first (a recipe chip waits until none are ringing).
+    "clear that" and a dismiss with nothing ringing return None so the chip path still runs.
+    Running timers stay.
+    """
+    if not isinstance(timers, dict):
+        return None
+    utt = _fold_utt(text)
+    if utt not in _ALL_RINGING and utt != "dismiss":
+        return None
+    ringing = _ringing_rows(timers, now)
+    if not ringing:
+        return None
+    picked = ringing if utt in _ALL_RINGING else ringing[:1]
+    ids, names = [], []
+    for k, t in picked:
+        ids.append(k)
+        names.append(_title_name(t.get("label")))
+        timers.pop(k, None)
+    # One message for a stop-all, so the station re-packs once. A single dismiss stays one id.
+    if len(ids) > 1:
+        messages = [{"type": "timer_cancel", "ids": ids}]
+    else:
+        messages = [{"type": "timer_cancel", "id": ids[0]}]
+    return {"ids": ids, "messages": messages, "say": stopped_say(names), "all": utt in _ALL_RINGING}
+
+
+def pi_timer_messages(to_pi):
+    """One Pi message, or the list a stop-all cancel returns."""
+    msgs = to_pi if isinstance(to_pi, list) else ([to_pi] if isinstance(to_pi, dict) else [])
+    return [m for m in msgs if isinstance(m, dict) and m.get("type") in ("card", "timer_set", "timer_cancel")]
+
+
 def cancel_timer(args, timers, now):
-    hits, err = resolve_timer(args if isinstance(args, dict) else {}, timers, now)
+    args = args if isinstance(args, dict) else {}
+    if _fold_utt(args.get("label")) in _ALL_RINGING:
+        ringing = _ringing_rows(timers, now)
+        if len(ringing) > 1:
+            raw, names, ids = [], [], []
+            for k, t in ringing:
+                raw.append(t.get("label") or "timer")
+                names.append(_title_name(t.get("label")))
+                ids.append(k)
+                timers.pop(k, None)
+            return {"ok": True, "cancelled": raw, "say": stopped_say(names)}, {"type": "timer_cancel", "ids": ids}
+    hits, err = resolve_timer(args, timers, now)
     tid, bad, _ = _one_hit(hits, timers, err)
     if bad:
         return bad, None
@@ -650,8 +759,11 @@ def extend_timer(args, timers, now):
     t["due"] = now + whole
     t["duration"] = whole
     t["ringing"] = False
-    return ({"ok": True, "label": t.get("label") or "timer", "added": say_left(sec), "left": say_left(whole)},
-            {"type": "timer_set", "id": tid, "seconds": whole, "label": t.get("label") or "timer"})
+    msg = {"type": "timer_set", "id": tid, "seconds": whole, "label": t.get("label") or "timer"}
+    src = timer_source(t.get("source"))
+    if src:
+        msg["source"] = src
+    return ({"ok": True, "label": t.get("label") or "timer", "added": say_left(sec), "left": say_left(whole)}, msg)
 
 
 def save_timer_state(path, timers, now, wall_now=None):
@@ -676,8 +788,12 @@ def save_timer_state(path, timers, now, wall_now=None):
         dur = t.get("duration")
         if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
             dur = max(remain, 1.0)
-        doc_timers[str(tid)] = {"label": clean_label(t.get("label")), "remain": remain,
-                                "duration": float(dur), "ringing": ringing}
+        row = {"label": clean_label(t.get("label")), "remain": remain,
+               "duration": float(dur), "ringing": ringing}
+        src = timer_source(t.get("source"))
+        if src:
+            row["source"] = src
+        doc_timers[str(tid)] = row
     if not doc_timers and not os.path.exists(path):
         return True
     try:
@@ -731,8 +847,12 @@ def load_timer_state(path, wall_now):
         dur = t.get("duration")
         if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not 1 <= float(dur) <= MAX_TIMER_S:
             dur = max(remain, 1.0)
-        out[str(tid)] = {"label": clean_label(t.get("label")), "remain": remain,
-                         "duration": float(dur), "ringing": ringing}
+        rec = {"label": clean_label(t.get("label")), "remain": remain,
+               "duration": float(dur), "ringing": ringing}
+        src = timer_source(t.get("source"))
+        if src:
+            rec["source"] = src
+        out[str(tid)] = rec
     return out
 
 
@@ -740,7 +860,10 @@ def restore_timers(path, now, wall_now):
     """In-memory book from the state file, with deadlines on `now` (a MonoClock in production)."""
     out = {}
     for tid, t in load_timer_state(path, wall_now).items():
-        out[tid] = {"label": t["label"], "due": now + t["remain"], "duration": t["duration"], "ringing": t["ringing"]}
+        rec = {"label": t["label"], "due": now + t["remain"], "duration": t["duration"], "ringing": t["ringing"]}
+        if t.get("source"):
+            rec["source"] = t["source"]
+        out[tid] = rec
     return out
 
 
@@ -759,10 +882,15 @@ def timer_restore_messages(timers, now):
         else:
             left = int(round(float(due) - float(now)))
         label = rec.get("label") or "timer"
+        msg = {"type": "timer_set", "id": tid, "label": label}
+        src = timer_source(rec.get("source"))
+        if src:
+            msg["source"] = src
         if rec.get("ringing") or left < 1:
-            msgs.append({"type": "timer_set", "id": tid, "seconds": 0, "label": label})
+            msg["seconds"] = 0
         else:
-            msgs.append({"type": "timer_set", "id": tid, "seconds": left, "label": label})
+            msg["seconds"] = left
+        msgs.append(msg)
     return msgs
 
 

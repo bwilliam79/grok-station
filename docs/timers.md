@@ -9,7 +9,9 @@ Every persona gets four tools: `set_timer`, `list_timers`, `cancel_timer`, `exte
 - "Set a pasta timer for 10 minutes" stores the name **pasta** (a trailing "timer" is not kept).
 - A timer with no name is **Timer**. The next unnamed one is **Timer 2**, then **Timer 3**.
 - "What's running?" lists them soonest first. A ringing timer is first.
-- "Stop", "stop the timer", or "dismiss it" dismisses the ringing one, or the only one. If several are running and none is ringing, the station asks which.
+- "Stop", "stop the timer", or "dismiss timer" clears every ringing timer at once. Running timers stay. Grok confirms with the names, as in "Stopped Orzo, Garlic bread and Timer." To drop just one, say "cancel the <name> timer".
+- Bare "dismiss" while a timer is ringing clears the one that ended first. With nothing ringing, and a recipe up, "dismiss" or "clear that" still removes the newest recipe chip.
+- If several are running and none is ringing, "stop" with no name asks which one.
 - "Stop the pasta timer", "cancel the oven", "the second one", or "timer 2" pick one. A stored name wins over an index, so a timer named "Timer 2" is that name, not index 2. A bare "2" is the index.
 - "Add two minutes to the pasta timer" extends it. Extending a ringing timer starts it again.
 - A ninth timer is refused until one is cancelled. One second to 24 hours.
@@ -18,11 +20,15 @@ A timer that has reached zero stays in the list as ringing, even if a conversati
 
 ## Screen
 
-On the idle screen, up to four timers are countdown rings (soonest first). The rest are chips along the bottom. The ring is teal and shrinks with the time left.
+On the idle screen, up to four timers are countdown rings (soonest first). The rest are chips along the bottom. The ring is teal and shrinks with the time left. Closing a recipe leaves the timers on this idle screen; it does not cancel them.
 
-When one is done, that timer takes the screen: a full amber ring, a two-line headline ("Pasta is done"), and the hint Say “stop” to dismiss in the shared voice-hint style (muted connective words, the spoken word in the text colour). Every other timer is a chip. The amber ring pulses about once a second. These screens do not use red. Red on the station is only the microphone-off state and a stock that went down.
+When one is done, that timer takes the idle screen: a full amber ring, a two-line headline ("Pasta is done"), and the hint Say “stop” to dismiss in the shared voice-hint style (muted connective words, the spoken word in the text colour). Every other timer is a chip. The amber ring pulses about once a second. `GROK_STATION_REDUCE_MOTION=1` leaves a static outline instead of the pulse. These screens do not use red. Red on the station is only the microphone-off state and a stock that went down.
 
-During a conversation the timers stay a chip strip at the bottom, so the reply stays visible. The night clock hides them. The digits follow a monotonic clock taken when the list arrives, so a wall-clock step does not jump them.
+The alarm sounds when the timer ends, then again every 10 seconds for 2 minutes, then every 60 seconds, until it is dismissed or the one-hour drop.
+
+While a recipe is up, timers use the right-hand rail instead of the bottom strip (see display.md). A plain unnamed timer reads "Timer · 5 min" with the line "Set by voice". "Timer 2" keeps that name. A timer started from a recipe step is named after the card's `dish` ("Orzo") or "Step N" when the card has no dish, and its source line is "From step N". Ringing timers come first, in the order they ended, then running timers, oldest first. With more than three timers and at most two ringing, slot 3 is "+N more", soonest first, up to three rows. With more than two ringing, slots 1 and 2 keep the full ringing treatment and slot 3 is "+N more" with an amber border and the alert fill, no bell ring. Its rows list the other ringing timers as a bell plus "<Name> · done", then running timers by time left, up to three rows. A ringing timer stays on the rail. "Stop" clears every ringing timer and the rail slides once. Dismissing or cancelling slides the later timers up to fill the gap (240 ms, or instant under reduced motion). Nothing outside the rail moves. While any timer is ringing, an amber banner replaces the sports and calendar chips: one name ("Orzo timer is done"), two ("Orzo and Garlic bread are done"), or two names and "+ N more". Each name is capped; "+ N more" is not. The chips come back when nothing is ringing.
+
+During a conversation that is not a recipe, the timers stay a chip strip at the bottom, so the reply stays visible. The night clock hides them. The digits follow a monotonic clock taken when the list arrives, so a wall-clock step does not jump them.
 
 ## What is stored
 

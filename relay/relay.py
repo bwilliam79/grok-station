@@ -2479,6 +2479,7 @@ async def session(req):
                 pcm = await tts_pcm(http, text, voice, max_s)
                 if pcm:
                     await pi.send_bytes(pcm)
+                return pcm
 
             async def end_routed_turn():
                 who = "" if st["persona"] == "grok" else f" ({st['persona']})"
@@ -2610,6 +2611,10 @@ async def session(req):
                             st.update(playing=False, speech=False, quiet_since=now, turn_t0=now, turn=st["turn"] + 1)
                             st["heard"] = ""  # each turn's question starts empty
                             log(f"turn {st['turn']} open")
+                            off = arm_offer_window(st, offer_now())
+                            if off:
+                                await pi.send_json({"type": "recipe_caption", "text": off.get("say") or "",
+                                                    "seconds": OFFER_WINDOW_S})
                             if st["t1"]:
                                 st["t1"].open()  # read-back finished playing: the 15 s spoken window starts now
                         continue
@@ -2740,6 +2745,45 @@ async def session(req):
                         heard = latest_utterance(st["heard_hist"], raw)
                         st["heard_hist"] = (st["heard_hist"] + [raw])[-8:]
                         st["heard"] = heard
+                        # A timer offer is answered before stop, train, recipe commands, or the model.
+                        offer_decision = classify_offer_reply(heard, st, offer_now())
+                        if offer_decision == "lapse":
+                            await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
+                        elif offer_decision == "cancel":
+                            await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
+                        elif offer_decision in ("yes", "no"):
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            arm_recipe_drop(st)
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st["answered_utt"] = st.get("utt")
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
+                            if offer_decision == "no":
+                                st.pop("recipe_offer", None)
+                                await play_fixed(load_cards().OFFER_NO_SAY, voice, TTS_SHORT_S)
+                                log("recipe offer no")
+                            else:
+                                args = offer_set_args(st)
+                                st.pop("recipe_offer", None)
+                                now_t = timer_clock.now()
+                                out, to_pi = station_tools.set_timer(args, st.get("timers"), now_t)
+                                if out.get("ok"):
+                                    for pi_msg in station_tools.pi_timer_messages(to_pi):
+                                        await pi.send_json(pi_msg)
+                                    station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
+                                    await play_fixed(load_cards().timer_set_say(args["label"], args["minutes"]),
+                                                     voice, TTS_REPLY_S)
+                                    log("recipe offer yes")
+                                else:
+                                    log("recipe offer missed")
+                            st["release_model"] = not persona_routed(st["persona"])
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         # Bare goodbye/stop/cancel, including turn 1. No "heard": that flips the display to thinking.
                         # "stop" while a timer is ringing falls through so the tool can dismiss it.
                         if session_local_exit(heard, st.get("timers")):
@@ -2748,6 +2792,29 @@ async def session(req):
                                 await cancel_response()
                             await pi.send_json({"type": "done", "local": True})
                             return "user ended"
+                        # "stop" / "dismiss timer" / "stop the timer" clear every ringing timer.
+                        # Bare "dismiss" clears the one that ended first, before a recipe chip.
+                        cleared = station_tools.clear_ringing_utterance(heard, st.get("timers"), timer_clock.now())
+                        if cleared:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            for pi_msg in cleared["messages"]:
+                                await pi.send_json(pi_msg)
+                            now_t = timer_clock.now()
+                            station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st.update(drop_model=True, responding=True, answered_utt=st.get("utt"))
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            if cleared.get("say"):
+                                await play_fixed(cleared["say"], voice, TTS_REPLY_S)
+                            st["release_model"] = not persona_routed(st["persona"])
+                            log("timer dismiss")  # no names
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         # "Train my wake word for <bot>" speaks the intro and queues recording.
                         # It does not reach the model. "stop" above still ends a normal session.
                         # Words inside the later recording window are not commands: enroll owns the mic.
@@ -2802,6 +2869,22 @@ async def session(req):
                             say = result.get("say") if isinstance(result.get("say"), str) else ""
                             if say.strip():
                                 await play_fixed(say, recipe_voice(roster, result.get("bot")), TTS_REPLY_S)
+                            offer = plan_step_offer(st, cmd, result, st.get("timers"))
+                            if offer:
+                                pcm = await play_fixed(offer["say"], recipe_voice(roster, result.get("bot")), TTS_REPLY_S)
+                                play_s = pcm_seconds(pcm)
+                                st["recipe_offer"] = {
+                                    "say": offer["say"], "label": offer["label"], "seconds": offer["seconds"],
+                                    "minutes": offer["minutes"], "speak_at": offer_now(), "playback_s": play_s,
+                                    "pending": True,
+                                }
+                                await pi.send_json({"type": "recipe_caption", "text": offer["say"],
+                                                    "seconds": OFFER_WINDOW_S + play_s})
+                                log("recipe offer")  # the sentence is not logged
+                            elif result.get("closed"):
+                                st.pop("recipe", None)
+                                st.pop("recipe_offer", None)
+                                await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
                             log("recipe " + cmd)  # the command only; the step text is not logged
                             end = await end_routed_turn()
                             if end:
@@ -2964,10 +3047,12 @@ async def session(req):
                             dropped, due_changed = station_tools.note_due(st["timers"], now_t)
                             for tid in dropped:  # hour-late: the station would drop it quietly; free the slot there too
                                 await pi.send_json({"type": "timer_cancel", "id": tid})
+                            if ev.get("name") == "set_timer":
+                                args = recipe_timer_args(args, st)
                             out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
-                            # card or timer message; a failed tool sends nothing. Log the name and verdict only.
-                            if out.get("ok") and isinstance(to_pi, dict) and to_pi.get("type") in ("card", "timer_set", "timer_cancel"):
-                                await pi.send_json(to_pi)
+                            # card or timer message; a failed tool sends nothing. stop-all is one message per timer.
+                            for pi_msg in station_tools.pi_timer_messages(to_pi):
+                                await pi.send_json(pi_msg)
                             if due_changed or dropped or (ev.get("name") in ("set_timer", "cancel_timer", "extend_timer") and out.get("ok")):
                                 station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
                             log(f"tool {ev['name']} ok={out.get('ok')}")  # name and verdict only
@@ -3051,10 +3136,19 @@ async def session(req):
                         await pi.send_json({"type": "xai_error", "message": str((ev.get("error") or {}).get("message", ""))[:200]})
                 return "xai closed"
 
+            async def lapse_offer():
+                """The offer window ended, or the follow-up ended with no answer. Say nothing."""
+                if st.pop("recipe_offer", None) is not None:
+                    await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
+
             async def no_speech():
                 while (st["speaking"] or st["responding"] or st["playing"]
                        or time.monotonic() - st["quiet_since"] < NO_SPEECH):
                     await asyncio.sleep(0.25)
+                    off = st.get("recipe_offer")
+                    if off and not offer_open(off, offer_now()):
+                        await lapse_offer()
+                await lapse_offer()
                 await pi.send_json({"type": "timeout", "speech": st["speech"]})
                 if st["turn"] > 1:
                     return f"no follow-up after turn {st['turn'] - 1}" if not st["speech"] else "no reply to noise (follow-up)"
@@ -3077,6 +3171,9 @@ async def session(req):
             async def caps():
                 while True:
                     now = time.monotonic()
+                    off = st.get("recipe_offer")
+                    if off and not offer_open(off, offer_now()):
+                        await lapse_offer()
                     if hold_expired(st, now):
                         await drop_held_output()
                         return "no transcript"
@@ -3599,6 +3696,143 @@ def recipe_match(text):
     if cmd not in RECIPE_CMDS:
         return None
     return cmd
+
+
+OFFER_WINDOW_S = 8
+
+
+def offer_now():
+    return time.monotonic()
+
+
+def pcm_seconds(pcm):
+    """Playback length of 24 kHz PCM16, so the yes window starts after the offer finishes."""
+    if not pcm:
+        return 0.0
+    return len(pcm) / 48000.0
+
+
+def _step_has_timer(timers, recipe_id, step):
+    if not isinstance(timers, dict):
+        return False
+    for t in timers.values():
+        src = t.get("source") if isinstance(t, dict) else None
+        if isinstance(src, dict) and src.get("recipe_id") == recipe_id and src.get("step") == step:
+            return True
+    return False
+
+
+def remember_recipe(st, result):
+    if not isinstance(st, dict):
+        return
+    if not isinstance(result, dict) or not result.get("ok") or result.get("closed"):
+        if isinstance(result, dict) and result.get("closed"):
+            st.pop("recipe", None)
+        return
+    rid, step = result.get("id"), result.get("step")
+    if not isinstance(rid, str) or type(step) is not int:
+        return
+    dish = result.get("dish") if isinstance(result.get("dish"), str) and result.get("dish").strip() else None
+    st["recipe"] = {"id": rid, "step": step, "dish": dish}
+
+
+def plan_step_offer(st, cmd, result, timers):
+    """The offer for this step, once per recipe session. Repeat asks again only when that step has no timer."""
+    remember_recipe(st, result)
+    rec = st.get("recipe") if isinstance(st, dict) else None
+    if not rec or not isinstance(result, dict) or not result.get("ok") or result.get("closed"):
+        return None
+    say = result.get("say") if isinstance(result.get("say"), str) else ""
+    try:
+        cards = load_cards()
+    except Exception:
+        return None
+    if not say.strip() or say in (cards.FIRST_STEP_LINE, cards.LAST_STEP_LINE):
+        return None
+    if _step_has_timer(timers, rec["id"], rec["step"]):
+        return None
+    key = (rec["id"], rec["step"])
+    offered = st.setdefault("offered_steps", set())
+    if key in offered and cmd != "repeat":
+        return None
+    built = cards.build_timer_offer(say, rec.get("dish"), rec["step"])
+    if not built:
+        return None
+    offered.add(key)
+    return built
+
+
+def offer_open(off, now):
+    if not isinstance(off, dict):
+        return False
+    until = off.get("until")
+    if isinstance(until, (int, float)) and not isinstance(until, bool):
+        return now < until
+    speak = off.get("speak_at")
+    if not isinstance(speak, (int, float)) or isinstance(speak, bool):
+        return False
+    return now < float(speak) + float(off.get("playback_s") or 0) + OFFER_WINDOW_S
+
+
+def classify_offer_reply(heard, st, now=None):
+    """'yes', 'no', 'cancel', 'lapse', or None when no offer is waiting.
+
+    Yes and no are whole utterances. Anything else cancels the offer so the command still runs.
+    A window that has already ended lapses quietly.
+    """
+    if not isinstance(st, dict):
+        return None
+    off = st.get("recipe_offer")
+    if not off:
+        return None
+    now = offer_now() if now is None else now
+    if not offer_open(off, now):
+        st.pop("recipe_offer", None)
+        return "lapse"
+    try:
+        kind = load_cards().offer_answer(heard)
+    except Exception:
+        kind = None
+    if kind in ("yes", "no"):
+        return kind
+    st.pop("recipe_offer", None)
+    return "cancel"
+
+
+def arm_offer_window(st, now=None):
+    """The 8 s yes window starts when follow-up listening opens (the offer has finished speaking)."""
+    if not isinstance(st, dict):
+        return None
+    off = st.get("recipe_offer")
+    if not isinstance(off, dict):
+        return None
+    now = offer_now() if now is None else now
+    off["until"] = now + OFFER_WINDOW_S
+    off["pending"] = False
+    return off
+
+
+def offer_set_args(st):
+    off = st.get("recipe_offer") or {}
+    rec = st.get("recipe") or {}
+    return {"seconds": int(off.get("seconds") or 0), "label": off.get("label") or "",
+            "minutes": int(off.get("minutes") or 0),
+            "source": {"recipe_id": rec.get("id"), "step": rec.get("step")}}
+
+
+def recipe_timer_args(args, st):
+    """An unnamed timer while a recipe step is up is that step's timer. A named one stays a voice timer."""
+    rec = st.get("recipe") if isinstance(st, dict) else None
+    args = dict(args or {})
+    if not rec:
+        return args
+    raw = args.get("label")
+    named = isinstance(raw, str) and raw.strip() and raw.strip().casefold() != "timer"
+    if named or args.get("source"):
+        return args
+    args["source"] = {"recipe_id": rec["id"], "step": rec["step"]}
+    args["label"] = rec.get("dish") or f"Step {rec['step']}"
+    return args
 
 
 def recipe_taken(heard, post):

@@ -30,6 +30,10 @@ The station's localhost `/status` adds `grok` with `state` and `cause` only. No 
 
 Voice hints on a recipe step, a ringing timer, and the calendar footer are one style: body text at L(36), which is 48 px on the 2560×1706 panel. "Say" and the connective words are muted. A spoken phrase is in the text colour, inside curly quotes. On the calendar, "Next:" is muted and the event is text colour, not quoted.
 
+On a recipe the hint is one row under all three columns (x 128, y 1494, w 2304, h 84 at 2560×1706). It always reads Say "next step" · "previous step" · "close recipe", including on step 1. It does not list timer phrases. "previous step" on step 1 still says "That's the first step". When Juniper offers a timer, that sentence replaces the hint until the answer or the 8 second window ends, then the hint comes back. The same row does not change size.
+
+A time in the step ("10 minutes", "20 min", "1 hour", "twenty minutes") is drawn in teal with a dotted underline. The first time in the step is the one that counts. It turns muted while a timer from that step is running or ringing, and teal again when that timer is gone. The link is the timer's source, `{recipe_id, step}`, not its name. Closing the recipe clears the offer caption. The step card does not get wider.
+
 ## Supported range
 
 `MIN_SIZE, MAX_SIZE = (800, 480), (3840, 2160)` in `app/grok_station.py`:
@@ -86,7 +90,9 @@ While Brightness is Schedule, Sunrise and sunset, or Light sensor, and the night
 
 ## Bottom zone (0.12.16)
 
-Only a recipe takes the whole screen. A sports or calendar tile, and the bot's listening, thinking, replying and error states, use the bottom zone: the band under the clock, date and weather, which never move or shrink. At 2560x1706 the zone runs x 128 to 2432 and from about y 800 down to the safe area; it scales with the layout on other screens (`zone_rect` in `app/grok_station.py`). When timer chips show, the zone's bottom moves up above them (`content_limit`). Home cards under the date are hidden while the zone is in use.
+Only a recipe takes the whole screen. A sports or calendar tile, and the bot's listening, thinking, replying and error states, use the bottom zone: the band under the clock, date and weather, which never move or shrink. At 2560x1706 the zone runs x 128 to 2432 and from about y 800 down to the safe area; it scales with the layout on other screens (`zone_rect` in `app/grok_station.py`). When timer chips show on those screens, the zone's bottom moves up above them (`content_limit`). Home cards under the date are hidden while the zone is in use.
+
+A recipe does not use that strip. At 2560×1706 the ingredients card, step card, and timer rail are fixed (y 216, h 1246): ingredients x 128 w 560, step x 712 w 1168, rail x 1904 w 528. The rail is three slots of 400 px with a 23 px gap. Timers do not shrink the step card. The banner slot (x 780, y 56, w 1130, h 104) holds the sports and calendar chips, right-aligned, until a timer rings.
 
 - **Bot states.** The zone card holds the avatar on the left, then the bot's name, the heard line and the reply. The state is an icon and a word at the top right in the ring colour: bars and "Listening", three dots and "Thinking", a speaker and "Replying". Plain text from `/show`, wake-word enrollment, the list read-back card, and a reply that carries an inline weather, time or conversion card keep their full-screen layouts.
 - **A tile while the bot is active.** The tile takes the zone. The bot shrinks to the upper-left status: avatar, name, then the same icon and word. The reply text is hidden while the tile is up, with no caption; speech keeps playing. When the tile goes, the bot expands back into the zone.
