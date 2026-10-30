@@ -1890,7 +1890,7 @@ def enroll(req, read16, play):
                 show(i, "quiet")
                 _note_clip(i, sent, "quiet", "quiet", bool(prior), n)
                 if decision["action"] == "stop":
-                    ENROLL_STATE["silent_stop"] = decision["say"]
+                    ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])
                     break
                 for _ in range(int(RETRY_S / 0.08)):
                     read16()
@@ -1921,10 +1921,10 @@ def enroll(req, read16, play):
                     read16()
             i += 1
         if ENROLL_STATE.get("silent_stop"):
-            msg = ENROLL_STATE.pop("silent_stop")
+            msg, station_msg = ENROLL_STATE.pop("silent_stop")
             shutil.rmtree(d, ignore_errors=True)
-            enroll_stage("failed", msg, phrase, ses)
-            post_state("notice", text=msg)
+            enroll_stage("failed", msg, phrase, ses)  # admin dialog line
+            post_state("notice", text=station_msg)  # station tile: the voice restart line
             return
         if ENROLL_STATE.get("discard"):
             timed_out = bool(ENROLL_STATE.pop("timed_out", False))
@@ -1967,7 +1967,10 @@ def enroll(req, read16, play):
         if (ENROLL_STATE.get("last") or {}).get("stage") in ("recording", "ready", "count"):
             enroll_stage("failed", mic_stopped_line(label), phrase, ses)
         shutil.rmtree(d, ignore_errors=True)
-        post_state("idle")  # take the display out of enroll mode
+        if train_flow is not None and (ENROLL_STATE.get("last") or {}).get("stage") == "failed":
+            post_state("notice", text=train_flow.mic_stopped_station_line(label))  # leaves enroll mode
+        else:
+            post_state("idle")  # take the display out of enroll mode
         raise
     finally:
         ENROLL_STATE["busy"] = False

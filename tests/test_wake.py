@@ -368,7 +368,7 @@ class EnrollMicStops(unittest.TestCase):
         self.assertEqual(last["stage"], "failed")
         self.assertEqual(last["message"], gw.mic_stopped_line("Zed"))
         self.assertFalse(gw.ENROLL_STATE["busy"])
-        self.assertEqual(posted[-1], "idle")  # the display leaves enroll mode
+        self.assertEqual(posted[-1], "notice")  # the display leaves enroll mode with the station mic-stop line (rev1.3)
 
 
 class TrainingNotice(unittest.TestCase):

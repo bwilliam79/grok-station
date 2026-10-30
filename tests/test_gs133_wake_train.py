@@ -95,7 +95,7 @@ class StaleAndError(unittest.TestCase):
         phrase = os.path.join(self.d, "hey_juniper")
         left = os.listdir(phrase) if os.path.isdir(phrase) else []
         self.assertEqual(left, [])  # the partial session directory is gone
-        self.assertEqual(posted[-1], "idle")
+        self.assertEqual(posted[-1], "notice")  # station mic-stop line leaves enroll mode (rev1.3 copy deck)
         self.assertFalse(gw.ENROLL_STATE["busy"])
 
 

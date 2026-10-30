@@ -99,7 +99,7 @@ class TouchEnrollSilence(unittest.TestCase):
         self.assertEqual(posted.count("quiet"), 2)
         self.assertNotIn("saved", posted)
         self.assertNotIn("error", posted)
-        self.assertEqual(notices, [TOUCH_SAY])
+        self.assertEqual(notices, [VOICE_STOP])  # station tile: voice restart line (rev1.3 copy deck); admin keeps TOUCH_SAY
         self.assertEqual(saved, [])
         self.assertFalse(busy)
         self.assertEqual(last.get("stage"), "failed")

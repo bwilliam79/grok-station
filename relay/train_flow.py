@@ -99,12 +99,11 @@ def silent_clip(streak, bot, voice=True):
     """
     who = " ".join(str(bot or "").split()) or "the bot"
     if int(streak) >= 2:
+        # "station" is the tile line: the voice restart line however the session started (rev1.3 copy deck).
+        station = "Stopped. Say 'Hey Grok, train my wake word for %s' to try again." % who
         if voice:
-            return {
-                "action": "stop",
-                "say": "Stopped. Say 'Hey Grok, train my wake word for %s' to try again." % who,
-            }
-        return {"action": "stop", "say": SILENT_TOUCH_SAY, "note": SILENT_TOUCH_NOTE}
+            return {"action": "stop", "say": station, "station": station}
+        return {"action": "stop", "say": SILENT_TOUCH_SAY, "note": SILENT_TOUCH_NOTE, "station": station}
     return {"action": "retry", "say": QUIET_SAY}
 
 
@@ -112,3 +111,10 @@ def mic_stopped_line(bot):
     who = " ".join(str(bot or "").split()) or "the bot"
     return ("The microphone stopped while recording. "
             "Say 'Hey Grok, train my wake word for %s' or press Record voice to try again." % who)
+
+
+def mic_stopped_station_line(bot):
+    """The station tile after a mic stop. Record voice is an admin-dialog string (rev1.3 copy deck)."""
+    who = " ".join(str(bot or "").split()) or "the bot"
+    return ("The microphone stopped while recording. "
+            "Say 'Hey Grok, train my wake word for %s' to try again." % who)
