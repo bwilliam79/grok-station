@@ -2150,6 +2150,7 @@ LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = None    # training tile and its fixed av
 LAST_ENROLL_BUTTONS = []                        # (id, rect) in screen px, for enroll_hit
 LAST_ENROLL_HINT = None                         # muted "To stop, stay quiet." line; the station has no Cancel
 LAST_ENROLL_PROGRESS = None                     # progress row the hint sits under
+LAST_ENROLL_HEADLINE = None                     # headline box; height is font ascent plus descent
 LAST_ENROLL_STAGE = None
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
@@ -3013,12 +3014,12 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
     global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT
     global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_BUTTONS, LAST_ENROLL_STAGE
-    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS
+    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS, LAST_ENROLL_HEADLINE
     LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
     LAST_WEATHER_RECT = LAST_OFFLINE_RECT = LAST_DATE_RECT = LAST_CLOCK_RECT = None
     LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = LAST_ENROLL_STAGE = None
     LAST_ENROLL_BUTTONS = []
-    LAST_ENROLL_HINT = LAST_ENROLL_PROGRESS = None
+    LAST_ENROLL_HINT = LAST_ENROLL_PROGRESS = LAST_ENROLL_HEADLINE = None
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
@@ -4229,7 +4230,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     """
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG
     global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_STAGE
-    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS
+    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS, LAST_ENROLL_HEADLINE
     i, n, stage, extra = enroll_parse(msg)
     prompt = msg.get("text") or ""
     m = re.search(r"[“\"](.+?)[”\"]", prompt)
@@ -4269,12 +4270,17 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     ef = font("body", zpx(L, 44))
     surf.blit(ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
     head, sub, scolor, status, _bar = enroll_copy(phrase, i, n, stage, extra)
-    head_slot = pygame.Rect(col_x, tile.y + zpx(L, 170), col_w, max(1, zpx(L, 131)))
-    surf.set_clip(head_slot.clip(tile))
     hf = font("display", _fit_px_step("display", head, col_w, zpx(L, 128), zpx(L, 96), zpx(L, 8)))
+    # Descent is negative. Ascent minus descent is the line box, and it does not depend on the string.
+    head_h = max(1, hf.get_ascent() - hf.get_descent())
+    head_slot = pygame.Rect(col_x, tile.y + zpx(L, 170), col_w, head_h)
+    LAST_ENROLL_HEADLINE = pygame.Rect(head_slot)
+    surf.set_clip(head_slot.clip(tile))
     shown = _ellipsize_quoted(hf, head, col_w)
     surf.blit(hf.render(shown, True, TEXT), head_slot.topleft)
-    sub_slot = pygame.Rect(col_x, tile.y + zpx(L, 321), col_w, max(1, zpx(L, 170)))
+    # Lines under the headline start at its bottom, so a descender is not covered.
+    shift = max(0, head_slot.bottom - (tile.y + zpx(L, 321)))
+    sub_slot = pygame.Rect(col_x, tile.y + zpx(L, 321) + shift, col_w, max(1, zpx(L, 170)))
     surf.set_clip(sub_slot.clip(tile))
     if sub:
         sf, lines, step = _fit_wrapped("body", sub, col_w, sub_slot.h, zpx(L, 72), zpx(L, 60), zpx(L, 4), 2, 1.18)
@@ -4284,11 +4290,11 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
                 break
             surf.blit(sf.render(ln, True, scolor), (col_x, y))
             y += step
-    prog = pygame.Rect(col_x, tile.y + zpx(L, 521), col_w, max(1, zpx(L, 88)))
+    prog = pygame.Rect(col_x, tile.y + zpx(L, 521) + shift, col_w, max(1, zpx(L, 88)))
     LAST_ENROLL_PROGRESS = pygame.Rect(prog)
     surf.set_clip(prog.clip(tile))
     _draw_progress(surf, L, prog, col_w, stage, i, status)
-    act = pygame.Rect(col_x, tile.y + zpx(L, 641), col_w, max(1, zpx(L, 104)))
+    act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
     _draw_actions(surf, L, tile, act, col_w, stage)
