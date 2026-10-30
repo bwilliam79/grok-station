@@ -28,7 +28,7 @@ ROWS = [
 ]
 PAGE_FNS = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
             "setupSteps", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML", "setupMessageDetail",
-            "setupMessagePopHTML", "popoverDismiss", "showSetupMessage", "closeBotMessage")
+            "setupMessagePopHTML", "popoverDismiss", "showSetupMessage", "closeBotMessage", "botRepaintDeferred", "flushBotRepaint")
 
 
 def _src(names):
@@ -251,6 +251,7 @@ class R7CalloutUsesMainBotName(unittest.TestCase):
 
 
 BOT_FNS = ("botMessageLead", "botMessageDetail", "botMessagePopHTML", "repliesFrom", "showBotMessage")
+BOT_FNS += ("botRepaintDeferred", "flushBotRepaint")
 BOT_KEY_PROBE = """
   const added = [], removed = [];
   const ae = document.addEventListener.bind(document), re_ = document.removeEventListener.bind(document);
@@ -296,6 +297,66 @@ class R8BotRowPopoverEscAndFocusOut(unittest.TestCase):
         self.assertTrue(d["closedOnX"], d)
         self.assertEqual(d["added"], 6, d)
         self.assertEqual(d["added"], d["removed"], d)
+
+
+# F1: the Bots list repaints every 3 s. A repaint while the row popover is open must not swap the .bmsg out
+# from under it: it waits until the popover closes, then runs once.
+F1_PROBE = """
+  const host = document.createElement('div');
+  const rowHTML = '<div class="botrow" data-slug="otto"><span>O</span><div class="info"><button type="button" class="bmsg" ' +
+    'data-bmsg="otto" aria-expanded="false"><span class="tx">Couldn\\'t reach Otto.</span></button></div></div>';
+  host.innerHTML = rowHTML; document.body.appendChild(host);
+  const el = {_bots: [{slug: 'otto', name: 'Otto'}]};
+  let paints = 0;
+  const repaint = () => { paints++; host.innerHTML = rowHTML; };
+  // What the 3 s refresh calls: paintBots defers through botRepaintDeferred when a popover is open.
+  const tick = () => { if (typeof botRepaintDeferred === 'function' && botRepaintDeferred(repaint)) return; repaint(); };
+  showBotMessage(host.querySelector('.bmsg'), el);
+  tick(); tick();
+  const pop = document.getElementById('bmsgpop');
+  const live = host.querySelector('.bmsg[data-bmsg="otto"]');
+  res.expanded = live.getAttribute('aria-expanded');
+  res.focusInPop = !!(pop && pop.contains(document.activeElement));
+  res.paintsWhileOpen = paints;
+  document.getElementById('bmsgx').click();
+  res.paintsAfter = paints;
+  res.closed = !document.getElementById('bmsgpop');
+  const now = host.querySelector('.bmsg[data-bmsg="otto"]');
+  res.focusBack = document.activeElement === now;
+  res.expandedAfter = now.getAttribute('aria-expanded');
+"""
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class F1RepaintKeepsBotPopover(unittest.TestCase):
+    def test_repaint_while_open_keeps_expanded_and_focus(self):
+        d = chrome(1280, F1_PROBE, BOT_FNS)
+        self.assertEqual(d["expanded"], "true", d)
+        self.assertTrue(d["focusInPop"], d)
+        self.assertEqual(d["paintsWhileOpen"], 0, d)
+        self.assertTrue(d["closed"], d)
+        self.assertEqual(d["paintsAfter"], 1, d)
+        self.assertTrue(d["focusBack"], d)
+        self.assertEqual(d["expandedAfter"], "false", d)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class F2CalloutSingularCopy(unittest.TestCase):
+    def _one(self, name):
+        return _callout(_fixture(main_name=name, imported=(), setup={"pip": {"status": "connected"}}))
+
+    def test_one_bot_with_main_name(self):
+        txt = self._one("Maeve")
+        self.assertIn("Maeve can send Otto its setup message.", txt)
+        self.assertNotIn("each one", txt)
+
+    def test_one_bot_without_main_name(self):
+        txt = self._one("")
+        self.assertIn("Your main bot can send Otto its setup message.", txt)
+        self.assertNotIn("each one", txt)
+
+    def test_plural_unchanged(self):
+        self.assertIn("Maeve can send each one its setup message.", _callout(_fixture(main_name="Maeve")))
 
 
 if __name__ == "__main__":

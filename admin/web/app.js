@@ -3274,6 +3274,7 @@ function showSetupMessage(btn, el, row, opts) {
     detach();
     btn.setAttribute("aria-expanded", "false");
     if (wrap.parentNode) wrap.remove();
+    flushBotRepaint();
     if (refocus !== false) back();
   };
   const onDoc = ev => {
@@ -3698,7 +3699,7 @@ function botsCalloutHTML(opts) {
     const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
     const who = (opts && opts.mainName) || "Your main bot";
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
-      `<div class="help">${esc(who)} can send each one its setup message. You review it first.</div></div>` +
+      `<div class="help">${esc(who)} can send ${n > 1 ? "each one" : esc(pending[0].name || "it")} its setup message. You review it first.</div></div>` +
       `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
   }
   if (kind === "updates") {
@@ -3894,6 +3895,18 @@ function botRowTapOpensConfigure(target, phone) {
   return true;
 }
 let botMessageCloser = null;
+// F1: while a bots-row or setup message popover is open, hold the list repaint so its button isn't swapped out
+// (that reset aria-expanded and dropped focus to body). The latest held repaint runs once when the popover closes.
+function botRepaintDeferred(paint) {
+  if (!botMessageCloser) return false;
+  botRepaintDeferred.held = paint;
+  return true;
+}
+function flushBotRepaint() {
+  const held = botRepaintDeferred.held;
+  botRepaintDeferred.held = null;
+  if (typeof held === "function") held();
+}
 function closeBotMessage() {
   const close = botMessageCloser;
   botMessageCloser = null;
@@ -3938,6 +3951,7 @@ function showBotMessage(btn, el) {
     detach();
     btn.setAttribute("aria-expanded", "false");
     if (wrap.parentNode) wrap.remove();
+    flushBotRepaint();
     if (refocus !== false) back();
   };
   const onDoc = ev => {
@@ -3958,6 +3972,7 @@ function showBotMessage(btn, el) {
   if (x && x.focus) x.focus();
 }
 function paintBots(el, bots) {
+  if (botRepaintDeferred(() => paintBots(el, el._bots))) return;
   bots = mainFirst(bots || []);
   el._bots = bots;
   paintSummary(el, bots);
