@@ -4840,7 +4840,7 @@ function graceFormHTML(view) {
       <p class="help">For changes like adding a bot or an integration, while you're signed in. Signing out always ends this.</p>
       <label class="grow"><input type="radio" name="grace" value="every"${on("every")}><span class="gl"><b>Every time</b><span class="sub">Ask for each change.</span></span></label>
       <label class="grow"><input type="radio" name="grace" value="time"${on("time")}><span class="gl"><b>After a set time</b><span class="sub">Ask once, then not again for a while.</span></span></label>
-      <div class="gmin" id="gmin"${choice === "time" ? "" : " hidden"}><label for="gminn">Minutes</label><input class="inp" id="gminn" type="number" inputmode="numeric" min="1" max="120" step="1" value="${esc(minutes)}"><span>minutes</span></div>
+      <div class="gmin" id="gmin"${choice === "time" ? "" : " hidden"}><input class="inp" id="gminn" aria-label="Re-ask after, in minutes" type="number" inputmode="numeric" min="1" max="120" step="1" value="${esc(minutes)}"><span>minutes</span></div>
       <p class="ferr" id="gmine" hidden></p>
       <label class="grow"><input type="radio" name="grace" value="session"${on("session")}><span class="gl"><b>Not while I'm signed in</b><span class="sub">Ask once, then not again until you sign out, change the password, leave it idle for 30 minutes, or 12 hours pass.</span></span></label>
       <div class="hbinfo" id="gnotice" role="note"${choice === "session" ? "" : " hidden"}><span class="ii" aria-hidden="true">i</span><span>Anyone using this signed-in browser can change bots, webhooks and most other settings without the password.</span></div>
