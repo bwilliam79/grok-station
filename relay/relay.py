@@ -1601,7 +1601,7 @@ def _train_target(spoken, bots):
 
 
 def train_wake_request(text, bots):
-    """Match "Hey Grok, train my wake word for <bot>". None when the sentence is not that request.
+    """Match "Hey Grok, train (or set up) my wake word for <bot>". None when the sentence is not that request.
 
     Same cleanup as connect_request. A match is {slug, name, phrase, spoken}. phrase is hey_<slug>
     when that id is legal, and None for Grok so hey_grok is never sent. An unknown name is
@@ -1616,7 +1616,8 @@ def train_wake_request(text, bots):
         t = t.replace(ch, " ")
     t = " ".join(t.split())
     # The transcriber often writes "wakeboard" or "wake board" for "wake word" (0.13.9).
-    m = re.match(r"^(?:hey grok )?train my wake(?: word|board| board|-board) for (.+)$", t)
+    # 0.13.11: "set up my wake word for <bot>" is the same request (bq-0012).
+    m = re.match(r"^(?:hey grok )?(?:train|set up|setup|set-up) my wake(?: word|board| board|-board) for (.+)$", t)
     if not m:
         return None
     spoken = m.group(1).strip()

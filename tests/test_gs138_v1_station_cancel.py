@@ -19,8 +19,8 @@ import pygame
 import train_flow
 
 HINT = "To stop, stay quiet for 3 seconds."  # 0.13.9 gs-voice-train rev1.6
-INTRO = "Okay. I'll record you 5 times. Say Juniper after each chime. To stop, stay quiet."
-MORE = "Okay. I'll add 5 more. Say Juniper after each chime. To stop, stay quiet."
+INTRO = "Okay. I'll record you 5 times. Say Hey Juniper after each chime. To stop, stay quiet."
+MORE = "Okay. I'll add 5 more. Say Hey Juniper after each chime. To stop, stay quiet."
 # Stages that used to draw ("stop", "Cancel"). The hint replaces that button.
 CANCEL_STAGES = ("ready", "count", "recording", "quiet", "loud", "saved")
 

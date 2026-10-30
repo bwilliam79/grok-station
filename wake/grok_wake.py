@@ -985,6 +985,24 @@ def begin_persona_sync():
     return True
 
 
+def enroll_label_ok(label, phrase):
+    """A typed admin wake word (0.13.11 bq-0012): short, plain letters, and the same word as phrase."""
+    if not isinstance(label, str) or not isinstance(phrase, str):
+        return False
+    text = " ".join(label.split())
+    if not text or len(text) > 48 or not re.fullmatch(r"[A-Za-z' -]+", text):
+        return False
+    words = [w.replace("'", "") for w in re.sub(r"[^a-z' ]+", "", text.lower().replace("-", "")).split()]
+    return "_".join(w for w in words if w) == phrase
+
+
+def enroll_say_text(phrase, label=None):
+    """The quoted wake word on the training tile: the typed label when it matches, else the id as words."""
+    if enroll_label_ok(label, phrase):
+        return "\u201c" + " ".join(label.split()) + "\u201d"
+    return "\u201c" + phrase.replace("_", " ").title() + "\u201d"
+
+
 def parse_enroll(j):
     """The body of POST /enroll. None when the phrase is not one this station can record.
 
@@ -1010,6 +1028,8 @@ def parse_enroll(j):
     if voice and phrase_trained(phrase):
         topup = True
     out = {"phrase": phrase, "persona": persona, "count": count, "topup": topup}
+    if enroll_label_ok(j.get("label"), phrase):
+        out["label"] = " ".join(j["label"].split())
     if voice:
         out["voice"] = True
     return out
@@ -1975,8 +1995,7 @@ def enroll(req, read16, play):
     if train_flow is None:
         return
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
-    words = phrase.replace("_", " ").title()
-    say = f"“{words}”"
+    say = enroll_say_text(phrase, req.get("label"))
     prior = last_session(phrase) if req.get("topup") else None
     ses = time.strftime("%Y%m%d-%H%M%S")
     d = os.path.join(ENROLL_DIR, phrase, ses)

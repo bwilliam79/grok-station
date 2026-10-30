@@ -30,6 +30,17 @@ def wake_speak_label(phrase, name=""):
     return who or "it"
 
 
+def wake_say_words(phrase, name=""):
+    """The whole wake word as said after the chime, Hey included ("Hey Juniper"). 0.13.11 bq-0012."""
+    if isinstance(phrase, str) and phrase:
+        words = phrase.replace("-", " ").replace("_", " ").split()
+        label = " ".join((w[:1].upper() + w[1:]) for w in words if w)
+        if label:
+            return label
+    who = " ".join(str(name or "").split())
+    return ("Hey " + who) if who else "it"
+
+
 def voice_train_plan(hit, has_model=False):
     """What one train sentence does. A matched phrase starts at get-ready, not the prompt tile.
 
@@ -50,11 +61,12 @@ def voice_train_plan(hit, has_model=False):
     if not phrase:
         return {"begin": False, "phase": None, "say": "", "enroll": None, "tile": False}
     label = wake_speak_label(phrase, hit.get("name"))
+    words = wake_say_words(phrase, hit.get("name"))
     topup = bool(has_model)
     if topup:
-        say = "Okay. I'll add 5 more. Say %s after each chime. To stop, stay quiet." % label
+        say = "Okay. I'll add 5 more. Say %s after each chime. To stop, stay quiet." % words
     else:
-        say = "Okay. I'll record you 5 times. Say %s after each chime. To stop, stay quiet." % label
+        say = "Okay. I'll record you 5 times. Say %s after each chime. To stop, stay quiet." % words
     return {
         "begin": True,
         "phase": "ready",

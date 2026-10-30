@@ -1380,6 +1380,20 @@ def persona_ok(slug):
     return slug == "grok" or slug_ok(slug)
 
 
+def enroll_label(raw, mid):
+    """The wake word as typed on the admin page, when it names the same word as mid (0.13.11 bq-0012).
+
+    Letters, spaces, hyphens and apostrophes only, at most 48 characters. None otherwise, so the
+    station falls back to the id.
+    """
+    if not isinstance(raw, str):
+        return None
+    text = " ".join(raw.replace("\u2019", "'").split())
+    if not text or len(text) > 48 or not re.fullmatch(r"[A-Za-z' -]+", text):
+        return None
+    return text if normalize_phrase(text)[0] == mid else None
+
+
 def phrase_label(name):
     return " ".join(p.capitalize() for p in str(name).split("_") if p)
 
@@ -3006,7 +3020,16 @@ def safe_bot(b):
         "update": update_view(b.get("update")),
         "update_refused_at": _epoch(b.get("update_refused_at")),
         "stats": stats_view(b.get("stats")),
+        "feed_updates": feed_updates_view(b.get("feed_updates")),
     }
+
+
+def feed_updates_view(raw):
+    """The Bots page Updates switch state (0.13.11). Off and no rule unless the relay says exactly on."""
+    raw = raw if isinstance(raw, dict) else {}
+    rule = raw.get("rule")
+    rule = rule if isinstance(rule, str) and len(rule) <= 60 else ""
+    return {"on": raw.get("on") is True, "rule": rule}
 
 
 def enroll_bot_flags():
@@ -4669,8 +4692,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if creating or mid != BUILTIN_WORD:
             save_phrase_persona(mid, who)
-        code, out = wake("POST", "/enroll", {"phrase": mid, "count": count, "topup": bool(j.get("topup")),
-                                              "persona": who})
+        body = {"phrase": mid, "count": count, "topup": bool(j.get("topup")), "persona": who}
+        label = enroll_label(raw, mid)
+        if label:
+            body["label"] = label  # the station tile says the word as typed (bq-0012)
+        code, out = wake("POST", "/enroll", body)
         if not isinstance(out, dict):
             out = {}
         if code != 202 and creating:

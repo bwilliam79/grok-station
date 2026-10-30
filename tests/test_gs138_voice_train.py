@@ -24,7 +24,7 @@ class VoiceStart(unittest.TestCase):
         self.assertTrue(plan["begin"])
         self.assertEqual(plan["phase"], "ready")
         self.assertNotEqual(plan["phase"], "prompt")
-        self.assertEqual(plan["say"], "Okay. I'll record you 5 times. Say Juniper after each chime. To stop, stay quiet.")
+        self.assertEqual(plan["say"], "Okay. I'll record you 5 times. Say Hey Juniper after each chime. To stop, stay quiet.")
         self.assertEqual(plan["enroll"]["phrase"], "hey_juniper")
         self.assertEqual(plan["enroll"]["persona"], "juniper")
         self.assertIs(plan["enroll"]["voice"], True)
@@ -32,7 +32,7 @@ class VoiceStart(unittest.TestCase):
         self.assertFalse(plan["tile"])
         more = gw.voice_train_plan(JUNIPER, has_model=True)
         self.assertTrue(more["begin"])
-        self.assertEqual(more["say"], "Okay. I'll add 5 more. Say Juniper after each chime. To stop, stay quiet.")
+        self.assertEqual(more["say"], "Okay. I'll add 5 more. Say Hey Juniper after each chime. To stop, stay quiet.")
         self.assertIs(more["enroll"]["topup"], True)
         missing = gw.voice_train_plan(
             {"slug": "", "name": "", "phrase": None, "spoken": "Nova"}, has_model=False)
