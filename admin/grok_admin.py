@@ -3910,6 +3910,18 @@ def setup_dismiss_hint(doc, now):
     return 200, {"ok": True, "setup": setup_public(doc, now)}
 
 
+def setup_computer_suggestions(own, main):
+    """Names to offer: this bot's last-known computer, then the main bot's. Duplicates drop out."""
+    out = []
+    for raw in (own, main):
+        if not isinstance(raw, str):
+            continue
+        name = " ".join(raw.split())
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
 def bots_setup_field():
     return setup_public(setup_load(), time.time())
 
@@ -4894,7 +4906,8 @@ class Handler(BaseHTTPRequestHandler):
         wake = row.get("wake") or ("Hey " + name if name else "")
         computer = row.get("computer") or ""
         if not computer:
-            computer = ctx["hosts"].get(ctx["main"]) or ctx["hosts"].get(slug) or ""
+            suggestions = setup_computer_suggestions(ctx["hosts"].get(slug), ctx["hosts"].get(ctx["main"]))
+            computer = suggestions[0] if suggestions else ""
 
         def poster(message):
             main = ctx["main"]

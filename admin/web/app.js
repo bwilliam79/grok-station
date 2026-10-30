@@ -3199,6 +3199,21 @@ function setupListHTML(rows, opts) {
   return '<div class="card" id="setupcard"><h2>Set up bots</h2><p class="prog" role="status">' + esc(intro) +
     '</p><ul class="setl">' + items + "</ul></div>";
 }
+function setupComputerSuggestions(own, main) {
+  const out = [];
+  [own, main].forEach(raw => {
+    const name = String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+    if (name && out.indexOf(name) < 0) out.push(name);
+  });
+  return out;
+}
+function setupComputerFieldHTML(own, main, value) {
+  const list = setupComputerSuggestions(own, main);
+  const shown = value == null ? (list[0] || "") : value;
+  const opts = list.map(n => '<option value="' + esc(n) + '"></option>').join("");
+  return '<input class="inp" id="psthost" list="psthosts" autocomplete="off" spellcheck="false" maxlength="40" value="' +
+    esc(shown) + '"><datalist id="psthosts">' + opts + "</datalist>";
+}
 function setupMainComputer(el) {
   const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
   return (main && main.reply_host) || "";
@@ -3225,9 +3240,12 @@ function setupListRows(el) {
     const inflow = st === "sent" || st === "failed" || st === "connected";
     const configured = !!(b.webhook && b.webhook.configured);
     const name = draft.name || b.name || b.slug;
+    const ownComputer = b.reply_host || "";
+    const suggestions = setupComputerSuggestions(ownComputer, mainComputer);
     out.push({
       slug: b.slug, name: name, wake: draft.wake || ("Hey " + name),
-      computer: draft.computer || b.reply_host || mainComputer || "",
+      computer: draft.computer || suggestions[0] || "",
+      ownComputer: ownComputer, mainComputer: mainComputer,
       status: (configured && !inflow) ? "already" : st,
       sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner,
       unknown: !!draft.unknown
@@ -3239,9 +3257,11 @@ function setupListRows(el) {
     seen[slug] = true;
     const draft = stored[slug] || {};
     const name = draft.name || row.name;
+    const pendingSuggestions = setupComputerSuggestions("", mainComputer);
     out.push({
       slug: slug, name: name, wake: draft.wake || ("Hey " + name),
-      computer: draft.computer || mainComputer || "",
+      computer: draft.computer || pendingSuggestions[0] || "",
+      ownComputer: "", mainComputer: mainComputer,
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
       configured: false, pending: true, owner: owner, unknown: !!draft.unknown
     });
@@ -3309,7 +3329,18 @@ function setupEdit(row, el, field, btn) {
   input.maxLength = 40;
   input.setAttribute("aria-label", field === "wake" ? "Wake word" : field === "computer" ? "Computer name" : "Name");
   input.value = row[field] || "";
+  if (field === "computer") input.setAttribute("list", "edithosts");
   btn.replaceWith(input);
+  if (field === "computer") {
+    const hosts = document.createElement("datalist");
+    hosts.id = "edithosts";
+    setupComputerSuggestions(row.ownComputer, row.mainComputer).forEach(name => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      hosts.appendChild(opt);
+    });
+    input.insertAdjacentElement("afterend", hosts);
+  }
   input.focus();
   input.onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } };
   input.onblur = async () => {
@@ -3392,7 +3423,7 @@ function openPasteValues(row, el) {
     <div class="field"${saved ? " hidden" : ""}><label for="pstkey">Webhook key</label><input class="inp" id="pstkey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="400"> <span class="help" id="pstkeym" hidden>Pasted</span></div>
     <div class="field"${saved ? " hidden" : ""}><label for="pstpub">Public key</label><input class="inp" id="pstpub" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" maxlength="120"> <span class="help" id="pstpubm" hidden>Pasted</span></div>
     ${saved ? '<p class="note">Pasted</p>' : ""}
-    <div class="field"><label for="psthost">Computer name</label><input class="inp" id="psthost" autocomplete="off" spellcheck="false" maxlength="40" value="${esc(row.computer || "")}">
+    <div class="field"><label for="psthost">Computer name</label>${setupComputerFieldHTML(row.ownComputer, row.mainComputer, row.computer || "")}
       <p class="help">Prefilled from the setup message. Checked during the test.</p></div>
     <p class="note">Keys stay on your home computer.</p>
     <div id="pste"></div>

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 
@@ -44,6 +45,7 @@ def _run(expr):
     names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark",
              "setupOwnerLabel", "setupSteps",
              "setupMessage", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
+             "setupComputerSuggestions", "setupComputerFieldHTML",
              "setupSendResult",
              "botsCalloutKind", "botsCalloutHTML")
     src = "\n".join(_fn(n) for n in names)
@@ -605,6 +607,34 @@ class Rev33SendFailure(unittest.TestCase):
         self.assertNotIn(">Send setup<", html)
         self.assertNotIn("Update the main bot first.", html)
         self.assertIn('class="schip amb"', html)
+
+
+class Rev33Computer(unittest.TestCase):
+    """The computer name is a suggestion: this bot's computer, then the main bot's. It stays editable."""
+
+    def test_suggestion_order_is_own_then_main_and_not_locked(self):
+        send = ADMIN[ADMIN.index("def bots_setup_send"):ADMIN.index("def bots_setup_draft")]
+        self.assertNotIn('ctx["hosts"].get(ctx["main"]) or ctx["hosts"].get(slug)', send)
+        self.assertIn('setup_computer_suggestions(ctx["hosts"].get(slug), ctx["hosts"].get(ctx["main"]))', send)
+        self.assertEqual(ga.setup_computer_suggestions("Den laptop", "Office computer"),
+                         ["Den laptop", "Office computer"])
+        self.assertEqual(ga.setup_computer_suggestions("Office computer", "Office computer"), ["Office computer"])
+        self.assertEqual(ga.setup_computer_suggestions("", "Office computer"), ["Office computer"])
+        self.assertEqual(ga.setup_computer_suggestions("  ", None), [])
+        html = _run("setupComputerFieldHTML(%s, %s, %s)" % (
+            json.dumps("Den laptop"), json.dumps("Office computer"), json.dumps("Den laptop")))
+        self.assertIn("<datalist", html)
+        self.assertIn('list="psthosts"', html)
+        self.assertLess(html.index(">Den laptop<") if ">Den laptop<" in html else html.index("Den laptop"),
+                        html.index("Office computer"))
+        self.assertLess(html.index("Den laptop"), html.index("Office computer"))
+        self.assertNotIn("readonly", html.lower())
+        self.assertNotIn("disabled", html.lower())
+        paste = JS[JS.index("function openPasteValues("):JS.index("\nfunction ", JS.index("function openPasteValues("))]
+        self.assertIn("setupComputerFieldHTML", paste)
+        self.assertNotIn("readonly", paste.lower())
+        listed = _run("setupComputerSuggestions('Den laptop', 'Office computer')")
+        self.assertEqual(listed, ["Den laptop", "Office computer"])
 
 
 if __name__ == "__main__":
