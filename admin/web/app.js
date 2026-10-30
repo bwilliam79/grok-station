@@ -4,6 +4,7 @@
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const root = () => $("#root");
+if (typeof document !== "undefined") installAvatarFallback(document);
 let S = {state: null, page: "home", timers: [], stepupUntil: null, avatarV: 0, };
 const PERSONA = s => s ? s[0].toUpperCase() + s.slice(1) : "";
 const WORD = n => String(n == null ? "" : n).split("_").filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
@@ -2597,9 +2598,16 @@ function keepAvatarImgs(list, paint) {
     }
   });
 }
-function bindAvatars(root) {
-  if (!root || !root.querySelectorAll) return;
-  root.querySelectorAll("img.av").forEach(img => { img.onerror = () => avatarOnError(img); });
+// Avatar fallback with no inline handler (the CSP blocks those): one capture-phase listener on the document,
+// because "error" does not bubble. It covers every img.av, including ones rendered before any script ran on them.
+function onAvatarError(ev) {
+  const t = ev && ev.target;
+  if (t && t.tagName === "IMG" && t.classList && t.classList.contains("av")) avatarOnError(t);
+}
+function installAvatarFallback(doc) {
+  if (!doc || doc._avatarFallback) return;
+  doc._avatarFallback = true;
+  doc.addEventListener("error", onAvatarError, true);
 }
 // Display only: "aurora" shows as "Aurora". The value sent and stored stays the lowercase xAI id.
 function voiceLabel(v) {
@@ -2671,7 +2679,6 @@ function noteAvatarVersions(bots) {
       let img = w.querySelector("img.av");
       if (!img) { img = document.createElement("img"); img.className = "av"; img.alt = ""; w.prepend(img); }
       delete img.dataset.fb;
-      img.onerror = () => avatarOnError(img);
       img.src = avatarSrc(b.slug);
     });
   });
@@ -2683,7 +2690,7 @@ function avatar(slug, name, lg, ring) {
   const src = logo ? "/assets/mark.svg" : esc(avatarSrc(slug));
   const tipId = ring ? `avtip-${String(slug || "bot").replace(/[^a-z0-9-]/gi, "")}` : "";
   const a11y = ring ? ` tabindex="0" role="img" aria-label="${esc(name || slug || "Bot")}: ${esc(ring.word)}" aria-describedby="${tipId}" title="${esc(ring.word)}"` : "";
-  const inner = `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}${ring ? " st " + ring.cls : ""}"${a11y} data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}" onerror="avatarOnError(this)"><span class="monoav">${letter}</span></span>`;
+  const inner = `<span class="avwrap${lg ? " lg" : ""}${logo ? " logo" : ""}${ring ? " st " + ring.cls : ""}"${a11y} data-slug="${esc(slug)}" data-fallback="${esc(fb)}"><img class="av" alt="" src="${src}"><span class="monoav">${letter}</span></span>`;
   if (!ring) return inner;
   return `<span class="tipwrap avtip">${inner}<span class="tip" role="tooltip" id="${tipId}">${esc(ring.word)}</span></span>`;
 }
@@ -4029,7 +4036,6 @@ function paintBots(el, bots) {
       <div class="cfg"><button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>
         <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>`).join("");
   keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
-  bindAvatars(list);
   bindWakeToggles(list, el);
   list.querySelectorAll("[data-upd]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
@@ -4218,7 +4224,6 @@ function bustPortraits(el) {
       w.prepend(img);
     }
     delete img.dataset.fb;
-    img.onerror = () => avatarOnError(img);
     img.src = "/api/portrait/" + encodeURIComponent(w.dataset.slug) + "?v=" + S.avatarV;
   });
   return refreshBots(el);
@@ -4332,7 +4337,6 @@ function openBot(bot, el) {
       });
     };
   });
-  bindAvatars(d);
   wirePair(d, bot, el);
   wireKeyMode(d, bot, el);
   bindInstructions(d, "cpupd", () => routineUpdate(bot.slug, el._stationPub, el._fingerprint, bot.key_mode));

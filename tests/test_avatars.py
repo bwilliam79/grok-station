@@ -50,7 +50,7 @@ class IndexTests(unittest.TestCase):
         self.assertIn("function defaultAvatarIndex", js)
         self.assertIn("% 18", js)
         self.assertIn("/avatars/default-", js)
-        self.assertIn("onerror", js)
+        self.assertIn('addEventListener("error", onAvatarError, true)', js)  # 0.13.9: no inline onerror (CSP)
         self.assertIn("avatarOnError", js)
 
 
