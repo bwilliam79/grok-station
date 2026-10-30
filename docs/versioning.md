@@ -339,6 +339,15 @@ Installs over 0.11.6. The pinned home-helper files and the installer change, so 
 - **Bots page actions.** Refresh avatars moved from the page header to directly left of Add bot; Revoke all bots is unchanged. The "No other bots yet" line is gone.
 - **Instructions.** The bot templates name release 0.12.6. `scripts/gs-update.sh` changed, so the update manifest and deploy pins are regenerated.
 
+## 0.13.9
+
+Change note (2026-10-30): patch release; installs over 0.13.8. The bot templates name release 0.13.9 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
+
+- **Set up bots (Noor gs-configure-all rev3.2, gs139 re-checks).** Restores the Configure all / Set up <bot> callout that 0.13.8 held. It counts every Set up bots row that isn't Connected or Already connected and opens one list. `/api/bots/setup-send` relays only to the main bot and refuses unknown slugs with a fixed body. Tests: `tests/test_gs139_*.py`.
+- **Training tile (Noor gs-voice-train rev1.5).** `_enroll_actions` returns no buttons on any stage; prompt and failed show a muted note; failed holds 10 s. Tests: `tests/test_gs139_train_tile.py`.
+- **leak-scan.** The retired word rule is gone; the whole-word mechanism stays.
+- **gitleaks.** `.gitleaksignore` lists per-finding fingerprints for the synthetic tokens in `tests/test_handoff.py` (Nix 0.13.8 follow-up).
+
 ## 0.13.8
 
 Change note (2026-10-29): patch release; installs over 0.13.7. The bot templates name release 0.13.8 (no other instruction change), so the update manifest and deploy pins are regenerated; press Update on each bot so its release matches.
