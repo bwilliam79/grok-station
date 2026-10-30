@@ -133,6 +133,48 @@ def _is_num(v):
     return not isinstance(v, bool) and isinstance(v, (int, float))
 
 
+# Grace-setting helpers sit above Auth: `AUTH = Auth()` runs at import and loading saved sessions needs
+# session_mode() (0.13.9 startup fix; tests/test_gs139_boot_with_sessions.py).
+def _settings_path():
+    return path("update-settings.json")
+
+
+def _settings_doc():
+    d = read_json(_settings_path(), {})
+    return d if isinstance(d, dict) else {}
+
+
+def grace_ok(n):
+    """Allowed stored values: 0, an int from 1 to 120, or the string "session". Nothing else."""
+    if n == "session":
+        return True
+    if isinstance(n, bool) or not isinstance(n, int):
+        return False
+    return n == 0 or 1 <= n <= GRACE_MAX
+
+
+def password_grace_min():
+    """0 always asks. 1..120 is a minute window. "session" lasts this sign-in.
+
+    A missing or rejected value is the factory default, 10. "session" is not stored as a number.
+    """
+    n = _settings_doc().get("password_grace_min", 10)
+    if n == "session":
+        return "session"
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
+        return 10
+    return n
+
+
+def session_mode():
+    return password_grace_min() == "session"
+
+
+def session_cookie_ttl():
+    """Max-Age for a new admin cookie: 12 h, or until logout in "session" mode."""
+    return SESSION_COOKIE_FOREVER if session_mode() else SESSION_TTL
+
+
 class Auth:
     """Password record, setup code, sessions, global lockout."""
 
@@ -3333,46 +3375,6 @@ def _audit_update(event, detail="-"):
     if not re.fullmatch(r"[a-z0-9-]{1,40}", event) or "://" in detail or "@" in detail:
         return
     append_audit(f"{ts} admin station {event} {detail}")
-
-
-def _settings_path():
-    return path("update-settings.json")
-
-
-def _settings_doc():
-    d = read_json(_settings_path(), {})
-    return d if isinstance(d, dict) else {}
-
-
-def grace_ok(n):
-    """Allowed stored values: 0, an int from 1 to 120, or the string "session". Nothing else."""
-    if n == "session":
-        return True
-    if isinstance(n, bool) or not isinstance(n, int):
-        return False
-    return n == 0 or 1 <= n <= GRACE_MAX
-
-
-def password_grace_min():
-    """0 always asks. 1..120 is a minute window. "session" lasts this sign-in.
-
-    A missing or rejected value is the factory default, 10. "session" is not stored as a number.
-    """
-    n = _settings_doc().get("password_grace_min", 10)
-    if n == "session":
-        return "session"
-    if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > GRACE_MAX:
-        return 10
-    return n
-
-
-def session_mode():
-    return password_grace_min() == "session"
-
-
-def session_cookie_ttl():
-    """Max-Age for a new admin cookie: 12 h, or until logout in "session" mode."""
-    return SESSION_COOKIE_FOREVER if session_mode() else SESSION_TTL
 
 
 def _grace_rank(n):
