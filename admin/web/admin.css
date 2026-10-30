@@ -1,7 +1,7 @@
 /* grok-station admin · Hearth theme. Errors and destructive actions are amber 'Needs attention' (design.md §8.2). Red is allowed only for the offline avatar status ring. Mic off and stock-down stay on the station, not in the admin.
    Hearth theme, settings scale (see ADMIN-UI.md) */
 :root{--tabbar-h:72px;--fs-help:13px;--fs-body:15px;--fs-label:14px;--fs-h3:18px;--fs-h2:22px;--fs-h1:28px;--fs-mono:13px;--fs-mono-sm:10px;--fs-caps:12px;--fs-cat:16px;--fs-dev:15px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--panel-pad:var(--sp-4) 0 var(--sp-2);--fs-preview-time:clamp(var(--fs-h1),14cqi,72px);--fs-preview-date:clamp(var(--fs-help),4cqi,var(--fs-h3));--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
---gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
+--gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--teal-hover:#62DCC4;--teal-active:#30B89E;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
 --gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
 @media (max-width:767px){:root{--fs-body:16px}}  /* 16px stops iOS zoom on input focus */
@@ -860,3 +860,21 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 #out{display:inline-block;padding:4px 0;min-height:24px}
 #bothdr{position:relative}
 .vtippop{right:0;left:auto;max-width:min(240px,calc(100vw - 32px))}
+/* 0.13.11 Bots list: setup inside each row (Noor gs-bots-merge SPEC rev1.1) + Updates switch */
+.btn.btn-setup--needs{background:var(--gs-teal);border-color:var(--gs-teal);color:var(--gs-on-teal);font-weight:600}
+.btn.btn-setup--needs:hover{background:var(--teal-hover);border-color:var(--teal-hover)}
+.btn.btn-setup--needs:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}
+.btn.btn-setup--needs:active{background:var(--teal-active);border-color:var(--teal-active);box-shadow:inset 0 1px 0 rgba(13,11,9,.25)}
+.btn.btn-setup--needs[disabled]{background:var(--gs-teal);border-color:var(--gs-teal);opacity:.55;cursor:default}
+.setacts{display:inline-flex;align-items:center;gap:8px}
+.setpanel{margin:0 0 12px 58px;padding:14px 16px;border-radius:10px;background:var(--gs-surface-2);border-left:3px solid var(--gs-teal)}
+.setpanel.err{border-left-color:var(--gs-amber)}
+.setpanel h3.lbl{margin:0 0 8px;font-size:var(--fs-help)}
+.setpanel .steps{margin:0 0 8px;padding-left:20px}
+.setpanel .seterr{margin:0 0 10px;color:var(--gs-text)}
+.setpanel .seterr .gl{color:var(--gs-amber);margin-right:6px}
+.setpanel .acts{display:flex;gap:8px;margin-top:10px}
+.updsw{display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px;margin-left:4px}
+.updsw .tog{display:inline-flex;align-items:center;gap:6px}
+.updsw .updrule{max-width:12rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:600px){.setpanel{margin-left:0}.setpanel .acts .btn,.setacts .btn{min-height:44px;flex:1}}

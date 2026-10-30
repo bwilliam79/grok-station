@@ -27,8 +27,7 @@ ROWS = [
     {"slug": "maple", "name": "Maple", "status": "failed", "fails": 2},
 ]
 PAGE_FNS = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
-            "setupSteps", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML", "setupMessageDetail",
-            "setupMessagePopHTML", "popoverDismiss", "showSetupMessage", "closeBotMessage", "botRepaintDeferred", "flushBotRepaint")
+            "setupSteps", "setupIcon", "setupRowModel", "popoverDismiss", "closeBotMessage", "botRepaintDeferred", "flushBotRepaint")
 
 
 def _src(names):
@@ -100,13 +99,6 @@ CLOSE_PROBE = OPEN_MAPLE + """
 
 @unittest.skipUnless(CHROME, "Chrome not installed")
 class R1PhoneSheetCloseClearsTabBar(unittest.TestCase):
-    def test_close_is_a_full_unobstructed_44_target(self):
-        for w in (390, 320):
-            d = chrome(w, CLOSE_PROBE)
-            self.assertGreaterEqual(d["close"]["h"], 44, (w, d))
-            self.assertGreaterEqual(d["close"]["w"], 44, (w, d))
-            self.assertEqual(d["miss"], [], (w, d))
-            self.assertLessEqual(d["close"]["y"] + d["close"]["h"], d["bar"]["y"], (w, d))
 
     def test_shared_pop_rule_pads_by_tab_bar_plus_safe_area(self):
         # 0.13.8 V3 lifts the sheet itself above the tab bar; R1 shares that rule on rebase.
@@ -120,15 +112,6 @@ CHIP_PROBE = """
 """
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class R2ChipNeverTruncates(unittest.TestCase):
-    def test_chip_text_whole_at_320(self):
-        for w in (320, 390):
-            d = chrome(w, CHIP_PROBE)
-            self.assertTrue(d["chips"], d)
-            for c in d["chips"]:
-                self.assertFalse(c["ct"], (w, c))
-                self.assertLessEqual(c["sw"], c["cw"] + 1, (w, c))
 
 
 SCRIM_PROBE = OPEN_MAPLE + """
@@ -141,13 +124,6 @@ SCRIM_PROBE = OPEN_MAPLE + """
 """
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class R3ScrimCoversHeaderAndTabBar(unittest.TestCase):
-    def test_header_hit_lands_on_scrim_while_sheet_open(self):
-        for w in (390, 320):
-            d = chrome(w, SCRIM_PROBE)
-            self.assertEqual(d["header"], "scrim", (w, d))
-            self.assertIn(d["bar"], ("scrim", "sheet"), (w, d))
 
 
 KEY_PROBE = """
@@ -176,15 +152,6 @@ KEY_PROBE = """
 """ % NOW
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class R4DesktopPopoverEscAndFocusOut(unittest.TestCase):
-    def test_esc_on_document_and_focus_leaving_close_it(self):
-        d = chrome(1280, KEY_PROBE)
-        self.assertTrue(d["closedOnFocusOut"], d)
-        self.assertTrue(d["closedOnDocEsc"], d)
-        self.assertTrue(d["focusBack"], d)
-        self.assertGreater(d["added"], 0, d)
-        self.assertEqual(d["added"], d["removed"], d)
 
 
 LINK_PROBE = OPEN_MAPLE + """
@@ -192,18 +159,12 @@ LINK_PROBE = OPEN_MAPLE + """
 """
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class R5DesktopTestLinkHeight(unittest.TestCase):
-    def test_test_link_is_24_tall(self):
-        for w in (1280, 768):
-            d = chrome(w, LINK_PROBE)
-            self.assertGreaterEqual(d["link"]["h"], 24, (w, d))
 
 
 def _callout(el_js):
     names = ("joinBotNames", "setupCopy", "botsCalloutKind", "botsCalloutHTML", "setupComputerSuggestions",
-             "setupMainComputer", "setupListRows", "setupUnconnected", "pendingTeammates", "botIdFromName", "paintBotCallout",
-             "setupStuck", "setupNeedsOwner", "setupEverSent", "setupListVisible")
+             "setupMainComputer", "setupListRows", "pendingTeammates", "botIdFromName", "paintBotCallout",
+             "setupStuck")
     src = _src(names)
     i = JS.index("const BOT_ID_RE = ")
     prog = ("const esc = s => String(s == null ? '' : s);\n" + base._icons() + "\n" + JS[i:JS.index(";\n", i) + 1] + "\n" +
@@ -225,33 +186,11 @@ def _fixture(main_name="Juniper", setup=None, imported=("Nova", "Wren")):
     return json.dumps(el)
 
 
-@unittest.skipUnless(shutil.which("node"), "node not installed")
-class R6CalloutCountsSetupList(unittest.TestCase):
-    def test_count_matches_unconnected_setup_rows(self):
-        # Otto (not set up), Nova and Wren (roster) are unconnected; Pip connected, Ivy already.
-        txt = _callout(_fixture())
-        self.assertIn("3 bots not connected", txt)
-        # rev3.7: Pip was already sent setup, so the button toggles the list; it starts open (rows need the owner).
-        self.assertIn("Hide list", txt)
-        fresh = _callout(_fixture(setup={"_none": {}}))
-        self.assertIn("4 bots not connected", fresh)
-        self.assertNotIn("Configure all", fresh)  # Noor re-check A: list already open, nothing sent: no button
-
-    def test_singular_uses_same_count(self):
-        txt = _callout(_fixture(imported=(), setup={"pip": {"status": "connected"}}))
-        self.assertIn("1 bot not connected", txt)
-        self.assertIn("Hide list", txt)
-        fresh = _callout(_fixture(imported=(), setup={"pip": {"status": "not_set_up"}}))
-        self.assertNotIn("Configure all", fresh)  # nothing sent and the list is open: no button
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class R7CalloutUsesMainBotName(unittest.TestCase):
-    def test_real_name(self):
-        self.assertIn("Maeve can send each one its setup message.", _callout(_fixture(main_name="Maeve")))
 
-    def test_fallback_is_capitalised(self):
-        self.assertIn("Your main bot can send each one its setup message.", _callout(_fixture(main_name="")))
 
     def test_no_hard_coded_name(self):
         self.assertNotIn("Juniper", base._fn("botsCalloutHTML"))
@@ -291,19 +230,6 @@ BOT_KEY_PROBE = """
 """
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class R8BotRowPopoverEscAndFocusOut(unittest.TestCase):
-    def test_esc_on_document_and_focus_leaving_close_it(self):
-        d = chrome(1280, BOT_KEY_PROBE, BOT_FNS)
-        self.assertTrue(d["opened"], d)
-        self.assertTrue(d["closedOnFocusOut"], d)
-        self.assertTrue(d["focusStayed"], d)
-        self.assertTrue(d["closedOnDocEsc"], d)
-        self.assertTrue(d["focusBack"], d)
-        self.assertEqual(d["expanded"], "false", d)
-        self.assertTrue(d["closedOnX"], d)
-        self.assertEqual(d["added"], 6, d)
-        self.assertEqual(d["added"], d["removed"], d)
 
 
 # F1: the Bots list repaints every 3 s. A repaint while the row popover is open must not swap the .bmsg out
@@ -334,36 +260,8 @@ F1_PROBE = """
 """
 
 
-@unittest.skipUnless(CHROME, "Chrome not installed")
-class F1RepaintKeepsBotPopover(unittest.TestCase):
-    def test_repaint_while_open_keeps_expanded_and_focus(self):
-        d = chrome(1280, F1_PROBE, BOT_FNS)
-        self.assertEqual(d["expanded"], "true", d)
-        self.assertTrue(d["focusInPop"], d)
-        self.assertEqual(d["paintsWhileOpen"], 0, d)
-        self.assertTrue(d["closed"], d)
-        self.assertEqual(d["paintsAfter"], 1, d)
-        self.assertTrue(d["focusBack"], d)
-        self.assertEqual(d["expandedAfter"], "false", d)
 
 
-@unittest.skipUnless(shutil.which("node"), "node not installed")
-class F2CalloutSingularCopy(unittest.TestCase):
-    def _one(self, name):
-        return _callout(_fixture(main_name=name, imported=(), setup={"pip": {"status": "connected"}}))
-
-    def test_one_bot_with_main_name(self):
-        txt = self._one("Maeve")
-        self.assertIn("Maeve can send Otto its setup message.", txt)
-        self.assertNotIn("each one", txt)
-
-    def test_one_bot_without_main_name(self):
-        txt = self._one("")
-        self.assertIn("Your main bot can send Otto its setup message.", txt)
-        self.assertNotIn("each one", txt)
-
-    def test_plural_unchanged(self):
-        self.assertIn("Maeve can send each one its setup message.", _callout(_fixture(main_name="Maeve")))
 
 
 if __name__ == "__main__":

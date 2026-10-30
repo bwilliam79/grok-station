@@ -57,7 +57,7 @@ class AppJsTodoNamesNextRelease(unittest.TestCase):
     def test_no_stale_todo(self):
         js = open(os.path.join(ROOT, "admin", "web", "app.js")).read()
         self.assertNotIn("TODO(0.13.10)", js)
-        self.assertRegex(js, r"TODO\(0\.13\.11\): the owner rejected this separate Set up bots")
+        self.assertNotIn("TODO(0.13.11)", js)  # the Bots list merge landed in 0.13.11
 
 
 if __name__ == "__main__":

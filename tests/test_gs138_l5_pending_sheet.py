@@ -36,7 +36,7 @@ class PendingSheet(unittest.TestCase):
         self.assertIn('<h3 tabindex="-1">', f)
         self.assertIn('wrap.querySelector("h3").focus();', f)
         self.assertNotIn("rm.focus()", f)
-        self.assertIn('row.querySelector("[data-setup]")', f)  # P2: back to Set up, not the div
+        self.assertIn('row.querySelector("[data-setupbtn], [data-remove]")', f)  # P2: back to Set up, not the div
         self.assertNotIn("row.focus()", f)
 
 

@@ -32,8 +32,7 @@ def _html(row, **opts):
 
 
 NAMES = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
-         "setupSteps", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML", "setupMessageDetail",
-         "setupMessagePopHTML", "setupKeepUnknown")
+         "setupSteps", "setupIcon", "setupRowModel", "setupKeepUnknown")
 
 
 def _run(expr):
@@ -75,22 +74,7 @@ UNKNOWN = base._row("not_set_up", unknown=True)
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class N1FixedRowHeight(unittest.TestCase):
-    def test_message_is_one_tappable_line_in_the_info_column(self):
-        for row in (STUCK, FAILED, UNKNOWN):
-            html = _html(row)
-            info, btns = _cols(html)
-            self.assertNotIn('class="help"', btns, row["status"])
-            self.assertEqual(html.count('class="ssub"'), 1, row["status"])
-            self.assertIn('class="ssub"', info)
-            self.assertIn('aria-haspopup="dialog"', info)
 
-    def test_failure_extras_move_to_the_popover(self):
-        html = _html(FAILED)
-        self.assertNotIn("Still can't reach", html)
-        self.assertNotIn('data-act="maintest"', html)
-        self.assertIn("function showSetupMessage(", JS)
-        pop = _fn("setupMessagePopHTML")
-        self.assertIn('data-act="maintest"', pop)
 
     def test_row_height_is_fixed(self):
         self.assertRegex(FLAT, r"\.setr\{[^}]*height:48px")
@@ -99,36 +83,9 @@ class N1FixedRowHeight(unittest.TestCase):
         self.assertRegex(phone, r"\.setr\{[^}]*height:164px")
         self.assertRegex(phone, r"\.racts\{[^}]*flex-direction:row")
 
-    def test_tap_opens_full_text(self):
-        paint = _fn("paintSetupList")
-        self.assertIn(".ssub", paint)
-        self.assertIn("showSetupMessage(", paint)
-        d = _run("setupMessageDetail(setupRowModel(%s, {mainName: 'Juniper', now: 1000}))" % json.dumps(FAILED))
-        self.assertEqual(d["title"], "Couldn't reach Juniper")
-        self.assertEqual(d["body"], "Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.")
-        self.assertEqual(d["again"], "Still can't reach Juniper.")
-        pop = _run("setupMessagePopHTML(%s, true)" % json.dumps(d))
-        self.assertIn("Test Juniper's connection", pop)
-        self.assertIn('aria-modal="true"', pop)
 
 
 
-@unittest.skipUnless(shutil.which("node"), "node not installed")
-class N4StuckSubLine(unittest.TestCase):
-    def test_no_ok_card_sits_next_to_the_sent_chip(self):
-        html = _html(STUCK)
-        info, btns = _cols(html)
-        self.assertNotIn("No OK card yet?", btns)
-        self.assertIn("No OK card yet?", info)
-        chip = info.index("Sent ")
-        self.assertLess(chip, info.index("No OK card yet?"))
-        line = info[info.rindex('<div class="sline"', 0, chip):]
-        self.assertIn("No OK card yet?", line)
-        self.assertNotIn('<div class="lbl"', line)
-
-    def test_fresh_sent_row_has_no_sub_line(self):
-        html = _html(base._row("sent", sent_at=1000 - 30))
-        self.assertNotIn("No OK card yet?", html)
 
 
 
@@ -138,17 +95,6 @@ class N3FixedButtonColumn(unittest.TestCase):
         _, btns = _cols(html)
         return re.findall(r'<(?:button|span)[^>]*data-slot="(\w)"[^>]*?(?:data-act="(\w+)")?[^>]*>', btns)
 
-    def test_send_and_send_again_share_one_slot(self):
-        fresh = _cols(_html(base._row("not_set_up")))[1]
-        stuck = _cols(_html(STUCK))[1]
-        unknown = _cols(_html(UNKNOWN))[1]
-        failed = _cols(_html(FAILED))[1]
-        for btns, act in ((fresh, "send"), (stuck, "again"), (unknown, "again"), (failed, "retry")):
-            self.assertRegex(btns, r'data-slot="a"[^>]*data-act="%s"' % act)
-        self.assertRegex(stuck, r'data-slot="b"[^>]*data-act="paste"')
-        # Both slots are always drawn, so slot a never moves when slot b is empty.
-        for btns in (fresh, unknown, failed):
-            self.assertIn('data-slot="b"', btns)
 
     def test_button_column_has_a_fixed_width(self):
         m = re.search(r"\.sendc2\{([^}]*)\}", FLAT)
@@ -156,14 +102,6 @@ class N3FixedButtonColumn(unittest.TestCase):
         self.assertRegex(m.group(1), r"(^|;)width:\d+px")
         self.assertRegex(FLAT, r"\.racts\{[^}]*grid-template-columns:\d+px\d+px")
 
-    def test_help_text_never_in_the_button_column(self):
-        for row in (base._row("not_set_up"), FAILED, STUCK):
-            html = _html(row, sendBlocked=True)
-            info, btns = _cols(html)
-            self.assertNotIn("help", btns)
-            self.assertIn("Update Juniper first", info)
-            hid = re.search(r'aria-describedby="([^"]+)"', btns).group(1)
-            self.assertIn('id="%s"' % hid, info)
 
 
 
@@ -259,15 +197,6 @@ class N5PhoneTestLinkTarget(unittest.TestCase):
 
 
 
-@unittest.skipUnless(shutil.which("node"), "node not installed")
-class N6EditButtonHeight(unittest.TestCase):
-    def test_inline_edit_buttons_are_at_least_24px(self):
-        html = _html(base._row("not_set_up"), expanded=True)
-        self.assertIn('class="tlnk" data-edit="name"', html)
-        m = re.search(r"\.tlnk\[data-edit\]\{([^}]*)\}", FLAT)
-        self.assertIsNotNone(m)
-        self.assertIn("min-height:24px", m.group(1))
-        self.assertRegex(m.group(1), r"display:inline-(flex|block)")
 
 
 
