@@ -20,6 +20,10 @@ FLAT = re.sub(r"\s+", "", CSS)
 
 
 def _fn(name):
+    if "\nasync function " + name + "(" in JS:
+        start = JS.index("\nasync function " + name + "(")
+        nxt = re.compile(r"\n(?:async )?function ").search(JS, start + 1)
+        return JS[start:nxt.start()]
     return base._fn(name)
 
 
@@ -38,7 +42,8 @@ def _run(expr):
             "\nprocess.stdout.write(JSON.stringify(" + expr + "));")
     out = base.subprocess.run(["node", "-e", prog], capture_output=True, text=True)
     if out.returncode:
-        raise AssertionError(out.stderr.strip().splitlines()[-1] if out.stderr.strip() else "node failed")
+        errs = [ln for ln in out.stderr.splitlines() if "Error" in ln]
+        raise AssertionError(errs[0] if errs else "node failed")
     return json.loads(out.stdout)
 
 
@@ -159,6 +164,88 @@ class N3FixedButtonColumn(unittest.TestCase):
             self.assertIn("Update Juniper first", info)
             hid = re.search(r'aria-describedby="([^"]+)"', btns).group(1)
             self.assertIn('id="%s"' % hid, info)
+
+
+
+class N2FailedSurvivesRefresh(unittest.TestCase):
+    """A no-reason send failure is kept in setup-bots.json (0600) until a send succeeds."""
+
+    def setUp(self):
+        ga = base.ga
+        ga._SETUP_INFLIGHT.clear()
+        self.ga = ga
+
+    def _send(self, doc, ok):
+        return self.ga.setup_send(doc, "otto", known=base.KNOWN, main_slug="juniper", main_name="Juniper",
+                                  main_outdated=False, now=1000, poster=lambda m: ok, name="Otto",
+                                  wake="Hey Otto", computer="Office computer")
+
+    def test_mark_unknown_is_returned_and_cleared_by_a_good_send(self):
+        ga = self.ga
+        doc = {"rows": {}, "hint": None}
+        code, body = ga.setup_mark_unknown(doc, "otto", known=base.KNOWN, now=1000, name="Otto")
+        self.assertEqual(code, 200)
+        self.assertIs(body["setup"]["rows"]["otto"]["unknown"], True)
+        self.assertEqual(body["setup"]["rows"]["otto"]["status"], "not_set_up")
+        code, body = self._send(doc, True)
+        self.assertEqual(code, 200)
+        self.assertIs(body["setup"]["rows"]["otto"]["unknown"], False)
+
+    def test_failure_with_a_reason_replaces_unknown(self):
+        ga = self.ga
+        doc = {"rows": {}, "hint": None}
+        ga.setup_mark_unknown(doc, "otto", known=base.KNOWN, now=1000, name="Otto")
+        code, body = self._send(doc, False)
+        self.assertEqual(code, 502)
+        self.assertIs(body["setup"]["rows"]["otto"]["unknown"], False)
+
+    def test_sent_or_connected_wins_and_bad_input_is_refused(self):
+        ga = self.ga
+        doc = {"rows": {"otto": {"status": "sent", "sent_at": 900}}, "hint": None}
+        code, body = ga.setup_mark_unknown(doc, "otto", known=base.KNOWN, now=1000)
+        self.assertEqual(code, 200)
+        self.assertIs(body["setup"]["rows"]["otto"]["unknown"], False)
+        self.assertEqual(ga.setup_mark_unknown(doc, "nobody", known=base.KNOWN, now=1000)[0], 404)
+        self.assertEqual(ga.setup_mark_unknown(doc, "../x", known=base.KNOWN, now=1000)[0], 404)
+
+    def test_file_round_trip_is_validated_and_0600(self):
+        ga = self.ga
+        target = ga.path(ga.SETUP_FILE)
+        saved = open(target).read() if os.path.exists(target) else None
+        try:
+            ga.setup_store({"rows": {"otto": {"status": "not_set_up", "unknown": True},
+                                     "ivy": {"status": "not_set_up", "unknown": "yes"}}, "hint": None})
+            self.assertEqual(os.stat(target).st_mode & 0o777, 0o600)
+            got = ga.setup_load()
+            self.assertIs(got["rows"]["otto"]["unknown"], True)
+            self.assertIs(got["rows"]["ivy"]["unknown"], False)
+            view = ga.setup_public(got, 1000)
+            self.assertIs(view["rows"]["otto"]["unknown"], True)
+        finally:
+            if saved is None:
+                os.path.exists(target) and os.remove(target)
+            else:
+                ga.setup_store(json.loads(saved))
+
+    def test_route_takes_only_a_slug(self):
+        src = base.ADMIN
+        self.assertIn('if p == "/api/bots/setup-unknown":', src)
+        i = src.index("def bots_setup_unknown(")
+        self.assertIn('setup_check_body(j, ("slug",))', src[i:i + 400])
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_refresh_keeps_the_failed_row_until_a_send_succeeds(self):
+        prev = {"otto": {"status": "not_set_up", "unknown": True, "name": "Otto"}}
+        kept = _run("setupKeepUnknown(%s, {otto: {status: 'not_set_up', unknown: false}})" % json.dumps(prev))
+        self.assertIs(kept["otto"]["unknown"], True)
+        gone = _run("setupKeepUnknown(%s, {})" % json.dumps(prev))
+        self.assertIs(gone["otto"]["unknown"], True)
+        sent = _run("setupKeepUnknown(%s, {otto: {status: 'sent', sent_at: 5}})" % json.dumps(prev))
+        self.assertFalse(sent["otto"].get("unknown"))
+        refresh = _fn("refreshBots")
+        self.assertIn("setupAdopt(", refresh)
+        send = _fn("setupSend")
+        self.assertIn("/api/bots/setup-unknown", send)
 
 
 if __name__ == "__main__":

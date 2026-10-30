@@ -3680,7 +3680,8 @@ def setup_check_body(j, allowed):
 
 
 def _setup_blank():
-    return {"name": "", "wake": "", "computer": "", "status": "not_set_up", "sent_at": 0, "fails": 0, "message": ""}
+    return {"name": "", "wake": "", "computer": "", "status": "not_set_up", "sent_at": 0, "fails": 0, "message": "",
+            "unknown": False}
 
 
 def _setup_row(doc, slug):
@@ -3703,6 +3704,8 @@ def _setup_row(doc, slug):
         row["wake"] = ""
     if not isinstance(row.get("computer"), str):
         row["computer"] = ""
+    if row.get("unknown") is not True:
+        row["unknown"] = False
     return row
 
 
@@ -3725,6 +3728,7 @@ def setup_public(doc, now):
             "sent_at": sent,
             "fails": fails,
             "stuck": bool(status == "sent" and sent > 0 and (now - sent) >= SETUP_STUCK_S),
+            "unknown": row.get("unknown") is True and status not in ("sent", "connected"),
         }
     hint = doc.get("hint") if isinstance(doc, dict) else None
     if not (isinstance(hint, dict) and hint.get("name")):
@@ -3755,7 +3759,8 @@ def setup_load():
         msg = row.get("message")
         message = msg if isinstance(msg, str) and "\x00" not in msg and len(msg) <= SETUP_MSG_MAX else ""
         doc["rows"][slug] = {"name": name, "wake": wake, "computer": computer, "status": status,
-                             "sent_at": sent, "fails": fails, "message": message}
+                             "sent_at": sent, "fails": fails, "message": message,
+                             "unknown": row.get("unknown") is True}
     hint = raw.get("hint")
     if isinstance(hint, dict):
         hname = clean_name(hint.get("name"))
@@ -3838,6 +3843,8 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
     finally:
         with _SETUP_LOCK:
             _SETUP_INFLIGHT.discard(slug)
+            # Either way the outcome now has a reason, so a no-reason failure flag is cleared.
+            row["unknown"] = False
             if ok:
                 row["status"] = "sent"
                 row["sent_at"] = int(now)
@@ -3852,6 +3859,24 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
     if ok:
         return 200, {"ok": True, "setup": view}
     return 502, {"error": "Couldn't reach %s" % who, "setup": view}
+
+
+def setup_mark_unknown(doc, slug, *, known, now, name=None):
+    """The page saw a send fail with no reason (no reply, or no error text). Keep that row failed across
+    refreshes and reloads until a send succeeds. One boolean on the row; Sent and Connected win."""
+    if not isinstance(doc, dict):
+        return 400, {"error": "bad request"}
+    if not slug_ok(slug) or not isinstance(known, (set, list, tuple, frozenset, dict)) or slug not in known:
+        return 404, {"error": "not found"}
+    row = _setup_row(doc, slug)
+    if row.get("status") in ("sent", "connected"):
+        return 200, {"ok": True, "setup": setup_public(doc, now)}
+    if name and not row.get("name"):
+        got = clean_name(name)
+        if got:
+            row["name"] = got
+    row["unknown"] = True
+    return 200, {"ok": True, "setup": setup_public(doc, now)}
 
 
 def setup_draft(doc, slug, *, known, now, name=None, wake=None, computer=None):
@@ -4780,6 +4805,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_setup_send(j)
         if p == "/api/bots/setup-draft":
             return self.bots_setup_draft(j)
+        if p == "/api/bots/setup-unknown":
+            return self.bots_setup_unknown(j)
         if p == "/api/bots/setup-connected":
             return self.bots_setup_connected(j)
         if p == "/api/bots/setup-hint":
@@ -4924,6 +4951,25 @@ class Handler(BaseHTTPRequestHandler):
             computer=computer, add_bot=None, save=(lambda d: setup_merge(d, slug)))
         if code in (200, 502) and not (isinstance(body, dict) and body.get("inflight")):
             audit(slug, "setup-send" if code == 200 else "setup-fail")
+        return self.send(code, body)
+
+    def bots_setup_unknown(self, j):
+        if setup_check_body(j, ("slug",)):
+            return self.send(400, {"error": "bad request"})
+        slug = j.get("slug")
+        if not slug_ok(slug):
+            return self.send(400, {"error": "bad request"})
+        ctx = self._setup_ctx()
+        if ctx is None:
+            return self.bots_unconfigured()
+        if slug not in ctx["known"]:
+            return self.send(404, {"error": "not found"})
+        doc = setup_load()
+        code, body = setup_mark_unknown(doc, slug, known=ctx["known"], now=time.time(),
+                                        name=ctx["names"].get(slug) or "")
+        if code == 200:
+            setup_merge(doc, slug)
+            audit(slug, "setup-unknown")
         return self.send(code, body)
 
     def bots_setup_draft(self, j):

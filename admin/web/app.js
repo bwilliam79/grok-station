@@ -3384,12 +3384,30 @@ function setupSendResult(r, bot) {
   if (err) return {toast: err, row: ""};
   return {toast: "Setup didn't send to " + botName + ". Try again.", row: "again"};
 }
+function setupKeepUnknown(prev, next) {
+  // A no-reason send failure stays on the row across refreshes until the station reports Sent or Connected.
+  const out = Object.assign({}, next || {});
+  Object.keys(prev || {}).forEach(slug => {
+    const old = prev[slug];
+    if (!old || !old.unknown) return;
+    const cur = out[slug];
+    if (cur && (cur.status === "sent" || cur.status === "connected")) return;
+    out[slug] = Object.assign({status: "not_set_up"}, cur || {}, {unknown: true, name: (cur && cur.name) || old.name || ""});
+  });
+  return out;
+}
+function setupAdopt(el, setup) {
+  if (!el || !setup) return;
+  const prev = (el._setup && el._setup.rows) || {};
+  el._setup = Object.assign({}, setup, {rows: setupKeepUnknown(prev, setup.rows || {})});
+}
 async function setupSend(row, el, btn) {
   if (!row || !btn || btn.getAttribute("aria-disabled") === "true" || btn.disabled) return;
   const act = btn.getAttribute("data-act");
   busyBtn(btn, true, act === "retry" ? "Retrying\u2026" : "Sending\u2026");
   const r = await api("POST", "/api/bots/setup-send", {slug: row.slug});
-  if (r.data && r.data.setup) el._setup = r.data.setup;
+  if (r.ok && r.data && r.data.setup) el._setup = r.data.setup;
+  else if (r.data && r.data.setup) setupAdopt(el, r.data.setup);
   const outcome = setupSendResult(r, row.name);
   if (outcome.toast) toast(outcome.toast, "bad");
   if (r.status === 409) refreshFinishChrome();
@@ -3398,6 +3416,9 @@ async function setupSend(row, el, btn) {
     el._setup.rows = el._setup.rows || {};
     const prev = el._setup.rows[row.slug] || {};
     el._setup.rows[row.slug] = Object.assign({}, prev, {unknown: true, name: row.name || prev.name || ""});
+    // Best effort: record it on the station too, so a reload still shows the failure.
+    const mark = await api("POST", "/api/bots/setup-unknown", {slug: row.slug});
+    if (mark.ok && mark.data && mark.data.setup) setupAdopt(el, mark.data.setup);
   }
   if (el && document.body.contains(el)) {
     if ($("#blist", el)) refreshBots(el);
@@ -3430,7 +3451,7 @@ function setupEdit(row, el, field, btn) {
     const body = {slug: row.slug};
     body[field] = input.value;
     const r = await api("POST", "/api/bots/setup-draft", body);
-    if (r.ok && r.data && r.data.setup) el._setup = r.data.setup;
+    if (r.ok && r.data && r.data.setup) setupAdopt(el, r.data.setup);
     else toast((r.data && r.data.error) || "Couldn't save that.", "bad");
     paintSetupList(el);
   };
@@ -4079,7 +4100,8 @@ async function refreshBots(el) {
   el._bots = (r.data && r.data.bots) || [];
   noteAvatarVersions(el._bots);
   el._imported = (r.data && r.data.imported) || {rows: []};
-  el._setup = (r.data && r.data.setup) || el._setup || {rows: {}, hint: null};
+  if (r.data && r.data.setup) setupAdopt(el, r.data.setup);
+  else el._setup = el._setup || {rows: {}, hint: null};
   applyBotMeta(el, r.data);
   const voiceSel = document.getElementById("bvoice");
   const voiceDirty = !!(voiceSel && voiceSel.value !== (voiceSel.dataset.saved || ""));
