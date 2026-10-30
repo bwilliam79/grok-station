@@ -1384,3 +1384,250 @@ class Deck:
             if exp_left < 0:
                 exp_left = 0
             return min(rot_left, exp_left)
+
+
+# ---------------------------------------------------------------- bot updates feed (0.13.10, Noor SPEC rev4)
+# A bot sends an update inside the existing signed /voice/show envelope (op "update" or "update_clear").
+# The relay checks the bot's Updates switch and forwards it to the station's localhost /show.
+# HARD RULE (owner): the feed is visual only. Nothing here speaks, plays a sound or wakes a bot.
+import datetime as _dt  # noqa: E402
+
+UPDATE_TYPES = ("needs_you", "heads_up", "working_on", "done")
+LINE_MAX = 80
+RULE_MAX = 60
+UPD_ROTATE_S = ROTATE_DEFAULT        # 20 s, confirmed by the owner
+DONE_FADE_S = 30 * 60                  # Done fades (aged look) at 30 min
+DROP_S = 2 * 3600                      # Done gone, Working on / Heads-up without expires_at dropped at 2 h
+FEED_MAX = 48                          # whole feed; oldest non-Needs-you dropped first
+UPD_PER_BOT = 8
+UPD_SLOTS = 3
+UPDATE_KEYS = frozenset(("v", "op", "id", "update", "kind", "nonce", "exp_ms"))
+UPD_CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
+UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule"))
+UPD_BODY_REQ = frozenset(("type", "line", "time"))
+UPDATE_OPS = ("update", "update_clear")
+
+
+def _upd_iso(value):
+    """Unix seconds from an ISO 8601 string with a zone. Raises CardError."""
+    if not isinstance(value, str) or len(value) > 40:
+        raise CardError("schema")
+    try:
+        t = _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise CardError("schema")
+    if t.tzinfo is None:
+        raise CardError("schema")
+    return t.timestamp()
+
+
+def clip_line(text):
+    """1-80 characters. Longer is cut at the last word boundary <= 79 and given an ellipsis."""
+    text = escape_text(text, 4 * LINE_MAX) if isinstance(text, str) else ""
+    text = " ".join(text.split())
+    if not text:
+        raise CardError("schema")
+    if len(text) <= LINE_MAX:
+        return text
+    cut = text[:LINE_MAX - 1]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut.rstrip() + "\u2026"
+
+
+def validate_update(doc):
+    """An update or update_clear show document (kind "show", same replay fields). Raises CardError."""
+    if not isinstance(doc, dict) or type(doc.get("v")) is not int or doc.get("v") != 1:
+        raise CardError("schema")
+    op = doc.get("op")
+    if op not in UPDATE_OPS or set(doc) != (UPDATE_KEYS if op == "update" else UPD_CLEAR_KEYS):
+        raise CardError("schema")
+    if not isinstance(doc.get("id"), str) or not CARD_ID.fullmatch(doc["id"]):
+        raise CardError("schema")
+    replay = _replay(doc)
+    if op == "update_clear":
+        return {"v": 1, "op": op, "id": doc["id"], **replay}
+    body = doc.get("update")
+    if not isinstance(body, dict) or not UPD_BODY_REQ <= set(body) <= UPD_BODY_KEYS:
+        raise CardError("schema")
+    if body.get("type") not in UPDATE_TYPES:
+        raise CardError("schema")
+    out = {"type": body["type"], "line": clip_line(body.get("line")), "time": _upd_iso(body.get("time"))}
+    if "expires_at" in body and body["type"] != "needs_you":   # ignored for Needs you (SPEC)
+        out["expires_at"] = _upd_iso(body.get("expires_at"))
+    if "feed_rule" in body:
+        rule = escape_text(body.get("feed_rule"), RULE_MAX) if isinstance(body.get("feed_rule"), str) else None
+        if rule is None:
+            raise CardError("schema")
+        out["feed_rule"] = " ".join(rule.split())
+    return {"v": 1, "op": op, "id": doc["id"], "update": out, **replay}
+
+
+def is_update_op(doc):
+    return isinstance(doc, dict) and doc.get("op") in UPDATE_OPS
+
+
+class UpdateFeed:
+    """The station's update feed. Not persisted: a restart starts empty (bots resend)."""
+
+    def __init__(self):
+        self.items = {}     # (bot, id) -> {"bot","id","type","line","time","expires_at"?,"seq"}
+        self.rules = {}     # bot -> feed rule text shown on the Bots page ("" = All updates)
+        self.seq = 0
+        self.paused_until = None   # voice "pause updates": until resume or 10 min idle
+
+    def put(self, bot, uid, update):
+        if not bot_slug_ok(bot):
+            raise CardError("schema")
+        if "feed_rule" in update:
+            self.rules[bot] = update["feed_rule"]
+        if update["type"] == "working_on":     # one Working on per bot: the next update replaces it
+            for key in [k for k, v in self.items.items() if k[0] == bot and v["type"] == "working_on"]:
+                del self.items[key]
+        self.seq += 1
+        row = {"bot": bot, "id": uid, "seq": self.seq,
+               **{k: v for k, v in update.items() if k != "feed_rule"}}
+        self.items[(bot, uid)] = row
+        self._cap(bot)
+        return row
+
+    def clear(self, bot, uid):
+        return self.items.pop((bot, uid), None) is not None
+
+    def drop_bot(self, bot):
+        """Updates switched off (or bot removed): its rows leave the station now."""
+        for key in [k for k in self.items if k[0] == bot]:
+            del self.items[key]
+
+    def _cap(self, bot):
+        mine = sorted((v for v in self.items.values() if v["bot"] == bot), key=lambda r: r["seq"])
+        while len(mine) > UPD_PER_BOT:
+            old = next((r for r in mine if r["type"] != "needs_you"), mine[0])
+            mine.remove(old)
+            self.items.pop((old["bot"], old["id"]), None)
+        while len(self.items) > FEED_MAX:
+            rows = sorted(self.items.values(), key=lambda r: r["seq"])
+            old = next((r for r in rows if r["type"] != "needs_you"), rows[0])
+            self.items.pop((old["bot"], old["id"]), None)
+
+    def expire(self, now):
+        """Ageing keeps running at night and while paused (SPEC)."""
+        for key, r in list(self.items.items()):
+            t = r["type"]
+            if t == "needs_you":
+                continue
+            if t == "heads_up" and "expires_at" in r:
+                gone = now >= r["expires_at"]
+            else:
+                gone = now - r["time"] >= DROP_S
+            if gone:
+                del self.items[key]
+
+    def ordered(self, now):
+        """Needs you newest first, then the rest newest first. Done past 30 min is marked aged."""
+        self.expire(now)
+        rows = [dict(r) for r in self.items.values()]
+        for r in rows:
+            r["aged"] = r["type"] == "done" and now - r["time"] >= DONE_FADE_S
+        newest = lambda r: (-r["time"], -r["seq"])
+        needs = sorted((r for r in rows if r["type"] == "needs_you"), key=newest)
+        rest = sorted((r for r in rows if r["type"] != "needs_you"), key=newest)
+        return needs, rest
+
+
+def update_slots(needs, others, step, slots=UPD_SLOTS):
+    """What the 3-tile band shows at rotation step `step` (one step per 20 s).
+
+    0 Needs you: all slots rotate. 1: it pins slot 1, others rotate in 2-3.
+    2: they pin slots 1-2, others rotate in slot 3. 3+: Needs you rotate two per step in slots 1-2,
+    slot 3 rotates the others. `others` is updates then home cards; there is no cap and no "+N more".
+    """
+    step = max(0, int(step))
+
+    def window(seq, n, k):
+        if not seq or n <= 0:
+            return []
+        if len(seq) <= n:
+            return list(seq)
+        start = (k * n) % len(seq)
+        return [seq[(start + i) % len(seq)] for i in range(n)]
+
+    if not needs:
+        pinned = []
+    elif len(needs) <= 2:
+        pinned = list(needs)
+    else:
+        pinned = window(needs, 2, step)
+    rest = window(others, slots - len(pinned), step)
+    return (pinned + rest)[:slots]
+
+
+def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
+    """Position text above the band (SPEC): '' when nothing rotates."""
+    n_needs, n_oth = len(needs), len(others)
+    free = slots - min(n_needs, 2)
+    text = ""
+    if n_oth > free and free > 0:
+        first = ((step * free) % n_oth) + 1
+        span = f"{first}" if free == 1 else f"{first}\u2013{min(n_oth, first + free - 1)}"
+    else:
+        span = None
+    if n_needs >= 3:
+        s = (step * 2) % n_needs + 1
+        text = f"Needs you {s}\u2013{min(n_needs, s + 1)} of {n_needs}"
+        if span:
+            text += f" \u00b7 others {span} of {n_oth}"
+    elif n_needs == 2:
+        text = "2 Needs you" + (f" \u00b7 others {span} of {n_oth}" if span else "")
+    elif n_needs == 1:
+        text = "Needs you" + (f" \u00b7 {int(span.split(chr(8211))[0]) + 1}\u2013"
+                              f"{int(span.split(chr(8211))[-1]) + 1} of {n_oth + 1}" if span else "")
+    elif span:
+        text = f"{span} of {n_oth}"
+    if text and paused:
+        text = "Paused \u00b7 " + text
+    return text
+
+
+def update_band_state(feed, now, step, *, night=False, bot_talking=False, timer_ringing=False, paused=False):
+    """What the updates band does right now.
+
+    night: hidden entirely, Needs you included; only the dimmed night clock shows.
+    bot talking / timer ringing / voice pause: visible but paused (rotation holds its step).
+    """
+    needs, rest = feed.ordered(now)
+    if night:
+        return {"visible": False, "paused": False, "tiles": [], "marker": ""}
+    hold = bool(bot_talking or timer_ringing or paused)
+    tiles = update_slots(needs, rest, step)
+    return {"visible": bool(tiles), "paused": hold, "tiles": tiles,
+            "marker": update_marker(needs, rest, step, paused=hold)}
+
+
+def update_next_step(step, elapsed_s, paused):
+    """Advance one step per UPD_ROTATE_S of unpaused time."""
+    if paused or elapsed_s < UPD_ROTATE_S:
+        return step
+    return step + 1
+
+
+def update_rule_line(on, rule, online=True):
+    """The line under a bot's Updates switch on the Bots page (SPEC)."""
+    if not online:
+        return "Rule can\u2019t change while offline"
+    if not on:
+        return "Off: nothing shows on the station"
+    rule = " ".join(str(rule or "").split())
+    return rule or "All updates"
+
+
+_UPD_PAUSE = re.compile(r"^(?:hey grok )?(pause|stop|resume) updates$")
+
+
+def updates_pause_command(heard):
+    """'pause' / 'resume' for "Hey Grok, pause|stop|resume updates", else None. A reply to the wake word only."""
+    t = " ".join(str(heard or "").lower().replace(",", " ").replace(".", " ").split())
+    m = _UPD_PAUSE.match(t)
+    if not m:
+        return None
+    return "resume" if m.group(1) == "resume" else "pause"

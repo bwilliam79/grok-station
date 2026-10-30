@@ -580,6 +580,16 @@ class Handler(BaseHTTPRequestHandler):
             j = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return self._reply(400, {"error": "bad json"})
+        if isinstance(j, dict) and j.get("op") in cards.UPDATE_OPS + ("updates_off",):
+            if not card_from_here(self.client_address[0]):
+                return self._reply(403, {"error": "localhost only"})
+            try:
+                kind, bot, uid = apply_update(j, updates_feed())
+            except cards.CardError:
+                return self._reply(400, {"error": "bad update"})
+            pygame.event.post(pygame.event.Event(FEED, tile=None))  # repaint only; never a sound
+            print(f"update {kind} bot={bot} id={uid}", flush=True)  # never the line
+            return self._reply(200, {"ok": True})
         if isinstance(j, dict) and j.get("op") in ("put", "clear"):
             if not card_from_here(self.client_address[0]):
                 return self._reply(403, {"error": "localhost only"})
@@ -762,6 +772,38 @@ def apply_show(doc, cache, deck, now=None, on_logo=logo_landed):
     card = cards.prepare_display_logos(show["card"], cache, on_ready=on_logo)
     deck.put(bot, show["id"], show["priority"], show["ttl_s"], card, now)
     return "put", bot, show["id"]
+
+
+UPDATES = None
+
+
+def updates_feed():
+    """The station's bot updates feed (0.13.10). In memory; tests replace UPDATES."""
+    global UPDATES
+    if UPDATES is None:
+        UPDATES = cards.UpdateFeed()
+    return UPDATES
+
+
+def apply_update(doc, feed, now=None):
+    """Re-validate an update op from the relay and apply it. Raises CardError. Visual only: no audio here."""
+    if not isinstance(doc, dict):
+        raise cards.CardError("schema")
+    body = dict(doc)
+    bot = body.pop("bot", None)
+    if not cards.bot_slug_ok(bot):
+        raise cards.CardError("schema")
+    if body.get("op") == "updates_off":
+        if set(body) != {"v", "op"} or body.get("v") != 1:
+            raise cards.CardError("schema")
+        feed.drop_bot(bot)
+        return "off", bot, "-"
+    upd = cards.validate_update(body)
+    if upd["op"] == "update_clear":
+        feed.clear(bot, upd["id"])
+        return "clear", bot, upd["id"]
+    feed.put(bot, upd["id"], upd["update"])
+    return "put", bot, upd["id"]
 
 
 def feed_identity(now=None):

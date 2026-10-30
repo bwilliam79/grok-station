@@ -4187,6 +4187,19 @@ def lint_show(show, hosts=(), names=(), pii=True):
 
     A clear has no text. None means the card may be posted. A reason means 422. Fail closed.
     """
+    if isinstance(show, dict) and show.get("op") == "update":
+        # Updates: the line and the feed rule get the secret lint and, with pii_mode, the reply PII lint.
+        body = show.get("update") if isinstance(show.get("update"), dict) else {}
+        texts = [t for t in (body.get("line"), body.get("feed_rule")) if isinstance(t, str)]
+        try:
+            for text in texts:
+                why = _lint_field(text, hosts, names, False) or (
+                    _lint_field(text, hosts, names, True) if (True if pii is None else bool(pii)) else None)
+                if why:
+                    return why
+        except Exception:
+            return "error"
+        return None
     if not isinstance(show, dict) or show.get("op") != "put":
         return None
     pii_on = True if pii is None else bool(pii)
@@ -4221,6 +4234,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
     now = int(time.time() * 1000) if now_ms is None else now_ms
 
     def parse(doc):
+        if isinstance(doc, dict) and doc.get("op") in mod.UPDATE_OPS:
+            return mod.validate_update(doc)  # 0.13.10 bot updates feed: same envelope, same checks
         return mod.validate_show(doc, cap)
 
     try:
@@ -4228,6 +4243,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
                                     rate_now=rate_now, seen=seen, now_ms=now)
     except botreply.Reject as rej:
         return _reject_show(rej)
+    if show.get("op") in mod.UPDATE_OPS and not updates_on(show.get("bot")):
+        return _reject_show(botreply.Reject(403, "updates_off", show.get("bot", "-")))
     if lint_show(show, hosts, names, pii):
         return _reject_show(botreply.Reject(422, "lint", show.get("bot", "-")))
     reserved = False
@@ -4251,7 +4268,94 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
         return 503, {"error": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
     if isinstance(seen, set):
         seen.add((show["bot"], show["nonce"]))
+    if show.get("op") == "update" and "feed_rule" in (show.get("update") or {}):
+        note_feed_rule(show["bot"], show["update"]["feed_rule"])
     return 200, {"ok": True}, _ShowAudit(show.get("bot", "-"), "ok")
+
+
+def updates_path():
+    return os.path.join(STATE_DIR, "updates.json")
+
+
+def _updates_doc():
+    try:
+        with open(updates_path(), encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def read_updates():
+    """{slug: True}. Missing, unreadable or malformed means every bot is off (fail closed)."""
+    bots = _updates_doc().get("bots")
+    if not isinstance(bots, dict):
+        return {}
+    return {k: v for k, v in bots.items() if handoff.bot_slug_ok(k) and v is True}
+
+
+def read_feed_rules():
+    """{slug: rule}. The bot owns its rule (set by voice with the bot); the station only displays it."""
+    rules = _updates_doc().get("rules")
+    if not isinstance(rules, dict):
+        return {}
+    return {k: v for k, v in rules.items() if handoff.bot_slug_ok(k) and isinstance(v, str) and len(v) <= 60}
+
+
+def _write_updates_doc(bots, rules):
+    data = (json.dumps({"bots": bots, "rules": rules}, sort_keys=True) + "\n").encode()
+    atomic_write(updates_path(), data, 0o600)
+
+
+def note_feed_rule(slug, rule):
+    """Remember the rule a bot last sent ("" = All updates). Best effort; never blocks the update."""
+    rules = read_feed_rules()
+    if rules.get(slug) == rule:
+        return
+    rules[slug] = rule
+    try:
+        _write_updates_doc(read_updates(), rules)
+    except OSError:
+        pass
+
+
+def updates_on(slug):
+    """A bot's Updates switch. Off by default, so a newly connected bot shows nothing (owner)."""
+    return isinstance(slug, str) and read_updates().get(slug) is True
+
+
+def write_updates(slug, on):
+    cur = read_updates()
+    if on:
+        cur[slug] = True
+    else:
+        cur.pop(slug, None)
+    _write_updates_doc(cur, read_feed_rules())
+    return cur
+
+
+def post_station_updates_drop(slug, post=None):
+    """Switching a bot off removes its rows from the station now (localhost /show, op updates_off)."""
+    return post_station_show({"v": 1, "op": "updates_off", "bot": slug}, post=post)
+
+
+async def admin_updates_put(req):
+    """PUT /admin/bots/{slug}/updates {"on": bool}. Admin gate; known bots only."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    slug = req.match_info.get("slug", "")
+    body = await admin_json(req)
+    if not _known(slug) or not isinstance(body, dict) or set(body) != {"on"} or type(body["on"]) is not bool:
+        return web.json_response({"error": "bad request"}, status=400)
+    try:
+        write_updates(slug, body["on"])
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    if not body["on"]:
+        post_station_updates_drop(slug)
+    log(f"updates {'on' if body['on'] else 'off'} {slug}")
+    return web.json_response({"ok": True, "on": body["on"]})
 
 
 def factory_reset_policy():
@@ -4571,6 +4675,7 @@ async def admin_bots_get(req):
     bots = []
     helpers = helper_records()
     updates = bot_updates()
+    feed_on, feed_rules = read_updates(), read_feed_rules()
     for slug in sorted(roster):
         p = roster[slug]
         ent = hooks.get(slug)
@@ -4589,6 +4694,7 @@ async def admin_bots_get(req):
                                          or (helpers.get(slug) or {}).get("recover")),
                      "update": updates.get(slug),
                      "update_refused_at": _update_bad.get(slug),
+                     "feed_updates": {"on": feed_on.get(slug) is True, "rule": feed_rules.get(slug, "")},
                      "stats": stats.bot_view(slug)})
     if not VOICES:
         kick_voice_fetch()
@@ -6276,6 +6382,7 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/helper-status/dismiss", admin_helper_status_dismiss),
     web.post("/admin/bots/{slug}/helper-update", admin_helper_update),
     web.post("/admin/bots/{slug}/update", admin_bot_update),
+    web.put("/admin/bots/{slug}/updates", admin_updates_put),
     web.get("/admin/policy", admin_policy_get), web.put("/admin/policy", admin_policy_put),
     web.get("/admin/cards", admin_cards_get), web.put("/admin/cards", admin_cards_put),
     web.post("/voice/reply", voice_reply),

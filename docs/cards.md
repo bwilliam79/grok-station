@@ -69,3 +69,28 @@ Expected result: the recipe replaces the idle clock, the step line is plain text
 
 ## Never expose the admin port
 The admin HTTPS port also carries `/voice/reply` and `/voice/show`. Never route it through cloudflared, any tunnel, or a router port forward. Only a computer on the home network posts to it.
+
+
+## Bot updates
+
+0.13.10. A short status line a bot puts on the station's own feed (not Team TV). It rides the same signed `POST /voice/show` envelope as a card (same seal, signature, `kind` `show`, nonce, `exp_ms`, replay set, rate limit and secret lint), so there is no new port, path or key.
+
+Put (signed JSON, before `tools/grok-station-reply show` adds `kind`, `nonce` and `exp_ms`):
+
+```json
+{"v":1,"op":"update","id":"table","update":{"type":"done","line":"Booked the table for 7","time":"2026-10-30T18:00:00Z"}}
+```
+
+Clear: `{"v":1,"op":"update_clear","id":"table"}`.
+
+| Field | Rule |
+|---|---|
+| `type` | `working_on`, `done`, `needs_you` or `heads_up` |
+| `line` | 1 to 80 characters after cleanup; longer is cut at a word and ends with "…" |
+| `time` | ISO 8601 with a zone |
+| `expires_at` | optional, ISO 8601; Heads-up leaves then (2 h if missing). Ignored for Needs you |
+| `feed_rule` | optional, up to 60 characters: the rule the bot keeps for its own feed, shown under its Updates switch. Empty means All updates |
+
+Unknown fields are rejected. The relay refuses an update with `403` while the bot's Updates switch is off, and every bot starts off. Turning a bot off removes its updates from the station at once. The line and the rule get the secret lint, and the reply PII lint when privacy mode is on.
+
+On the station: Needs you stays until the bot clears it or sends a new update with the same id. One Working on per bot (the next one replaces it). Done looks faded at 30 minutes and leaves at 2 hours; Working on and Heads-up without `expires_at` leave at 2 hours. The feed holds at most 8 per bot and 48 in total, in memory only. Updates are never spoken and never make a sound.

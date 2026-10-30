@@ -4882,6 +4882,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_put_bots(self, p, q, j):
         if p == "/api/bots/list-source":
             return self.bots_list_source(j)
+        um = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/updates", p)
+        if um and slug_ok(um.group(1)):
+            return self.bots_updates_put(um.group(1), j)
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})
@@ -5294,6 +5297,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data)
         audit("-", "helper-status-dismiss")
         return self.send(200, {"ok": True})
+
+    def bots_updates_put(self, slug, j):
+        """The Bots page Updates switch (0.13.10). Only {"on": bool} is forwarded; off by default."""
+        if not isinstance(j, dict) or set(j) != {"on"} or type(j.get("on")) is not bool:
+            return self.send(400, {"error": "bad request"})
+        got = relay_call("PUT", "/admin/bots/" + slug + "/updates", {"on": j["on"]})
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not (isinstance(data, dict) and data.get("ok") is True):
+            return self.relay_fail(status, data)
+        audit(slug, "updates-" + ("on" if j["on"] else "off"))
+        return self.send(200, {"ok": True, "on": j["on"]})
 
     def bots_helper_update(self, slug):
         """Ask a home bot to update its helper. The webhook carries only kind update_helper: no command, no URL."""
