@@ -187,5 +187,18 @@ class R4DesktopPopoverEscAndFocusOut(unittest.TestCase):
         self.assertEqual(d["added"], d["removed"], d)
 
 
+LINK_PROBE = OPEN_MAPLE + """
+  const l = document.querySelector('#smsgpop [data-act="maintest"]'); res.link = R(l);
+"""
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class R5DesktopTestLinkHeight(unittest.TestCase):
+    def test_test_link_is_24_tall(self):
+        for w in (1280, 768):
+            d = chrome(w, LINK_PROBE)
+            self.assertGreaterEqual(d["link"]["h"], 24, (w, d))
+
+
 if __name__ == "__main__":
     unittest.main()
