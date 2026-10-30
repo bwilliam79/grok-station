@@ -500,11 +500,11 @@ class InstructionTemplates(unittest.TestCase):
             self.assertIn("--voice", pic, label)
             self.assertEqual(pic.count('"$HOME/.local/share/grok-station/avatar-<slug>.png"'), 2, label)
             self.assertLess(len(text), 12000, label)
-            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.7."), label)
+            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.8."), label)
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
         self.assertEqual(docs.count(_VOICE_SENTENCE), 2)
-        self.assertEqual(docs.count("Grok Station instructions, release 0.13.7."), 2)
+        self.assertEqual(docs.count("Grok Station instructions, release 0.13.8."), 2)
         self.assertIn("never replaced by a report", docs)  # 0.13.0: the add-bot picker stays; a report only seeds
 
 
