@@ -3,60 +3,50 @@
 session_mode(), defined later in the file. With a saved sign-in on disk the admin died with NameError, so the
 restart after every update failed. The other tests start from an empty state dir and missed it.
 
-This boots grok_admin in a fresh interpreter from a populated state dir (password, saved sessions, both grace
+This re-runs grok_admin's top level from a populated state dir (password, saved sessions, both grace
 modes). Fails on 6f18fb1."""
 import hashlib
-import json
 import os
-import subprocess
-import sys
-import tempfile
+import runpy
 import time
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from test_admin import CLOCK, ga, reset_state
 
-PROBE = r"""
-import sys
-sys.path.insert(0, %r)
-import grok_admin as ga
-print("SESSIONS", len(ga.AUTH.sessions))
-"""
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ADMIN = os.path.join(ROOT, "admin", "grok_admin.py")
 
 
 def _boot(grace, seen_ago):
-    d = tempfile.mkdtemp(prefix="gs-boot-")
-    state, run = os.path.join(d, "state"), os.path.join(d, "run")
-    os.makedirs(state)
-    os.makedirs(run)
+    """Run grok_admin.py's top level again (a fresh module namespace, the shared test_admin sandbox) with a
+    password, one saved session and a grace setting already on disk, as after an update restart."""
+    reset_state()
     t = time.time()
-    tok = "boot-test-token"
-    with open(os.path.join(state, "auth.json"), "w") as fh:
-        json.dump({"password": {"salt": "00", "hash": "00", "n": 16384, "r": 8, "p": 1}, "set_at": int(t)}, fh)
-    with open(os.path.join(state, "sessions.json"), "w") as fh:
-        json.dump({hashlib.sha256(tok.encode()).hexdigest(): {"exp": t - seen_ago + 12 * 3600, "seen": t - seen_ago,
-                                                             "sid": "0123abcd"}}, fh)
+    ga.write_json(ga.path("auth.json"), {"password": ga.hash_password("kitchen table lamp 42"), "set_at": int(t)})
+    ga.write_json(ga.path("sessions.json"), {hashlib.sha256(b"boot-test-token").hexdigest(): {
+        "exp": t - seen_ago + 12 * 3600, "seen": t - seen_ago, "sid": "0123abcd"}})
     if grace is not None:
-        with open(os.path.join(state, "update-settings.json"), "w") as fh:
-            json.dump({"password_grace_min": grace}, fh)
-    env = dict(os.environ, ADMIN_STATE_DIR=state, ADMIN_RUN_DIR=run)
-    return subprocess.run([sys.executable, "-c", PROBE % os.path.join(ROOT, "admin")], env=env,
-                          capture_output=True, text=True, timeout=60)
+        ga.write_json(ga.path("update-settings.json"), {"password_grace_min": grace})
+    try:
+        mod = runpy.run_path(ADMIN, run_name="gs_boot_probe")
+        return len(mod["AUTH"].sessions)
+    finally:
+        reset_state()
 
 
 class BootWithSavedSessions(unittest.TestCase):
+    def setUp(self):
+        self._clock = CLOCK[0]
+
+    def tearDown(self):
+        CLOCK[0] = self._clock
+
     def test_session_mode_keeps_an_old_sign_in(self):
-        out = _boot("session", 2 * 86400)
-        self.assertEqual(out.returncode, 0, out.stderr[-1500:])
-        self.assertIn("SESSIONS 1", out.stdout)
+        self.assertEqual(_boot("session", 2 * 86400), 1)
 
     def test_timed_mode_drops_a_stale_one_and_keeps_a_fresh_one(self):
-        out = _boot(10, 2 * 86400)
-        self.assertEqual(out.returncode, 0, out.stderr[-1500:])
-        self.assertIn("SESSIONS 0", out.stdout)
-        out = _boot(None, 60)
-        self.assertEqual(out.returncode, 0, out.stderr[-1500:])
-        self.assertIn("SESSIONS 1", out.stdout)
+        self.assertEqual(_boot(10, 2 * 86400), 0)
+        self.assertEqual(_boot(None, 60), 1)
 
 
 class ImportTimeOrder(unittest.TestCase):
