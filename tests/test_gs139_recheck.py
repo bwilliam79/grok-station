@@ -114,5 +114,22 @@ class R1PhoneSheetCloseClearsTabBar(unittest.TestCase):
         self.assertIn("calc(%spx + env(safe-area-inset-bottom))" % tab_h, pop)
 
 
+CHIP_PROBE = """
+  res.chips = [...document.querySelectorAll('.ssub .schip')].map(c => ({t: c.textContent.trim(), w: Math.round(c.getBoundingClientRect().width),
+     sw: c.scrollWidth, cw: c.clientWidth, ct: (c.querySelector('.ct') || c).scrollWidth > (c.querySelector('.ct') || c).clientWidth}));
+"""
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class R2ChipNeverTruncates(unittest.TestCase):
+    def test_chip_text_whole_at_320(self):
+        for w in (320, 390):
+            d = chrome(w, CHIP_PROBE)
+            self.assertTrue(d["chips"], d)
+            for c in d["chips"]:
+                self.assertFalse(c["ct"], (w, c))
+                self.assertLessEqual(c["sw"], c["cw"] + 1, (w, c))
+
+
 if __name__ == "__main__":
     unittest.main()

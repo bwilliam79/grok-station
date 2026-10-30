@@ -767,7 +767,7 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 .sline .schip{margin-top:0;min-width:0}
 .ssub{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;height:20px;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;position:relative;border-radius:4px}
 .ssub::before{content:"";position:absolute;inset:-2px -4px}
-.ssub .schip{flex:0 1 auto}
+.ssub .schip{flex:none}
 .ssub .sep{flex:none;margin:0 -4px}
 .ssub .ct{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ssub .tx{flex:1 1 auto;min-width:0;margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
