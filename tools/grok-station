@@ -34,6 +34,7 @@ reset() {
   [ -f "$AUTH" ] || { echo "No admin password is set yet (setup code is on the station screen)."; return 0; }
   # auth.json sits in $V/admin, which grok-admin owns: open it and write the new one through that folder's
   # descriptor, never by path, so a planted auth.json or temp symlink is not followed (Nix 0.13.6 M-pre2).
+  # password_grace_min "session" in the sibling update-settings.json is restored to the factory 10 the same way.
   /usr/bin/python3 - "$AUTH" <<'PY'
 import json, os, secrets, stat, sys, time
 f = sys.argv[1]
@@ -41,6 +42,40 @@ folder, name = os.path.split(f)
 NF = os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | NF)
 try:
+    sname = "update-settings.json"
+    try:
+        sfd = os.open(sname, os.O_RDONLY | os.O_NONBLOCK | NF, dir_fd=dfd)
+    except FileNotFoundError:
+        sfd = None
+    except OSError:
+        sys.exit("refusing to reset: %s is a symlink or can't be opened" % os.path.join(folder, sname))
+    if sfd is not None:
+        with os.fdopen(sfd) as sfh:
+            sst = os.fstat(sfh.fileno())
+            if not stat.S_ISREG(sst.st_mode) or sst.st_nlink != 1:
+                sys.exit("refusing to reset: %s is not a plain file with one link" % os.path.join(folder, sname))
+            try:
+                sd = json.load(sfh)
+            except ValueError:
+                sd = None
+        if isinstance(sd, dict) and sd.get("password_grace_min") == "session":
+            sd["password_grace_min"] = 10
+            sown = os.fstat(dfd)
+            stmp = ".%s.new.%s" % (sname, secrets.token_hex(8))
+            sout = os.open(stmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NF, 0o600, dir_fd=dfd)
+            try:
+                with os.fdopen(sout, "w") as sfh:
+                    json.dump(sd, sfh)
+                    sfh.flush()
+                    os.fchown(sfh.fileno(), sown.st_uid, sown.st_gid)
+                    os.fchmod(sfh.fileno(), 0o600)
+                os.rename(stmp, sname, src_dir_fd=dfd, dst_dir_fd=dfd)
+            except BaseException:
+                try:
+                    os.unlink(stmp, dir_fd=dfd)
+                except OSError:
+                    pass
+                raise
     try:
         cur = os.open(name, os.O_RDONLY | os.O_NONBLOCK | NF, dir_fd=dfd)
     except OSError:
