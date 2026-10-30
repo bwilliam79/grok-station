@@ -70,12 +70,17 @@ class BotsHeader(unittest.TestCase):
         self.assertIn("Juniper, Otto and Pip · Station routine is out of date. Updates keep their settings.", upd)
         self.assertIn(">Update all (3)<", upd)
         self.assertIn('class="callout amb"', upd)
-        # 0.13.8 holds the Configure all / Set up callout for 0.13.9 (Noor option C).
-        self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts(
-            [{"slug": "j", "name": "Juniper", "main": True}],
-            [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}]))), "")
-        self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts(
-            [{"slug": "j", "name": "Juniper"}], [{"name": "Otto"}]))), "")
+        cfg = _run("botsCalloutHTML(%s)" % json.dumps(_opts(
+            [{"slug": "j", "name": "Juniper"}],
+            [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}])))
+        self.assertIn("3 bots not connected", cfg)
+        self.assertIn("Your main bot can send each one its setup message. You review it first.", cfg)
+        self.assertIn(">Configure all<", cfg)
+        self.assertIn('id="cfgall"', cfg)
+        one = _run("botsCalloutHTML(%s)" % json.dumps(_opts(
+            [{"slug": "j", "name": "Juniper"}], [{"name": "Otto"}])))
+        self.assertIn("1 bot not connected", one)
+        self.assertIn(">Set up Otto<", one)
         self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts([{"slug": "j", "name": "Juniper"}]))), "")
 
     def test_header_shell_and_phone_quiet_line(self):
