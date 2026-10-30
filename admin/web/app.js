@@ -2491,6 +2491,7 @@ function noteStepup(data) {
   const t = stepupText();
   n.textContent = t;
   n.hidden = !t;
+  if (n.parentNode && n.parentNode.classList && n.parentNode.classList.contains("bsumrow")) n.parentNode.hidden = !t;
 }
 function stepupOpen() { return !!stepupText(); }
 /* sha256 of UTF-8 bytes, hex. Same formula as app/avatars.py: int(sha256(slug.encode()).hexdigest(), 16) % 18 + 1. */
@@ -2911,14 +2912,11 @@ function lastReplyLine(b) {
 function mainFirst(bots) {
   return bots.filter(b => b.main).concat(bots.filter(b => !b.main));
 }
+// rev3.6 #1: no visible bot count above the list; screen readers get it from the list's label.
 function paintSummary(el, bots) {
-  const sum = $("#bsum", el);
-  if (!sum) return;
-  const n = (bots || []).length + 1;
-  let attn = 0;
-  (bots || []).forEach(b => { if (rowNeeds(b, el._words, el._train)) attn += 1; });
-  const botsTxt = n + (n === 1 ? " bot" : " bots");
-  sum.textContent = attn ? botsTxt + " · " + attn + (attn === 1 ? " needs attention" : " need attention") : botsTxt;
+  const list = $("#blist", el);
+  if (!list) return;
+  list.setAttribute("aria-label", "Bots, " + ((bots || []).length + 1));
 }
 function paintUnused(el) {
   const wrap = $("#unusedwrap", el);
@@ -5416,11 +5414,11 @@ async function pageBots(el) {
   el.innerHTML = `${data.message ? `<div class="banner warn" id="bmsg">${esc(data.message)}</div>` : `<div class="banner warn" id="bmsg" hidden></div>`}
     <div class="banner warn" id="bkilled"${data.killed ? "" : " hidden"}>All bots are revoked. Pair a key again to accept replies.</div>
     <div class="banner warn" id="bhelperbad"${helperStatusBanner(data) ? "" : " hidden"}><span id="bhelpermsg">${esc(helperStatusBanner(data))}</span> <button class="btn g sm" id="bhelperdismiss" type="button">Hide warning</button></div>
-    <div class="bsumrow inline"><span class="help" id="bsum"></span><span class="stepup" id="sulock" hidden></span></div>
+    <div class="bsumrow inline" hidden><span class="stepup" id="sulock" hidden></span></div>
     <div id="botcall"></div>
     <div id="setuphost"></div>
     <div class="card teamtip" id="teamcard">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<p id="teamphrase"></p></div>
-    <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist"></div><div id="vere"></div></div>
+    <div class="card botsheet"><div class="bothead" aria-hidden="true"><span class="hb">Bot</span><span>Wake word</span><span></span></div><div id="blist" role="group" aria-label="Bots"></div><div id="vere"></div></div>
     <div id="unusedwrap" hidden>
       <div class="seclab">Unused wake words</div>
       <div class="card botsheet" id="unused"></div>

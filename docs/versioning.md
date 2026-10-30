@@ -345,6 +345,7 @@ Change note (2026-10-30): patch release; installs over 0.13.8. The bot templates
 
 - **Set up bots (Noor gs-configure-all rev3.2, gs139 re-checks).** Restores the Configure all / Set up <bot> callout that 0.13.8 held. It counts every Set up bots row that isn't Connected or Already connected and opens one list. `/api/bots/setup-send` relays only to the main bot and refuses unknown slugs with a fixed body. Tests: `tests/test_gs139_*.py`.
 - **Training tile (Noor gs-voice-train rev1.5).** `_enroll_actions` returns no buttons on any stage; prompt and failed show a muted note; failed holds 10 s. Tests: `tests/test_gs139_train_tile.py`.
+- **Bot count line (Noor gs-configure-all rev3.6 #1).** The visible "N bots" line above the list and its spacing are gone; `#blist` is `role="group"` with aria-label "Bots, N". The row that held it now only shows the step-up unlock note. Tests: `tests/test_bots_summary_wording.py` (fails on 0.13.8).
 - **leak-scan.** The retired word rule is gone; the whole-word mechanism stays.
 - **gitleaks.** `.gitleaksignore` lists per-finding fingerprints for the synthetic tokens in `tests/test_handoff.py` (Nix 0.13.8 follow-up).
 
