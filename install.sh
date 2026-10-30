@@ -207,6 +207,12 @@ st_display() {
 st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
 for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py home.py; do run install -m644 relay/$f $O/relay/; done
+  # 0.13.8: train_flow.py is the one copy, root-owned beside relay.py. grok owns $O/wake, so the
+  # relay must not exec a file from there. Same parent check as gain.py (Nix M1b).
+  if [ "$DRY" = 1 ]; then echo "+ check $O/relay and its parents are root-owned"; else
+    _root_tree_ok "$O/relay" || { echo "refusing to install relay/train_flow.py: $O/relay or a parent is not a root-owned, root-only-writable folder"; return 1; }
+  fi
+  run install -o root -g root -m644 relay/train_flow.py $O/relay/train_flow.py
   sh_ "[ -x $O/relay/venv/bin/python ] || python3 -m venv $O/relay/venv"
   if [ "$OFFLINE" != 1 ]; then run $O/relay/venv/bin/pip install --quiet --require-hashes -r relay/requirements.txt; fi
   run install -m644 systemd/grok-station-relay.service /etc/systemd/system/
@@ -282,7 +288,7 @@ st_wake() {
     requests "websockets>=17"
   run $WV/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/train_flow.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
   run python3 -I - --put grok "$O" wake/models wake/models/hey_grok.onnx < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).

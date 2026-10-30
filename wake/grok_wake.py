@@ -34,8 +34,26 @@ step, and scored on the same embedding stream as Hey Grok.
 """
 import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
 import numpy as np
-import train_flow
 import wait_tone
+
+
+def _load_train_flow():
+    """The one copy lives beside the relay, which is root-owned when installed.
+
+    This listener must not keep a second copy under wake/: grok can edit that tree,
+    and the relay used to exec it. Repo and install share the same layout
+    (wake/ and relay/ are siblings).
+    """
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.normpath(os.path.join(os.path.dirname(here), "relay", "train_flow.py"))
+    spec = importlib.util.spec_from_file_location("gs_train_flow", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+train_flow = _load_train_flow()
 
 voice_train_plan = train_flow.voice_train_plan
 train_steps = train_flow.train_steps

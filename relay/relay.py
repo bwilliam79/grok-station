@@ -1633,17 +1633,71 @@ def train_wake_request(text, bots):
     return {"slug": slug, "name": name, "phrase": _phrase_for_slug(slug), "spoken": spoken_name}
 
 
+def train_flow_path():
+    """The one copy of the training decisions, beside this file. Not under wake/."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_flow.py")
+
+
+def code_file_ok(path, root_uid=0):
+    """True only for a real file owned by root_uid, mode 0644, with every parent a real
+    directory owned by root_uid and not group- or other-writable.
+
+    A symlink is refused. A file grok owns (any uid other than root_uid) is refused.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return False
+    if st.st_uid != root_uid or stat.S_IMODE(st.st_mode) != 0o644:
+        return False
+    p = os.path.dirname(os.path.abspath(path))
+    while True:
+        try:
+            dst = os.lstat(p)
+        except OSError:
+            return False
+        if stat.S_ISLNK(dst.st_mode) or not stat.S_ISDIR(dst.st_mode):
+            return False
+        if dst.st_uid != root_uid or dst.st_mode & 0o022:
+            return False
+        if p == os.sep:
+            return True
+        parent = os.path.dirname(p)
+        if parent == p:
+            return True
+        p = parent
+
+
 _TRAIN_FLOW = None
 
 
 def _train_flow():
-    """wake/train_flow.py. Loaded once. The relay does not import the wake listener."""
+    """Load the training decisions once from beside this file.
+
+    grok owns the wake tree, and this process holds the xAI key, so that tree is
+    never executed. An installed copy must pass code_file_ok. A checkout outside
+    /opt/grok-station may be owned by the developer; a symlink is still refused.
+    """
     global _TRAIN_FLOW
     if _TRAIN_FLOW is not None:
         return _TRAIN_FLOW
     import importlib.util
-    path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "wake", "train_flow.py"))
+    path = train_flow_path()
+    if (os.sep + "wake" + os.sep) in (os.sep + os.path.abspath(path) + os.sep):
+        raise RuntimeError("refusing train flow from the wake tree")
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError("train flow missing") from exc
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise RuntimeError("refusing train flow symlink")
+    if os.path.abspath(path).startswith("/opt/grok-station" + os.sep) and not code_file_ok(path):
+        raise RuntimeError("refusing untrusted train flow")
     spec = importlib.util.spec_from_file_location("gs_train_flow", path)
+    if not spec or not spec.loader:
+        raise RuntimeError("train flow missing")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     _TRAIN_FLOW = mod

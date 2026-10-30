@@ -11,7 +11,7 @@ install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
 install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py
 if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
   # Root writes into grok-owned dirs only through safe-mkdirs --put (dir fds, O_NOFOLLOW; Nix 0.13.6 L3).
-  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" "$S/wake/train_flow.py" < "$S/tools/safe-mkdirs.py"
+  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" < "$S/tools/safe-mkdirs.py"
   # Not `install -d -o grok`: root would follow a symlink grok planted and chown its target (Nix 0.13.6 M1).
   python3 -I - grok /opt/grok-station wake/models wake/models/enrolled < "$S/tools/safe-mkdirs.py"
   python3 -I - --put grok /opt/grok-station wake/models "$S/wake/models/fewshot_negatives.npz" < "$S/tools/safe-mkdirs.py"
@@ -49,6 +49,22 @@ while True:
     p = os.path.dirname(p)
 PY
 install -o root -g root -m644 "$S/wake/gain.py" /opt/grok-station/gain.py.new && mv /opt/grok-station/gain.py.new /opt/grok-station/gain.py
+# 0.13.8: the relay loads train_flow.py from its own directory, never the grok-owned wake tree.
+# Same parent-dir rule as gain.py. The relay directory is created by install.sh before this runs.
+if [ -d /opt/grok-station/relay ]; then
+python3 -I - /opt/grok-station/relay <<'PY' || { echo "refusing to install train_flow.py: /opt/grok-station/relay or a parent is not a root-owned, root-only-writable folder" >&2; exit 1; }
+import os, stat, sys
+p = sys.argv[1]
+while True:
+    st = os.lstat(p)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+        sys.exit(1)
+    if p == "/":
+        break
+    p = os.path.dirname(p)
+PY
+install -o root -g root -m644 "$S/relay/train_flow.py" /opt/grok-station/relay/train_flow.py.new && mv /opt/grok-station/relay/train_flow.py.new /opt/grok-station/relay/train_flow.py
+fi
 rm -f /opt/grok-station/assets/portraits/grok.png /opt/grok-station/admin/web/assets/grok.png
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/scripts/gs-usb-reset" /usr/local/lib/grok-station/gs-usb-reset.new && mv /usr/local/lib/grok-station/gs-usb-reset.new /usr/local/lib/grok-station/gs-usb-reset

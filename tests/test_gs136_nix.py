@@ -100,7 +100,7 @@ class M1(Base):
         os.makedirs(os.path.join(S, "wake", "lines"))
         os.makedirs(os.path.join(S, "tools"))
         shutil.copy(TOOL, os.path.join(S, "tools", "safe-mkdirs.py"))
-        for n in ("grok_wake.py", "gain.py", "fewshot.py", "wait_tone.py", "train_flow.py"):
+        for n in ("grok_wake.py", "gain.py", "fewshot.py", "wait_tone.py"):
             open(os.path.join(S, "wake", n), "w").write("# %s\n" % n)
         open(os.path.join(S, "wake", "models", "fewshot_negatives.npz"), "wb").write(b"npz")
         open(os.path.join(S, "wake", "lines", "a.wav"), "wb").write(b"wav")
