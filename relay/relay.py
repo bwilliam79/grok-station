@@ -2799,11 +2799,10 @@ async def session(req):
                             if not st.get("utt"):
                                 st["utt"] = 1
                             st["answered_utt"] = st.get("utt")
-                            await asyncio.to_thread(post_station_show, {"v": 1, "op": "updates_pause",
-                                                                        "on": pause_hit[0] == "pause"})
+                            say = await asyncio.to_thread(updates_pause_send, pause_hit)
                             voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
-                            await play_fixed(pause_hit[1], voice, TTS_SHORT_S)
-                            log("updates " + pause_hit[0])
+                            await play_fixed(say, voice, TTS_SHORT_S)
+                            log("updates " + pause_hit[0] + ("" if say == pause_hit[1] else " (station unreachable)"))
                             st["release_model"] = not persona_routed(st["persona"])
                             end = await end_routed_turn()
                             if end:
@@ -3875,6 +3874,16 @@ def updates_pause_reply(heard, st, now=None):
     if action is None:
         return None
     return action, UPDATES_PAUSE_SAY[action]
+
+
+# Same words the admin UI uses when the station doesn't answer (app.js offline notes).
+STATION_UNREACHABLE_SAY = "Can't reach the station."
+
+
+def updates_pause_send(pause_hit, post=None):
+    """POST updates_pause; "Updates paused/resumed." only when the station accepted it (200)."""
+    status = post_station_show({"v": 1, "op": "updates_pause", "on": pause_hit[0] == "pause"}, post=post)
+    return pause_hit[1] if status == 200 else STATION_UNREACHABLE_SAY
 
 
 def offer_missed_say(out):
