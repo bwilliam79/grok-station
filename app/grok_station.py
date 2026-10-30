@@ -3945,16 +3945,36 @@ _SOLID_RING = {"prompt": MUTED, "error": MUTED, "custom": MUTED}
 _ENROLL_SQUARES = 5
 
 
+def clock_date_bottom(L):
+    """Bottom of the idle clock and date. Same y as draw_idle when there is no weather."""
+    top = L(70) + int(L.extra_y * 0.3)
+    cf = font("display", L(300))
+    base = top + int(cf.get_ascent() * 0.98)
+    clock_bottom = base - cf.get_ascent() + cf.get_height()
+    af = font("display", L(84))
+    ampm_bottom = base - af.get_ascent() + af.get_height()
+    date_bottom = base + L(40) + font("body", L(60)).get_height()
+    return max(clock_bottom, ampm_bottom, date_bottom)
+
+
 def enroll_tile_rect(L):
-    """Bottom-zone training tile. Inner offsets stay tile-relative when timers push it up."""
+    """Bottom-zone training tile. It stays under the clock and date and shrinks if that gap is short.
+
+    Inner offsets stay tile-relative when timers push the cap up.
+    """
     x, y, w, h = zpx(L, 128), zpx(L, 800), zpx(L, 2304), zpx(L, 794)
     if x + w > L.w - zpx(L, 16):
         x, w = L.m, max(1, L.w - 2 * L.m)
     cap = L.h - L(40)
     if TIMER_CHIPS:
         cap = min(cap, content_limit(L))
+    floor = clock_date_bottom(L)
+    # Design y when it is already clear. Otherwise sit as low as the date allows, then shrink.
+    y = max(int(y), int(floor))
     if y + h > cap:
-        y = max(0, cap - h)
+        y = max(int(floor), cap - h)
+    if y + h > cap:
+        h = max(1, cap - y)
     return pygame.Rect(int(x), int(y), int(w), int(h))
 
 
