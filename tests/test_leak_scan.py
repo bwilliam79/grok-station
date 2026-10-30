@@ -18,12 +18,20 @@ spec.loader.exec_module(ls)
 
 TERMS = {"zorbhost", "hyph-box", "fake.lan", "old town"}
 _tmp = tempfile.NamedTemporaryFile("w", suffix=".terms", delete=False)
-_tmp.write("# comment\nZorbHost\nhyph-box\nfake.lan\nold town\n")
 _tmp.close()
 
 
+def setUpModule():
+    # Written again whenever this module's tests start, so a shuffled run that leaves and re-enters works.
+    with open(_tmp.name, "w") as f:
+        f.write("# comment\nZorbHost\nhyph-box\nfake.lan\nold town\n")
+
+
 def tearDownModule():
-    os.unlink(_tmp.name)
+    try:
+        os.unlink(_tmp.name)
+    except FileNotFoundError:
+        pass
 
 
 def env(**kw):
