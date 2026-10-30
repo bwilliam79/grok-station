@@ -65,6 +65,8 @@ while True:
 PY
 install -o root -g root -m644 "$S/relay/train_flow.py" /opt/grok-station/relay/train_flow.py.new && mv /opt/grok-station/relay/train_flow.py.new /opt/grok-station/relay/train_flow.py
 fi
+# 0.13.8: drop the old grok-owned copy (and its .pyc). Dir fds, O_NOFOLLOW, regular files only (Nix b).
+python3 -I "$S/tools/rm-stale-train-flow.py" /opt/grok-station
 rm -f /opt/grok-station/assets/portraits/grok.png /opt/grok-station/admin/web/assets/grok.png
 install -o root -g root -m755 "$S/admin/grok-station-helper" /usr/local/lib/grok-station/grok-station-helper.new && mv /usr/local/lib/grok-station/grok-station-helper.new /usr/local/lib/grok-station/grok-station-helper
 install -o root -g root -m755 "$S/scripts/gs-usb-reset" /usr/local/lib/grok-station/gs-usb-reset.new && mv /usr/local/lib/grok-station/gs-usb-reset.new /usr/local/lib/grok-station/gs-usb-reset
