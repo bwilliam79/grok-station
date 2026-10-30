@@ -3,7 +3,8 @@
 
 "session" lasts this sign-in until logout or a password change (0.13.9: no idle or
 absolute limit in this mode). Password change, reset-admin, the setting itself, and
-turning personal-info blocking off still ask. No browser for the page; the copy
+turning personal-info blocking off still ask in the timed modes; in "session" mode
+(0.13.9) only a password change or reset-admin asks. No browser for the page; the copy
 helpers run under node. The API tests use the shared admin server.
 """
 import hashlib
@@ -184,7 +185,8 @@ class SessionGrace(unittest.TestCase):
         self.assertNotIn(self.c.jar.get("gs_session", "missing-cookie"), line)
 
     def test_always_reasks_pii_off_grace_and_reset(self):
-        self.assertEqual(self._put("session")[0], 200)
+        # A timed window (10 min): these still ask. Session mode skips them (SessionModeSkipsReask).
+        self.assertEqual(self._put(10)[0], 200)
         self.assertEqual(self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 10})[0], 403)
         self.assertEqual(self.c.req("PUT", "/api/privacy", {"pii_mode": False})[0], 403)
         buf = io.StringIO()
@@ -237,7 +239,7 @@ class SessionGrace(unittest.TestCase):
         self.assertEqual(j["stepup_until"], CLOCK[0] + 15 * 60)
 
     def test_omitted_password_does_not_lock_out(self):
-        self.assertEqual(self._put("session")[0], 200)
+        self.assertEqual(self._put(10)[0], 200)
         for _ in range(6):
             st, j = self.c.req("PUT", "/api/privacy", {"pii_mode": False})
             self.assertEqual(st, 403, j)
@@ -252,3 +254,109 @@ class SessionGrace(unittest.TestCase):
     def test_allow_bots_action_control_is_absent(self):
         blob = JS + open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8").read()
         self.assertNotIn("Allow bots to take action", blob)
+
+
+class SessionModeSkipsReask(unittest.TestCase):
+    """0.13.9 (owner decision 2026-10-30, Nix conditions): in "session" mode, being signed in is enough for
+    privacy off, the grace setting and WLED Voice home control on. Each writes an audit line with old and new
+    values and a time, never a token. Password change and reset-admin still ask; other modes still re-ask.
+    Fails on 5ffe867 (all three answered 403 without a password)."""
+
+    def setUp(self):
+        self._clock = CLOCK[0]
+        CLOCK[0] = 1_700_000_000
+        self.c = signed_in()
+        self._rc = ga.relay_call
+        self.pii = [True]
+        self._reg = os.environ.get("ADMIN_INTEGRATIONS")
+        os.environ["ADMIN_INTEGRATIONS"] = os.path.join(os.environ["ADMIN_STATE_DIR"], "integrations.json")
+
+        def fake(method, path, payload=None, timeout=10, raw=None, content_type=None):
+            if path == "/admin/policy" and method == "PUT":
+                self.pii[0] = payload.get("pii_mode")
+                return 200, {"ok": True, "pii_mode": self.pii[0]}
+            if path == "/admin/policy" and method == "GET":
+                return 200, {"pii_mode": self.pii[0]}
+            return 200, {"ok": True}
+        ga.relay_call = fake
+
+    def tearDown(self):
+        ga.relay_call = self._rc
+        CLOCK[0] = self._clock
+        if self._reg is None:
+            os.environ.pop("ADMIN_INTEGRATIONS", None)
+        else:
+            os.environ["ADMIN_INTEGRATIONS"] = self._reg
+
+    def _fresh_session(self, grace):
+        st, _ = self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": grace, "password": GOOD})
+        self.assertEqual(st, 200)
+        self.c.req("POST", "/api/logout", {})
+        self.assertEqual(self.c.req("POST", "/api/login", {"password": GOOD})[0], 200)  # no grace window open yet
+
+    def _seed_wled(self):
+        doc = ga.gsi.load()
+        doc["integrations"]["wled"] = {"enabled": True}
+        doc["devices"].append({"id": "w-abcd", "kind": "wled", "host": "127.0.0.1:9", "name": "Kitchen Strip",
+                               "aliases": [], "type": "light", "caps": list(ga.gsi.CAPS), "presets": {}})
+        ga.gsi.save(doc)
+
+    def _audit(self, fn):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            out = fn()
+        return out, [ln for ln in buf.getvalue().splitlines() if ln.startswith("audit ")]
+
+    def test_signed_in_is_enough_in_session_mode(self):
+        self._fresh_session("session")
+        tok = self.c.jar["gs_session"]
+        sid = ga.AUTH.session_public_id(tok)
+        (st, j), lines = self._audit(lambda: self.c.req("PUT", "/api/privacy", {"pii_mode": False}))
+        self.assertEqual(st, 200, j)
+        self.assertIn("audit persona=- action=pii_mode old=on new=off session=%s last4=- time=%d" % (sid, CLOCK[0]), lines)
+        self._seed_wled()
+        (st, j), lines = self._audit(lambda: self.c.req("PUT", "/api/integrations/wled/voice", {"on": True}))
+        self.assertEqual(st, 200, j)
+        self.assertTrue(ga.gsi.load()["integrations"]["wled"]["voice"])
+        self.assertIn("audit persona=- action=voice-home-control old=off new=on session=%s last4=- time=%d" % (sid, CLOCK[0]), lines)
+        (st, j), lines = self._audit(lambda: self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 10}))
+        self.assertEqual(st, 200, j)
+        self.assertIn("audit persona=- action=password-grace old=session new=10 session=%s last4=- time=%d" % (sid, CLOCK[0]), lines)
+        for ln in lines:
+            self.assertNotIn(tok, ln)
+            self.assertNotIn(hashlib.sha256(tok.encode()).hexdigest(), ln)
+        # Now in a timed mode with no window: it asks again.
+        self.assertEqual(self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": "session"})[0], 403)
+
+    def test_password_change_still_asks_and_checks_still_apply(self):
+        self._fresh_session("session")
+        self.assertEqual(self.c.req("POST", "/api/password", {"new": "a brand new pass 7"})[0], 400)
+        self.assertEqual(self.c.req("PUT", "/api/privacy", {"pii_mode": False}, csrf=False)[0], 403)
+        self.assertEqual(self.c.req("PUT", "/api/privacy", {"pii_mode": False}, ctype="text/plain")[0], 403)
+        self.assertEqual(C().req("PUT", "/api/privacy", {"pii_mode": False})[0], 401)
+        self.assertEqual(C().req("PUT", "/api/system/password-grace", {"password_grace_min": 0})[0], 401)
+        self.assertTrue(self.pii[0])
+
+    def test_state_flag_and_ui_skip_the_prompt(self):
+        self._fresh_session("session")
+        self.assertIs(self.c.req("GET", "/api/state")[1]["grace_session"], True)
+        self._fresh_session(10)
+        self.assertIs(self.c.req("GET", "/api/state")[1]["grace_session"], False)
+        self.assertIsNone(C().req("GET", "/api/state")[1]["grace_session"])
+        self.assertIn("function graceSession() { return !!(S.state && S.state.grace_session === true); }", JS)
+        self.assertIn("privacyAsksFirst(next, stepupOpen(), graceSession())", JS)
+        self.assertIn('if (graceSession()) saveGrace("")', JS)
+        self.assertIn('if (!on || graceSession()) send("")', JS)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_privacy_prompt_rule(self):
+        self.assertFalse(_run("privacyAsksFirst(false, false, true)"))
+        self.assertTrue(_run("privacyAsksFirst(false, true, false)"))
+
+    def test_other_modes_still_reask(self):
+        for grace in (0, 10):
+            self._fresh_session(grace)
+            self.assertEqual(self.c.req("PUT", "/api/privacy", {"pii_mode": False})[0], 403, grace)
+            self.assertEqual(self.c.req("PUT", "/api/system/password-grace", {"password_grace_min": 5})[0], 403, grace)
+            self._seed_wled()
+            self.assertEqual(self.c.req("PUT", "/api/integrations/wled/voice", {"on": True})[0], 403, grace)

@@ -2497,6 +2497,7 @@ function noteStepup(data) {
   n.hidden = !t;
   if (n.parentNode && n.parentNode.classList && n.parentNode.classList.contains("bsumrow")) n.parentNode.hidden = !t;
 }
+function graceSession() { return !!(S.state && S.state.grace_session === true); }
 function stepupOpen() { return stepupLeft() > 0; }
 /* sha256 of UTF-8 bytes, hex. Same formula as app/avatars.py: int(sha256(slug.encode()).hexdigest(), 16) % 18 + 1. */
 function sha256Hex(bytes) {
@@ -5553,7 +5554,8 @@ async function pageBots(el) {
   };
 }
 const PII_TEXT = "Always blocked, in every mode: passwords, keys, tokens, SSNs, and card numbers. When this is on, replies also block personal info: household names, emails, phones, addresses, IPs, MACs, and host names.";
-function privacyAsksFirst(nextOn, open) {
+function privacyAsksFirst(nextOn, open, session) {
+  if (session) return false;  // 0.13.9: signed in is enough in "Not while I'm signed in" mode
   return nextOn === false || !open;
 }
 async function pagePrivacy(el) {
@@ -5591,7 +5593,7 @@ async function pagePrivacy(el) {
       toast(next ? "Personal info blocked in replies." : "Personal info can appear in replies.");
       return res;
     };
-    if (privacyAsksFirst(next, stepupOpen())) askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
+    if (privacyAsksFirst(next, stepupOpen(), graceSession())) askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
     else {
       const res = await send("");
       if (res.status === 403) askPassword("Change privacy?", "Enter the admin password to change this.", "Save", async pw => apply(await send(pw)), revert);
@@ -5728,7 +5730,7 @@ async function pageSystem(el) {
     if (err) { syncGrace(); return; }
     const payload = gracePayload(picked, raw);
     attn($("#ge", el), "");
-    askPassword("Ask for the password again", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", async pw => {
+    const saveGrace = async pw => {
       const fs = $("#gracefs", el);
       if (fs) fs.inert = true;
       busyBtn(gsave, true, "Saving\u2026");
@@ -5743,9 +5745,14 @@ async function pageSystem(el) {
         attn($("#ge", el), "");
         markSaved();
         toast(graceToast(payload));
+        if (S.state) S.state.grace_session = payload === "session";
       } else markUnsaved();
       return r;
-    });
+    };
+    const ask = () => askPassword("Ask for the password again", "Enter the admin password. Changing this always asks, even during the grace window.", "Save", saveGrace);
+    // 0.13.9: in "Not while I'm signed in" mode being signed in is enough; ask only if the server says so.
+    if (graceSession()) saveGrace("").then(r => { if (r && r.status === 403) ask(); });
+    else ask();
   };
   const hh = s.health || {};
   const t = s.tls || {};
@@ -6436,7 +6443,7 @@ async function pageIntegrations(el) {
         } else if (r.status !== 403) attn($("#wvoicee", el), "Couldn't save that.");
         return r;
       };
-      if (!on) send("");
+      if (!on || graceSession()) send("").then(r => { if (on && r && r.status === 403) withPassword("Turn on voice home control?", "Enter the admin password. Anyone who says the wake word can then control these devices.", "Turn on", send); });
       else withPassword("Turn on voice home control?", "Enter the admin password. Anyone who says the wake word can then control these devices.", "Turn on", send);
     };
     const hbGo = $("#hbsetup", el);

@@ -2579,6 +2579,12 @@ def audit(persona, action, last4=None):
     print(f"audit persona={persona} action={action} last4={tail} time={int(now())}", flush=True)
 
 
+def audit_change(action, old, new, sid):
+    """Audit a signed-in change with old and new values. Never the password, cookie or session key."""
+    sid_s = sid if isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8}", sid) else "-"
+    print(f"audit persona=- action={action} old={old} new={new} session={sid_s} last4=- time={int(now())}", flush=True)
+
+
 def audit_stepup():
     """One journal line when a step-up window opens. The password is not written."""
     print(f"audit persona=- action=stepup open last4=- time={int(now())}", flush=True)
@@ -4171,6 +4177,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(200, {"setup_required": AUTH.setup_required(), "mode": AUTH.mode(), "signed_in": signed,
                                "locked_s": AUTH.locked(), "host": hostname() + ".local", "version": version(),
                                "stepup_until": AUTH.stepup_until(self.cookie("gs_session")) if signed else None,
+                               "grace_session": session_mode() if signed else None,
                                "xai_key_set": xai_key_set(),
                                "wizard": read_json(path("wizard.json"), {"step": 2, "done": False}) if signed else None})
 
@@ -4721,8 +4728,12 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(j.get("pii_mode"), bool):
             return self.send(400, {"error": "bad value"})
         # Turning personal-info blocking off always asks, even during "session" (Nix). Turning it on uses the window.
-        if not self.need_password(j, always=j.get("pii_mode") is False):
+        if not self.need_password(j, always=j.get("pii_mode") is False, session_ok=True):
             return
+        before = relay_call("GET", "/admin/policy")
+        old = "-"
+        if before and before[0] == 200 and isinstance(before[1], dict) and isinstance(before[1].get("pii_mode"), bool):
+            old = "on" if before[1]["pii_mode"] else "off"
         got = relay_call("PUT", "/admin/policy", {"pii_mode": j["pii_mode"], "actor": RELAY_ACTOR})
         if got is None:
             return self.send(503, {"error": RELAY_UNCONFIGURED})
@@ -4730,6 +4741,7 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         audit("-", "pii_mode " + ("on" if j["pii_mode"] else "off"))
+        audit_change("pii_mode", old, "on" if j["pii_mode"] else "off", AUTH.session_public_id(self.cookie("gs_session")))
         return self.send(200, {"ok": True, "pii_mode": j["pii_mode"]})
 
     def api_get_portrait(self, p, q, j):
@@ -4757,14 +4769,22 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(404, {"error": "not found"})
 
     # -- bots (proxied to the relay; webhook keys are not stored here)
-    def need_password(self, j, always=False):
-        """Password check. An open grace window is enough unless always=True.
+    def need_password(self, j, always=False, session_ok=False):
+        """Password check.
+
+        session_ok=True (0.13.9, owner decision, Nix conditions): in "session" grace mode a signed-in session
+        is enough. The route has already checked the session, the X-GS-Admin header and the JSON body.
+        Used for privacy off, the grace setting and Voice home control on; never for a password change or reset.
+
+        Older notes: An open grace window is enough unless always=True.
 
         always=True is for changing the grace setting and for turning personal-info blocking off:
         a correct password is required even when a window is already open. A correct password opens
         the window (no-op when the setting is 0). A wrong password does not.
         """
         token = self.cookie("gs_session")
+        if session_ok and session_mode():
+            return True
         pw = j.get("password") if isinstance(j, dict) and "password" in j else None
         supplied = isinstance(pw, str) and pw != ""
         if not always and not supplied and AUTH.stepup_open(token):
@@ -5587,7 +5607,7 @@ class Handler(BaseHTTPRequestHandler):
         if not grace_ok(n):
             return self.send(400, {"error": "Pick every time, 1 to 120 minutes, or this sign-in."})
         old = password_grace_min()
-        if not self.need_password(j, always=True):
+        if not self.need_password(j, always=True, session_ok=True):
             return
         try:
             store_password_grace_min(n)
@@ -5759,14 +5779,17 @@ class Handler(BaseHTTPRequestHandler):
         if "password" in j and not isinstance(j["password"], str):
             return self.send(400, {"error": "bad_request"})
         on = j["on"]
-        if on and not self.need_password(j):
+        if on and not self.need_password(j, session_ok=True):
             return
         with LOCK:
             doc = gsi.load()
+            was = any(isinstance(b, dict) and b.get("voice") is True for b in doc["integrations"].values())
             if not _voice_apply(doc, on):
                 return self.send(400, {"error": "not_set_up"})
             gsi.save(doc)
         audit_home("voice-on" if on else "voice-off", "wled")
+        audit_change("voice-home-control", "on" if was else "off", "on" if on else "off",
+                     AUTH.session_public_id(self.cookie("gs_session")))
         return self.send(200, self._integration_view(gsi.load()))
 
     def api_get_integrations(self, p, q, j):
