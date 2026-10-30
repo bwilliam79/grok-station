@@ -248,5 +248,15 @@ class N2FailedSurvivesRefresh(unittest.TestCase):
         self.assertIn("/api/bots/setup-unknown", send)
 
 
+
+class N5PhoneTestLinkTarget(unittest.TestCase):
+    def test_every_tlnk_is_44pt_on_phone(self):
+        phone = _phone_rules()
+        m = re.search(r"(?:^|[{}])\.tlnk\{([^}]*)\}", phone)
+        self.assertIsNotNone(m, "phone .tlnk rule (not only .steps .tlnk)")
+        self.assertIn("min-height:44px", m.group(1))
+        self.assertIn("min-width:44px", m.group(1))
+
+
 if __name__ == "__main__":
     unittest.main()

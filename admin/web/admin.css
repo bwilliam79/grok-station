@@ -795,7 +795,7 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
   .sendc2 .btn,.racts .btn{min-height:44px;flex:1}
   .steps{margin-left:0}
   .stnote{margin-left:0}
-  .steps .tlnk{display:inline-block;min-height:44px;line-height:44px}
+  .tlnk{display:inline-flex;align-items:center;min-height:44px;min-width:44px;vertical-align:middle}
 }
 .vnspin{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:gs-spin .8s linear infinite;box-sizing:border-box}
 @media (prefers-reduced-motion:reduce){.vnspin{width:auto;height:auto;border:0;border-radius:0;animation:none;vertical-align:baseline}.vnspin::before{content:"\00b7\00b7\00b7"}}
