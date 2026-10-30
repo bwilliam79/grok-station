@@ -41,11 +41,12 @@ class BackLinkTarget(unittest.TestCase):
         m = re.search(r"(?:^|;)\s*" + prop + r"\s*:\s*([^;]+)", body)
         return m.group(1) if m else None
 
-    def test_desktop_tap_target_at_least_44(self):
+    def test_desktop_target_is_32(self):
+        # 0.13.9 fix round item 6: the ghost back button is 32 px on desktop (24 px minimum), 44 px on phone.
         base = self._rules(phone=False)
         self.assertTrue(base)
         heights = [_px(self._decl(b, "min-height"), self.tokens) for b in base if self._decl(b, "min-height")]
-        self.assertTrue(heights and max(heights) >= 44, heights)
+        self.assertEqual(heights, [32.0])
 
     def test_phone_target_44_and_text_15(self):
         ph = self._rules(phone=True)

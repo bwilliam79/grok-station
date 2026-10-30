@@ -86,28 +86,29 @@ class VoiceExamples(unittest.TestCase):
 
 
 class IntegrationsBack(unittest.TestCase):
-    def test_back_control_is_a_quiet_link(self):
+    def test_back_control_is_a_ghost_button(self):
+        # 0.13.9 fix round item 6 (Noor gs-fixround-0139 rev1): still the <a id="iback"> the back() handler binds,
+        # now a bordered ghost button with a 16 px chevron and the label.
         js = _src(JS_PATH)
         page = js[js.index("async function pageIntegrations"):]
-        self.assertNotIn('class="btn g back" id="iback"', page)
         self.assertNotRegex(page, r"<button\b[^>]*\bid=\"iback\"")
-        self.assertIn('const backLink = label => `<a href="#" class="iback" id="iback">‹ ${esc(label || "Integrations")}</a>`;', page)
-        self.assertIn('backLink("Homebridge")', page)
+        line = page[page.index("const backLink = label =>"):]
+        line = line[:line.index("\n")]
+        self.assertIn('<a href="#" class="iback" id="iback"><svg width="16" height="16"', line)
+        self.assertIn('aria-hidden="true"', line)
+        self.assertIn('<span>${esc(label || "Integrations")}</span></a>', line)
+        self.assertNotIn("‹", line)
         self.assertIn('backLink(wledBackLabel)', page)
         self.assertIn('backLink(hbBackLabel)', page)
         css = re.sub(r"\s+", "", _src(CSS_PATH))
-        rule = re.search(r"a\.iback\{([^}]*)\}", css)
-        self.assertIsNotNone(rule, "missing a.iback rule")
-        body = rule.group(1)
-        self.assertIn("min-height:44px", body)  # N6 (0.13.8): 44 px tap target
-        self.assertIn("text-decoration:none", body)
-        self.assertIn("color:var(--gs-muted)", body)
-        hover = re.search(r"a\.iback:hover\{([^}]*)\}", css)
-        self.assertIsNotNone(hover, "missing a.iback:hover rule")
-        self.assertIn("text-decoration:underline", hover.group(1))
+        body = re.search(r"a\.iback\{([^}]*)\}", css).group(1)
+        for want in ("height:32px", "min-height:32px", "border:1pxsolidvar(--gs-rule-2)", "background:transparent",
+                     "color:var(--gs-text)", "text-decoration:none", "border-radius:var(--gs-radius-sm)"):
+            self.assertIn(want, body)
+        hover = re.search(r"a\.iback:hover\{([^}]*)\}", css).group(1)
+        self.assertIn("background:var(--gs-surface-2)", hover)
         phone = css.split("@media(max-width:767px)", 1)[-1]
-        self.assertIn("a.iback{font-size:var(--fs-dev);min-height:44px;min-width:88px}", phone)
-
+        self.assertIn("a.iback{height:44px;min-height:44px", phone)
 
 if __name__ == "__main__":
     unittest.main()

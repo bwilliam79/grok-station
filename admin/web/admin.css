@@ -581,9 +581,15 @@ p#emptybot{margin:10px 2px 0}
 .nmrow:first-child{border-top:0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
 .wake{color:var(--gs-teal);font-weight:600}
-a.iback{display:inline-flex;align-items:center;font:500 var(--fs-help)/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:44px;margin:0 0 6px}
-a.iback:hover{color:var(--gs-text);text-decoration:underline}
-a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--gs-text)}
+/* 0.13.9 fix round item 6: ghost back button. */
+a.iback{display:inline-flex;align-items:center;gap:var(--sp-2);height:32px;min-height:32px;padding:0 14px 0 10px;margin:0 0 var(--sp-3) -2px;border:1px solid var(--gs-rule-2);border-radius:var(--gs-radius-sm);background:transparent;color:var(--gs-text);font:500 var(--fs-label)/1 var(--body);text-decoration:none}
+a.iback svg{flex:none;color:var(--gs-muted)}
+a.iback:hover{background:var(--gs-surface-2);text-decoration:none}
+a.iback:hover svg{color:var(--gs-text)}
+a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:var(--gs-text)}
+@media (max-width:767px){
+  a.iback{height:44px;min-height:44px;min-width:0;font-size:var(--fs-dev);padding:0 16px 0 12px}
+}
 .mhead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
 .mhead h2{margin:0}
 .mhead .tcount{font-size:var(--fs-help);color:var(--gs-muted)}
@@ -599,7 +605,6 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 .danger p{margin:4px 0 0;color:var(--gs-muted);font-size:var(--fs-help)}
 .danger .btn{margin-left:auto;flex:none}
 @media (max-width:767px){
-  a.iback{font-size:var(--fs-dev);min-height:44px;min-width:88px}
   .mhead{flex-wrap:wrap}
   .mhead .btn{width:100%;min-height:48px;margin-left:0}
   .rdiv{display:none}

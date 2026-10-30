@@ -6152,7 +6152,7 @@ async function pageIntegrations(el) {
     return `<span class="${cls}"${i + 1 === n ? ' aria-current="step"' : ""}>${t}</span>`;
   }).join('<span class="sep"> · </span>')}</p>`;
   const back = fn => { const a = $("#iback", el); if (a) a.onclick = ev => { ev.preventDefault(); fn(); }; };
-  const backLink = label => `<a href="#" class="iback" id="iback">‹ ${esc(label || "Integrations")}</a>`;
+  const backLink = label => `<a href="#" class="iback" id="iback"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg><span>${esc(label || "Integrations")}</span></a>`;
   let wledBackLabel = "Integrations";
   let hbBackLabel = "Integrations";
   const head = (n, title) => `${backLink(wledBackLabel)}${stepper(n)}<h2>${title}</h2>`;
