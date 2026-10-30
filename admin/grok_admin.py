@@ -3628,17 +3628,46 @@ def clean_wake(raw):
     return t
 
 
-def setup_message(name, wake, computer):
+def setup_owner_name():
+    """Person name on the station sign-in record, or "" when setup stored none.
+
+    Station setup writes the password here. A name kept on that record is the owner.
+    admin is the sign-in label, not a person.
+    """
+    doc = read_json(path("auth.json"), {})
+    if not isinstance(doc, dict):
+        return ""
+    for key in ("name", "username"):
+        raw = doc.get(key)
+        got = clean_name(raw) if isinstance(raw, str) else None
+        if got and got.casefold() not in ("admin", "you"):
+            return got
+    return ""
+
+
+def setup_owner_label(owner=None):
+    """Owner phrase for the setup text. Empty means the station owner, never you."""
+    if owner is None:
+        owner = setup_owner_name()
+    who = " ".join(owner.split()) if isinstance(owner, str) else ""
+    if not who or who.casefold() in ("admin", "you"):
+        return "the station owner"
+    return who
+
+
+def setup_message(name, wake, computer, owner=None):
     """The four steps the main bot passes on. Step 2 names the existing routine so a resend does not create a second."""
     computer = computer or ""
+    who = setup_owner_label(owner)
+    poss = who + "'s"
     lines = [
-        "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
+        "Show %s a confirm card in this chat. Only go ahead if %s says yes." % (who, who),
         'If you already have a routine whose instructions start with "Grok Station instructions", update that one. '
-        "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on the owner's "
-        "home computer (%s)." % computer,
+        "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on %s "
+        "home computer (%s)." % (poss, computer),
         "Reply on the station as %s. Your wake word is %s." % (name, wake),
         "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
-        "The owner copies them into the station himself.",
+        "%s copies them into the station." % who,
     ]
     return "\n".join("%d. %s" % (i, line) for i, line in enumerate(lines, 1))
 
@@ -3702,7 +3731,7 @@ def setup_public(doc, now):
         hint_out = None
     else:
         hint_out = {"name": hint["name"], "dismissed": hint.get("dismissed") is True}
-    return {"rows": rows, "hint": hint_out}
+    return {"rows": rows, "hint": hint_out, "owner": setup_owner_name()}
 
 
 def setup_load():

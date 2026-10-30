@@ -41,7 +41,8 @@ def _icons():
 
 
 def _run(expr):
-    names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupSteps",
+    names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark",
+             "setupOwnerLabel", "setupSteps",
              "setupMessage", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
              "botsCalloutKind", "botsCalloutHTML")
     src = "\n".join(_fn(n) for n in names)
@@ -102,7 +103,7 @@ class SetupBotsUI(unittest.TestCase):
                          "Juniper needs the latest station instructions before it can pass setup to other bots.")
         self.assertEqual(copy["block"], "Update Juniper first")
         steps = _run("setupSteps(%s)" % json.dumps(OTTO))
-        self.assertEqual(steps[0], "Show the owner a confirm card in this chat. Only go ahead if he says yes.")
+        self.assertEqual(steps[0], "Show the station owner a confirm card in this chat. Only go ahead if the station owner says yes.")
         self.assertIn('start with "Grok Station instructions"', steps[1])
         self.assertIn("Don't create a second", steps[1])
         self.assertIn("Office computer", steps[1])
@@ -110,7 +111,7 @@ class SetupBotsUI(unittest.TestCase):
         self.assertIn("Reply on the station as ", steps[2])
         self.assertIn("Hey Otto", steps[2])
         self.assertEqual(steps[3], "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
-                         "The owner copies them into the station himself.")
+                         "the station owner copies them into the station.")
         text = _run("setupMessage(%s)" % json.dumps(OTTO))
         self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer"))
         self.assertGreater(len(text), 500)  # the default webhook cap would cut step 4
@@ -258,14 +259,14 @@ class SetupSend(unittest.TestCase):
         self.assertGreater(len(self.messages[0]), 500)
         self.assertIn('start with "Grok Station instructions"', self.messages[0])
         self.assertIn("Don't create a second", self.messages[0])
-        self.assertIn("The owner copies them into the station himself.", self.messages[0])
+        self.assertIn("the station owner copies them into the station.", self.messages[0])
         # The webhook cleaner drops newline controls. The relay sends spaces so "yes." does not glue to "2."
         wire = handoff.payload("ab" * 8, "juniper", self.messages[0].replace("\n", " "),
                                "2026-10-29T00:00:00Z", cap=4000)["question"]
         bare = handoff.payload("ab" * 8, "juniper", self.messages[0],
                                "2026-10-29T00:00:00Z", cap=4000)["question"]
         self.assertIn("yes. 2. If you already", wire)
-        self.assertIn("The owner copies them into the station himself.", wire)
+        self.assertIn("the station owner copies them into the station.", wire)
         self.assertGreater(len(wire), 500)
         self.assertNotIn("yes. 2.", bare)
         relay_fn = RELAY[RELAY.index("async def admin_setup_relay"):RELAY.index("async def admin_cards_get")]
@@ -474,6 +475,74 @@ class Rev33States(unittest.TestCase):
             self.assertEqual(doc["rows"]["otto"]["status"], "sent")
         finally:
             ga._SETUP_INFLIGHT.clear()
+
+
+class Rev33Owner(unittest.TestCase):
+    """The setup text uses the name stored at station setup, or 'the station owner'."""
+
+    def _auth(self, doc):
+        ga.write_json(ga.path("auth.json"), doc)
+
+    def test_owner_name_sam_and_absent(self):
+        sam = dict(OTTO, owner="Sam")
+        steps = _run("setupSteps(%s)" % json.dumps(sam))
+        blob = " ".join(steps)
+        self.assertIn("Show Sam a confirm card", steps[0])
+        self.assertIn("if Sam says yes", steps[0])
+        self.assertIn("Sam's home computer", steps[1])
+        self.assertIn("Sam copies them into the station.", steps[3])
+        self.assertNotRegex(blob, r"\b(he|she|himself|herself)\b")
+        self.assertNotIn("Show you", steps[0])
+        self.assertNotIn("the station owner", blob)
+        missing = _run("setupSteps(%s)" % json.dumps(OTTO))
+        self.assertIn("Show the station owner a confirm card", missing[0])
+        self.assertIn("if the station owner says yes", missing[0])
+        self.assertIn("the station owner's home computer", missing[1])
+        self.assertIn("the station owner copies them into the station.", missing[3])
+        self.assertNotRegex(" ".join(missing), r"\b(he|she|himself|herself)\b")
+        self.assertNotIn("Show you", missing[0])
+        text = _run("setupMessage(%s)" % json.dumps(sam))
+        self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"))
+        self.assertEqual(_run("setupMessage(%s)" % json.dumps(dict(OTTO, owner=""))),
+                         ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""))
+        auth = ga.path("auth.json")
+        existed = os.path.isfile(auth)
+        raw = open(auth, encoding="utf-8").read() if existed else None
+        ga._SETUP_INFLIGHT.clear()
+        try:
+            self._auth({"name": "Sam"})
+            self.assertEqual(ga.setup_owner_name(), "Sam")
+            self.assertEqual(ga.setup_public({"rows": {}}, 1)["owner"], "Sam")
+            self._auth({"username": "admin", "password": "kept"})
+            self.assertEqual(ga.setup_owner_name(), "")
+            self._auth({"password": "kept"})
+            self.assertEqual(ga.setup_owner_name(), "")
+            none = ga.setup_message("Otto", "Hey Otto", "Office computer")
+            self.assertIn("the station owner", none)
+            self.assertNotRegex(none, r"\b(he|she|himself|herself)\b")
+            self.assertNotIn("Show you", none)
+            self._auth({"name": "Sam", "password": "kept"})
+            doc = {"rows": {}}
+            code, body = ga.setup_send(
+                doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
+                now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+            self.assertEqual(code, 200)
+            self.assertIn("Sam's home computer", doc["rows"]["otto"]["message"])
+            self.assertNotIn("message", body["setup"]["rows"]["otto"])
+            self.assertEqual(body["setup"]["owner"], "Sam")
+            self._auth({"password": "kept"})
+            ga.setup_send(
+                doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
+                now=1005, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+            self.assertIn("Sam", doc["rows"]["otto"]["message"])
+            self.assertNotIn("the station owner", doc["rows"]["otto"]["message"])
+        finally:
+            ga._SETUP_INFLIGHT.clear()
+            if existed:
+                with open(auth, "w", encoding="utf-8") as f:
+                    f.write(raw)
+            elif os.path.isfile(auth):
+                os.remove(auth)
 
 
 if __name__ == "__main__":

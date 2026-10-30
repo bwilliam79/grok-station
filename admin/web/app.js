@@ -3055,27 +3055,37 @@ function setupMark(text, field, disabled) {
   return "<mark>" + esc(text) + '</mark> <button type="button" class="tlnk" data-edit="' + field + '"' +
     (disabled ? " disabled" : "") + ">Edit</button>";
 }
+function setupOwnerLabel(owner) {
+  if (owner == null) return "the station owner";
+  const who = String(owner).replace(/\s+/g, " ").trim();
+  if (!who || who.toLowerCase() === "you" || who.toLowerCase() === "admin") return "the station owner";
+  return who;
+}
 function setupSteps(row) {
   const name = (row && row.name) || "";
   const wake = (row && row.wake) || ("Hey " + name);
   const computer = (row && row.computer) || "";
   const off = !!(row && row.editDisabled);
+  const who = setupOwnerLabel(row && row.owner);
+  const poss = who + "'s";
   return [
-    "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
-    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on the owner\'s home computer (' + setupMark(computer, "computer", off) + ").",
+    "Show " + who + " a confirm card in this chat. Only go ahead if " + who + " says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on ' + poss + " home computer (" + setupMark(computer, "computer", off) + ").",
     "Reply on the station as " + setupMark(name, "name", off) + ". Your wake word is " + setupMark(wake, "wake", off) + ".",
-    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. The owner copies them into the station himself."
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. " + who + " copies them into the station."
   ];
 }
 function setupMessage(row) {
   const name = (row && row.name) || "";
   const wake = (row && row.wake) || ("Hey " + name);
   const computer = (row && row.computer) || "";
+  const who = setupOwnerLabel(row && row.owner);
+  const poss = who + "'s";
   const lines = [
-    "Show the owner a confirm card in this chat. Only go ahead if he says yes.",
-    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on the owner\'s home computer (' + computer + ").",
+    "Show " + who + " a confirm card in this chat. Only go ahead if " + who + " says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. Don\'t create a second. Otherwise create a webhook-triggered routine called "Grok Station" on ' + poss + " home computer (" + computer + ").",
     "Reply on the station as " + name + ". Your wake word is " + wake + ".",
-    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. The owner copies them into the station himself."
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. " + who + " copies them into the station."
   ];
   return lines.map((line, i) => (i + 1) + ". " + line).join("\n");
 }
@@ -3194,6 +3204,7 @@ function setupListVisible(el) {
 function setupListRows(el) {
   const bots = (el && el._bots) || [];
   const stored = (el && el._setup && el._setup.rows) || {};
+  const owner = (el && el._setup && typeof el._setup.owner === "string") ? el._setup.owner : "";
   const mainComputer = setupMainComputer(el);
   const out = [], seen = {};
   bots.forEach(b => {
@@ -3208,7 +3219,7 @@ function setupListRows(el) {
       slug: b.slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || b.reply_host || mainComputer || "",
       status: (configured && !inflow) ? "already" : st,
-      sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured
+      sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner
     });
   });
   pendingTeammates(el).forEach(row => {
@@ -3221,7 +3232,7 @@ function setupListRows(el) {
       slug: slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || mainComputer || "",
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
-      configured: false, pending: true
+      configured: false, pending: true, owner: owner
     });
   });
   return out;
