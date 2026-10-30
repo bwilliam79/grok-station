@@ -419,6 +419,7 @@ a.need:hover{text-decoration:underline}
   .pop .acts .btn{width:100%;min-height:48px}
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4}
   .botrow .ww{grid-column:2;grid-row:2}
+  .botrow .ww>span:not(.pill){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .botrow .cfg{grid-column:3;grid-row:1}
   .botrow .cfg .btn{display:none}
   .botrow[data-pending] .cfg .btn[data-setup]{display:inline-flex;min-height:44px;height:44px}
