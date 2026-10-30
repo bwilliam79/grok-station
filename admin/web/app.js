@@ -3369,7 +3369,13 @@ async function removePending(key, el) {
   attn($("#vere", el), "");
   refreshBots(el);
 }
+function closePendingSheet() {
+  const old = document.getElementById("pendpop");
+  if (old) old.remove();
+}
+window.addEventListener("hashchange", closePendingSheet);
 function openPendingSheet(row, el) {
+  closePendingSheet();
   const pend = row.getAttribute("data-pending");
   const name = (row.querySelector(".lbl") || {}).textContent || "";
   const wrap = document.createElement("div");
