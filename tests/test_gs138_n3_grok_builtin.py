@@ -20,7 +20,16 @@ sys.path.insert(0, os.path.join(ROOT, "app"))
 sys.path.insert(0, os.path.join(ROOT, "relay"))
 
 import grok_station as gs  # noqa: E402
-import relay  # noqa: E402
+
+
+def _relay():
+    """Import relay at test time, not at collection time.
+
+    relay reads its state paths from the environment once, on first import. A module-level
+    import here ran before test_handoff set HANDOFF_PENDING, so relay kept /var/lib/grok-station.
+    """
+    import relay
+    return relay
 
 SAY = "Grok's wake word is built in and can't be trained. Say a bot's name to train its wake word."
 GROK = {"slug": "grok", "name": "Grok", "phrase": None, "spoken": "Grok"}
@@ -62,7 +71,7 @@ class GrokBuiltin(unittest.TestCase):
         self.assertIsNone(quiet["enroll"])
         self.assertNotIn("hold_s", quiet)
 
-        result = relay.train_session_result(plan)
+        result = _relay().train_session_result(plan)
         self.assertEqual(result["say"], SAY)
         self.assertIsNone(result["enroll"])
         self.assertEqual(result["hold_s"], 4)
@@ -71,7 +80,7 @@ class GrokBuiltin(unittest.TestCase):
         self.assertEqual(result["done"]["hold_s"], 4)
         self.assertEqual(result["done"]["text"], SAY)
         self.assertEqual(result["end"], "user ended")
-        kept = relay.train_session_result(TF.voice_train_plan(
+        kept = _relay().train_session_result(TF.voice_train_plan(
             {"slug": "juniper", "name": "Juniper", "phrase": "hey_juniper", "spoken": "Juniper"}))
         self.assertEqual(kept["done"], {"type": "done", "local": True})
         self.assertNotIn("hold_s", kept)
@@ -107,6 +116,15 @@ class GrokBuiltin(unittest.TestCase):
         self.assertIn('ev.get("hold_s") == 4', done)
         self.assertIn('self.state("notice", text=self.reply, hold_s=4)', done)
         self.assertIn("if not builtin_hold:", done)
+
+
+class CollectionDoesNotImportRelay(unittest.TestCase):
+    def test_loading_this_module_leaves_relay_unimported(self):
+        import subprocess
+        code = ("import sys; sys.path.insert(0, %r); import test_gs138_n3_grok_builtin; "
+                "print('relay' in sys.modules)") % os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip().splitlines()[-1], "False", out.stderr[-2000:])
 
 
 if __name__ == "__main__":
