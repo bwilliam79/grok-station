@@ -1587,19 +1587,34 @@ def log_margins(phrase, others, pairs, path=None, now=None):
         if not lines:
             return
         old = b""
-        try:
-            with open(path, "rb") as f:
-                old = f.read()
+        try:  # NIX-1312-01: no symlink, and at most MARGIN_LOG_MAX bytes from the tail
+            rfd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                size = os.fstat(rfd).st_size
+                if size > MARGIN_LOG_MAX:
+                    os.lseek(rfd, size - MARGIN_LOG_MAX, os.SEEK_SET)
+                while len(old) < MARGIN_LOG_MAX:
+                    chunk = os.read(rfd, MARGIN_LOG_MAX - len(old))
+                    if not chunk:
+                        break
+                    old += chunk
+            finally:
+                os.close(rfd)
         except OSError:
             pass
         data = old + "".join(lines).encode()
         if len(data) > MARGIN_LOG_MAX:
             data = data[len(data) - MARGIN_LOG_MAX // 2:]
             data = data[data.find(b"\n") + 1:]
-        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        tmp = path + ".tmp"
+        try:
+            os.unlink(tmp)  # a leftover .tmp, or a planted link: removed, never followed
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        os.replace(path + ".tmp", path)
+        os.replace(tmp, path)
     except OSError:
         print("fewshot: margin log not written", flush=True)
 

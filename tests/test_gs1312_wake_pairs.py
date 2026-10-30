@@ -164,5 +164,79 @@ class Listener(unittest.TestCase):
         self.assertNotIn("MARGIN_LOG)", self.src.replace("open(path", ""))  # written only, never read at runtime
 
 
+class NixFix(unittest.TestCase):  # NIX-1312-01 / NIX-1312-02
+    def setUp(self):
+        import grok_wake as gw
+        self.gw = gw
+        self.om = fs.Matcher([tf.WORD]); self.om.word_id = "hey_miles"
+        self.pairs = {"Hey Miles": {"ok": True, "misroutes": 0, "min_margin": 0.07, "pass_rate": 0.9}}
+
+    def test_margin_log_tmp_symlink_is_not_followed(self):
+        d = tempfile.mkdtemp()
+        target = os.path.join(d, "victim.txt")
+        with open(target, "w") as f:
+            f.write("keep")
+        p = os.path.join(d, "m.jsonl")
+        os.symlink(target, p + ".tmp")
+        self.gw.log_margins("hey_jules", [("Hey Miles", self.om)], self.pairs, path=p, now=1_700_000_000)
+        self.assertEqual(open(target).read(), "keep")       # not written through
+        self.assertFalse(os.path.islink(p))                  # the log is a real file, not the old link
+        if os.path.exists(p):
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+            self.assertEqual(json.loads(open(p).read().splitlines()[-1])["word"], "hey_jules")
+
+    def test_oversized_log_is_read_bounded_and_capped(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "m.jsonl")
+        with open(p, "wb") as f:
+            f.write((b"x" * 99 + b"\n") * 20000)            # 2 MB, about 30 times the cap
+        reads = []
+        real = os.read
+
+        def spy(fd, n):
+            reads.append(n)
+            return real(fd, n)
+        real_open = __builtins__["open"] if isinstance(__builtins__, dict) else __builtins__.open
+        opened = []
+
+        def no_open(path, mode="r", *a, **k):
+            if str(path) == p and "r" in mode:
+                opened.append(path)
+            return real_open(path, mode, *a, **k)
+        self.gw.os.read = spy
+        self.gw.open = no_open
+        try:
+            self.gw.log_margins("hey_jules", [("Hey Miles", self.om)], self.pairs, path=p, now=1_700_000_000)
+        finally:
+            self.gw.os.read = real
+            del self.gw.open
+        self.assertEqual(opened, [])                         # no unbounded open().read() of the log
+        self.assertTrue(reads and max(reads) <= self.gw.MARGIN_LOG_MAX, reads)
+        self.assertLessEqual(os.path.getsize(p), self.gw.MARGIN_LOG_MAX)
+        self.assertEqual(json.loads(open(p).read().splitlines()[-1])["word"], "hey_jules")
+
+    def test_shared_hey_pair_with_a_good_margin_still_fails_on_misroutes(self):
+        """5 of 12 rows shared: margins and pass rate look fine, but the other word fires first on "Hey"."""
+        gg = np.random.default_rng(5)
+        hey = gg.standard_normal((5, 96)).astype(np.float32)
+        jules = np.vstack([hey, gg.standard_normal((7, 96))]).astype(np.float32)
+        miles = np.vstack([hey, gg.standard_normal((7, 96))]).astype(np.float32)
+        p = Pairs("test_a_close_pair_told_apart_passes")
+        p.setUp()
+        try:
+            other = p._enrolled(miles)
+            frames, lens = p._word(jules)
+            cal = fs.calibrate(frames, lens, [tf.say(NEG)[0]], others=[("Hey Miles", other)])
+        finally:
+            p.doCleanups()
+        pc = cal["pairs"]["Hey Miles"]
+        self.assertGreaterEqual(pc["pass_rate"], 0.8, pc)
+        self.assertGreaterEqual(pc["min_margin"], fs.SEP_MARGIN, pc)
+        self.assertGreater(pc["misroutes"], 0, pc)
+        self.assertFalse(pc["ok"], pc)
+        self.assertFalse(cal["ok"])
+        self.assertIn("sounds too much like Hey Miles", cal["message"])
+
+
 if __name__ == "__main__":
     unittest.main()
