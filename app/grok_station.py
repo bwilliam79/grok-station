@@ -3869,6 +3869,8 @@ def enroll_copy(phrase, i, n, stage, extra):
     if stage == "quiet":
         return "Try again", "I didn't hear it. Again after the chime.", MUTED, f"{i} of {n}" if n else clip, bar
     if stage == "saved":
+        if n and i >= n and extra != "next":
+            return "Saved. Checking the recordings.", "", MUTED, f"{i} of {n}", 1.0
         sub = "Next" if extra == "next" and i < n else ""
         return f"{i} of {n} saved", sub, MUTED, f"{i} of {n}" if n else None, i / n if n else None
     if stage == "uploaded":
@@ -3894,7 +3896,8 @@ def enroll_copy(phrase, i, n, stage, extra):
 def state_hold(state, done, heard="", hold_s=None):
     """Seconds a voice state stays up.
 
-    A finished reply (done) keeps REPLY_HOLD. Passed, uploaded and error enrollment screens hold 10 s.
+    A finished reply (done) keeps REPLY_HOLD. The finished save (N/N saved, not a between-clip Next)
+    holds 4 s, then the tile closes. Passed, uploaded and error enrollment screens hold 10 s.
     Every other enrollment stage keeps the 30 s cap in VOICE_HOLDS.
     hold_s 4 is the built-in Grok wake-word line or a failed enroll start: it does not use the notice or reply holds.
     """
@@ -3903,7 +3906,9 @@ def state_hold(state, done, heard="", hold_s=None):
     if done:
         return REPLY_HOLD
     if state == "enroll":
-        stage = enroll_parse({"heard": heard})[2]
+        i, n, stage, extra = enroll_parse({"heard": heard})
+        if stage == "saved" and n and i >= n and extra != "next":
+            return 4
         return 10 if stage in ("passed", "uploaded", "error") else VOICE_HOLDS["enroll"]
     return VOICE_HOLDS[state]
 
