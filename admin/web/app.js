@@ -3014,8 +3014,9 @@ function joinBotNames(names) {
   if (list.length === 2) return list[0] + " and " + list[1];
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
 }
-// Set up bots (0.13.9). One list for one bot or many. Strings match the rev3.2 copy table.
+// Set up bots (0.13.9). One list for one bot or many.
 const SETUP_STUCK_S = 300;
+const SETUP_REACHABLE = {not_set_up: 1, sent: 1, failed: 1, connected: 1, already: 1};
 function setupCopy(main, bot) {
   main = main || "your main bot";
   bot = bot || "this bot";
@@ -3023,14 +3024,10 @@ function setupCopy(main, bot) {
     title: "Set up bots",
     intro: "Each bot gets its own setup. Open Setup steps to read exactly what " + main + " passes on.",
     note: "Send setup passes these steps to " + bot + " through " + main + ". Highlighted parts are only for " + bot + ".",
-    sent: "Sent to " + main + " to pass on",
-    sentSub: bot + "'s OK card should appear in its chat in about a minute",
-    waiting: "Waiting for your OK in " + bot + "'s chat",
     connected: "Connected · Updates off",
     hintTitle: bot + " connected. Updates are off.",
     hintBody: "Turn on Updates in a bot's row to see it on the station.",
     already: "Already connected",
-    cancelled: "You cancelled in " + bot + "'s chat",
     fail: "Couldn't reach " + main,
     failSub: bot + "'s setup wasn't sent. Check that " + main + "'s computer is on, then try again.",
     again: "Still can't reach " + main + ".",
@@ -3096,7 +3093,8 @@ function setupRowModel(row, opts) {
   const main = opts.mainName || "your main bot";
   const bot = row.name || "this bot";
   const copy = setupCopy(main, bot);
-  const status = row.status || "not_set_up";
+  const rawStatus = row.status || "not_set_up";
+  const status = SETUP_REACHABLE[rawStatus] ? rawStatus : "not_set_up";
   const now = opts.now == null ? Date.now() / 1000 : opts.now;
   const stuck = status === "sent" && setupStuck(row, now);
   const fails = Number(row.fails) || 0;
@@ -3107,21 +3105,17 @@ function setupRowModel(row, opts) {
   if (status === "not_set_up") {
     actions.push({act: "send", label: "Send setup", primary: true, blocked: blocked});
   } else if (status === "sent") {
-    icon = "clock"; text = copy.sent; colour = "lav";
-    sub = stuck ? copy.stuck : copy.sentSub;
+    icon = "clock"; colour = "lav";
+    const when = clockTime(Number(row.sent_at) || 0);
+    text = when ? ("Sent " + when) : "Sent";
+    sub = stuck ? copy.stuck : "";
     if (stuck) actions.push({act: "again", label: "Send setup again", primary: false, blocked: blocked});
-  } else if (status === "waiting") {
-    icon = "pulse"; text = copy.waiting; colour = "amb";
-    actions.push({act: "open", label: "Open Grok Bot", primary: false, blocked: false});
     actions.push({act: "paste", label: "Paste values", primary: true, blocked: false});
   } else if (status === "failed") {
     icon = "err"; text = copy.fail; colour = "amb";
     sub = copy.failSub;
     if (fails >= 2) again = copy.again;
     actions.push({act: "retry", label: "Retry", primary: true, blocked: blocked});
-  } else if (status === "cancelled") {
-    icon = "slash"; text = copy.cancelled; colour = "amb";
-    actions.push({act: "again", label: "Send setup again", primary: false, blocked: blocked});
   } else if (status === "connected") {
     icon = "ok"; text = copy.connected; colour = "teal";
   } else {
@@ -3129,7 +3123,7 @@ function setupRowModel(row, opts) {
   }
   return {
     status: status, icon: icon, text: text, sub: sub, again: again, colour: colour,
-    disclose: !quiet, editDisabled: status === "sent" || status === "waiting",
+    disclose: !quiet, editDisabled: status === "sent",
     actions: actions, sendBlocked: blocked && actions.some(a => a.blocked),
     stepsId: setupDomId("steps-", row), hintId: setupDomId("bh-", row),
     note: copy.note, testLink: copy.testLink, block: copy.block, stuck: stuck
@@ -3194,7 +3188,7 @@ function setupListVisible(el) {
   const rows = (el && el._setup && el._setup.rows) || {};
   return Object.keys(rows).some(slug => {
     const st = rows[slug] && rows[slug].status;
-    return st === "sent" || st === "waiting" || st === "failed" || st === "cancelled" || st === "connected";
+    return st === "sent" || st === "failed" || st === "connected";
   });
 }
 function setupListRows(el) {
@@ -3207,7 +3201,7 @@ function setupListRows(el) {
     seen[b.slug] = true;
     const draft = stored[b.slug] || {};
     const st = draft.status || "not_set_up";
-    const inflow = st === "sent" || st === "waiting" || st === "failed" || st === "cancelled" || st === "connected";
+    const inflow = st === "sent" || st === "failed" || st === "connected";
     const configured = !!(b.webhook && b.webhook.configured);
     const name = draft.name || b.name || b.slug;
     out.push({
@@ -3273,7 +3267,7 @@ async function setupSend(row, el, btn) {
 }
 function setupEdit(row, el, field, btn) {
   if (!row || !btn || btn.disabled) return;
-  if (row.status === "sent" || row.status === "waiting") return;
+  if (row.status === "sent") return;
   const input = document.createElement("input");
   input.className = "inp";
   input.maxLength = 40;

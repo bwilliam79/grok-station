@@ -4,6 +4,7 @@
 No browser. The page functions are taken from app.js and run under node. The send path is
 grok_admin.setup_send: on the base revision that name does not exist (AttributeError).
 """
+import datetime
 import json
 import os
 import re
@@ -40,7 +41,7 @@ def _icons():
 
 
 def _run(expr):
-    names = ("joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupSteps",
+    names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupSteps",
              "setupMessage", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
              "botsCalloutKind", "botsCalloutHTML")
     src = "\n".join(_fn(n) for n in names)
@@ -53,6 +54,15 @@ def _run(expr):
 OTTO = {"slug": "otto", "name": "Otto", "wake": "Hey Otto", "computer": "Office computer",
         "status": "not_set_up", "sent_at": 0, "fails": 0}
 KNOWN = {"otto", "juniper"}
+
+
+def _clock(ts):
+    """Same local h:mm AM/PM as clockTime in app.js."""
+    d = datetime.datetime.fromtimestamp(ts)
+    h = d.hour
+    ap = "PM" if h >= 12 else "AM"
+    h = h % 12 or 12
+    return "%d:%02d %s" % (h, d.minute, ap)
 
 
 def _row(status, **extra):
@@ -78,14 +88,10 @@ class SetupBotsUI(unittest.TestCase):
         self.assertEqual(copy["note"],
                          "Send setup passes these steps to Otto through Juniper. Highlighted parts are only for Otto.")
         self.assertEqual(copy["stuck"], "No OK card yet?")
-        self.assertEqual(copy["sent"], "Sent to Juniper to pass on")
-        self.assertEqual(copy["sentSub"], "Otto's OK card should appear in its chat in about a minute")
-        self.assertEqual(copy["waiting"], "Waiting for your OK in Otto's chat")
         self.assertEqual(copy["connected"], "Connected · Updates off")
         self.assertEqual(copy["hintTitle"], "Otto connected. Updates are off.")
         self.assertEqual(copy["hintBody"], "Turn on Updates in a bot's row to see it on the station.")
         self.assertEqual(copy["already"], "Already connected")
-        self.assertEqual(copy["cancelled"], "You cancelled in Otto's chat")
         self.assertEqual(copy["fail"], "Couldn't reach Juniper")
         self.assertEqual(copy["failSub"],
                          "Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.")
@@ -136,21 +142,18 @@ class SetupBotsUI(unittest.TestCase):
         self.assertNotIn(" disabled>", opened)
         sent = _html(_row("sent", sent_at=1000), expanded=True, now=1100)
         self.assertIn('class="schip lav"', sent)
-        self.assertIn("Sent to Juniper to pass on", sent)
-        self.assertIn("Otto's OK card should appear in its chat in about a minute", sent)
+        self.assertIn("Sent " + _clock(1000), sent)
+        self.assertNotIn("Sent to Juniper to pass on", sent)
+        self.assertNotIn("Otto's OK card should appear", sent)
+        self.assertNotIn("Mark connected", sent)
+        self.assertIn(">Paste values<", sent)
         self.assertNotIn(">Send setup<", sent)
         self.assertEqual(sent.count(" disabled>"), 3)  # Edit is off while Sent
         stuck = _html(_row("sent", sent_at=1000), now=1300)
         self.assertIn("No OK card yet?", stuck)
         self.assertIn(">Send setup again<", stuck)
-        self.assertNotIn("btn p", stuck)  # secondary, not primary
+        self.assertIn("Sent " + _clock(1000), stuck)
         self.assertNotIn("Otto's OK card should appear", stuck)
-        waiting = _html(_row("waiting"), expanded=True)
-        self.assertIn('class="schip amb"', waiting)
-        self.assertIn("Waiting for your OK in Otto's chat", waiting)
-        self.assertIn(">Open Grok Bot<", waiting)
-        self.assertIn(">Paste values<", waiting)
-        self.assertEqual(waiting.count(" disabled>"), 3)
         failed = _html(_row("failed", fails=1))
         self.assertIn("Couldn't reach Juniper", failed)
         self.assertIn("Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.", failed)
@@ -160,9 +163,6 @@ class SetupBotsUI(unittest.TestCase):
         self.assertIn("Still can't reach Juniper.", again)
         self.assertIn(">Test Juniper's connection<", again)
         self.assertIn(">Retry<", again)
-        cancelled = _html(_row("cancelled"))
-        self.assertIn("You cancelled in Otto's chat", cancelled)
-        self.assertIn(">Send setup again<", cancelled)
         connected = _html(_row("connected"))
         self.assertIn('class="schip teal"', connected)
         self.assertIn("Connected · Updates off", connected)
@@ -371,16 +371,16 @@ class SetupSend(unittest.TestCase):
         self.assertNotIn("/api/bots/setup-transition", ADMIN)
         self.assertNotIn("def api_post_setup_status", ADMIN)
 
-    def test_waiting_and_cancelled_are_stored_without_an_inbound_route(self):
-        doc = {"rows": {}}
-        self._send(doc, lambda msg: True, now=1000)
-        view = ga.setup_transition(doc, "otto", "waiting", now=1000)
-        self.assertEqual(view["rows"]["otto"]["status"], "waiting")
-        view = ga.setup_transition(doc, "otto", "cancelled", now=1000)
-        self.assertEqual(view["rows"]["otto"]["status"], "cancelled")
+    def test_waiting_and_cancelled_are_not_stored(self):
+        self.assertFalse(hasattr(ga, "setup_transition"))
+        self.assertNotIn("/api/bots/setup-transition", ADMIN)
+        doc = {"rows": {"otto": {"name": "Otto", "wake": "Hey Otto", "computer": "Office computer",
+                                 "status": "waiting", "sent_at": 1, "fails": 0, "message": "frozen"}}}
+        view = ga.setup_public(doc, 1000)
+        self.assertEqual(view["rows"]["otto"]["status"], "not_set_up")
         self.assertNotIn("message", view["rows"]["otto"])
-        with self.assertRaises(ValueError):
-            ga.setup_transition(doc, "otto", "declined", now=1000)
+        doc["rows"]["otto"]["status"] = "cancelled"
+        self.assertEqual(ga.setup_public(doc, 1000)["rows"]["otto"]["status"], "not_set_up")
 
     def test_connected_does_not_create_a_second_record_or_touch_pasted_values(self):
         doc = {"rows": {"otto": {"name": "Otto", "wake": "Hey Otto", "computer": "Office computer",
@@ -409,6 +409,71 @@ class SetupSend(unittest.TestCase):
         short = handoff.payload("ab" * 8, "juniper", q, "2026-10-29T00:00:00Z")
         self.assertEqual(len(short["question"]), handoff.Q_MAX)
         self.assertEqual(handoff.Q_MAX, 500)
+
+
+class Rev33States(unittest.TestCase):
+    """Waiting and Cancelled are not reachable. Sent shows the clock until Connect."""
+
+    def test_waiting_and_cancelled_are_not_reachable_and_sent_shows_the_clock(self):
+        self.assertNotIn("waiting", ga._SETUP_STATUSES)
+        self.assertNotIn("cancelled", ga._SETUP_STATUSES)
+        self.assertFalse(hasattr(ga, "setup_transition"), "setup_transition is only the waiting/cancelled writer")
+        stored = {"rows": {
+            "otto": {"name": "Otto", "wake": "Hey Otto", "computer": "Office computer",
+                     "status": "waiting", "sent_at": 1000, "fails": 0, "message": "frozen"},
+            "pip": {"name": "Pip", "wake": "Hey Pip", "computer": "Office computer",
+                    "status": "cancelled", "sent_at": 1000, "fails": 0, "message": "frozen"},
+        }}
+        ga.write_json(ga.path(ga.SETUP_FILE), stored, 0o600)
+        try:
+            loaded = ga.setup_load()
+        finally:
+            try:
+                os.remove(ga.path(ga.SETUP_FILE))
+            except OSError:
+                pass
+        self.assertEqual(loaded["rows"]["otto"]["status"], "not_set_up")
+        self.assertEqual(loaded["rows"]["pip"]["status"], "not_set_up")
+        view = ga.setup_public({"rows": {"otto": {"status": "cancelled", "name": "Otto", "sent_at": 1, "fails": 0}}}, 1000)
+        self.assertEqual(view["rows"]["otto"]["status"], "not_set_up")
+        waiting = _html(_row("waiting"), expanded=True)
+        self.assertNotIn("Waiting for your OK", waiting)
+        self.assertNotIn(">Open Grok Bot<", waiting)
+        self.assertNotIn('class="schip amb"', waiting)
+        cancelled = _html(_row("cancelled"))
+        self.assertNotIn("You cancelled", cancelled)
+        self.assertNotIn(">Send setup again<", cancelled)
+        when = _clock(1000)
+        sent = _html(_row("sent", sent_at=1000), expanded=True, now=1100)
+        self.assertIn("Sent " + when, sent)
+        self.assertNotIn("Sent to Juniper to pass on", sent)
+        self.assertNotIn("Mark connected", sent)
+        self.assertNotIn("Otto's OK card should appear", sent)
+        self.assertIn(">Paste values<", sent)
+        self.assertIn('class="schip lav"', sent)
+        stuck = _html(_row("sent", sent_at=1000), now=1300)
+        self.assertIn("Sent " + when, stuck)
+        self.assertIn("No OK card yet?", stuck)
+        self.assertIn(">Send setup again<", stuck)
+        self.assertNotIn("Mark connected", stuck)
+        doc = {"rows": {}}
+        added = []
+        ga._SETUP_INFLIGHT.clear()
+        try:
+            opt = dict(known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
+                       poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer",
+                       add_bot=lambda *a, **k: added.append(1))
+            code, _ = ga.setup_send(doc, "otto", now=1000, **opt)
+            self.assertEqual(code, 200)
+            frozen = doc["rows"]["otto"]["message"]
+            code, _ = ga.setup_send(doc, "otto", now=1300, **opt)
+            self.assertEqual(code, 200)
+            self.assertEqual(added, [])
+            self.assertEqual(list(doc["rows"]), ["otto"])
+            self.assertEqual(doc["rows"]["otto"]["message"], frozen)
+            self.assertEqual(doc["rows"]["otto"]["status"], "sent")
+        finally:
+            ga._SETUP_INFLIGHT.clear()
 
 
 if __name__ == "__main__":

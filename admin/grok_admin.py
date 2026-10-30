@@ -3612,7 +3612,7 @@ def update_check_loop():
 SETUP_STUCK_S = 300
 SETUP_MSG_MAX = 4000
 SETUP_FILE = "setup-bots.json"
-_SETUP_STATUSES = ("not_set_up", "sent", "waiting", "failed", "cancelled", "connected")
+_SETUP_STATUSES = ("not_set_up", "sent", "failed", "connected")
 _SETUP_LOCK = threading.Lock()
 _SETUP_INFLIGHT = set()
 _WAKE_RE = re.compile(r"[A-Za-z][A-Za-z '’-]*")
@@ -3831,7 +3831,7 @@ def setup_draft(doc, slug, *, known, now, name=None, wake=None, computer=None):
     if not slug_ok(slug) or not isinstance(known, (set, list, tuple, frozenset, dict)) or slug not in known:
         return 404, {"error": "not found"}
     row = _setup_row(doc, slug)
-    if row.get("status") in ("sent", "waiting"):
+    if row.get("status") == "sent":
         return 409, {"error": "That setup was already sent."}
     if name is not None:
         got = clean_name(name)
@@ -3879,16 +3879,6 @@ def setup_dismiss_hint(doc, now):
     if isinstance(hint, dict) and hint.get("name"):
         doc["hint"] = {"name": hint["name"], "dismissed": True}
     return 200, {"ok": True, "setup": setup_public(doc, now)}
-
-
-def setup_transition(doc, slug, status, now=None):
-    """Store waiting or cancelled. Not an HTTP route: no authenticated bot ingress reports those states."""
-    if status not in ("waiting", "cancelled") or not slug_ok(slug) or not isinstance(doc, dict):
-        raise ValueError("status")
-    now = time.time() if now is None else now
-    row = _setup_row(doc, slug)
-    row["status"] = status
-    return setup_public(doc, now)
 
 
 def bots_setup_field():
