@@ -3763,20 +3763,6 @@ def _dotted_hline(surf, color, x, y, width, thick, dash):
         pos += dash + gap
 
 
-def fitted_step_lines(lines, face, width, height, gap):
-    """Lines that fit in the step box, whole lines only. A cut-off step ellipsizes the last one shown."""
-    line_h = face.get_height()
-    if line_h <= 0 or height < line_h or not lines:
-        return []
-    n = 0
-    while n < len(lines) and (n + 1) * line_h + n * gap <= height:
-        n += 1
-    shown = list(lines[:n])
-    if n < len(lines) and shown:
-        shown[-1] = ellipsize(face, shown[-1], width)
-    return shown
-
-
 def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     """One rail slot. Empty slots stay dashed; only slot 1 says "No timers"."""
     global LAST_RECIPE_COPY
@@ -3784,7 +3770,6 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     if slot.get("kind") == "empty":
         _dashed_rect(surf, RULE2, rect, max(1, recipe_px(L, 3)), recipe_px(L, 14), recipe_px(L, 10))
         if index == 0:
-            slot["label"] = "No timers"
             LAST_RECIPE_COPY.append("No timers")
             icon = _clock_icon(recipe_px(L, 64), RECIPE_FAINT)
             label = font("body", recipe_px(L, 40)).render("No timers", True, RECIPE_FAINT)

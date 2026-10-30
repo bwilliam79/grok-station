@@ -2747,6 +2747,9 @@ async def session(req):
                         st["heard"] = heard
                         # A timer offer is answered before stop, train, recipe commands, or the model.
                         offer_decision = classify_offer_reply(heard, st, offer_now())
+                        if offer_decision == "hold":
+                            st["buf"] = []
+                            continue
                         if offer_decision == "lapse":
                             await pi.send_json({"type": "recipe_caption", "text": "", "seconds": 0})
                         elif offer_decision == "cancel":
@@ -2778,6 +2781,9 @@ async def session(req):
                                                      voice, TTS_REPLY_S)
                                     log("recipe offer yes")
                                 else:
+                                    miss = offer_missed_say(out)
+                                    if miss:
+                                        await play_fixed(miss, voice, TTS_REPLY_S)
                                     log("recipe offer missed")
                             st["release_model"] = not persona_routed(st["persona"])
                             end = await end_routed_turn()
@@ -3722,11 +3728,27 @@ def _step_has_timer(timers, recipe_id, step):
     return False
 
 
+# Steps already offered, per recipe id, for the recipe's lifetime on the station (R2-3).
+# Not per voice session: a fresh "Hey Grok, next step" must not re-offer a declined step.
+OFFERED_STEPS = {}
+OFFERED_MAX = 8  # recipes remembered at once; the oldest is dropped
+
+
+def reset_offered_steps(recipe_id=None):
+    if recipe_id is None:
+        OFFERED_STEPS.clear()
+    else:
+        OFFERED_STEPS.pop(recipe_id, None)
+
+
 def remember_recipe(st, result):
     if not isinstance(st, dict):
         return
     if not isinstance(result, dict) or not result.get("ok") or result.get("closed"):
         if isinstance(result, dict) and result.get("closed"):
+            gone = result.get("id") or (st.get("recipe") or {}).get("id")
+            if isinstance(gone, str):
+                reset_offered_steps(gone)
             st.pop("recipe", None)
         return
     rid, step = result.get("id"), result.get("step")
@@ -3751,14 +3773,17 @@ def plan_step_offer(st, cmd, result, timers):
         return None
     if _step_has_timer(timers, rec["id"], rec["step"]):
         return None
-    key = (rec["id"], rec["step"])
-    offered = st.setdefault("offered_steps", set())
-    if key in offered and cmd != "repeat":
+    offered = OFFERED_STEPS.get(rec["id"])
+    if offered is not None and rec["step"] in offered and cmd != "repeat":
         return None
     built = cards.build_timer_offer(say, rec.get("dish"), rec["step"])
     if not built:
         return None
-    offered.add(key)
+    if offered is None:
+        while len(OFFERED_STEPS) >= OFFERED_MAX:
+            OFFERED_STEPS.pop(next(iter(OFFERED_STEPS)))
+        offered = OFFERED_STEPS[rec["id"]] = set()
+    offered.add(rec["step"])
     return built
 
 
@@ -3775,7 +3800,7 @@ def offer_open(off, now):
 
 
 def classify_offer_reply(heard, st, now=None):
-    """'yes', 'no', 'cancel', 'lapse', or None when no offer is waiting.
+    """'yes', 'no', 'cancel', 'lapse', 'hold', or None when no offer is waiting.
 
     Yes and no are whole utterances. Anything else cancels the offer so the command still runs.
     A window that has already ended lapses quietly.
@@ -3793,6 +3818,11 @@ def classify_offer_reply(heard, st, now=None):
         kind = load_cards().offer_answer(heard)
     except Exception:
         kind = None
+    if off.get("pending"):
+        # The offer is still playing (R2-7). A yes/no or a short fragment is held, not acted on;
+        # a real command (two or more words that are not an answer) still cancels and runs.
+        if kind in ("yes", "no") or len((heard or "").split()) < 2:
+            return "hold"
     if kind in ("yes", "no"):
         return kind
     st.pop("recipe_offer", None)
@@ -3810,6 +3840,12 @@ def arm_offer_window(st, now=None):
     off["until"] = now + OFFER_WINDOW_S
     off["pending"] = False
     return off
+
+
+def offer_missed_say(out):
+    """What Grok says when "yes" can't set the timer, e.g. "Eight timers are already running." (R2-4)."""
+    err = out.get("error") if isinstance(out, dict) else None
+    return err if isinstance(err, str) and err.strip() else None
 
 
 def offer_set_args(st):

@@ -749,26 +749,6 @@ def _ring_one(k, v):
                 timers_save()
 
 
-def alarm_repeat_due(elapsed, last):
-    """True when a ringing timer should chime again.
-
-    The ring itself is the tone at elapsed 0 (`last` 0). Then every 10 s through 2 minutes,
-    then every 60 s. Nothing at or after the one-hour drop.
-    """
-    try:
-        elapsed = float(elapsed)
-        last = float(last)
-    except (TypeError, ValueError):
-        return False
-    if elapsed >= 3600 or not elapsed > last:
-        return False
-    step = 10.0 if last < 120 else 60.0
-    nxt = last + step
-    if nxt >= 3600:
-        return False
-    return elapsed + 1e-9 >= nxt
-
-
 def catchup_mark(last, elapsed):
     """Latest repeat mark at or before elapsed, and after last. None when nothing new is due.
 

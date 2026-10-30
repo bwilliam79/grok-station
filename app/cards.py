@@ -727,7 +727,11 @@ def _recipe(card):
            "ingredients": _list(card.get("ingredients"), 1, 12, 48, escape_text),
            "steps": steps, "step": _int(card.get("step"), 1, len(steps))}
     if "dish" in card:
-        out["dish"] = _dish_name(card.get("dish"))
+        # A malformed dish is dropped, not the recipe: the card still shows (R2-5).
+        try:
+            out["dish"] = _dish_name(card.get("dish"))
+        except (CardError, TypeError, AttributeError, IndexError):
+            pass
     return out
 
 

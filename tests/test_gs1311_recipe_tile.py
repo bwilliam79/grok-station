@@ -237,8 +237,7 @@ class Rail(unittest.TestCase):
         gs.TIMER_EPOCH = EPOCH
         gs.draw_feed(surf, gs.Layout(*PANEL), NOW, dict(RECIPE))
         self.assertIn("No timers", gs.LAST_RECIPE_COPY)
-        self.assertEqual(gs.LAST_RECIPE_RAIL["slots"][0]["label"], "No timers")
-        self.assertNotIn("label", gs.LAST_RECIPE_RAIL["slots"][1])
+        self.assertEqual(gs.LAST_RECIPE_COPY.count("No timers"), 1)
 
 
 class Banner(unittest.TestCase):
@@ -392,17 +391,6 @@ class StopAndClose(unittest.TestCase):
         self.assertEqual(payload["mode"], "rings")
         self.assertEqual([r["title"] for r in payload["rings"]], ["Garlic Bread", "Orzo"])
         self.assertEqual(gs.timer_aria("Orzo", 462), "Orzo, 7 minutes 42 seconds left")
-
-    def test_tone_repeats_every_10s_then_every_60s_until_the_hour(self):
-        self.assertFalse(gw.alarm_repeat_due(0, 0))
-        self.assertFalse(gw.alarm_repeat_due(9, 0))
-        self.assertTrue(gw.alarm_repeat_due(10, 0))
-        self.assertTrue(gw.alarm_repeat_due(120, 110))
-        self.assertFalse(gw.alarm_repeat_due(121, 120))
-        self.assertTrue(gw.alarm_repeat_due(180, 120))
-        self.assertTrue(gw.alarm_repeat_due(3540, 3480))
-        self.assertFalse(gw.alarm_repeat_due(3600, 3540))
-        self.assertFalse(gw.alarm_repeat_due(4000, 3540))
 
 
 def _long_step():
@@ -919,8 +907,8 @@ class Rev4Dish(unittest.TestCase):
         self.assertEqual(named["dish"], "Orzo")
         self.assertEqual(cards.validate_card(dict(RECIPE, dish="Garlic Bread"))["dish"], "Garlic Bread")
         for bad in ("orzo", "ORZO", "Garlic bread", "x" * 17, ""):
-            with self.assertRaises(cards.CardError):
-                cards.validate_card(dict(RECIPE, dish=bad))
+            # 0.13.10 (R2-5): a malformed dish is dropped and the recipe still validates.
+            self.assertNotIn("dish", cards.validate_card(dict(RECIPE, dish=bad)))
         hit = cards.step_time("Boil the orzo for 10 minutes, then rest 5 minutes.")
         self.assertEqual(hit["seconds"], 600)
         self.assertEqual(hit["minutes"], 10)
@@ -1127,6 +1115,9 @@ class Rev4Highlight(unittest.TestCase):
 
 
 class Rev4Offer(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        _ensure_relay().reset_offered_steps()  # offered steps live per recipe now (R2-3)
+
     async def _turns(self, lines, recipe_for, *, silence=False):
         from aiohttp import web, WSMsgType
         from aiohttp.test_utils import TestClient, TestServer
@@ -1255,6 +1246,7 @@ class Rev4Offer(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Okay.", replies)
         self.assertFalse(any(e.get("type") == "timer_set" for e in events))
         self.assertEqual(posted, ["next", "repeat"])
+        _ensure_relay().reset_offered_steps()  # a fresh recipe; R2-3 keeps offers per recipe
         events, posted = await self._turns(["next step", "yes", "repeat"], self._step)
         replies = self._replies(events)
         self.assertEqual(replies.count("Want a 10-minute timer for the orzo?"), 1)
@@ -1268,6 +1260,7 @@ class Rev4Offer(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Okay.", replies)
         self.assertEqual(posted, ["next", "next"])
         self.assertFalse(any(e.get("type") == "timer_set" for e in events))
+        _ensure_relay().reset_offered_steps()  # a fresh recipe; R2-3 keeps offers per recipe
         events, _posted = await self._turns(["next step"], self._step, silence=True)
         replies = self._replies(events)
         self.assertIn("Want a 10-minute timer for the orzo?", replies)
