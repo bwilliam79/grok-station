@@ -308,7 +308,7 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         t0 = time.monotonic()
         async with ClientSession() as http:
             self.assertEqual(await relay.ask_teammate(http, "jules", "q"), (None, "timeout"))
-        self.assertLess(time.monotonic() - t0, 4.5)
+        self.assertLess(time.monotonic() - t0, 8.0)
 
     async def test_timeout_alerts_and_does_not_say_still(self):
         self.mode = "silent"

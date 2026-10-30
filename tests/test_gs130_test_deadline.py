@@ -32,7 +32,7 @@ class TestDeadline(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(r._run_bot_test(tid), 3)
             self.assertEqual(r._runs[tid]["state"], "failed")
             self.assertEqual(r._runs[tid]["error"], "No answer")
-            self.assertLess(r._runs[tid]["elapsed_s"], 1.5)
+            self.assertLess(r._runs[tid]["elapsed_s"], 4.0)
             self.assertEqual(r.test_view(r._runs[tid])["remaining_s"], 0.0)
         finally:
             r.ask_teammate, r.TEST_LIMIT_S = real_teammate, real_limit

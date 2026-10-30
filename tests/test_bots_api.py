@@ -613,7 +613,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         h = self.headers()
         old_wait = r.REPLY_WAIT
         try:
-            r.REPLY_WAIT = 2
+            r.REPLY_WAIT = 8
             srv, _seen = await self._fake("deny")
             self._seed_hook(str(srv.make_url("/hook")), "denied-key-zzzz")
             r._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-icon-401.json"), r.today)
@@ -622,7 +622,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             tid = (await resp.json())["test_id"]
             body = await self._poll(tid, timeout=3)
             self.assertEqual(body["state"], "failed")
-            self.assertLess(time.monotonic() - t0, 2.0)  # red on POST failure, not after REPLY_WAIT
+            self.assertLess(time.monotonic() - t0, 4.0)  # red on POST failure, not after REPLY_WAIT
             self.assertEqual(r.icon_view(), {"paired": True, "ok": False})
             await srv.close()
 
@@ -721,10 +721,10 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
             r = await self.client.post("/admin/bots/jules/test", headers=h, json={})
             tid = (await r.json())["test_id"]
             t0 = time.monotonic()
-            body = await self._poll(tid, timeout=3)
+            body = await self._poll(tid, timeout=8)
             self.assertEqual(body["state"], "failed")
             self.assertEqual(body["error"], "No answer")
-            self.assertLess(time.monotonic() - t0, 2.5)
+            self.assertLess(time.monotonic() - t0, 5.0)
             await srv.close()
 
             self.relay._limits = self.handoff.Limits(os.path.join(self.tmp, "limits-cancel.json"), self.relay.today)

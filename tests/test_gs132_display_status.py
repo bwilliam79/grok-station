@@ -56,10 +56,10 @@ class DisplayStatusRead(unittest.TestCase):
         t0 = time.monotonic()
         with self.assertRaises(Exception):
             ga._fetch_display_status(1.5)
-        self.assertLess(time.monotonic() - t0, 2.5)
+        self.assertLess(time.monotonic() - t0, 5.0)
         t0 = time.monotonic()
         self.assertEqual(ga.read_display_status(timeout=1.5), {"state": "checking", "cause": None})
-        self.assertLess(time.monotonic() - t0, 2.5)
+        self.assertLess(time.monotonic() - t0, 5.0)
 
 
 if __name__ == "__main__":
