@@ -414,7 +414,7 @@ a.need:hover{text-decoration:underline}
   .botrow .ww{min-height:28px}
   .botrow .tog::before{inset:-11px -2px}
   .bmsg::before{inset:-12px -4px}
-  .pop{position:fixed;left:0;right:0;bottom:0;width:auto;border-radius:18px 18px 0 0;padding:12px 20px 34px;z-index:5}
+  .pop{position:fixed;left:0;right:0;bottom:0;width:auto;border-radius:18px 18px 0 0;padding:12px 20px calc(84px + env(safe-area-inset-bottom));z-index:5}
   .pop::before{content:"";display:block;width:36px;height:4px;border-radius:4px;background:var(--gs-rule-2);margin:0 auto 14px}
   .pop .acts .btn{width:100%;min-height:48px}
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4}
