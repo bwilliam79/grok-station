@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Item 2 (approved): copy names the configured main bot, never a hard-coded Juniper.
 
-Fallback: "Your main bot" at the start of a sentence, "your main bot" mid-sentence.
+Fallback: "your main bot" mid-sentence. The callout copy (sentence-start "Your main bot") returns in 0.13.9.
 """
-import json
 import os
 import shutil
 import sys
@@ -16,22 +15,12 @@ STUBS = "function routineForBot() { return ''; }\nfunction botIdFromName(n) { re
     _fn("teamSetupMessage")
 
 
-def _callout(bots):
-    return _run("botsCalloutHTML(%s)" % json.dumps({"bots": bots, "pending": [{"name": "Otto"}, {"name": "Pip"}], "behind": []}))
-
-
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class MainBotName(unittest.TestCase):
     def test_no_hard_coded_juniper_in_copy(self):
         for line in JS.splitlines():
             if "Juniper" in line:
                 self.assertTrue(line.strip().startswith("//"), line)
-
-    def test_callout_start_of_sentence(self):
-        self.assertIn(">Wren can send each one its setup message. You review it first.<",
-                      _callout([{"slug": "w", "name": "Wren", "main": True}]))
-        self.assertIn(">Your main bot can send each one its setup message. You review it first.<",
-                      _callout([{"slug": "o", "name": "Otto"}]))
 
     def test_team_setup_message_mid_sentence(self):
         named = _run("teamSetupMessage([], {_bots: [{slug: 'w', name: 'Wren', main: true}]})", STUBS)

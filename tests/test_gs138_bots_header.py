@@ -32,8 +32,7 @@ def _icons():
 def _run(expr, extra=""):
     src = "\n".join(_fn(n) for n in (
         "joinBotNames", "botsCalloutKind", "botsQuietHidden", "botsHeaderShell",
-        "botsCalloutHTML", "revokeAllCopy", "openConfigureAll"))
-    # openConfigureAll calls pendingTeammates / addBot; the expression stubs them when it needs to.
+        "botsCalloutHTML", "revokeAllCopy"))
     prog = "const esc = s => String(s == null ? '' : s);\n" + _icons() + "\n" + extra + "\n" + src + \
         "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
     out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, check=True)
@@ -71,17 +70,12 @@ class BotsHeader(unittest.TestCase):
         self.assertIn("Juniper, Otto and Pip · Station routine is out of date. Updates keep their settings.", upd)
         self.assertIn(">Update all (3)<", upd)
         self.assertIn('class="callout amb"', upd)
-        cfg = _run("botsCalloutHTML(%s)" % json.dumps(_opts(
+        # 0.13.8 holds the Configure all / Set up callout for 0.13.9 (Noor option C).
+        self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts(
             [{"slug": "j", "name": "Juniper", "main": True}],
-            [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}])))
-        self.assertIn("3 bots not connected", cfg)
-        self.assertIn("Juniper can send each one its setup message. You review it first.", cfg)
-        self.assertIn(">Configure all<", cfg)
-        self.assertIn('id="cfgall"', cfg)
-        one = _run("botsCalloutHTML(%s)" % json.dumps(_opts(
-            [{"slug": "j", "name": "Juniper"}], [{"name": "Otto"}])))
-        self.assertIn("1 bot not connected", one)
-        self.assertIn(">Set up Otto<", one)
+            [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}]))), "")
+        self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts(
+            [{"slug": "j", "name": "Juniper"}], [{"name": "Otto"}]))), "")
         self.assertEqual(_run("botsCalloutHTML(%s)" % json.dumps(_opts([{"slug": "j", "name": "Juniper"}]))), "")
 
     def test_header_shell_and_phone_quiet_line(self):
@@ -112,25 +106,6 @@ class BotsHeader(unittest.TestCase):
         one = _run("revokeAllCopy(['Otto'])")
         self.assertEqual(one["title"], "Revoke all 1 bot?")
         self.assertIn("Otto stops replying", one["body"])
-
-    def test_configure_all_button_uses_existing_setup_for_one_name(self):
-        extra = """
-        function pendingTeammates() { return PENDING; }
-        function addBot(voices, el, preset) { OPENED = preset; }
-        let PENDING = [];
-        let OPENED = null;
-        """
-        # The function reads pendingTeammates(el). Stub ignores args.
-        opened = _run("((PENDING = [{name: 'Otto'}]), openConfigureAll({_voices: []}), OPENED)", extra)
-        self.assertEqual(opened, {"name": "Otto"})
-        # Several names: Configure all opens setup for the first one (Bugbot PR 2: it used to do nothing).
-        first = _run("((PENDING = [{name: 'Otto'}, {name: 'Pip'}]), OPENED = 'untouched', openConfigureAll({}), OPENED)", extra)
-        self.assertEqual(first, {"name": "Otto"})
-        none = _run("((PENDING = []), OPENED = 'untouched', openConfigureAll({}), OPENED)", extra)
-        self.assertEqual(none, "untouched")
-        src = _fn("paintBotCallout")
-        self.assertIn("openConfigureAll(el)", src)
-        self.assertIn('id="cfgall"', _fn("botsCalloutHTML"))
 
 
 if __name__ == "__main__":

@@ -3010,7 +3010,7 @@ function joinBotNames(names) {
   if (list.length === 2) return list[0] + " and " + list[1];
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
 }
-// rev3: 2+ not set up → Configure all; exactly one → Set up {bot}. Update wins over either.
+// rev3 kinds: 2+ not set up → "configure"; exactly one → "setup" (0.13.8 renders neither). Update wins over either.
 // "Not set up" is an imported name that is not a bot yet (pendingTeammates). Not gated on the main bot.
 function botsCalloutKind(opts) {
   opts = opts || {};
@@ -3038,7 +3038,6 @@ function botsHeaderShell() {
 function botsCalloutHTML(opts) {
   const kind = botsCalloutKind(opts);
   const behind = (opts && opts.behind) || [];
-  const pending = (opts && opts.pending) || [];
   if (kind === "empty") {
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">Add your main bot first</div>` +
       `<div class="help">You set it up by hand once. Then it can set up the rest.</div></div></div>`;
@@ -3050,16 +3049,7 @@ function botsCalloutHTML(opts) {
       `<div class="help">${esc(names)} · Station routine is out of date. Updates keep their settings.</div></div>` +
       `<button class="btn p sm" id="updallbtn" type="button">Update all (${n})</button></div>`;
   }
-  if (kind === "configure" || kind === "setup") {
-    const n = pending.length;
-    const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
-    const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
-    const main = ((opts && opts.bots) || []).filter(b => b && b.main)[0];
-    const mainName = (main && (main.name || main.slug)) || "Your main bot";
-    return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
-      `<div class="help">${esc(mainName)} can send each one its setup message. You review it first.</div></div>` +
-      `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
-  }
+  // 0.13.8: "configure" and "setup" render nothing. 0.13.9 restores that callout with its "Set up bots" list.
   return "";
 }
 function revokeAllCopy(names) {
@@ -3072,11 +3062,6 @@ function revokeAllCopy(names) {
   const help = "To bring a bot back, connect it again from the Bots page. Grok keeps working.";
   const action = n ? ("Revoke all " + n + (n === 1 ? " bot" : " bots")) : "Revoke all bots";
   return {title: title, body: body, help: help, action: action};
-}
-// Set up (addBot) for the first name not set up yet. With several, each press takes the next one.
-function openConfigureAll(el) {
-  const pending = pendingTeammates(el);
-  if (pending.length) addBot((el && el._voices) || [], el, {name: pending[0].name});
 }
 function paintBotCallout(el) {
   const bots = (el && el._bots) || [];
@@ -3093,8 +3078,6 @@ function paintBotCallout(el) {
       if (send.length) rowUpdateStart(send);
       if (rows.some(r => r.state === "copy")) openFinishDialog({all: true});
     };
-    const cfg = $("#cfgall", host);
-    if (cfg) cfg.onclick = () => openConfigureAll(el);
   }
   const qs = document.getElementById("botqs");
   if (qs) {

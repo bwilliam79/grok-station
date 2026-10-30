@@ -1,42 +1,14 @@
 #!/usr/bin/env python3
 """Bugbot findings on PR 2 (0.13.8 RC).
 
-B1 Medium: Configure all (2+ names not set up) did nothing.
-B2 Low: the not-connected callout always named Juniper.
+B1/B2 (Configure all callout) are held for 0.13.9 with that callout: see test_gs138_c_hold_callout.py.
 B3 Medium: a failed wake enroll start was ignored after the spoken intro.
 """
-import json
 import os
-import shutil
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_gs138_bots_header import _run  # noqa: E402
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-@unittest.skipUnless(shutil.which("node"), "node not installed")
-class ConfigureAllCallout(unittest.TestCase):
-    def test_configure_all_starts_setup_for_the_first_pending_name(self):
-        stub = ("const calls = [];\n"
-                "function pendingTeammates(el) { return [{name: 'Otto'}, {name: 'Pip'}]; }\n"
-                "function addBot(voices, el, o) { calls.push(o && o.name); }\n")
-        got = _run("(openConfigureAll({_voices: []}), calls)", stub)
-        self.assertEqual(got, ["Otto"])
-
-    def test_callout_names_the_main_bot(self):
-        opts = {"bots": [{"slug": "w", "name": "Wren", "main": True}, {"slug": "j", "name": "Juniper"}],
-                "pending": [{"name": "Otto"}, {"name": "Pip"}], "behind": []}
-        html = _run("botsCalloutHTML(%s)" % json.dumps(opts))
-        self.assertIn("Wren can send each one its setup message.", html)
-        self.assertNotIn("Juniper can", html)
-
-    def test_callout_without_a_main_bot_is_generic(self):
-        opts = {"bots": [{"slug": "j", "name": "Juniper"}], "pending": [{"name": "Otto"}], "behind": []}
-        html = _run("botsCalloutHTML(%s)" % json.dumps(opts))
-        self.assertIn("Your main bot can send each one its setup message.", html)
 
 
 class EnrollStartFailure(unittest.TestCase):
