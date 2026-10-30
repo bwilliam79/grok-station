@@ -150,5 +150,42 @@ class R3ScrimCoversHeaderAndTabBar(unittest.TestCase):
             self.assertIn(d["bar"], ("scrim", "sheet"), (w, d))
 
 
+KEY_PROBE = """
+  const added = [], removed = [];
+  const ae = document.addEventListener.bind(document), re_ = document.removeEventListener.bind(document);
+  document.addEventListener = (t, f, o) => { added.push(t); ae(t, f, o); };
+  document.removeEventListener = (t, f, o) => { removed.push(t); re_(t, f, o); };
+  const outside = document.createElement('button'); outside.id = 'outside'; outside.textContent = 'x';
+  document.body.appendChild(outside);
+  const btn = document.querySelector('.ssub[data-ssub="maple"]');
+  const open = () => showSetupMessage(btn, document.body, rows[2], {mainName:'Juniper', now:%d});
+  // 1: focus leaves the popover (Tab out) -> it closes.
+  open(); document.getElementById('smsgx').focus(); outside.focus();
+  res.closedOnFocusOut = !document.getElementById('smsgpop');
+  // 2: if focus sits outside while still open, Esc on the document closes it and returns focus to the row.
+  open();
+  if (document.getElementById('smsgpop')) {
+    document.body.focus();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+  }
+  res.closedOnDocEsc = !document.getElementById('smsgpop');
+  res.focusBack = document.activeElement === btn;
+  // 3: listeners added while open are all removed on close.
+  const cnt = a => a.filter(t => t === 'keydown' || t === 'focusin').length;
+  res.added = cnt(added); res.removed = cnt(removed);
+""" % NOW
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class R4DesktopPopoverEscAndFocusOut(unittest.TestCase):
+    def test_esc_on_document_and_focus_leaving_close_it(self):
+        d = chrome(1280, KEY_PROBE)
+        self.assertTrue(d["closedOnFocusOut"], d)
+        self.assertTrue(d["closedOnDocEsc"], d)
+        self.assertTrue(d["focusBack"], d)
+        self.assertGreater(d["added"], 0, d)
+        self.assertEqual(d["added"], d["removed"], d)
+
+
 if __name__ == "__main__":
     unittest.main()

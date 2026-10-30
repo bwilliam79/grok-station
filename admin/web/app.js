@@ -3237,12 +3237,18 @@ function showSetupMessage(btn, el, row, opts) {
     const live = slug ? document.querySelector('.ssub[data-ssub="' + slug + '"]') : null;
     if (live && live.focus) live.focus();
   };
-  const close = () => {
+  let closed = false;
+  // refocus=false when focus already moved somewhere else on its own (Tab out of the popover).
+  const close = refocus => {
+    if (closed) return;
+    closed = true;
     if (botMessageCloser === close) botMessageCloser = null;
     document.removeEventListener("click", onDoc);
+    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("focusin", onFocusIn);
     btn.setAttribute("aria-expanded", "false");
     if (wrap.parentNode) wrap.remove();
-    back();
+    if (refocus !== false) back();
   };
   const onDoc = ev => {
     if (!wrap.isConnected) { document.removeEventListener("click", onDoc); return; }
@@ -3250,7 +3256,9 @@ function showSetupMessage(btn, el, row, opts) {
     if (btn.contains && btn.contains(ev.target)) return;
     close();
   };
-  wrap.addEventListener("keydown", ev => {
+  // Listen on the document while open, so Esc still works after focus leaves the popover.
+  const onKey = ev => {
+    if (!wrap.isConnected) { close(false); return; }
     if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
     if (!phone || ev.key !== "Tab" || !pop) return;
     const list = Array.prototype.filter.call(pop.querySelectorAll("button, [href]"), n => !n.disabled);
@@ -3258,7 +3266,16 @@ function showSetupMessage(btn, el, row, opts) {
     const first = list[0], last = list[list.length - 1];
     if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
     else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
-  });
+  };
+  // Focus moving to anything outside the popover (and its row button) closes it, leaving focus where it went.
+  const onFocusIn = ev => {
+    const t = ev.target;
+    if (!wrap.isConnected) { close(false); return; }
+    if (wrap.contains(t) || (btn.contains && btn.contains(t))) return;
+    close(false);
+  };
+  document.addEventListener("keydown", onKey);
+  document.addEventListener("focusin", onFocusIn);
   const scrim = wrap.querySelector("[data-smsg-scrim]");
   if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
   const x = $("#smsgx", wrap);
