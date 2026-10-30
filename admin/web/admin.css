@@ -579,7 +579,7 @@ p#emptybot{margin:10px 2px 0}
 .nmrow:first-child{border-top:0}
 .ferr{color:var(--gs-amber);font-size:var(--fs-help);margin-top:6px}
 .wake{color:var(--gs-teal);font-weight:600}
-a.iback{display:inline-flex;align-items:center;font:500 var(--fs-help)/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:24px;margin:0 0 6px}
+a.iback{display:inline-flex;align-items:center;font:500 var(--fs-help)/1.2 var(--body);color:var(--gs-muted);text-decoration:none;min-height:44px;margin:0 0 6px}
 a.iback:hover{color:var(--gs-text);text-decoration:underline}
 a.iback:focus-visible{outline:3px solid rgba(63,211,182,.30);outline-offset:2px;color:var(--gs-text)}
 .mhead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
