@@ -3155,7 +3155,10 @@ function setupRowHTML(row, opts) {
   const m = setupRowModel(row, opts);
   const expanded = !!opts.expanded;
   const letter = esc(String((row.name || row.slug || "?").trim().slice(0, 1).toUpperCase() || "?"));
-  const chip = '<div class="schip ' + m.colour + '" role="status">' + setupIcon(m.icon) + "<span>" + esc(m.text) + "</span></div>";
+  const chip = '<span class="schip ' + m.colour + '">' + setupIcon(m.icon) + "<span>" + esc(m.text) + "</span></span>";
+  // The Sent sub-line ("No OK card yet?") sits next to the chip, on the status line.
+  const stuckSub = m.status === "sent" && m.sub ? '<span class="ssub2 help">' + esc(m.sub) + "</span>" : "";
+  const line = '<div class="sline" role="status">' + chip + stuckSub + "</div>";
   let disc = "";
   if (m.disclose) {
     disc = '<button class="disc" type="button" data-slug="' + esc(row.slug || "") + '" aria-expanded="' +
@@ -3171,7 +3174,7 @@ function setupRowHTML(row, opts) {
   });
   if (m.sendBlocked) acts += '<div class="help" id="' + esc(m.hintId) + '">' + esc(m.block) + "</div>";
   let sub = "";
-  if (m.sub) sub += '<div class="help">' + esc(m.sub) + "</div>";
+  if (m.sub && m.status !== "sent") sub += '<div class="help">' + esc(m.sub) + "</div>";
   if (m.again) {
     sub += '<div class="help">' + esc(m.again) + ' <button type="button" class="tlnk" data-act="maintest" data-slug="' +
       esc(row.slug || "") + '">' + esc(m.testLink) + "</button></div>";
@@ -3184,7 +3187,7 @@ function setupRowHTML(row, opts) {
   }
   return '<div class="setr">' +
     '<span class="avwrap" data-slug="' + esc(row.slug || "") + '"><span class="monoav">' + letter + "</span></span>" +
-    '<div><div class="lbl">' + esc(row.name || "") + "</div>" + chip + "</div>" +
+    '<div class="sinfo"><div class="lbl">' + esc(row.name || "") + "</div>" + line + "</div>" +
     disc + '<div class="sendc2">' + acts + sub + "</div></div>" + steps;
 }
 function setupListHTML(rows, opts) {
