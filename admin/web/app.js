@@ -5612,16 +5612,26 @@ function graceFormHTML(view) {
     <div id="ge"></div>
     <div class="field"><button class="btn p" id="gsave" type="button" disabled aria-describedby="gnoch">Save</button><span class="help" id="gnoch">No changes</span></div></form>`;
 }
+// 0.13.9 fix round item 7 (Noor gs-fixround-0139 rev1): grouped System page. Template and CSS only; every id and handler is unchanged.
+const SYS_CHEV = '<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function sysGroup(id, title, sum, inner, open) {
+  return `<details class="sysgrp" id="${id}"${open ? " open" : ""}><summary><h2>${title}</h2><span class="sum">${sum}</span>${SYS_CHEV}</summary><div class="sysin">${inner}</div></details>`;
+}
 async function pageSystem(el) {
-  el.innerHTML = `<div class="card" id="hl"><h2>Health</h2></div>
-    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>
+  el.innerHTML = sysGroup("g-status", "Status", "CPU, memory, disk, services, network", `<div id="hl"></div>`, true) +
+    sysGroup("g-sec", "Password and security", "Admin password, ask again, certificate", `
+    <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
+      ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
+    <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>
+    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>`, false) +
+    sysGroup("g-trouble", "Troubleshooting", "Logs, restart voice", `
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><label for="lp">Log</label><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <label for="ls">Time range</label><select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
       <div class="log" id="log" style="margin-top:12px">Pick a part and press Show.</div></div>
-    <div class="card"><h2>Restart</h2><div class="inline" style="margin-top:8px"><button class="btn" id="rv">Restart voice only</button><button class="btn dg" id="rb">Reboot station…</button><button class="btn g" id="again">Run setup again</button></div><div id="se"></div></div>
-    <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
-      ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
-    <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>`;
+    <div class="card"><h2>Restart voice</h2><div class="row sysrv"><span class="help">Restarts the voice listener only. The screen and settings stay as they are.</span><button class="btn" id="rv">Restart voice only</button></div><div id="se"></div></div>`, false) +
+    `<section class="danger sysdanger" aria-labelledby="dzh"><h3 id="dzh">Danger zone</h3>
+    <div class="drow2"><div class="dm"><b>Reboot station</b><span>Back in about a minute. A conversation in progress is cut off.</span></div><button class="btn dg" id="rb">Reboot station…</button></div>
+    <div class="drow2"><div class="dm"><b>Run setup again</b><span>Opens the setup steps again. Your bots and settings are kept until you change them.</span></div><button class="btn dg" id="again">Run setup again</button></div></section>`;
   wirePw("np1", "np2", $("#pgo", el));
   $("#pw", el).onsubmit = async ev => {
     ev.preventDefault();
@@ -5693,7 +5703,7 @@ async function pageSystem(el) {
   const t = s.tls || {};
   $("#tls", el).innerHTML = `<h2>Security certificate</h2><p class="help">This station's own certificate. If the browser warns, match its SHA-256 to this fingerprint (also on the station screen for 10 minutes after a new one), then trust it.</p>
     <div class="certline"><span class="fp-lab">SHA-256</span>${staticValue("tlsfp", t.fingerprint || "", "certificate fingerprint", "n/a")}</div>`;
-  $("#hl", el).innerHTML = `<h2>Health</h2>
+  $("#hl", el).innerHTML = `
     <div class="row"><span>CPU temperature</span><span class="right mono">${hh.cpu_c != null ? hh.cpu_c + " °C" : "n/a"}</span></div>
     <div class="row"><span>Uptime</span><span class="right mono">${hh.uptime_s != null ? Math.floor(hh.uptime_s / 86400) + "d " + Math.floor(hh.uptime_s % 86400 / 3600) + "h" : "n/a"}</span></div>
     <div class="row"><span>Memory used</span><span class="right mono">${hh.mem_used_pct != null ? hh.mem_used_pct + "%" : "n/a"}</span></div>

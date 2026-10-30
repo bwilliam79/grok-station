@@ -817,3 +817,32 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   .vtipbtn .vtl{display:none}
   .vtippop{position:fixed;left:0;right:0;top:var(--vtip-top,64px);width:auto;border-radius:0 0 12px 12px}
 }
+/* rev1 item 7 (0.13.9): grouped System page. Existing tokens only. */
+.sysgrp{background:var(--gs-surface);border:1px solid var(--gs-rule);border-radius:var(--gs-radius-md)}
+.sysgrp>summary{list-style:none;display:flex;align-items:center;gap:var(--sp-3);min-height:56px;padding:var(--sp-3) 22px;cursor:pointer;border-radius:var(--gs-radius-md)}
+.sysgrp>summary::-webkit-details-marker{display:none}
+.sysgrp>summary h2{font:600 var(--fs-h3) var(--disp);margin:0}
+.sysgrp>summary .sum{margin-left:auto;color:var(--gs-muted);font-size:var(--fs-help);text-align:right}
+.sysgrp>summary .chev{flex:none;width:16px;height:16px;color:var(--gs-muted);transition:transform .15s}
+.sysgrp[open]>summary .chev{transform:rotate(180deg)}
+.sysgrp>summary:hover{background:var(--gs-surface-2)}
+.sysgrp>summary:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
+.sysgrp[open]>summary{border-bottom:1px solid var(--gs-rule);border-radius:var(--gs-radius-md) var(--gs-radius-md) 0 0}
+.sysgrp .sysin{padding:var(--sp-2) 22px var(--sp-5)}
+.sysgrp .sysin>.card{background:transparent;border:0;border-radius:0;padding:var(--sp-4) 0 0}
+.sysgrp .sysin>.card+.card{border-top:1px solid var(--gs-rule);margin-top:var(--sp-4)}
+.sysgrp .sysin>.card h2{font:600 var(--fs-label) var(--body);color:var(--gs-text);margin-bottom:var(--sp-1)}
+.sysgrp .row{min-height:48px}
+.danger.sysdanger{margin-top:var(--sp-2);border:1px solid #5A4416;border-radius:var(--gs-radius-md);padding:18px 22px}
+.sysdanger h3{font:600 var(--fs-body) var(--body);color:var(--gs-amber);margin-bottom:var(--sp-3)}
+.sysdanger .drow2{display:flex;align-items:center;gap:var(--sp-4);min-height:56px;border-top:1px solid var(--gs-rule)}
+.sysdanger .drow2:first-of-type{border-top:0}
+.sysdanger .drow2 .dm{flex:1;min-width:0}.sysdanger .drow2 .dm b{font-weight:500;display:block}.sysdanger .drow2 .dm span{color:var(--gs-muted);font-size:var(--fs-help)}
+@media (max-width:767px){.sysgrp>summary{min-height:56px;padding:var(--sp-3) var(--sp-4)}.sysgrp .sysin{padding:var(--sp-2) var(--sp-4) var(--sp-5)}
+ .sysgrp>summary .sum{display:none}.sysdanger .drow2{flex-direction:column;align-items:stretch;gap:var(--sp-2);padding:var(--sp-3) 0}.sysdanger .drow2 .btn{min-height:44px;width:100%}}
+.danger.sysdanger{display:block}
+.sysdanger .drow2 .btn{margin-left:auto;flex:none;min-width:160px}
+.sysgrp>summary .chev{display:block;min-width:16px}
+@media (max-width:767px){.sysgrp>summary .chev{margin-left:auto}.sysdanger .drow2 .btn{margin-left:0}}
+.sysgrp .sysin legend{font:600 var(--fs-label) var(--body);color:var(--gs-text);margin-bottom:var(--sp-1)}
+.sysrv{border:0;padding-top:4px;gap:var(--sp-3)}.sysrv .help{flex:1}
