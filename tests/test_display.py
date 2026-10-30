@@ -289,9 +289,9 @@ class EnrollScreens(unittest.TestCase):
         self.assertEqual(gs.enroll_copy("Hey Finn", 1, 10, "prompt", "")[3], "10 clips · about 1 min")
         self.assertEqual(gs.enroll_copy("Hey Finn", 3, 10, "ready", "")[3], "Clip 3 of 10")
         self.assertEqual(gs.enroll_copy("Hey Finn", 3, 10, "saved", "")[3], "3 of 10")
-        self.assertEqual(gs.enroll_copy("Hey Finn", 1, 5, "count", "3")[0], "3")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 1, 5, "count", "3")[0], "Say “Hey Finn”")  # 0.13.9 1a: phrase stays the heading
         self.assertEqual(gs.enroll_copy("Hey Finn", 1, 5, "count", "3")[1], "Recording in 3…")
-        self.assertEqual(gs.enroll_copy("Hey Finn", 1, 5, "recording", "")[0], "Listening… 1 of 5")
+        self.assertEqual(gs.enroll_copy("Hey Finn", 1, 5, "recording", "")[:2], ("Say “Hey Finn”", "Listening… Clip 1 of 5"))
         self.assertIn("2nd in line", gs.enroll_copy("Hey Finn", 0, 0, "queued", "2")[1])
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "10")[0], "Needs 10 more clips")
         self.assertEqual(gs.enroll_copy("Hey Finn", 0, 0, "failed", "")[0], "Needs 5 more clips")
