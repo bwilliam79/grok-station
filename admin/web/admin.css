@@ -355,6 +355,8 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .bmsg:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
 #bmsgpop{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
 #bmsgpop .pop,#bmsgpop .scrim{pointer-events:auto}
+#pendpop{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
+#pendpop .pop,#pendpop .scrim{pointer-events:auto}
 .pop{position:absolute;z-index:5;width:360px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:16px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
 .pop h3{display:flex;gap:8px;color:var(--gs-amber);font:600 var(--fs-label) var(--body);margin-bottom:6px}
 .pop p{font-size:var(--fs-label);color:var(--gs-text);line-height:1.45}
