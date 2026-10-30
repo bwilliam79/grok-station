@@ -44,6 +44,7 @@ def _run(expr):
     names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark",
              "setupOwnerLabel", "setupSteps",
              "setupMessage", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
+             "setupSendResult",
              "botsCalloutKind", "botsCalloutHTML")
     src = "\n".join(_fn(n) for n in names)
     prog = "const esc = s => String(s == null ? '' : s);\n" + _icons() + "\n" + src + \
@@ -572,6 +573,38 @@ class Rev33WebhookLine(unittest.TestCase):
         self.assertIn("<ol", opened)
         self.assertEqual(opened.count("<li>"), 4)
         self.assertIn("Only go ahead if Sam says yes.", opened)
+
+
+class Rev33SendFailure(unittest.TestCase):
+    """An unknown send failure names the bot. The main-bot sentence appears only when the server says it."""
+
+    def test_unknown_failure_toast_and_send_again(self):
+        start = JS.index("function setupSend(")
+        src = JS[start:JS.index("\nfunction ", start)]
+        self.assertNotIn("Update the main bot first.", src)
+        unknown = _run("setupSendResult(%s, 'Otto')" % json.dumps({"ok": False, "status": 500, "data": {}}))
+        self.assertEqual(unknown, {"toast": "Setup didn't send to Otto. Try again.", "row": "again"})
+        blank = _run("setupSendResult(%s, 'Otto')" % json.dumps({"ok": False, "status": 409, "data": {}}))
+        self.assertEqual(blank["toast"], "Setup didn't send to Otto. Try again.")
+        self.assertEqual(blank["row"], "again")
+        main = _run("setupSendResult(%s, 'Otto')" % json.dumps(
+            {"ok": False, "status": 409, "data": {"error": "Update the main bot first."}}))
+        self.assertEqual(main["toast"], "Update the main bot first.")
+        self.assertNotEqual(main["row"], "again")
+        named = _run("setupSendResult(%s, 'Otto')" % json.dumps(
+            {"ok": False, "status": 409, "data": {"error": "Update Juniper first"}}))
+        self.assertEqual(named["toast"], "Update Juniper first")
+        self.assertNotIn("Update the main bot first.", named["toast"])
+        reach = _run("setupSendResult(%s, 'Otto')" % json.dumps(
+            {"ok": False, "status": 502, "data": {"error": "Couldn't reach Juniper", "setup": {"rows": {}}}}))
+        self.assertEqual(reach["toast"], "")
+        self.assertEqual(reach["row"], "retry")
+        html = _html(dict(OTTO, unknown=True))
+        self.assertIn("Setup didn't send to Otto. Try again.", html)
+        self.assertIn(">Send setup again<", html)
+        self.assertNotIn(">Send setup<", html)
+        self.assertNotIn("Update the main bot first.", html)
+        self.assertIn('class="schip amb"', html)
 
 
 if __name__ == "__main__":

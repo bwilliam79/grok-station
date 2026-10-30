@@ -3111,7 +3111,9 @@ function setupRowModel(row, opts) {
   const blocked = !!opts.sendBlocked;
   const quiet = status === "connected" || status === "already";
   let icon = "dash", text = "Not set up", sub = "", again = "", colour = "mut";
-  const actions = [];
+  let actions = [];
+  let editOff = status === "sent";
+  let showStuck = stuck;
   if (status === "not_set_up") {
     actions.push({act: "send", label: "Send setup", primary: true, blocked: blocked});
   } else if (status === "sent") {
@@ -3131,12 +3133,20 @@ function setupRowModel(row, opts) {
   } else {
     icon = "ok"; text = copy.already; colour = "teal";
   }
+  if (row.unknown && status !== "failed" && status !== "connected" && status !== "already") {
+    icon = "err"; colour = "amb";
+    text = "Setup didn't send to " + bot + ". Try again.";
+    sub = ""; again = "";
+    actions = [{act: "again", label: "Send setup again", primary: false, blocked: blocked}];
+    editOff = false;
+    showStuck = false;
+  }
   return {
     status: status, icon: icon, text: text, sub: sub, again: again, colour: colour,
-    disclose: !quiet, editDisabled: status === "sent",
+    disclose: !quiet, editDisabled: editOff,
     actions: actions, sendBlocked: blocked && actions.some(a => a.blocked),
     stepsId: setupDomId("steps-", row), hintId: setupDomId("bh-", row),
-    note: copy.note, testLink: copy.testLink, block: copy.block, stuck: stuck
+    note: copy.note, testLink: copy.testLink, block: copy.block, stuck: showStuck
   };
 }
 function setupRowHTML(row, opts) {
@@ -3219,7 +3229,8 @@ function setupListRows(el) {
       slug: b.slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || b.reply_host || mainComputer || "",
       status: (configured && !inflow) ? "already" : st,
-      sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner
+      sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner,
+      unknown: !!draft.unknown
     });
   });
   pendingTeammates(el).forEach(row => {
@@ -3232,7 +3243,7 @@ function setupListRows(el) {
       slug: slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || mainComputer || "",
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
-      configured: false, pending: true, owner: owner
+      configured: false, pending: true, owner: owner, unknown: !!draft.unknown
     });
   });
   return out;
@@ -3259,17 +3270,31 @@ async function setupDismissHint(el) {
   else if (el._setup && el._setup.hint) el._setup.hint.dismissed = true;
   paintBotCallout(el);
 }
+function setupSendResult(r, bot) {
+  r = r || {};
+  const data = r.data || {};
+  const err = typeof data.error === "string" ? data.error : "";
+  const botName = bot || "this bot";
+  if (r.ok) return {toast: "", row: ""};
+  if (err === "Update the main bot first.") return {toast: err, row: ""};
+  if (err.indexOf("Couldn't reach ") === 0) return {toast: data.setup ? "" : err, row: "retry"};
+  if (err) return {toast: err, row: ""};
+  return {toast: "Setup didn't send to " + botName + ". Try again.", row: "again"};
+}
 async function setupSend(row, el, btn) {
   if (!row || !btn || btn.getAttribute("aria-disabled") === "true" || btn.disabled) return;
   const act = btn.getAttribute("data-act");
   busyBtn(btn, true, act === "retry" ? "Retrying\u2026" : "Sending\u2026");
   const r = await api("POST", "/api/bots/setup-send", {slug: row.slug});
   if (r.data && r.data.setup) el._setup = r.data.setup;
-  if (r.status === 409) {
-    toast((r.data && r.data.error) || "Update the main bot first.", "bad");
-    refreshFinishChrome();
-  } else if (!r.ok && !(r.data && r.data.setup)) {
-    toast((r.data && r.data.error) || ("Couldn't reach " + ((el && el._bots || []).filter(b => b && b.main)[0] || {}).name || "the main bot") + ".", "bad");
+  const outcome = setupSendResult(r, row.name);
+  if (outcome.toast) toast(outcome.toast, "bad");
+  if (r.status === 409) refreshFinishChrome();
+  if (outcome.row === "again" && el) {
+    el._setup = el._setup || {};
+    el._setup.rows = el._setup.rows || {};
+    const prev = el._setup.rows[row.slug] || {};
+    el._setup.rows[row.slug] = Object.assign({}, prev, {unknown: true, name: row.name || prev.name || ""});
   }
   if (el && document.body.contains(el)) {
     if ($("#blist", el)) refreshBots(el);
