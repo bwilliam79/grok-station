@@ -3,10 +3,20 @@
 
 Imported inside the tests so collecting this module does not initialize relay before the other suites set their env.
 """
-import asyncio, base64, hashlib, importlib.machinery, importlib.util, json, os, stat, tempfile, time, unittest
+import asyncio, base64, hashlib, importlib.machinery, importlib.util, json, os, stat, sys, tempfile, time, unittest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+
+# relay/ is a path entry (relay.py, handoff.py), not a package. Resolve it from this file so a
+# foreign cwd, or a run that has not already imported another suite, can still load it.
+_RELAY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "relay")
+
+
+def _relay_on_path():
+    if _RELAY_DIR not in sys.path:
+        sys.path.insert(0, _RELAY_DIR)
+
 
 GOOD = "https://api2.cursor.sh/automations/webhook/one"
 GOOD_443 = "https://api2.cursor.sh:443/automations/webhook/two"
@@ -16,6 +26,7 @@ KEY2 = "second-key-bbbb"
 
 class BotsApi(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        _relay_on_path()
         import handoff
         import relay
         self.handoff, self.relay = handoff, relay
@@ -857,8 +868,8 @@ if __name__ == "__main__":
 
 class IconMissingStatusTests(__import__("unittest").TestCase):
     def test_paired_unreadable_status_green(self):
-        import importlib, sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "relay"))
+        import importlib
+        _relay_on_path()
         r = importlib.import_module("relay")
         self.assertEqual(r.icon_from_status(["jules"], None), {"paired": True, "ok": True})
         self.assertEqual(r.icon_from_status(["jules"], "garbage"), {"paired": True, "ok": True})
