@@ -72,7 +72,7 @@ class BotsHeader(unittest.TestCase):
         self.assertIn(">Update all (3)<", upd)
         self.assertIn('class="callout amb"', upd)
         cfg = _run("botsCalloutHTML(%s)" % json.dumps(_opts(
-            [{"slug": "j", "name": "Juniper"}],
+            [{"slug": "j", "name": "Juniper", "main": True}],
             [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}])))
         self.assertIn("3 bots not connected", cfg)
         self.assertIn("Juniper can send each one its setup message. You review it first.", cfg)
@@ -123,7 +123,10 @@ class BotsHeader(unittest.TestCase):
         # The function reads pendingTeammates(el). Stub ignores args.
         opened = _run("((PENDING = [{name: 'Otto'}]), openConfigureAll({_voices: []}), OPENED)", extra)
         self.assertEqual(opened, {"name": "Otto"})
-        none = _run("((PENDING = [{name: 'Otto'}, {name: 'Pip'}]), OPENED = 'untouched', openConfigureAll({}), OPENED)", extra)
+        # Several names: Configure all opens setup for the first one (Bugbot PR 2: it used to do nothing).
+        first = _run("((PENDING = [{name: 'Otto'}, {name: 'Pip'}]), OPENED = 'untouched', openConfigureAll({}), OPENED)", extra)
+        self.assertEqual(first, {"name": "Otto"})
+        none = _run("((PENDING = []), OPENED = 'untouched', openConfigureAll({}), OPENED)", extra)
         self.assertEqual(none, "untouched")
         src = _fn("paintBotCallout")
         self.assertIn("openConfigureAll(el)", src)

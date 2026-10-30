@@ -1746,6 +1746,14 @@ def wake_phrase_ready(phrase, opener=None):
     return isinstance(words, dict) and phrase in words
 
 
+ENROLL_START_FAILED = "I couldn't start recording. Try again in a moment."
+
+
+def enroll_start_failed_say(status):
+    """The spoken line when the wake listener did not accept the enroll start; "" on 2xx."""
+    return "" if isinstance(status, int) and 200 <= status < 300 else ENROLL_START_FAILED
+
+
 def post_wake_enroll(body, post=None, opener=None):
     """Queue recording on the loopback wake control port. Does not open the prompt tile.
 
@@ -2749,13 +2757,16 @@ async def session(req):
                                 await cancel_response()
                             plan = _train_flow().voice_train_plan(train, wake_phrase_ready(train.get("phrase")))
                             result = train_session_result(plan)
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
                             if result["say"]:
-                                voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
                                 # The built-in Grok sentence is longer than a 6 s filler. One speak, no enroll.
                                 cap = TTS_REPLY_S if result.get("hold_s") == 4 else TTS_SHORT_S
                                 await play_fixed(plan["say"], voice, cap)
                             if result["enroll"]:
-                                post_wake_enroll(plan["enroll"])
+                                fail_say = enroll_start_failed_say(post_wake_enroll(plan["enroll"]))
+                                if fail_say:
+                                    log("train wake start failed")
+                                    await play_fixed(fail_say, voice, TTS_SHORT_S)
                             log("train wake")  # no phrase, no name
                             done = {"type": "done", "local": True}
                             if result.get("hold_s") == 4:

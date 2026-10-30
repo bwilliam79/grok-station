@@ -3054,8 +3054,10 @@ function botsCalloutHTML(opts) {
     const n = pending.length;
     const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
     const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
+    const main = ((opts && opts.bots) || []).filter(b => b && b.main)[0];
+    const mainName = (main && (main.name || main.slug)) || "Your main bot";
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
-      `<div class="help">Juniper can send each one its setup message. You review it first.</div></div>` +
+      `<div class="help">${esc(mainName)} can send each one its setup message. You review it first.</div></div>` +
       `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
   }
   return "";
@@ -3071,10 +3073,10 @@ function revokeAllCopy(names) {
   const action = n ? ("Revoke all " + n + (n === 1 ? " bot" : " bots")) : "Revoke all bots";
   return {title: title, body: body, help: help, action: action};
 }
-// One not-set-up name uses today's Set up (addBot). There is no bulk Configure-all action to open.
+// Set up (addBot) for the first name not set up yet. With several, each press takes the next one.
 function openConfigureAll(el) {
   const pending = pendingTeammates(el);
-  if (pending.length === 1) addBot((el && el._voices) || [], el, {name: pending[0].name});
+  if (pending.length) addBot((el && el._voices) || [], el, {name: pending[0].name});
 }
 function paintBotCallout(el) {
   const bots = (el && el._bots) || [];
