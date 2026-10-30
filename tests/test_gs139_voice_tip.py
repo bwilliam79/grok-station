@@ -21,7 +21,7 @@ import test_gs139_setup_bots as base  # noqa: E402
 JS = base.JS
 CSS = base.CSS
 CHROME = shutil.which("google-chrome") or shutil.which("chromium")
-FNS = ("trapTab", "botsHeaderShell", "teamState", "teamPhraseHtml", "paintTeam", "closeVoiceTip", "bindVoiceTip")
+FNS = ("trapTab", "popoverDismiss", "botsHeaderShell", "teamState", "teamPhraseHtml", "paintTeam", "closeVoiceTip", "bindVoiceTip")
 
 
 def _src():
@@ -43,12 +43,20 @@ SCENARIO = r"""
   res.closedHidden = pop.hidden;
   btn.click();
   res.open = {hidden: pop.hidden, exp: btn.getAttribute('aria-expanded'), pop: R(pop), z: getComputedStyle(pop).zIndex,
-    icon: getComputedStyle(btn.querySelector('.ico')).color, text: pop.textContent.trim(),
+    icon: getComputedStyle(btn.querySelector('.ico')).color, text: pop.querySelector('#teamphrase').textContent.trim(),
     wake: getComputedStyle(pop.querySelector('.wake')).color, hdr: R(document.getElementById('hdr'))};
   document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
   res.esc = {hidden: pop.hidden, exp: btn.getAttribute('aria-expanded'), focus: document.activeElement === btn};
-  btn.click(); document.getElementById('far').dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
-  res.outside = pop.hidden;
+  btn.click();
+  res.sheetFocus = document.activeElement === pop;
+  const x = pop.querySelector('[data-vtipx]');
+  res.closeBtn = getComputedStyle(x).display === 'none' ? null : R(x);
+  const scrim = document.querySelector('[data-vtip-scrim]');
+  let farHit = 0; document.getElementById('far').addEventListener('click', () => farHit++);
+  // Phone (rev3.7): the outside tap lands on the 55% scrim and must not reach the page.
+  if (scrim) scrim.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+  else document.getElementById('far').dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+  res.outside = pop.hidden; res.farHit = farHit; res.scrim = !!scrim;
   btn.click(); btn.click();
   res.toggle = {hidden: pop.hidden, focus: document.activeElement === btn};
 """
@@ -130,6 +138,8 @@ class VoiceTipChrome(unittest.TestCase):
         self.assertEqual(d["btn"]["h"], 32, d)
         self.assertNotEqual(d["label"], "none")
         self.assertGreater(d["open"]["pop"]["y"], d["btn"]["y"] + d["btn"]["h"] - 1, d)
+        self.assertFalse(d["scrim"], d)
+        self.assertEqual(d["closeBtn"]["h"], 0, d)  # no Close on desktop
 
     def test_phone(self):
         for w in (390, 320):
@@ -140,6 +150,10 @@ class VoiceTipChrome(unittest.TestCase):
             p = d["open"]["pop"]
             self.assertEqual((p["x"], p["w"]), (0, w), d)
             self.assertGreaterEqual(p["y"], d["open"]["hdr"]["y"] + d["open"]["hdr"]["h"], d)
+            self.assertTrue(d["scrim"], d)
+            self.assertTrue(d["sheetFocus"], d)
+            self.assertEqual(d["farHit"], 0, d)
+            self.assertGreaterEqual(d["closeBtn"]["h"], 44, d)
 
 
 if __name__ == "__main__":

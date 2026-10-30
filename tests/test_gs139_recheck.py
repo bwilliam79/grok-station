@@ -202,12 +202,13 @@ class R5DesktopTestLinkHeight(unittest.TestCase):
 
 def _callout(el_js):
     names = ("joinBotNames", "setupCopy", "botsCalloutKind", "botsCalloutHTML", "setupComputerSuggestions",
-             "setupMainComputer", "setupListRows", "setupUnconnected", "pendingTeammates", "botIdFromName", "paintBotCallout")
+             "setupMainComputer", "setupListRows", "setupUnconnected", "pendingTeammates", "botIdFromName", "paintBotCallout",
+             "setupStuck", "setupNeedsOwner", "setupEverSent", "setupListVisible")
     src = _src(names)
     i = JS.index("const BOT_ID_RE = ")
     prog = ("const esc = s => String(s == null ? '' : s);\n" + base._icons() + "\n" + JS[i:JS.index(";\n", i) + 1] + "\n" +
             "const host = {innerHTML: ''};\nconst $ = s => (s === '#botcall' ? host : null);\n"
-            "const document = {getElementById: () => null};\nfunction finishNeedsUpdate() { return false; }\n" +
+            "const document = {getElementById: () => null};\nconst S = {};\nfunction finishNeedsUpdate() { return false; }\n" +
             src + "\npaintBotCallout(" + el_js + ");\nprocess.stdout.write(JSON.stringify(host.innerHTML));")
     out = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
     if out.returncode:
@@ -230,12 +231,18 @@ class R6CalloutCountsSetupList(unittest.TestCase):
         # Otto (not set up), Nova and Wren (roster) are unconnected; Pip connected, Ivy already.
         txt = _callout(_fixture())
         self.assertIn("3 bots not connected", txt)
-        self.assertIn("Configure all", txt)
+        # rev3.7: Pip was already sent setup, so the button toggles the list; it starts open (rows need the owner).
+        self.assertIn("Hide list", txt)
+        fresh = _callout(_fixture(setup={"_none": {}}))
+        self.assertIn("4 bots not connected", fresh)
+        self.assertIn("Configure all", fresh)
 
     def test_singular_uses_same_count(self):
         txt = _callout(_fixture(imported=(), setup={"pip": {"status": "connected"}}))
         self.assertIn("1 bot not connected", txt)
-        self.assertIn("Set up Otto", txt)
+        self.assertIn("Hide list", txt)
+        fresh = _callout(_fixture(imported=(), setup={"pip": {"status": "not_set_up"}}))
+        self.assertIn("Configure all", fresh)  # nothing sent yet: the label opens the list
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
