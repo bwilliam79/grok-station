@@ -5921,7 +5921,8 @@ async def admin_setup_relay(req):
 
     Same signed webhook call as an update ask: Bearer token, handoff.payload, no redirect, 10s.
     Does not create a persona, a pending reply, or a second bot record, and does not wait for an answer.
-    The question is not logged.
+    The question is not logged. Only the configured main bot's slug is accepted; any other slug is
+    refused before an outbound call.
     """
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -5930,12 +5931,13 @@ async def admin_setup_relay(req):
     if not isinstance(body, dict) or set(body) - {"actor", "slug", "message"} or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
     slug = body.get("slug")
-    if not _known(slug):
+    main = list_source_slug()
+    if not _known(slug) or slug != main:
         return web.json_response({"error": "not found"}, status=404)
     message = body.get("message")
     if not isinstance(message, str) or not (1 <= len(message) <= 4000) or "\x00" in message:
         return web.json_response({"error": "bad request"}, status=400)
-    ent = current_webhooks().get(slug)
+    ent = current_webhooks().get(main)
     if not ent:
         return web.json_response({"error": "not configured"}, status=400)
     now = time.time()

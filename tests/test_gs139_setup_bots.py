@@ -637,5 +637,101 @@ class Rev33Computer(unittest.TestCase):
         self.assertEqual(listed, ["Den laptop", "Office computer"])
 
 
+class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
+    """setup-relay may post only to the configured main bot. Any other slug is refused with no outbound call."""
+
+    async def test_other_slug_is_refused_and_never_posts(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        import relay
+
+        r = relay
+        tmp = tempfile.mkdtemp()
+        snap = {
+            "WEBHOOKS_FILE": r.WEBHOOKS_FILE, "PERSONAS_FILE": r.PERSONAS_FILE, "ADMIN_TOKEN": r.ADMIN_TOKEN,
+            "voices": set(r.VOICES),
+            "personas": {k: (dict(v) if isinstance(v, dict) else v) for k, v in r._personas.items()},
+            "ClientSession": r.ClientSession,
+        }
+        calls = []
+
+        class _Resp:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **k):
+                calls.append("open")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, *a, **k):
+                calls.append(url)
+                return _Resp()
+
+        main_url = "https://api2.cursor.sh/automations/webhook/one"
+        other_url = "https://api2.cursor.sh/automations/webhook/two"
+        client = None
+        try:
+            r.WEBHOOKS_FILE = os.path.join(tmp, "webhooks.json")
+            r.PERSONAS_FILE = os.path.join(tmp, "personas.json")
+            r.ADMIN_TOKEN = b"admin-secret"
+            r.VOICES.clear()
+            r.VOICES.update({"ara"})
+            r._personas["mtime"] = None
+            with open(r.PERSONAS_FILE, "w", encoding="utf-8") as f:
+                json.dump({"personas": [
+                    {"slug": "juniper", "name": "Juniper", "voice": "ara", "prompt": "The notes helper.",
+                     "aliases": [], "facts": []},
+                    {"slug": "otto", "name": "Otto", "voice": "ara", "prompt": "The notes helper.",
+                     "aliases": [], "facts": []},
+                ]}, f)
+            os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)
+            with open(r.overlay_path(), "w", encoding="utf-8") as f:
+                json.dump({"list_source": "juniper"}, f)
+            self.assertTrue(r.write_webhooks({
+                "juniper": {"url": main_url, "token": "main-token-aaaa", "saved_at": 10},
+                "otto": {"url": other_url, "token": "otto-token-bbbb", "saved_at": 10},
+            }))
+            r.ClientSession = _Session
+            app = web.Application()
+            app.add_routes(r.ADMIN_ROUTES)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            headers = {"Authorization": "Bearer admin-secret", "X-Client-Cert-Fp": "c" * 64}
+            body = {"actor": "admin", "message": "Step 1: Show the station owner a confirm card."}
+            ok = await client.post("/admin/bots/setup-relay", headers=headers,
+                                   json=dict(body, slug="juniper"))
+            self.assertEqual(ok.status, 202, await ok.text())
+            self.assertEqual(calls, ["open", main_url])
+            calls.clear()
+            refused = await client.post("/admin/bots/setup-relay", headers=headers,
+                                        json=dict(body, slug="otto"))
+            self.assertGreaterEqual(refused.status, 400)
+            self.assertLess(refused.status, 500)
+            self.assertEqual(calls, [])
+        finally:
+            if client is not None:
+                await client.close()
+            r.ClientSession = snap["ClientSession"]
+            r.WEBHOOKS_FILE = snap["WEBHOOKS_FILE"]
+            r.PERSONAS_FILE = snap["PERSONAS_FILE"]
+            r.ADMIN_TOKEN = snap["ADMIN_TOKEN"]
+            r.VOICES.clear()
+            r.VOICES.update(snap["voices"])
+            r._personas.clear()
+            r._personas.update(snap["personas"])
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
