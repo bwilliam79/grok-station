@@ -258,5 +258,17 @@ class N5PhoneTestLinkTarget(unittest.TestCase):
         self.assertIn("min-width:44px", m.group(1))
 
 
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class N6EditButtonHeight(unittest.TestCase):
+    def test_inline_edit_buttons_are_at_least_24px(self):
+        html = _html(base._row("not_set_up"), expanded=True)
+        self.assertIn('class="tlnk" data-edit="name"', html)
+        m = re.search(r"\.tlnk\[data-edit\]\{([^}]*)\}", FLAT)
+        self.assertIsNotNone(m)
+        self.assertIn("min-height:24px", m.group(1))
+        self.assertRegex(m.group(1), r"display:inline-(flex|block)")
+
+
 if __name__ == "__main__":
     unittest.main()
