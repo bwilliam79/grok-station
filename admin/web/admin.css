@@ -1,6 +1,6 @@
 /* grok-station admin · Hearth theme. Errors and destructive actions are amber 'Needs attention' (design.md §8.2). Red is allowed only for the offline avatar status ring. Mic off and stock-down stay on the station, not in the admin.
    Hearth theme, settings scale (see ADMIN-UI.md) */
-:root{--fs-help:13px;--fs-body:15px;--fs-label:14px;--fs-h3:18px;--fs-h2:22px;--fs-h1:28px;--fs-mono:13px;--fs-mono-sm:10px;--fs-caps:12px;--fs-cat:16px;--fs-dev:15px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--panel-pad:var(--sp-4) 0 var(--sp-2);--fs-preview-time:clamp(var(--fs-h1),14cqi,72px);--fs-preview-date:clamp(var(--fs-help),4cqi,var(--fs-h3));--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
+:root{--tabbar-h:72px;--fs-help:13px;--fs-body:15px;--fs-label:14px;--fs-h3:18px;--fs-h2:22px;--fs-h1:28px;--fs-mono:13px;--fs-mono-sm:10px;--fs-caps:12px;--fs-cat:16px;--fs-dev:15px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;--sp-6:32px;--panel-pad:var(--sp-4) 0 var(--sp-2);--fs-preview-time:clamp(var(--fs-h1),14cqi,72px);--fs-preview-date:clamp(var(--fs-help),4cqi,var(--fs-h3));--gs-bg:#0D0B09;--gs-surface:#17130F;--gs-surface-2:#211B16;--gs-surface-3:#2A231C;--gs-rule:#2E2620;--gs-rule-2:#3A3028;
 --gs-text:#F5EFE6;--gs-muted:#A89B8C;--gs-faint:#998C7D;--gs-field-edge:#806F60;--gs-sidebar:#110E0B;--gs-on-teal:#0D0B09;--gs-radius-sm:10px;--gs-radius-md:16px;--gs-radius-pill:999px;--gs-teal:#3FD3B6;--gs-teal-bg:#12302A;--gs-lavender:#A99CFF;--gs-lavender-bg:#221E3A;
 --gs-warm:#FFE6BF;--gs-amber:#F5C04A;--gs-gold:#FFC83D;--gs-amber-bg:#33270F;--gs-red:#FF5A52;
 --disp:"Inter Tight",Inter,system-ui,sans-serif;--body:Inter,system-ui,sans-serif;--mono:ui-monospace,"Geist Mono","JetBrains Mono",monospace}
@@ -69,7 +69,7 @@ html,body{background:var(--gs-bg);color:var(--gs-text);font:var(--fs-body)/1.45 
 .phtop{height:54px;display:flex;align-items:center;padding:0 20px;font:600 var(--fs-body) var(--disp);color:var(--gs-text)}
 .phhead{padding:6px 20px 14px;display:flex;align-items:center;gap:12px}
 .phhead h1{font:600 var(--fs-h2) var(--disp)}
-.tabs{position:absolute;left:0;right:0;bottom:0;height:84px;background:var(--gs-sidebar);border-top:1px solid var(--gs-rule);display:flex;padding:8px 6px 26px}
+.tabs{position:absolute;left:0;right:0;bottom:0;height:var(--tabbar-h);background:var(--gs-sidebar);border-top:1px solid var(--gs-rule);display:flex;padding:8px 6px 26px}
 .tab{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:var(--fs-help);font-weight:600;color:var(--gs-muted)}
 .tab svg{width:22px;height:22px}.tab.on{color:var(--gs-teal)}
 
@@ -410,14 +410,14 @@ a.need:hover{text-decoration:underline}
   .bothead{display:none}
   .ww.none{display:none}
   .body.bots{padding:16px 16px 96px;max-width:none}
-  .phonebar{height:72px}
-  .phonebar button{min-height:72px;height:72px;padding:8px 0 18px}
+  .phonebar{height:var(--tabbar-h)}
+  .phonebar button{min-height:var(--tabbar-h);height:var(--tabbar-h);padding:8px 0 18px}
   .botrow{height:auto;grid-template-columns:44px minmax(0,1fr) auto;min-height:0;padding:16px 0;row-gap:4px;align-items:start}
   .botrow .cfg{align-self:center;min-height:44px;min-width:44px;justify-content:center}
   .botrow .ww{min-height:28px}
   .botrow .tog::before{inset:-11px -2px}
   .bmsg::before{inset:-12px -4px}
-  .pop{position:fixed;left:0;right:0;bottom:0;width:auto;border-radius:18px 18px 0 0;padding:12px 20px calc(84px + env(safe-area-inset-bottom));z-index:5}
+  .pop{position:fixed;left:0;right:0;bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom));width:auto;border-radius:18px 18px 0 0;padding:12px 20px 20px;z-index:5}
   .pop::before{content:"";display:block;width:36px;height:4px;border-radius:4px;background:var(--gs-rule-2);margin:0 auto 14px}
   .pop .acts .btn{width:100%;min-height:48px}
   .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4}
