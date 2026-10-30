@@ -3384,7 +3384,12 @@ function openPendingSheet(row, el) {
     `<h3 tabindex="-1">${esc(name)}</h3><div class="acts"><button class="btn" type="button" data-close>Close</button>` +
     `<button class="btn g" type="button" data-remove="${esc(pend)}">Remove</button></div></div>`;
   document.body.appendChild(wrap);
-  const close = () => { if (wrap.parentNode) wrap.remove(); if (row.isConnected && row.focus) row.focus(); };
+  const back = () => {
+    const key = String(pend).replace(/[^a-z0-9_-]/gi, "");
+    const btn = (row.isConnected && row.querySelector("[data-setup]")) || (key && document.querySelector('[data-setup="' + key + '"]'));
+    if (btn && btn.focus) btn.focus();
+  };
+  const close = () => { if (wrap.parentNode) wrap.remove(); back(); };
   wrap.querySelector(".scrim").onclick = close;
   wrap.querySelector("[data-close]").onclick = close;
   wrap.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } });

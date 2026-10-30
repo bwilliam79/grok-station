@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """L5 (gs-voice-train SPEC rev1.4, Noor): the phone pending-row sheet has a 44 pt Remove and a visible Close of
-44 pt or more (plus outside tap and Esc); focus moves to the heading on open and back to the row on close.
+44 pt or more (plus outside tap and Esc); focus moves to the heading on open and back to the row's Set up button on close (P2).
 V9: the Logs selects keep visible "Log" and "Time range" labels, not aria-only."""
 import os
 import re
@@ -36,7 +36,8 @@ class PendingSheet(unittest.TestCase):
         self.assertIn('<h3 tabindex="-1">', f)
         self.assertIn('wrap.querySelector("h3").focus();', f)
         self.assertNotIn("rm.focus()", f)
-        self.assertIn("row.focus()", f)
+        self.assertIn('row.querySelector("[data-setup]")', f)  # P2: back to Set up, not the div
+        self.assertNotIn("row.focus()", f)
 
 
 class LogLabelsVisible(unittest.TestCase):
