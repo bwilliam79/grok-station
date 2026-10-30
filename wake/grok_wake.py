@@ -1836,11 +1836,10 @@ def enroll(req, read16, play):
             clipped = is_clipped(raw)  # judged on the mic signal before software gain
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
-            if voice and clip is None and not clipped:
-                # Voice session: one silent clip retries, the next silent clip stops.
-                # A tap keeps the older retry cap below.
+            if clip is None and not clipped:
+                # One silent clip retries. A second silent clip in a row stops; nothing is saved.
                 silent += 1
-                decision = silent_clip(silent, label)
+                decision = silent_clip(silent, label, voice=voice)
                 print(f"enroll clip {i} rejected (quiet)", flush=True)
                 show(i, "quiet")
                 _note_clip(i, sent, "quiet", "quiet", bool(prior), n)

@@ -1608,6 +1608,9 @@ function openSetWake(bot, el, d, opts) {
     } else if (kind === "train") {
       text = "Training didn’t finish. Your recordings are saved. Try again.";
       note = "";
+    } else if (kind === "silent") {
+      text = "I didn't hear anything. Nothing new was saved.";
+      note = "Tap Record voice to try again.";
     }
     body.innerHTML = `<div class="acon" aria-hidden="true">!</div>
       <h2 class="h-dialog">Needs attention</h2>
@@ -1695,6 +1698,7 @@ function openSetWake(bot, el, d, opts) {
     }
     if (state === "failed") {
       const msg = String(row.message || "");
+      if (msg === "I didn't hear anything. Nothing new was saved.") return showError("silent");
       if (/mic|microphone/i.test(msg)) return showError("mic");
       if (/busy|conversation/i.test(msg)) return showError("busy");
       return showError("train");

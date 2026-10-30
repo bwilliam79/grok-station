@@ -8,6 +8,8 @@ ENROLL_COUNT = 5
 RETRY_S = 1.5
 CANCEL_SAY = "Stopped. Nothing new was saved."
 QUIET_SAY = "I didn't hear it. Again after the chime."
+SILENT_TOUCH_SAY = "I didn't hear anything. Nothing new was saved."
+SILENT_TOUCH_NOTE = "Tap Record voice to try again."
 COUNT_CAPTION = "Recording in 3…"
 GROK_BUILTIN_SAY = ("Grok's wake word is built in and can't be trained. "
                     "Say a bot's name to train its wake word.")
@@ -90,14 +92,19 @@ def train_steps(start, n=ENROLL_COUNT, gap_s=RETRY_S):
     return steps
 
 
-def silent_clip(streak, bot):
-    """The first silent clip retries. The second silent clip in a row stops the session."""
+def silent_clip(streak, bot, voice=True):
+    """The first silent clip retries. The second silent clip in a row stops the session.
+
+    voice=True keeps the spoken Hey Grok line. A Record voice tap (voice=False) uses the touch lines.
+    """
     who = " ".join(str(bot or "").split()) or "the bot"
     if int(streak) >= 2:
-        return {
-            "action": "stop",
-            "say": "Stopped. Say 'Hey Grok, train my wake word for %s' to try again." % who,
-        }
+        if voice:
+            return {
+                "action": "stop",
+                "say": "Stopped. Say 'Hey Grok, train my wake word for %s' to try again." % who,
+            }
+        return {"action": "stop", "say": SILENT_TOUCH_SAY, "note": SILENT_TOUCH_NOTE}
     return {"action": "retry", "say": QUIET_SAY}
 
 
