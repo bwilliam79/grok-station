@@ -82,6 +82,50 @@ def _html(row, **opts):
     return _run("setupRowHTML(%s, %s)" % (json.dumps(row), json.dumps(base)))
 
 
+def _visible(html):
+    """Tags removed. A highlighted word and its Edit button stay two words."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", html)).strip()
+
+
+# R4, filled in: owner Sam or "the station owner", bot Otto, computer Office computer, wake Hey Otto.
+SAM_WEBHOOK = (
+    'Step 1: Show Sam a confirm card in this chat, and only go ahead if Sam says yes. '
+    'Step 2: If you already have a routine whose instructions start with "Grok Station instructions", '
+    "update that one and don't create a second; otherwise create a webhook-triggered routine called "
+    '"Grok Station" on Sam\'s home computer (Office computer). '
+    "Step 3: Reply on the station as Otto; your wake word is Hey Otto. "
+    "Step 4: Keep the webhook URL and key in your routine panel, don't send them in any chat, and "
+    "Sam copies them into the station."
+)
+FALLBACK_WEBHOOK = (
+    "Step 1: Show the station owner a confirm card in this chat, and only go ahead if the station owner says yes. "
+    'Step 2: If you already have a routine whose instructions start with "Grok Station instructions", '
+    "update that one and don't create a second; otherwise create a webhook-triggered routine called "
+    '"Grok Station" on the station owner\'s home computer (Office computer). '
+    "Step 3: Reply on the station as Otto; your wake word is Hey Otto. "
+    "Step 4: Keep the webhook URL and key in your routine panel, don't send them in any chat, and "
+    "the station owner copies them into the station."
+)
+SAM_STEPS = [
+    "Show Sam a confirm card in this chat. Only go ahead if Sam says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. '
+    "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on Sam's home "
+    "computer (Office computer Edit).",
+    "Reply on the station as Otto Edit. Your wake word is Hey Otto Edit.",
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
+    "Sam copies them into the station.",
+]
+FALLBACK_STEPS = [
+    "Show the station owner a confirm card in this chat. Only go ahead if the station owner says yes.",
+    'If you already have a routine whose instructions start with "Grok Station instructions", update that one. '
+    "Don't create a second. Otherwise create a webhook-triggered routine called \"Grok Station\" on the station "
+    "owner's home computer (Office computer Edit).",
+    "Reply on the station as Otto Edit. Your wake word is Hey Otto Edit.",
+    "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
+    "the station owner copies them into the station.",
+]
+
+
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class SetupBotsUI(unittest.TestCase):
     def test_copy_strings_match_the_table(self):
@@ -365,7 +409,7 @@ class SetupSend(unittest.TestCase):
         called = []
         code, body = self._send(doc, lambda msg: called.append(msg) or True, main_outdated=True)
         self.assertEqual(code, 409)
-        self.assertEqual(body["error"], "Update Juniper first")
+        self.assertEqual(body["error"], "Update the main bot first.")
         self.assertEqual(called, [])
         self.assertEqual(doc.get("rows") or {}, {})
         self.assertEqual(self.added, [])
@@ -635,6 +679,137 @@ class Rev33Computer(unittest.TestCase):
         self.assertNotIn("readonly", paste.lower())
         listed = _run("setupComputerSuggestions('Den laptop', 'Office computer')")
         self.assertEqual(listed, ["Den laptop", "Office computer"])
+
+
+class Rev33CopyDeck(unittest.TestCase):
+    """R4 strings, exact. Sam is the stored owner. No stored name says the station owner.
+
+    fo-02, fo-03 and fo-03b still show the older sentences. The copy deck wins.
+    """
+
+    def _steps(self, owner):
+        row = dict(OTTO)
+        if owner is not None:
+            row["owner"] = owner
+        return [_visible(s) for s in _run("setupSteps(%s)" % json.dumps(row))]
+
+    def _auth(self, doc):
+        ga.write_json(ga.path("auth.json"), doc)
+
+    def test_webhook_and_preview_for_sam_and_no_name(self):
+        sam = dict(OTTO, owner="Sam")
+        self.assertEqual(_run("setupMessage(%s)" % json.dumps(sam)), SAM_WEBHOOK)
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"), SAM_WEBHOOK)
+        self.assertNotIn("\n", SAM_WEBHOOK)
+        self.assertEqual(self._steps("Sam"), SAM_STEPS)
+        self.assertEqual(_run("setupMessage(%s)" % json.dumps(OTTO)), FALLBACK_WEBHOOK)
+        self.assertEqual(_run("setupMessage(%s)" % json.dumps(dict(OTTO, owner=""))), FALLBACK_WEBHOOK)
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""), FALLBACK_WEBHOOK)
+        self.assertEqual(self._steps(None), FALLBACK_STEPS)
+        self.assertEqual(self._steps(""), FALLBACK_STEPS)
+        opened = _visible(_html(sam, expanded=True))
+        for step in SAM_STEPS:
+            self.assertIn(step, opened)
+        self.assertIn("Setup steps \u25b4", opened)
+        self.assertIn(
+            "Send setup passes these steps to Otto through Juniper. Highlighted parts are only for Otto.",
+            opened)
+        fallback = _visible(_html(OTTO, expanded=True))
+        for step in FALLBACK_STEPS:
+            self.assertIn(step, fallback)
+        auth = ga.path("auth.json")
+        existed = os.path.isfile(auth)
+        raw = open(auth, encoding="utf-8").read() if existed else None
+        ga._SETUP_INFLIGHT.clear()
+        try:
+            self._auth({"name": "Sam", "password": "kept"})
+            doc = {"rows": {}}
+            code, _ = ga.setup_send(
+                doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
+                now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+            self.assertEqual(code, 200)
+            self.assertEqual(doc["rows"]["otto"]["message"], SAM_WEBHOOK)
+            self._auth({"password": "kept"})
+            blank = {"rows": {}}
+            code, _ = ga.setup_send(
+                blank, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
+                now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+            self.assertEqual(code, 200)
+            self.assertEqual(blank["rows"]["otto"]["message"], FALLBACK_WEBHOOK)
+        finally:
+            ga._SETUP_INFLIGHT.clear()
+            if existed:
+                with open(auth, "w", encoding="utf-8") as f:
+                    f.write(raw)
+            elif os.path.isfile(auth):
+                os.remove(auth)
+
+    def test_row_labels_toasts_and_outdated_reason(self):
+        copy = _run("setupCopy('Juniper', 'Otto')")
+        self.assertEqual(copy, {
+            "title": "Set up bots",
+            "intro": "Each bot gets its own setup. Open Setup steps to read exactly what Juniper passes on.",
+            "note": "Send setup passes these steps to Otto through Juniper. Highlighted parts are only for Otto.",
+            "connected": "Connected · Updates off",
+            "hintTitle": "Otto connected. Updates are off.",
+            "hintBody": "Turn on Updates in a bot's row to see it on the station.",
+            "already": "Already connected",
+            "fail": "Couldn't reach Juniper",
+            "failSub": "Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.",
+            "again": "Still can't reach Juniper.",
+            "testLink": "Test Juniper's connection",
+            "mainTitle": "Update Juniper first",
+            "mainBody": "Juniper needs the latest station instructions before it can pass setup to other bots.",
+            "mainBtn": "Update Juniper",
+            "block": "Update Juniper first",
+            "stuck": "No OK card yet?",
+        })
+        fresh = _visible(_html(OTTO))
+        self.assertIn("Not set up", fresh)
+        self.assertIn("Setup steps \u25be", fresh)
+        self.assertIn("Send setup", fresh)
+        sent = _run("setupRowModel(%s, %s)" % (
+            json.dumps(_row("sent", sent_at=1000)),
+            json.dumps({"mainName": "Juniper", "now": 1100})))
+        self.assertEqual(sent["text"], "Sent " + _clock(1000))
+        self.assertRegex(sent["text"], r"^Sent \d{1,2}:\d{2} [AP]M$")
+        self.assertEqual(sent["sub"], "")
+        stuck = _run("setupRowModel(%s, %s)" % (
+            json.dumps(_row("sent", sent_at=1000)),
+            json.dumps({"mainName": "Juniper", "now": 1300})))
+        self.assertEqual(stuck["text"], "Sent " + _clock(1000))
+        self.assertEqual(stuck["sub"], "No OK card yet?")
+        self.assertEqual([a["label"] for a in stuck["actions"]], ["Send setup again", "Paste values"])
+        failed = _run("setupRowModel(%s, %s)" % (
+            json.dumps(_row("failed", fails=1)), json.dumps({"mainName": "Juniper"})))
+        self.assertEqual(failed["text"], "Couldn't reach Juniper")
+        self.assertEqual(failed["sub"],
+                         "Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.")
+        self.assertEqual([a["label"] for a in failed["actions"]], ["Retry"])
+        again = _run("setupRowModel(%s, %s)" % (
+            json.dumps(_row("failed", fails=2)), json.dumps({"mainName": "Juniper"})))
+        self.assertEqual(again["again"], "Still can't reach Juniper.")
+        self.assertEqual(again["testLink"], "Test Juniper's connection")
+        unknown = _run("setupSendResult(%s, 'Otto')" % json.dumps({"ok": False, "status": 500, "data": {}}))
+        self.assertEqual(unknown, {"toast": "Setup didn't send to Otto. Try again.", "row": "again"})
+        chip = _run("setupRowModel(%s, %s)" % (
+            json.dumps(dict(OTTO, unknown=True)), json.dumps({"mainName": "Juniper"})))
+        self.assertEqual(chip["text"], "Setup didn't send to Otto. Try again.")
+        self.assertEqual([a["label"] for a in chip["actions"]], ["Send setup again"])
+        doc = {"rows": {}}
+        code, body = ga.setup_send(
+            doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=True,
+            now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+        self.assertEqual(code, 409)
+        self.assertEqual(body["error"], "Update the main bot first.")
+        self.assertNotIn("Juniper", body["error"])
+        shown = _run("setupSendResult(%s, 'Otto')" % json.dumps(
+            {"ok": False, "status": code, "data": {"error": body["error"]}}))
+        self.assertEqual(shown, {"toast": "Update the main bot first.", "row": ""})
+        code, body = ga.setup_send(
+            {"rows": {}}, "otto", known=KNOWN, main_slug="juniper", main_name="", main_outdated=True,
+            now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
+        self.assertEqual(body["error"], "Update the main bot first.")
 
 
 class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):

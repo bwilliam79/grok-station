@@ -3798,7 +3798,8 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
         return 400, {"error": "bad request"}
     who = main_name if isinstance(main_name, str) and main_name else "the main bot"
     if main_outdated:
-        return 409, {"error": "Update %s first" % who}
+        # Copy deck, not the callout. The callout still names the main bot ("Update Juniper first").
+        return 409, {"error": "Update the main bot first."}
     if computer in ("", None):
         chost = ""
     else:
