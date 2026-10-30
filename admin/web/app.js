@@ -3214,6 +3214,33 @@ function setupMessagePopHTML(d, phone) {
     (d.body ? "<p>" + esc(d.body) + "</p>" : "") + again +
     '<div class="acts"><button class="btn" type="button" id="smsgx">Close</button></div></div>';
 }
+// Shared Esc / focus wiring for the setup and bots-row message popovers. While open it listens on the
+// document: Esc calls close() (which returns focus), focus moving outside wrap and btn calls close(false)
+// (focus stays where it went), and on phone Tab cycles inside pop. Returns a function that removes both listeners.
+function popoverDismiss(wrap, btn, pop, phone, trapSel, close) {
+  const onKey = ev => {
+    if (!wrap.isConnected) { close(false); return; }
+    if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
+    if (!phone || ev.key !== "Tab" || !pop) return;
+    const list = Array.prototype.filter.call(pop.querySelectorAll(trapSel), n => !n.disabled);
+    if (!list.length) return;
+    const first = list[0], last = list[list.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  };
+  const onFocusIn = ev => {
+    if (!wrap.isConnected) { close(false); return; }
+    const t = ev.target;
+    if (wrap.contains(t) || (btn && btn.contains && btn.contains(t))) return;
+    close(false);
+  };
+  document.addEventListener("keydown", onKey);
+  document.addEventListener("focusin", onFocusIn);
+  return () => {
+    document.removeEventListener("keydown", onKey);
+    document.removeEventListener("focusin", onFocusIn);
+  };
+}
 function showSetupMessage(btn, el, row, opts) {
   if (!btn || !row) return;
   closeBotMessage();
@@ -3244,8 +3271,7 @@ function showSetupMessage(btn, el, row, opts) {
     closed = true;
     if (botMessageCloser === close) botMessageCloser = null;
     document.removeEventListener("click", onDoc);
-    document.removeEventListener("keydown", onKey);
-    document.removeEventListener("focusin", onFocusIn);
+    detach();
     btn.setAttribute("aria-expanded", "false");
     if (wrap.parentNode) wrap.remove();
     if (refocus !== false) back();
@@ -3256,26 +3282,7 @@ function showSetupMessage(btn, el, row, opts) {
     if (btn.contains && btn.contains(ev.target)) return;
     close();
   };
-  // Listen on the document while open, so Esc still works after focus leaves the popover.
-  const onKey = ev => {
-    if (!wrap.isConnected) { close(false); return; }
-    if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
-    if (!phone || ev.key !== "Tab" || !pop) return;
-    const list = Array.prototype.filter.call(pop.querySelectorAll("button, [href]"), n => !n.disabled);
-    if (!list.length) return;
-    const first = list[0], last = list[list.length - 1];
-    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
-    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
-  };
-  // Focus moving to anything outside the popover (and its row button) closes it, leaving focus where it went.
-  const onFocusIn = ev => {
-    const t = ev.target;
-    if (!wrap.isConnected) { close(false); return; }
-    if (wrap.contains(t) || (btn.contains && btn.contains(t))) return;
-    close(false);
-  };
-  document.addEventListener("keydown", onKey);
-  document.addEventListener("focusin", onFocusIn);
+  const detach = popoverDismiss(wrap, btn, pop, phone, "button, [href]", close);
   const scrim = wrap.querySelector("[data-smsg-scrim]");
   if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
   const x = $("#smsgx", wrap);
@@ -3921,12 +3928,17 @@ function showBotMessage(btn, el) {
     const live = slug ? document.querySelector('.bmsg[data-bmsg="' + String(slug).replace(/[^a-z0-9-]/gi, "") + '"]') : null;
     if (live && live.focus) live.focus();
   };
-  const close = () => {
+  let closed = false;
+  // refocus=false when focus already moved somewhere else on its own (Tab out of the popover).
+  const close = refocus => {
+    if (closed) return;
+    closed = true;
     if (botMessageCloser === close) botMessageCloser = null;
     document.removeEventListener("click", onDoc);
+    detach();
     btn.setAttribute("aria-expanded", "false");
     if (wrap.parentNode) wrap.remove();
-    back();
+    if (refocus !== false) back();
   };
   const onDoc = ev => {
     if (!wrap.isConnected) { document.removeEventListener("click", onDoc); return; }
@@ -3934,9 +3946,8 @@ function showBotMessage(btn, el) {
     if (btn.contains && btn.contains(ev.target)) return;
     close();
   };
-  wrap.addEventListener("keydown", ev => {
-    if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
-  });
+  // Esc and focus-out come from popoverDismiss; the phone Tab trap stays on the shared trapTab (0.13.8 P3).
+  const detach = popoverDismiss(wrap, btn, pop, false, "button, [href], input, select, textarea", close);
   if (phone && pop) trapTab(pop);
   const scrim = wrap.querySelector("[data-bmsg-scrim]");
   if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };

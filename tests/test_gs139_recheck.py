@@ -28,7 +28,7 @@ ROWS = [
 ]
 PAGE_FNS = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
             "setupSteps", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML", "setupMessageDetail",
-            "setupMessagePopHTML", "showSetupMessage", "closeBotMessage")
+            "setupMessagePopHTML", "popoverDismiss", "showSetupMessage", "closeBotMessage")
 
 
 def _src(names):
@@ -39,7 +39,7 @@ def _src(names):
     return "\n".join(out)
 
 
-def chrome(width, scenario):
+def chrome(width, scenario, extra=()):
     """Render the Set up bots list (plus phone header and tab bar) at `width`, run `scenario`, return its JSON."""
     page = """<!doctype html><html><head><meta name=viewport content="width=device-width"><style>%s</style></head>
 <body><div class="top" id="hdr"><h1>Bots</h1></div><div class="body bots" id="host"></div>
@@ -58,7 +58,7 @@ const R = n => { const q = n.getBoundingClientRect(); return {x:Math.round(q.lef
 const res = {width: innerWidth};
 (async () => { try { %s } catch (e) { res.err = String(e); }
   document.getElementById('out').textContent = JSON.stringify(res); })();
-</script></body></html>""" % (CSS, base._icons(), _src(PAGE_FNS), json.dumps(ROWS), NOW, scenario)
+</script></body></html>""" % (CSS, base._icons(), _src(PAGE_FNS + tuple(extra)), json.dumps(ROWS), NOW, scenario)
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "inner.html"), "w") as f:
         f.write(page)
@@ -248,6 +248,54 @@ class R7CalloutUsesMainBotName(unittest.TestCase):
 
     def test_no_hard_coded_name(self):
         self.assertNotIn("Juniper", base._fn("botsCalloutHTML"))
+
+
+BOT_FNS = ("botMessageLead", "botMessageDetail", "botMessagePopHTML", "repliesFrom", "showBotMessage")
+BOT_KEY_PROBE = """
+  const added = [], removed = [];
+  const ae = document.addEventListener.bind(document), re_ = document.removeEventListener.bind(document);
+  document.addEventListener = (t, f, o) => { added.push(t); ae(t, f, o); };
+  document.removeEventListener = (t, f, o) => { removed.push(t); re_(t, f, o); };
+  const host = document.createElement('div');
+  host.innerHTML = '<div class="botrow" data-slug="otto"><span>O</span><div class="info"><button type="button" class="bmsg" ' +
+    'data-bmsg="otto" aria-expanded="false"><span class="tx">Couldn\\'t reach Otto. Check its computer.</span></button></div></div>' +
+    '<button type="button" id="outside">x</button>';
+  document.body.appendChild(host);
+  const el = {_bots: [{slug: 'otto', name: 'Otto'}]};
+  const btn = host.querySelector('.bmsg'), outside = document.getElementById('outside');
+  const open = () => showBotMessage(btn, el);
+  // 1: focus moves outside the popover -> it closes, focus stays where it went.
+  open(); res.opened = !!document.getElementById('bmsgpop'); outside.focus();
+  res.closedOnFocusOut = !document.getElementById('bmsgpop'); res.focusStayed = document.activeElement === outside;
+  // 2: focus parked outside the popover while open; Esc on the document closes it and returns focus to the row.
+  open();
+  if (document.getElementById('bmsgpop')) {
+    document.activeElement.blur();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+  }
+  res.closedOnDocEsc = !document.getElementById('bmsgpop');
+  res.focusBack = document.activeElement === btn;
+  res.expanded = btn.getAttribute('aria-expanded');
+  // 3: Close button still works and close runs once.
+  open(); document.getElementById('bmsgx').click(); res.closedOnX = !document.getElementById('bmsgpop');
+  const cnt = a => a.filter(t => t === 'keydown' || t === 'focusin').length;
+  res.added = cnt(added); res.removed = cnt(removed);
+"""
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class R8BotRowPopoverEscAndFocusOut(unittest.TestCase):
+    def test_esc_on_document_and_focus_leaving_close_it(self):
+        d = chrome(1280, BOT_KEY_PROBE, BOT_FNS)
+        self.assertTrue(d["opened"], d)
+        self.assertTrue(d["closedOnFocusOut"], d)
+        self.assertTrue(d["focusStayed"], d)
+        self.assertTrue(d["closedOnDocEsc"], d)
+        self.assertTrue(d["focusBack"], d)
+        self.assertEqual(d["expanded"], "false", d)
+        self.assertTrue(d["closedOnX"], d)
+        self.assertEqual(d["added"], 6, d)
+        self.assertEqual(d["added"], d["removed"], d)
 
 
 if __name__ == "__main__":
