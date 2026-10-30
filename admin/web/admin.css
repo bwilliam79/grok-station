@@ -421,6 +421,7 @@ a.need:hover{text-decoration:underline}
   .botrow .ww{grid-column:2;grid-row:2}
   .botrow .cfg{grid-column:3;grid-row:1}
   .botrow .cfg .btn{display:none}
+  .botrow[data-pending] .cfg .btn[data-setup]{display:inline-flex;min-height:44px;height:44px}
   .chev{display:flex}
   .btn{min-height:48px;height:auto}
   .btn.sm{min-height:40px;height:40px}

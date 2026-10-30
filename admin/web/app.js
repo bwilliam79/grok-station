@@ -3343,12 +3343,9 @@ function paintBots(el, bots) {
     const row = pending.filter(r => r.key === b.dataset.setup)[0];
     if (row) addBot(el._voices || [], el, {name: row.name});
   });
-  list.querySelectorAll("[data-remove]").forEach(b => b.onclick = async ev => {
+  list.querySelectorAll("[data-remove]").forEach(b => b.onclick = ev => {
     ev.stopPropagation();
-    const r = await api("DELETE", "/api/bots/imported/" + encodeURIComponent(b.dataset.remove), {});
-    if (!r.ok) return attn($("#vere", el), (r.data && r.data.error) || "Couldn't remove that.");
-    attn($("#vere", el), "");
-    refreshBots(el);
+    removePending(b.dataset.remove, el);
   });
   list.querySelectorAll(".bmsg").forEach(btn => btn.onclick = ev => {
     ev.preventDefault();
@@ -3356,13 +3353,36 @@ function paintBots(el, bots) {
     showBotMessage(btn, el);
   });
   list.querySelectorAll(".botrow").forEach(row => row.onclick = ev => {
-    if (row.getAttribute("data-fixed") || row.getAttribute("data-pending")) return;
     const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+    // Phone: a Not set up row shows Set up; Remove lives in the sheet the row opens (Noor gs138 QA).
+    if (row.getAttribute("data-pending")) return phone ? openPendingSheet(row, el) : undefined;
+    if (row.getAttribute("data-fixed")) return;
     if (!botRowTapOpensConfigure(ev.target, phone)) return;
     openBot(bots.filter(x => x.slug === row.getAttribute("data-slug"))[0], el);
   });
   paintUnused(el);
   paintTeam(el);
+}
+async function removePending(key, el) {
+  const r = await api("DELETE", "/api/bots/imported/" + encodeURIComponent(key), {});
+  if (!r.ok) return attn($("#vere", el), (r.data && r.data.error) || "Couldn't remove that.");
+  attn($("#vere", el), "");
+  refreshBots(el);
+}
+function openPendingSheet(row, el) {
+  const pend = row.getAttribute("data-pending");
+  const name = (row.querySelector(".lbl") || {}).textContent || "";
+  const wrap = document.createElement("div");
+  wrap.id = "pendpop";
+  wrap.innerHTML = `<div class="scrim"></div><div class="pop" role="dialog" aria-modal="true" aria-label="${esc(name)}">` +
+    `<h3>${esc(name)}</h3><div class="acts"><button class="btn g" type="button" data-remove="${esc(pend)}">Remove</button></div></div>`;
+  document.body.appendChild(wrap);
+  const close = () => { if (wrap.parentNode) wrap.remove(); if (row.isConnected && row.focus) row.focus(); };
+  wrap.querySelector(".scrim").onclick = close;
+  wrap.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } });
+  const rm = wrap.querySelector("[data-remove]");
+  rm.onclick = () => { close(); removePending(pend, el); };
+  rm.focus();
 }
 function saveRowVoice(sel, bot, el) {
   if (!bot || !sel) return;

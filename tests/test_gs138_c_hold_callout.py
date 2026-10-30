@@ -54,7 +54,7 @@ class HoldSetupCallout(unittest.TestCase):
         self.assertIn('<button class="btn sm" type="button" data-setup="${esc(row.key)}">Set up</button>', JS)
         self.assertIn('<button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button>', JS)
         self.assertIn('list.querySelectorAll("[data-setup]").forEach(b => b.onclick = ev => {', JS)
-        self.assertIn('list.querySelectorAll("[data-remove]").forEach(b => b.onclick = async ev => {', JS)
+        self.assertIn('list.querySelectorAll("[data-remove]").forEach(b => b.onclick = ev => {', JS)
 
     def test_team_setup_block_stays_on_main_bot_more_tab(self):
         self.assertIn("${(bot.main && pendingTeammates(el).length) ? `<h3>Team setup</h3>", JS)
