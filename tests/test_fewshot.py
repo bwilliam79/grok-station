@@ -19,11 +19,21 @@ def say(base, noise=0.25, lead=14, tail=5):
     return np.vstack([bg(lead), w, bg(tail)]).astype(np.float32), (len(idx) * fs.FRAME_S)
 
 
+class Fresh(unittest.TestCase):
+    """Each test draws from its own generator, so results do not depend on which tests ran first (Nix d)."""
+    SEED = 11
+
+    def setUp(self):
+        global rng
+        rng = np.random.default_rng(self.SEED)
+        super().setUp()
+
+
 def frames_for(stream_len_s):
     return stream_len_s
 
 
-class Matcher(unittest.TestCase):
+class Matcher(Fresh):
     def test_own_word_scores_high_other_low(self):
         m = fs.Matcher([WORD[:10], WORD[1:12]])
         hit = fs.peak(m, say(WORD)[0])
@@ -43,7 +53,7 @@ class Matcher(unittest.TestCase):
         self.assertEqual(len(m.R), 12 * fs.MAX_TEMPLATES)  # one matmul of at most 20 x 18 rows per frame
 
 
-class Calibrate(unittest.TestCase):
+class Calibrate(Fresh):
     def _reps(self, base, n=10, noise=0.25):
         out = [say(base, noise) for _ in range(n)]
         # clip_frames picks rows by time; put the word where a padded clip would have it
@@ -150,8 +160,9 @@ class Calibrate(unittest.TestCase):
         self.assertTrue(np.allclose(back[1], WORD[:7], atol=1e-2))
 
 
-class ListenerWiring(unittest.TestCase):
+class ListenerWiring(Fresh):
     def setUp(self):
+        super().setUp()
         self.d = tempfile.mkdtemp()
         self.old = (gw.ENROLLED_DIR, gw.ENROLL_DIR, gw.DROP_DIR, gw._embed, gw.hey_grok_hears, gw.FEWSHOT_NEG, fs.clip_frames)
         gw.ENROLLED_DIR = os.path.join(self.d, "enrolled"); gw.ENROLL_DIR = os.path.join(self.d, "inbox")
@@ -279,7 +290,7 @@ class ListenerWiring(unittest.TestCase):
                     sys.modules[k] = v
 
 
-class Shipping(unittest.TestCase):
+class Shipping(Fresh):
     def test_installed_and_updated(self):
         inst = open(os.path.join(ROOT, "install.sh")).read()
         files = open(os.path.join(ROOT, "tools", "install-files.sh")).read()

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Ask-again window (gs138): 0, 1..120, or the distinct value "session".
 
-"session" lasts this sign-in and is still cut by the 30-minute idle limit and the
-12-hour absolute limit. Password change, reset-admin, the setting itself, and
+"session" lasts this sign-in until logout or a password change (0.13.9: no idle or
+absolute limit in this mode). Password change, reset-admin, the setting itself, and
 turning personal-info blocking off still ask. No browser for the page; the copy
 helpers run under node. The API tests use the shared admin server.
 """
@@ -72,7 +72,7 @@ class GraceCopy(unittest.TestCase):
         self.assertIn("For changes like adding a bot or an integration, while you're signed in. Signing out always ends this.", html)
         self.assertIn("Ask for each change.", html)
         self.assertIn("Ask once, then not again for a while.", html)
-        self.assertIn("Ask once, then not again until you sign out, change the password, leave it idle for 30 minutes, or 12 hours pass.", html)
+        self.assertIn("Ask once, then not again until you sign out or the password changes.", html)
         self.assertIn("Anyone using this signed-in browser can change bots, webhooks and most other settings without the password.", html)
         self.assertIn("Changing the password and a few other security settings always ask.", html)
         self.assertIn(">minutes<", html)
@@ -123,7 +123,8 @@ class SessionGrace(unittest.TestCase):
     def _rec(self):
         return next(iter(ga.AUTH.sessions.values()))
 
-    def test_session_window_is_bounded(self):
+    def test_session_window_lasts_the_sign_in(self):
+        # 0.13.9 (Nix ruling, owner-accepted): "session" has no idle or absolute expiry; logout ends it.
         self.assertEqual(ga.IDLE_TTL, 30 * 60)
         self.assertEqual(ga.SESSION_TTL, 12 * 3600)
         buf = io.StringIO()
@@ -132,12 +133,8 @@ class SessionGrace(unittest.TestCase):
         self.assertEqual(st, 200, j)
         self.assertEqual(j["password_grace_min"], "session")
         rec = self._rec()
-        exp, seen = rec["exp"], rec["seen"]
-        self.assertEqual(j["stepup_until"], exp)
-        self.assertLessEqual(j["stepup_until"] - CLOCK[0], ga.SESSION_TTL)
+        self.assertGreater(j["stepup_until"] - CLOCK[0], ga.SESSION_TTL)
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
-        self.assertEqual(rec["exp"], exp)  # a later request does not extend the absolute cap
-        self.assertGreaterEqual(rec["seen"], seen)  # idle may slide; the absolute cap must not
         line = buf.getvalue()
         self.assertIn("action=password-grace old=10 new=session", line)
         self.assertIn("session=" + rec["sid"], line)
@@ -145,25 +142,14 @@ class SessionGrace(unittest.TestCase):
         self.assertNotIn(GOOD, line)
         self.assertNotIn(self.c.jar.get("gs_session", "missing-cookie"), line)
         self.assertNotIn(hashlib.sha256(self.c.jar["gs_session"].encode()).hexdigest(), line)
-        # Idle expiry ends it. No limit grew.
-        CLOCK[0] = rec["seen"] + ga.IDLE_TTL + 1
+        # Neither idle nor the old 12 h cap ends it now.
+        CLOCK[0] = rec["seen"] + ga.SESSION_TTL + ga.IDLE_TTL + 1
         st, state = self.c.req("GET", "/api/state")
-        self.assertFalse(state.get("signed_in"))
-        self.assertIsNone(state.get("stepup_until"))
-        self.assertEqual(self.c.req("POST", "/api/login", {"password": GOOD})[0], 200)
-        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kai"})[0], 403)
+        self.assertTrue(state.get("signed_in"))
+        self.assertIsNotNone(state.get("stepup_until"))
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kai"})[0], 200)
 
-    def test_absolute_logout_and_password_change_end_it(self):
-        self.assertEqual(self._put("session")[0], 200)
-        rec = self._rec()
-        rec["seen"] = CLOCK[0]
-        rec["stepup_until"] = rec["exp"]
-        CLOCK[0] = rec["exp"] + 1  # absolute cap, idle not due
-        st, state = self.c.req("GET", "/api/state")
-        self.assertFalse(state.get("signed_in"))
-        self.assertIsNone(state.get("stepup_until"))
-        self.assertEqual(self.c.req("POST", "/api/login", {"password": GOOD})[0], 200)
+    def test_logout_and_password_change_end_it(self):
         self.assertEqual(self._put("session")[0], 200)
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"name": "Kay"})[0], 200)
         self.c.req("POST", "/api/logout", {})

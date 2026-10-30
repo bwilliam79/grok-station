@@ -785,6 +785,16 @@ def relay_persona(slug):
     return slug if isinstance(slug, str) and re.fullmatch(r"[a-z]{2,16}", slug) else "grok"
 
 
+def _rmtree_logged(d, why):
+    """Remove a training folder. A missing folder is fine; any other failure is logged (path name only)."""
+    try:
+        shutil.rmtree(d)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"enroll cleanup failed ({why}): {os.path.basename(str(d))}: {type(e).__name__}", flush=True)
+
+
 def enroll_stage(stage, message, phrase=None, session=None):
     """Record where this enrollment is, on the status the admin page polls. Ignore a stale session."""
     last = ENROLL_STATE.get("last")
@@ -1956,7 +1966,7 @@ def enroll(req, read16, play):
             i += 1
         if ENROLL_STATE.get("silent_stop"):
             msg, _station_msg = ENROLL_STATE.pop("silent_stop")
-            shutil.rmtree(d, ignore_errors=True)
+            _rmtree_logged(d, "silent-stop")
             enroll_stage("failed", msg, phrase, ses)  # admin dialog line
             # Station tile (rev1.6): "Stopped. Nothing (new) was saved." heading, restart line under it, 4 s.
             show(i, "stopped", "topup" if prior else "")
@@ -3187,6 +3197,10 @@ def reopen_delay(reason, now, last, gap=30.0, base=2.0):
 # reopens inside STUCK_WINDOW_S, outside a session, ask MicRecovery for a "stuck" USB reset.
 STUCK_REOPENS = []
 STUCK_COUNT, STUCK_WINDOW_S = 3, 120.0
+# Cap (Nix c): at most STUCK_CAP stuck resets in any STUCK_CAP_WINDOW_S; one log line when the cap is hit.
+STUCK_RESETS = []
+STUCK_CAP, STUCK_CAP_WINDOW_S = 10, 3600.0
+STUCK_CAP_LOGGED = [False]
 
 
 def note_stuck_reopen(reason, busy, now):
@@ -3200,6 +3214,15 @@ def note_stuck_reopen(reason, busy, now):
     if len(STUCK_REOPENS) < STUCK_COUNT or RECOVERY is None:
         return None
     STUCK_REOPENS.clear()
+    while STUCK_RESETS and now - STUCK_RESETS[0] > STUCK_CAP_WINDOW_S:
+        STUCK_RESETS.pop(0)
+    if len(STUCK_RESETS) >= STUCK_CAP:
+        if not STUCK_CAP_LOGGED[0]:
+            STUCK_CAP_LOGGED[0] = True
+            print(f"mic reset capped: {STUCK_CAP} stuck resets in the last hour; no more until one ages out", flush=True)
+        return "capped"
+    STUCK_CAP_LOGGED[0] = False
+    STUCK_RESETS.append(now)
     return RECOVERY.request("stuck")
 
 

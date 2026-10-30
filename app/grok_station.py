@@ -4249,7 +4249,7 @@ def _draw_enroll_chips(surf, L):
 
 
 def enroll_hit(x, y):
-    """Tap target. On the prompt stage the whole tile starts, except Not now. None outside the tile."""
+    """Tap target. On the prompt stage the whole tile starts. No stage draws buttons since rev1.5. None outside the tile."""
     for bid, rect in LAST_ENROLL_BUTTONS:
         if rect.collidepoint(x, y):
             return bid
@@ -4353,7 +4353,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
-    _draw_actions(surf, L, tile, act, col_w, stage, who if who != VOICE_NAME else (phrase or who))
+    _draw_actions(surf, L, tile, act, col_w, stage, label)
     if stage in _QUIET_HINT_STAGES and not success:
         _draw_quiet_hint(surf, L, act, col_w)
     surf.set_clip(prev)

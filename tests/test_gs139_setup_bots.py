@@ -44,7 +44,7 @@ def _icons():
 def _run(expr):
     names = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark",
              "setupOwnerLabel", "setupSteps",
-             "setupMessage", "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
+             "setupIcon", "setupRowModel", "setupRowHTML", "setupListHTML",
              "setupComputerSuggestions", "setupComputerFieldHTML",
              "setupSendResult",
              "botsCalloutKind", "botsCalloutHTML")
@@ -159,7 +159,7 @@ class SetupBotsUI(unittest.TestCase):
         self.assertIn("Hey Otto", steps[2])
         self.assertEqual(steps[3], "Keep the webhook URL and key in your routine panel. Don't send them in any chat. "
                          "the station owner copies them into the station.")
-        text = _run("setupMessage(%s)" % json.dumps(OTTO))
+        text = ga.setup_message("Otto", "Hey Otto", "Office computer")
         self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer"))
         self.assertGreater(len(text), 500)  # the default webhook cap would cut step 4
         page = _run("setupListHTML(%s, %s)" % (json.dumps([OTTO, _row("already", slug="clover", name="Clover")]),
@@ -551,9 +551,9 @@ class Rev33Owner(unittest.TestCase):
         self.assertIn("the station owner copies them into the station.", missing[3])
         self.assertNotRegex(" ".join(missing), r"\b(he|she|himself|herself)\b")
         self.assertNotIn("Show you", missing[0])
-        text = _run("setupMessage(%s)" % json.dumps(sam))
+        text = ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam")
         self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"))
-        self.assertEqual(_run("setupMessage(%s)" % json.dumps(dict(OTTO, owner=""))),
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""),
                          ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""))
         auth = ga.path("auth.json")
         existed = os.path.isfile(auth)
@@ -600,7 +600,7 @@ class Rev33WebhookLine(unittest.TestCase):
 
     def test_webhook_text_is_one_line_and_preview_stays_a_list(self):
         row = dict(OTTO, owner="Sam")
-        text = _run("setupMessage(%s)" % json.dumps(row))
+        text = ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam")
         self.assertNotIn("\n", text)
         self.assertEqual(text, ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"))
         self.assertRegex(text, r"^Step 1: .+\. Step 2: .+\. Step 3: .+\. Step 4: .+\.$")
@@ -699,12 +699,12 @@ class Rev33CopyDeck(unittest.TestCase):
 
     def test_webhook_and_preview_for_sam_and_no_name(self):
         sam = dict(OTTO, owner="Sam")
-        self.assertEqual(_run("setupMessage(%s)" % json.dumps(sam)), SAM_WEBHOOK)
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"), SAM_WEBHOOK)
         self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner="Sam"), SAM_WEBHOOK)
         self.assertNotIn("\n", SAM_WEBHOOK)
         self.assertEqual(self._steps("Sam"), SAM_STEPS)
-        self.assertEqual(_run("setupMessage(%s)" % json.dumps(OTTO)), FALLBACK_WEBHOOK)
-        self.assertEqual(_run("setupMessage(%s)" % json.dumps(dict(OTTO, owner=""))), FALLBACK_WEBHOOK)
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer"), FALLBACK_WEBHOOK)
+        self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""), FALLBACK_WEBHOOK)
         self.assertEqual(ga.setup_message("Otto", "Hey Otto", "Office computer", owner=""), FALLBACK_WEBHOOK)
         self.assertEqual(self._steps(None), FALLBACK_STEPS)
         self.assertEqual(self._steps(""), FALLBACK_STEPS)

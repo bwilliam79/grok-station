@@ -4,3 +4,7 @@ be7ac811c0d31cd811a48908c5a755837f67e208:tests/test_handoff.py:generic-api-key:4
 781564bdec035febd9e51272fe3550f67c2446d9:tests/test_handoff.py:generic-api-key:40
 tests/test_handoff.py:generic-api-key:45
 tests/test_handoff.py:generic-api-key:46
+d19b0c745fb7d60f20ee214b762f552783f1cadb:tests/test_admin.py:generic-api-key:1436
+d19b0c745fb7d60f20ee214b762f552783f1cadb:tests/test_mic_reset.py:generic-api-key:288
+d19b0c745fb7d60f20ee214b762f552783f1cadb:tests/test_wake.py:generic-api-key:427
+d19b0c745fb7d60f20ee214b762f552783f1cadb:tests/test_gs134_wake_auth.py:generic-api-key:19

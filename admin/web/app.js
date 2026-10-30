@@ -291,6 +291,7 @@ async function boot() {
   S.state = r.data;
   noteStepup(r.data);
   if (!r.data.signed_in) return r.data.setup_required ? codeScreen() : loginScreen();
+  S.signinNote = "";
   if (r.data.wizard && !r.data.wizard.done) return wizard(r.data.wizard.step || 2);
   shell();
 }
@@ -359,7 +360,7 @@ function loginScreen() {  // 01b + 01c
     <img class="mk" src="/assets/mark.svg" alt=""><div class="wordmark">Grok Station</div><h2 class="h-auth">Sign in</h2><p class="sub">${esc(S.state.host)}</p>
     <div class="field"><label for="p">Password</label><div class="inline" style="flex-wrap:nowrap"><input class="inp" type="password" id="p" autocomplete="current-password" required>
       <button type="button" class="btn g sm" id="show">Show</button></div></div>
-    <div id="e"></div><div class="field"><button class="btn p" id="go">Sign in</button></div>
+    <div id="e"></div>${S.signinNote ? `<p class="note ok" id="lnote" role="status">${esc(S.signinNote)}</p>` : ""}<div class="field"><button class="btn p" id="go">Sign in</button></div>
     <p class="note"><a href="#" id="forgot">Forgot your password?</a></p>
     <div id="help" hidden class="banner off" style="display:block;margin-top:10px">
       <p>Reset needs the station itself. Either way only the password is wiped; your other settings stay.</p>
@@ -2479,9 +2480,12 @@ function wireKeyMode(root, bot, el) {
     else ask();
   });
 }
+/* "Not while I'm signed in" opens a window far past any minute setting (it lasts until logout), so it gets no label or countdown. */
+const GRACE_MAX_S = 120 * 60;
+function stepupLeft() { return Number(S.stepupUntil) - Date.now() / 1000; }
 function stepupText() {
-  const left = Number(S.stepupUntil) - Date.now() / 1000;
-  if (!(left > 0)) return "";
+  const left = stepupLeft();
+  if (!(left > 0) || left > GRACE_MAX_S + 60) return "";
   return "Unlocked for " + Math.ceil(left / 60) + " min";
 }
 function noteStepup(data) {
@@ -2493,7 +2497,7 @@ function noteStepup(data) {
   n.hidden = !t;
   if (n.parentNode && n.parentNode.classList && n.parentNode.classList.contains("bsumrow")) n.parentNode.hidden = !t;
 }
-function stepupOpen() { return !!stepupText(); }
+function stepupOpen() { return stepupLeft() > 0; }
 /* sha256 of UTF-8 bytes, hex. Same formula as app/avatars.py: int(sha256(slug.encode()).hexdigest(), 16) % 18 + 1. */
 function sha256Hex(bytes) {
   const K = new Uint32Array([
@@ -3073,20 +3077,6 @@ function setupSteps(row) {
     "Keep the webhook URL and key in your routine panel. Don't send them in any chat. " + who + " copies them into the station."
   ];
 }
-function setupMessage(row) {
-  const name = (row && row.name) || "";
-  const wake = (row && row.wake) || ("Hey " + name);
-  const computer = (row && row.computer) || "";
-  const who = setupOwnerLabel(row && row.owner);
-  const poss = who + "'s";
-  const steps = [
-    "Show " + who + " a confirm card in this chat, and only go ahead if " + who + " says yes.",
-    'If you already have a routine whose instructions start with "Grok Station instructions", update that one and don\'t create a second; otherwise create a webhook-triggered routine called "Grok Station" on ' + poss + " home computer (" + computer + ").",
-    "Reply on the station as " + name + "; your wake word is " + wake + ".",
-    "Keep the webhook URL and key in your routine panel, don't send them in any chat, and " + who + " copies them into the station."
-  ];
-  return steps.map((line, i) => "Step " + (i + 1) + ": " + line).join(" ");
-}
 function setupIcon(kind) {
   if (kind === "clock") return ICO_CLOCK;
   if (kind === "pulse") return ICO_PULSE;
@@ -3324,13 +3314,22 @@ function setupMainComputer(el) {
   const main = ((el && el._bots) || []).filter(b => b && b.main)[0];
   return (main && main.reply_host) || "";
 }
-function setupListVisible(el) {
-  if (el && el._setupOpen) return true;
+// rev3.7: the list starts open only while a row needs the owner (stuck Sent, not set up, or failed).
+// The owner's Show/Hide choice (S.setupChoice) then holds until the page reloads.
+function setupNeedsOwner(rows, now) {
+  return (rows || []).some(r => r && (r.status === "not_set_up" || r.status === "failed" ||
+    (r.status === "sent" && setupStuck(r, now))));
+}
+function setupEverSent(el) {
   const rows = (el && el._setup && el._setup.rows) || {};
   return Object.keys(rows).some(slug => {
     const st = rows[slug] && rows[slug].status;
     return st === "sent" || st === "failed" || st === "connected";
   });
+}
+function setupListVisible(el) {
+  if (typeof S.setupChoice === "boolean") return S.setupChoice;
+  return setupNeedsOwner(setupListRows(el), Date.now() / 1000);
 }
 function setupListRows(el) {
   const bots = (el && el._bots) || [];
@@ -3376,7 +3375,7 @@ function setupListRows(el) {
 }
 function openSetupBots(el) {
   if (!el) return;
-  el._setupOpen = true;
+  S.setupChoice = true;
   paintSetupList(el);
 }
 function openGrokBot() { window.location.href = "grokbot://"; }
@@ -3663,7 +3662,8 @@ function botsQuietHidden(kind, phone) {
 function botsHeaderShell() {
   return `<div class="hr" id="bothdr"><span class="qs" id="botqs" hidden>${ICO_OK}All bots up to date</span>` +
     `<button class="btn g sm vtipbtn" id="vtip" type="button" aria-expanded="false" aria-controls="vtippop" aria-label="Voice tip: update team list">${ICO_WAVE}<span class="vtl">Voice tip</span></button>` +
-    `<div class="vtippop" id="vtippop" role="dialog" aria-label="Voice tip" hidden><p id="teamphrase"></p></div>` +
+    `<div class="vtippop" id="vtippop" role="dialog" aria-label="Voice tip" hidden><p id="teamphrase"></p>` +
+    `<div class="acts vtipx"><button class="btn" type="button" data-vtipx>Close</button></div></div>` +
     `<button class="btn morebtn" id="botmore" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More bot actions">${ICO_DOTS}</button>` +
     `<ul class="menu" id="botmenu" role="menu" aria-label="More bot actions" hidden>` +
     `<li role="none"><button role="menuitem" id="avatars" type="button">Refresh avatars</button></li>` +
@@ -3695,12 +3695,15 @@ function botsCalloutHTML(opts) {
   }
   if (kind === "configure" || kind === "setup") {
     const n = pending.length;
-    const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
+    // rev3.7: before any bot has been sent setup the button opens the list ("Configure all" / "Set up {bot}");
+    // after that it toggles it ("Show list" / "Hide list").
+    const open = !!(opts && opts.listOpen);
+    const label = !(opts && opts.everSent) ? (n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""))) : (open ? "Hide list" : "Show list");
     const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
     const who = (opts && opts.mainName) || "Your main bot";
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
       `<div class="help">${esc(who)} can send ${n > 1 ? "each one" : esc(pending[0].name || "it")} its setup message. You review it first.</div></div>` +
-      `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
+      `<button class="btn s2 sm" id="cfgall" type="button" aria-controls="setuphost" aria-expanded="${open ? "true" : "false"}">${esc(label)}</button></div>`;
   }
   if (kind === "updates") {
     const who = (opts && opts.hintName) || "The bot";
@@ -3740,7 +3743,8 @@ function paintBotCallout(el) {
     mainOutdated: !!(main && finishNeedsUpdate(main)),
     mainName: (main && main.name) || "",
     updatesHint: !!(hint && hint.name && !hint.dismissed),
-    hintName: (hint && hint.name) || ""};
+    hintName: (hint && hint.name) || "",
+    listOpen: setupListVisible(el), everSent: setupEverSent(el)};
   const host = $("#botcall", el);
   if (host) {
     host.innerHTML = botsCalloutHTML(opts);
@@ -3752,7 +3756,13 @@ function paintBotCallout(el) {
       if (rows.some(r => r.state === "copy")) openFinishDialog({all: true});
     };
     const cfg = $("#cfgall", host);
-    if (cfg) cfg.onclick = () => openConfigureAll(el);
+    if (cfg) cfg.onclick = () => {
+      if (!setupEverSent(el) && !setupListVisible(el)) openConfigureAll(el);
+      else { S.setupChoice = !setupListVisible(el); paintSetupList(el); }
+      paintBotCallout(el);
+      const again = $("#cfgall", el);
+      if (again) again.focus();
+    };
     const um = $("#updmain", host);
     if (um && main) um.onclick = () => {
       const row = finishFind(FINISH.view, main.slug);
@@ -4901,8 +4911,10 @@ let voiceTipCloser = null;
 function closeVoiceTip(refocus) {
   if (voiceTipCloser) voiceTipCloser(refocus);
 }
-// Opens under the button (desktop) or full width under the header (phone, max-width 767px). Esc, a tap
-// outside or the button again close it and focus returns to the button. Phone reuses trapTab and the sheet's z-order.
+// Desktop: a popover under the button; Esc, a click outside, focus leaving it (popoverDismiss) or the button
+// again close it. Phone (767 px and under, rev3.7): the #pendpop pattern, a z6 wrapper with a 55% scrim and
+// a full-width sheet with a Close button. The sheet takes focus (tabindex -1), Tab stays inside, a tap on the
+// scrim closes it without reaching the page, and focus returns to the button.
 function bindVoiceTip() {
   const btn = document.getElementById("vtip"), pop = document.getElementById("vtippop");
   if (!btn || !pop) return;
@@ -4910,32 +4922,59 @@ function bindVoiceTip() {
     ev.preventDefault();
     if (voiceTipCloser) { closeVoiceTip(true); return; }
     const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
-    if (phone) {
-      const hdr = btn.closest ? btn.closest(".top, header") : null;
-      const r = (hdr || btn).getBoundingClientRect();
-      pop.style.setProperty("--vtip-top", Math.round(r.bottom + 8) + "px");
-    }
-    pop.hidden = false;
-    btn.setAttribute("aria-expanded", "true");
-    const onKey = e => { if (e.key === "Escape") { e.preventDefault(); close(true); } };
-    const onDown = e => {
-      const t = e.target;
-      if (pop.contains(t) || btn.contains(t)) return;
-      close(false);
-    };
+    const home = pop.parentNode, next = pop.nextSibling;
+    let wrap = null, undo = null;
     const close = refocus => {
       if (voiceTipCloser !== close) return;
       voiceTipCloser = null;
-      document.removeEventListener("keydown", onKey);
+      if (undo) undo();
       document.removeEventListener("pointerdown", onDown, true);
       pop.hidden = true;
+      pop.classList.remove("pop", "vtipsheet");
+      pop.removeAttribute("tabindex");
+      pop.removeAttribute("aria-modal");
+      if (wrap) {
+        if (home && home.isConnected) home.insertBefore(pop, next && next.parentNode === home ? next : null);
+        if (wrap.parentNode) wrap.remove();
+      }
       btn.setAttribute("aria-expanded", "false");
       if (refocus !== false && btn.isConnected) btn.focus();
     };
+    const onDown = e => {
+      const t = e.target;
+      if (pop.contains(t) || btn.contains(t) || (wrap && wrap.contains(t))) return;
+      close(false);
+    };
     voiceTipCloser = close;
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("pointerdown", onDown, true);
-    if (phone && !pop._trapped) { trapTab(pop); pop._trapped = true; }
+    pop.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const x = pop.querySelector("[data-vtipx]");
+    if (x) x.onclick = () => close(true);
+    if (phone) {
+      wrap = document.createElement("div");
+      wrap.id = "vtipwrap";
+      wrap.innerHTML = '<div class="scrim" data-vtip-scrim="1"></div>';
+      document.body.appendChild(wrap);
+      wrap.appendChild(pop);
+      pop.classList.add("pop", "vtipsheet");
+      pop.setAttribute("tabindex", "-1");
+      pop.setAttribute("aria-modal", "true");
+      const scrim = wrap.querySelector(".scrim");
+      const eat = e => { e.preventDefault(); e.stopPropagation(); };
+      scrim.addEventListener("pointerdown", eat);
+      scrim.addEventListener("click", e => { eat(e); close(true); });
+      const onKey = e => {
+        if (e.key === "Escape") { e.preventDefault(); close(true); }
+      };
+      document.addEventListener("keydown", onKey);
+      if (!pop._trapped) { trapTab(pop); pop._trapped = true; }
+      undo = () => document.removeEventListener("keydown", onKey);
+      pop.focus();
+    } else {
+      // Esc returns focus to the button; focus moving elsewhere closes it and leaves focus there.
+      undo = popoverDismiss(pop, btn, pop, false, "button", r => close(r));
+      document.addEventListener("pointerdown", onDown, true);
+    }
   };
 }
 const BOT_ROUTINE = `Grok Station instructions, release 0.13.9.
@@ -5605,7 +5644,7 @@ function graceFormHTML(view) {
       <label class="grow"><input type="radio" name="grace" value="time"${on("time")}><span class="gl"><b>After a set time</b><span class="sub">Ask once, then not again for a while.</span></span></label>
       <div class="gmin" id="gmin"${choice === "time" ? "" : " hidden"}><input class="inp" id="gminn" aria-label="Re-ask after, in minutes" type="number" inputmode="numeric" min="1" max="120" step="1" value="${esc(minutes)}"><span>minutes</span></div>
       <p class="ferr" id="gmine" hidden></p>
-      <label class="grow"><input type="radio" name="grace" value="session"${on("session")}><span class="gl"><b>Not while I'm signed in</b><span class="sub">Ask once, then not again until you sign out, change the password, leave it idle for 30 minutes, or 12 hours pass.</span></span></label>
+      <label class="grow"><input type="radio" name="grace" value="session"${on("session")}><span class="gl"><b>Not while I'm signed in</b><span class="sub">Ask once, then not again until you sign out or the password changes.</span></span></label>
       <div class="hbinfo" id="gnotice" role="note"${choice === "session" ? "" : " hidden"}><span class="ii" aria-hidden="true">i</span><span>Anyone using this signed-in browser can change bots, webhooks and most other settings without the password.</span></div>
     </fieldset>
     <p class="help">Changing the password and a few other security settings always ask.</p>
@@ -5617,13 +5656,20 @@ const SYS_CHEV = '<svg class="chev" viewBox="0 0 16 16" aria-hidden="true"><path
 function sysGroup(id, title, sum, inner, open) {
   return `<details class="sysgrp" id="${id}"${open ? " open" : ""}><summary><h2>${title}</h2><span class="sum">${sum}</span>${SYS_CHEV}</summary><div class="sysin">${inner}</div></details>`;
 }
+// rev3.7: an empty service state reads "unknown" next to an amber dot. Never the dot alone.
+function svcPill(v) {
+  const st = String(v == null ? "" : v).trim();
+  if (!st) return `<span class="right pill warn"><i></i>unknown</span>`;
+  return `<span class="right pill ${st === "active" ? "ok" : "bad"}"><i></i>${esc(st)}</span>`;
+}
 async function pageSystem(el) {
   el.innerHTML = sysGroup("g-status", "Status", "CPU, memory, disk, services, network", `<div id="hl"></div>`, true) +
     sysGroup("g-sec", "Password and security", "Admin password, ask again, certificate", `
     <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
       ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
     <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>
-    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>`, false) +
+    <div class="card certcard" id="tls"><h2>Security certificate</h2></div>
+    ${signOutAllHTML()}`, false) +
     sysGroup("g-trouble", "Troubleshooting", "Logs, restart voice", `
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><label for="lp">Log</label><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
       <label for="ls">Time range</label><select class="sel" id="ls" style="width:120px"><option value="15m">15 min</option><option value="1h" selected>1 hour</option><option value="1d">1 day</option></select><button class="btn sm" id="lr">Show</button><a class="btn sm" id="ld">Download</a></span></div>
@@ -5642,6 +5688,8 @@ async function pageSystem(el) {
     if (r.ok) { attn($("#pe", el), ""); markSaved(); toast("Password changed. Other devices are signed out."); }
     else { markUnsaved(); attn($("#pe", el), (r.data && r.data.error) || "Couldn't save that."); }
   };
+  const soe = $("#soego", el);
+  if (soe) soe.onclick = () => openSignOutAll(soe);
   const s = (await api("GET", "/api/system")).data || {};
   const storedGrace = s.password_grace_min;
   const remembered = graceView(storedGrace).minutes;
@@ -5708,7 +5756,7 @@ async function pageSystem(el) {
     <div class="row"><span>Uptime</span><span class="right mono">${hh.uptime_s != null ? Math.floor(hh.uptime_s / 86400) + "d " + Math.floor(hh.uptime_s % 86400 / 3600) + "h" : "n/a"}</span></div>
     <div class="row"><span>Memory used</span><span class="right mono">${hh.mem_used_pct != null ? hh.mem_used_pct + "%" : "n/a"}</span></div>
     <div class="row"><span>Disk free</span><span class="right mono">${hh.disk_free_gb != null ? hh.disk_free_gb + " GB" : "n/a"}</span></div>
-    ${Object.entries(s.services || {}).map(([k, v]) => `<div class="row"><span>${esc(k)}</span><span class="right pill ${v === "active" ? "ok" : "bad"}"><i></i>${esc(v)}</span></div>`).join("")}
+    ${Object.entries(s.services || {}).map(([k, v]) => `<div class="row"><span>${esc(k)}</span>${svcPill(v)}</div>`).join("")}
     <div class="row"><span>Network</span><span class="right help">${s.network && s.network.wifi ? "Wi-Fi " + esc(s.network.wifi.ssid) + " · " + s.network.wifi.signal + "%" : s.network && s.network.wired ? "Wired" : "Offline"}</span></div>`;
   const logs = async () => {
     const q = `part=${$("#lp", el).value}&since=${$("#ls", el).value}`;
@@ -5731,6 +5779,62 @@ async function pageSystem(el) {
       if (r.ok) { d.remove(); toast("Rebooting. This page reconnects when it's back."); } else errBox($("#re", d), r.data.error);
     };
   };
+}
+// rev3.7 (Nix B3): Sign out everywhere, last row of System > Password and security. Ends every admin
+// session on the server (POST /api/logout-all), this one too. The sidebar Sign out link stays this-browser-only.
+function signOutAllHTML() {
+  return `<div class="card soecard" id="soe"><h2>Sign out everywhere</h2>` +
+    `<p class="help">Ends every admin sign-in, including this one. You'll need your password to get back in.</p>` +
+    `<div class="field"><button class="btn soebtn" id="soego" type="button">Sign out everywhere\u2026</button></div></div>`;
+}
+function signOutAllSheetHTML() {
+  return `<div class="scrim" data-soe-scrim="1"></div><div class="pop soepop" role="dialog" aria-modal="true" aria-labelledby="soet" tabindex="-1">` +
+    `<h3 id="soet">Sign out of every device?</h3>` +
+    `<p>Every browser signed in to this station's admin page will need the password again.</p>` +
+    `<div class="soeerr" id="soee" aria-live="polite"></div>` +
+    `<div class="acts"><button class="btn" type="button" data-close>Cancel</button>` +
+    `<button class="btn soeok" type="button" data-soe>Sign out everywhere</button></div></div>`;
+}
+function openSignOutAll(btn) {
+  closePendingSheet();
+  const wrap = document.createElement("div");
+  wrap.id = "pendpop";
+  wrap.innerHTML = signOutAllSheetHTML();
+  document.body.appendChild(wrap);
+  const pop = wrap.querySelector(".pop");
+  const cancel = wrap.querySelector("[data-close]");
+  const go = wrap.querySelector("[data-soe]");
+  const onKey = ev => {
+    if (!wrap.isConnected) { document.removeEventListener("keydown", onKey); return; }
+    if (ev.key === "Escape") { ev.preventDefault(); close(); }
+  };
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    if (wrap.parentNode) wrap.remove();
+    if (btn && btn.isConnected && btn.focus) btn.focus();
+  };
+  wrap.querySelector(".scrim").onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
+  cancel.onclick = close;
+  go.onclick = async () => {
+    go.disabled = true;
+    go.textContent = "Signing out\u2026";
+    $("#soee").innerHTML = "";
+    const r = await api("POST", "/api/logout-all", {});
+    if (r && r.ok) {
+      document.removeEventListener("keydown", onKey);
+      if (wrap.parentNode) wrap.remove();
+      S.signinNote = "Signed out everywhere.";
+      location.hash = "";
+      boot();
+      return;
+    }
+    go.disabled = false;
+    go.textContent = "Sign out everywhere";
+    $("#soee").innerHTML = `<p class="ferr" role="alert">${ICO_ERR}Couldn't sign out. Try again.</p>`;
+  };
+  document.addEventListener("keydown", onKey);
+  trapTab(pop);
+  cancel.focus();
 }
 function pageMore(el) {
   const items = [["xai", "xAI API"], ["updates", "Updates"], ["bots", "Bots"], ["privacy", "Privacy"], ["display", "Display"], ["time", "Time and location"], ["network", "Network"], ["integrations", "Integrations"]];

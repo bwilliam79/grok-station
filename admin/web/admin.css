@@ -812,10 +812,10 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .vtippop{position:absolute;top:calc(100% + 8px);right:0;width:240px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:12px 14px;box-shadow:0 10px 40px rgba(0,0,0,.45);z-index:12;color:var(--gs-text);font-size:var(--fs-label);line-height:1.5}
 .vtippop[hidden]{display:none}
 .vtippop p{margin:0}
+.vtippop .vtipx{display:none}
 @media (max-width:767px){
   .vtipbtn{width:44px;height:44px;min-height:44px;padding:0}
   .vtipbtn .vtl{display:none}
-  .vtippop{position:fixed;left:0;right:0;top:var(--vtip-top,64px);width:auto;border-radius:0 0 12px 12px}
 }
 /* rev1 item 7 (0.13.9): grouped System page. Existing tokens only. */
 .sysgrp{background:var(--gs-surface);border:1px solid var(--gs-rule);border-radius:var(--gs-radius-md)}
@@ -846,3 +846,26 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 @media (max-width:767px){.sysgrp>summary .chev{margin-left:auto}.sysdanger .drow2 .btn{margin-left:0}}
 .sysgrp .sysin legend{font:600 var(--fs-label) var(--body);color:var(--gs-text);margin-bottom:var(--sp-1)}
 .sysrv{border:0;padding-top:4px;gap:var(--sp-3)}.sysrv .help{flex:1}
+/* rev3.7 (Nix B3): Sign out everywhere row and its confirm sheet (#pendpop pattern). */
+.soebtn{min-height:32px;height:32px}
+.soebtn:focus-visible,.soeok:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}
+.soeok{border:1px solid var(--gs-amber);color:var(--gs-amber);background:transparent}
+.soeok:disabled{opacity:.6;cursor:default}
+.soeerr{min-height:22px;margin-top:8px}
+.soeerr .ferr{display:flex;align-items:center;gap:6px;margin:0}
+#pendpop .soepop:focus{outline:none}
+#lnote{margin:8px 0 0}
+@media (max-width:767px){
+  .soebtn{width:100%;height:44px;min-height:44px}
+}
+#pendpop .soepop{position:fixed;left:50%;top:22vh;transform:translateX(-50%);max-width:calc(100vw - 32px);z-index:12}
+#pendpop [data-soe-scrim]{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:11}
+@media (max-width:767px){#pendpop .soepop{left:0;top:auto;transform:none;max-width:none}}
+/* rev3.7: phone Voice tip sheet (#pendpop pattern: z6 wrapper, 55% scrim, Close 44 px or more). */
+#vtipwrap{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
+#vtipwrap .scrim,#vtipwrap .pop{pointer-events:auto}
+#vtipwrap .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:11}
+#vtipwrap .vtipsheet{position:fixed;left:0;right:0;width:auto;top:auto}
+#vtipwrap .vtipsheet:focus{outline:none}
+#vtipwrap .vtipx{display:flex;margin-top:14px}
+#vtipwrap .vtipx .btn{width:100%;min-height:44px}

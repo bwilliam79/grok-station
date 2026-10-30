@@ -49,6 +49,7 @@ CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # no 0/O, 1/I
 MIN_PASSWORD = 10
 MAX_FAILS, FAIL_WINDOW, LOCK_FOR = 5, 900, 900
 SESSION_TTL, SETUP_TTL, IDLE_TTL = 12 * 3600, 900, 30 * 60  # idle: 30 min with no request; absolute cap stays 12 h
+SESSION_COOKIE_FOREVER = 400 * 86400  # "session" grace: the cookie lives until logout (browsers cap Max-Age near 400 days)
 STEPUP_TTL = 600  # default grace (password_grace_min=10); the open window uses the setting, and later requests do not move it
 GRACE_MAX = 120
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}
@@ -168,7 +169,7 @@ class Auth:
                 self._load_note.append(("skip-num", type(exp).__name__, type(seen).__name__, _is_num(exp), _is_num(seen),
                                         isinstance(exp, bool), isinstance(seen, bool)))
                 continue
-            if exp < t or t - seen > IDLE_TTL:
+            if not session_mode() and (exp < t or t - seen > IDLE_TTL):
                 self._load_note.append("skip-stale")
                 continue
             item = {"exp": float(exp), "seen": float(seen)}
@@ -293,7 +294,11 @@ class Auth:
         return hashlib.sha256(token.encode()).hexdigest() if token else None
 
     def _fresh(self, rec, t):
-        return isinstance(rec, dict) and rec.get("exp", 0) >= t and t - rec.get("seen", 0) <= IDLE_TTL
+        if not isinstance(rec, dict):
+            return False
+        if session_mode():  # owner-accepted (Nix ruling): a "session" sign-in ends only at logout, password change or reset
+            return True
+        return rec.get("exp", 0) >= t and t - rec.get("seen", 0) <= IDLE_TTL
 
     def valid(self, token):
         if not token or self.setup_required():
@@ -334,12 +339,6 @@ class Auth:
         until = rec.get("stepup_until")
         if isinstance(until, bool) or not isinstance(until, (int, float)) or until <= t:
             return None
-        exp = rec.get("exp")
-        if grace == "session":
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= t:
-                return None
-            if until > exp:
-                until = exp
         return until
 
     def stepup_open(self, token):
@@ -359,10 +358,7 @@ class Auth:
         if not self._fresh(rec, t):
             return None
         if grace == "session":
-            exp = rec.get("exp")
-            if isinstance(exp, bool) or not isinstance(exp, (int, float)) or exp <= t:
-                return None
-            rec["stepup_until"] = float(exp)
+            rec["stepup_until"] = t + SESSION_COOKIE_FOREVER  # lasts the sign-in; logout or a password change ends it
         elif isinstance(grace, int) and not isinstance(grace, bool) and grace > 0:
             rec["stepup_until"] = t + grace * 60
         else:
@@ -401,6 +397,13 @@ class Auth:
         if key in self.sessions:
             self.sessions.pop(key, None)
             self._save_sessions()
+
+    def logout_all(self):
+        """Sign out everywhere: drop every server-side session, including the caller's."""
+        n = len(self.sessions)
+        self.sessions.clear()
+        self._save_sessions()
+        return n
 
     def change_password(self, old, new):
         with LOCK:
@@ -3354,6 +3357,15 @@ def password_grace_min():
     return n
 
 
+def session_mode():
+    return password_grace_min() == "session"
+
+
+def session_cookie_ttl():
+    """Max-Age for a new admin cookie: 12 h, or until logout in "session" mode."""
+    return SESSION_COOKIE_FOREVER if session_mode() else SESSION_TTL
+
+
 def _grace_rank(n):
     """Session outlasts any minute window, but only inside the sign-in limits."""
     return GRACE_MAX + 1 if n == "session" else n
@@ -4200,7 +4212,7 @@ class Handler(BaseHTTPRequestHandler):
                 # first run: code, password, then the xAI key (Wi-Fi first only on the setup hotspot)
                 write_json(path("wizard.json"), {"step": 2 if AUTH.mode() == "hotspot" else 3, "done": False})
             s = AUTH.new_session()
-            return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL),
+            return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, session_cookie_ttl()),
                                                           self.set_cookie("gs_setup", "", 0)])
         return self.send(404, {"error": "not found"})
 
@@ -4210,19 +4222,28 @@ class Handler(BaseHTTPRequestHandler):
         s = AUTH.login(j.get("password"))
         if not s:
             return self.send(429 if AUTH.locked() else 401, {"error": PASSWORD_BAD, "locked_s": AUTH.locked()})
-        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL)])
+        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, session_cookie_ttl())])
 
     def api_post_logout(self, p, q, j):
         AUTH.logout(self.cookie("gs_session"))
         return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", "", 0)])
 
     # -- signed in
+    def api_post_logout_all(self, p, q, j):
+        """POST /api/logout-all: end every admin sign-in, this one too. Same guard, session and header checks as other POSTs."""
+        if p != "/api/logout-all":
+            return self.send(404, {"error": "not found"})
+        sid = AUTH.session_public_id(self.cookie("gs_session"))
+        n = AUTH.logout_all()
+        print(f"audit persona=- action=logout-all sessions={n} session={sid} last4=- time={int(now())}", flush=True)
+        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", "", 0)])
+
     def api_post_password(self, p, q, j):
         why = AUTH.change_password(j.get("old"), j.get("new"))
         if why:
             return self.send(400, {"error": why})
         s = AUTH.new_session()
-        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, SESSION_TTL)])
+        return self.send(200, {"ok": True}, headers=[self.set_cookie("gs_session", s, session_cookie_ttl())])
 
     def api_post_wizard(self, p, q, j):
         step = j.get("step")
