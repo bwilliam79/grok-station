@@ -363,6 +363,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .pop p{font-size:var(--fs-label);color:var(--gs-text);line-height:1.45}
 .pop .ctx{color:var(--gs-muted);font-size:var(--fs-help);margin-top:8px}
 .pop .acts{margin-top:14px}
+.pop .btn:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
 .need{color:var(--gs-amber);font-size:var(--fs-help);display:flex;align-items:center;gap:6px;margin-top:4px}
 a.need{text-decoration:none}
 a.need:hover{text-decoration:underline}
