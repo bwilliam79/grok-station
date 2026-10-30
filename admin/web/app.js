@@ -3261,14 +3261,8 @@ function showBotMessage(btn, el) {
   };
   wrap.addEventListener("keydown", ev => {
     if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
-    if (!phone || ev.key !== "Tab" || !pop) return;
-    const nodes = pop.querySelectorAll("button, [href], input, select, textarea");
-    const list = Array.prototype.filter.call(nodes, n => !n.disabled);
-    if (!list.length) return;
-    const first = list[0], last = list[list.length - 1];
-    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
-    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
   });
+  if (phone && pop) trapTab(pop);
   const scrim = wrap.querySelector("[data-bmsg-scrim]");
   if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
   const x = $("#bmsgx", wrap);
@@ -3389,10 +3383,17 @@ function openPendingSheet(row, el) {
     const btn = (row.isConnected && row.querySelector("[data-setup]")) || (key && document.querySelector('[data-setup="' + key + '"]'));
     if (btn && btn.focus) btn.focus();
   };
-  const close = () => { if (wrap.parentNode) wrap.remove(); back(); };
+  const pop = wrap.querySelector(".pop");
+  // Esc on document, not the sheet: it still closes after focus has left the sheet (0.13.9 R4).
+  const onKey = ev => {
+    if (!wrap.isConnected) { document.removeEventListener("keydown", onKey); return; }
+    if (ev.key === "Escape") { ev.preventDefault(); close(); }
+  };
+  const close = () => { document.removeEventListener("keydown", onKey); if (wrap.parentNode) wrap.remove(); back(); };
   wrap.querySelector(".scrim").onclick = close;
   wrap.querySelector("[data-close]").onclick = close;
-  wrap.addEventListener("keydown", ev => { if (ev.key === "Escape") { ev.preventDefault(); close(); } });
+  document.addEventListener("keydown", onKey);
+  trapTab(pop);
   const rm = wrap.querySelector("[data-remove]");
   rm.onclick = () => { close(); removePending(pend, el); };
   wrap.querySelector("h3").focus();
