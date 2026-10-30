@@ -161,5 +161,44 @@ class StationApply(unittest.TestCase):
             gs.apply_update({"v": 1, "op": "updates_off", "bot": "otto", "x": 1}, f)
 
 
+class StationBand(unittest.TestCase):
+    def setUp(self):
+        import pygame
+        pygame.display.init()
+        pygame.font.init()
+        self.old = gs.UPDATES
+        gs.UPDATES = cards.UpdateFeed()
+        gs.UPD_ROT.update(step=0, at=None)
+
+    def tearDown(self):
+        gs.UPDATES = self.old
+
+    def test_idle_band_paints_updates_and_rotates_every_20s(self):
+        import pygame, time
+        now = time.time()
+        for i in range(5):
+            gs.apply_update(dict(upd("u%d" % i, "done", "Line %d" % i, now - i), bot="otto"), gs.UPDATES)
+        gs.apply_update(dict(upd("n", "needs_you", "Approve the refund?", now), bot="juniper"), gs.UPDATES)
+        rows = gs.idle_band_rows(now)
+        self.assertEqual(rows[0]["id"], "n")
+        ident = gs.feed_identity(now)
+        surf = pygame.Surface((2560, 1706))
+        gs.draw_next_up(surf, gs.Layout(2560, 1706), None)
+        self.assertTrue(gs.LAST_UPDATE_BAND["visible"])
+        first = [r["id"] for r in gs.LAST_UPDATE_BAND["tiles"]]
+        self.assertNotEqual(gs.feed_identity(now + 21), ident)  # a repaint is due at 20 s
+        rows = gs.idle_band_rows(now + 21)
+        self.assertEqual(rows[0]["id"], "n")
+        self.assertNotEqual([r["id"] for r in rows], first)
+
+    def test_night_and_pause(self):
+        import time
+        now = time.time()
+        gs.apply_update(dict(upd("n", "needs_you", "x", now), bot="otto"), gs.UPDATES)
+        self.assertEqual(gs.idle_band_rows(now, night=True), [])
+        gs.idle_band_rows(now, paused=True)
+        self.assertEqual(gs.update_rotation_step(now + 100, paused=True), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

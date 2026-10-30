@@ -822,6 +822,11 @@ def feed_identity(now=None):
             mark = str(len(c["events"]))
         full = f"{cur['bot']}:{cur['id']}:{c['type']}:{mark}"
     home = ",".join(f"{h['bot']}:{h['id']}" for h in homes)
+    needs, rest = updates_feed().ordered(now)
+    if needs or rest:  # bot updates: a new, cleared, aged or rotated tile repaints (20 s step)
+        due = UPD_ROT["at"] is not None and now - UPD_ROT["at"] >= cards.UPD_ROTATE_S
+        home += "|u" + ",".join(f"{r['seq']}{'a' if r['aged'] else ''}" for r in needs + rest)
+        home += f":{UPD_ROT['step'] + (1 if due else 0)}"
     return full + "|" + home
 
 
@@ -3307,32 +3312,129 @@ def draw_home_band(surf, L, rows):
     height = min(L(280), floor_y - top)
     for i, row in enumerate(rows[:n]):
         rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
-        pygame.draw.rect(surf, SURFACE, rect, border_radius=L(20))
-        card = row["card"]
-        y = rect.top + L(16)
-        title = _line(surf, "display", L(34), card["title"].upper(), MUTED, rect.w - L(48))
-        surf.blit(title, (rect.left + L(28), y))
-        y += title.get_height() + L(16)
-        for item in card["items"]:
-            trend = item.get("trend")
-            color = GREEN if trend == "up" else RED if trend == "down" else TEXT
-            arrow = L(22)
-            label = _line(surf, "body", L(36), item["label"], MUTED, max(40, rect.w // 2 - L(16)))
-            value = _line(surf, "display", L(48), item["value"], color, max(40, rect.w // 2 - arrow - L(24)))
-            row_h = max(label.get_height(), value.get_height())
-            if y + row_h > rect.bottom - L(8):
-                break
-            surf.blit(label, (rect.left + L(28), y + max(0, (value.get_height() - label.get_height()) // 2)))
-            vx = rect.right - L(28) - value.get_width()
-            if trend in ("up", "down"):
-                _trend(surf, vx - arrow - L(8), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
-            surf.blit(value, (vx, y))
-            y += row_h + L(12)
+        _paint_home_tile(surf, L, rect, row)
+
+
+def _paint_home_tile(surf, L, rect, row):
+    """One home card in one band slot."""
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(20))
+    card = row["card"]
+    y = rect.top + L(16)
+    title = _line(surf, "display", L(34), card["title"].upper(), MUTED, rect.w - L(48))
+    surf.blit(title, (rect.left + L(28), y))
+    y += title.get_height() + L(16)
+    for item in card["items"]:
+        trend = item.get("trend")
+        color = GREEN if trend == "up" else RED if trend == "down" else TEXT
+        arrow = L(22)
+        label = _line(surf, "body", L(36), item["label"], MUTED, max(40, rect.w // 2 - L(16)))
+        value = _line(surf, "display", L(48), item["value"], color, max(40, rect.w // 2 - arrow - L(24)))
+        row_h = max(label.get_height(), value.get_height())
+        if y + row_h > rect.bottom - L(8):
+            break
+        surf.blit(label, (rect.left + L(28), y + max(0, (value.get_height() - label.get_height()) // 2)))
+        vx = rect.right - L(28) - value.get_width()
+        if trend in ("up", "down"):
+            _trend(surf, vx - arrow - L(8), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
+        surf.blit(value, (vx, y))
+        y += row_h + L(12)
+
+
+UPDATE_PILL = {"needs_you": "NEEDS YOU", "heads_up": "Heads-up", "working_on": "Working on", "done": "Done"}
+UPD_ROT = {"step": 0, "at": None}   # rotation position; held while paused, resumes from the same step
+LAST_UPDATE_BAND = None             # test hook: the band state last painted
+
+
+def update_age(seconds):
+    s = max(0, int(seconds))
+    return "now" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h"
+
+
+def update_rotation_step(now, paused=False):
+    """One step per 20 s of unpaused time. Pause holds the step; resume carries on from it."""
+    if UPD_ROT["at"] is None or paused:
+        UPD_ROT["at"] = now
+        return UPD_ROT["step"]
+    if now - UPD_ROT["at"] >= cards.UPD_ROTATE_S:
+        UPD_ROT["step"] += 1
+        UPD_ROT["at"] = now
+    return UPD_ROT["step"]
+
+
+def idle_band_rows(now, night=False, paused=False):
+    """Home band tiles: Needs you pinned, then updates and home cards rotating. Night: nothing at all."""
+    global LAST_UPDATE_BAND
+    homes = deck().home_row(now)
+    needs, rest = updates_feed().ordered(now)
+    if not needs and not rest:
+        LAST_UPDATE_BAND = None
+        return homes
+    if night:
+        LAST_UPDATE_BAND = {"visible": False, "tiles": [], "marker": ""}
+        return []
+    step = update_rotation_step(now, paused)
+    others = [dict(r, kind="update") for r in rest] + [dict(h, kind="home") for h in homes]
+    tiles = cards.update_slots([dict(r, kind="update") for r in needs], others, step)
+    LAST_UPDATE_BAND = {"visible": bool(tiles), "paused": bool(paused), "tiles": tiles,
+                        "marker": cards.update_marker(needs, others, step, paused=paused)}
+    return tiles
+
+
+def _paint_update_tile(surf, L, rect, row, now):
+    """One update tile: pill word (never colour alone), bot name and age, the line. Draws only."""
+    t = row["type"]
+    needs = t == "needs_you"
+    aged = row.get("aged")
+    pygame.draw.rect(surf, ALERT_FILL if needs else SURFACE if not aged else BG, rect, border_radius=L(20))
+    edge = AMBER if needs else RULE2
+    pygame.draw.rect(surf, edge, rect, width=max(1, L(6) if needs else L(3)), border_radius=L(20))
+    color = AMBER if t in ("needs_you", "heads_up") else LISTENING if t == "done" and not aged else MUTED
+    pill_f = font("display" if needs else "body", L(30))
+    word = pill_f.render(("! " if needs else "") + UPDATE_PILL[t], True, AMBER_INK if needs else color)
+    pill = pygame.Rect(rect.left + L(28), rect.top + L(20), word.get_width() + L(28), word.get_height() + L(8))
+    if needs:
+        pygame.draw.rect(surf, AMBER, pill, border_radius=pill.h // 2)
+    else:
+        pygame.draw.rect(surf, color, pill, width=max(1, L(2)), border_radius=pill.h // 2)
+    surf.blit(word, (pill.left + L(14), pill.top + L(4)))
+    meta = _line(surf, "body", L(30), f"{row['bot'].capitalize()} · {update_age(now - row['time'])}",
+                 MUTED, rect.right - pill.right - L(56))
+    surf.blit(meta, (rect.right - L(28) - meta.get_width(), pill.top + L(4)))
+    line = _line(surf, "display" if needs else "body", L(44), row["line"], MUTED if aged else TEXT, rect.w - L(56))
+    surf.blit(line, (rect.left + L(28), pill.bottom + L(24)))
 
 
 def draw_next_up(surf, L, now):
-    """Home cards in the lower band. Empty deck: nothing, so the idle clock stays where it is."""
-    draw_home_band(surf, L, deck().home_row(time.time()))
+    """Home cards and bot updates in the lower band. Empty: nothing, so the idle clock stays where it is."""
+    wall = time.time()
+    rows = idle_band_rows(wall)
+    homes = [r for r in rows if r.get("kind") != "update"]
+    draw_home_band(surf, L, homes if len(homes) == len(rows) else [])
+    if len(homes) != len(rows):
+        _draw_mixed_band(surf, L, rows, wall)
+
+
+def _draw_mixed_band(surf, L, rows, now):
+    """Same rect and slots as draw_home_band (Noor SPEC rev4: x 128..2432, 3 tiles, L16 gap)."""
+    floor_y = content_limit(L)
+    date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
+    weather_bottom = LAST_WEATHER_RECT.bottom if LAST_WEATHER_RECT else 0
+    top = max(date_bottom, weather_bottom, int(L.h * 0.58)) + L(16)
+    if floor_y - top < L(80):
+        return
+    gap, n = L(16), min(3, len(rows))
+    width = (L.w - 2 * L.m - gap * 2) // 3
+    height = min(L(280), floor_y - top)
+    for i, row in enumerate(rows[:n]):
+        rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
+        if row.get("kind") == "update":
+            _paint_update_tile(surf, L, rect, row, now)
+        else:
+            _paint_home_tile(surf, L, rect, row)
+    mark = (LAST_UPDATE_BAND or {}).get("marker")
+    if mark:
+        m = _line(surf, "body", L(30), mark, MUTED, L.w // 2)
+        surf.blit(m, (L.w - L.m - m.get_width(), top - m.get_height() - L(6)))
 
 
 def recipe_scale(L):

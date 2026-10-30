@@ -3023,6 +3023,9 @@ function joinBotNames(names) {
   if (list.length === 2) return list[0] + " and " + list[1];
   return list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
 }
+// TODO(0.13.10): the owner rejected this separate Set up bots section and the "N bots not connected" callout
+// (Oct 30). Noor is redesigning setup as per-row actions in the existing Bots list; that rework, plus the
+// per-bot Updates switch and feed-rule line (bot updates feed), lands in this same release once her design is in.
 // Set up bots (0.13.9). One list for one bot or many.
 const SETUP_STUCK_S = 300;
 const SETUP_REACHABLE = {not_set_up: 1, sent: 1, failed: 1, connected: 1, already: 1};
