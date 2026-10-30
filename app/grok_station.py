@@ -457,6 +457,8 @@ BG, SURFACE, SURFACE2, SURFACE3, RULE = hexc("0D0B09"), hexc("17130F"), hexc("21
 TEXT, MUTED, FAINT = hexc("F5EFE6"), hexc("A89B8C"), hexc("6F655A")
 FIELD_EDGE = hexc("806F60")  # empty training-progress square, 3 px edge on SURFACE3
 LISTENING, THINKING, SPEAKING, AMBER = hexc("3FD3B6"), hexc("A99CFF"), hexc("FFE6BF"), hexc("F5C04A")
+RULE2, ALERT_FILL, AMBER_INK = hexc("3A3028"), hexc("241C0E"), hexc("1A1408")
+RECIPE_FAINT = hexc("998C7D")  # "Serves", "No timers" on the recipe tile (SPEC faint, not the older FAINT)
 RED = hexc("FF5A52")  # mic off, and a stock-down arrow. Problems use text on a quiet ring
 GREEN = hexc("4ADE80")  # stock up only
 TEAL_BG = hexc("12302A")  # the next calendar row
@@ -2360,7 +2362,14 @@ def state_event(j):
     card = clean_card(j.get("card")) if has_card else None
     timers = clean_timers(j.get("timers")) if "timers" in j else None
     speech = speech_progress(j.get("speech"))
-    if not has_state and card is None and timers is None and speech is None:
+    has_caption = "recipe_caption" in j
+    caption, caption_s = "", 0
+    if has_caption:
+        caption = " ".join(str(j.get("recipe_caption") or "").split())[:160]
+        raw_s = j.get("recipe_caption_s")
+        if not isinstance(raw_s, bool) and isinstance(raw_s, (int, float)) and raw_s > 0:
+            caption_s = float(raw_s)
+    if not has_state and card is None and timers is None and speech is None and not has_caption:
         raise ValueError("nothing to apply")
     heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
@@ -2370,7 +2379,7 @@ def state_event(j):
     hold_s = 4 if (not isinstance(raw_hold, bool) and isinstance(raw_hold, (int, float)) and raw_hold == 4) else None
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
             "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
-            "speech": speech, "hold_s": hold_s}
+            "speech": speech, "hold_s": hold_s, "has_caption": has_caption, "caption": caption, "caption_s": caption_s}
 
 
 def speech_progress(raw):
@@ -2479,6 +2488,9 @@ def clean_timers(items):
             dur = None
         if dur is not None:
             rec["duration"] = float(dur)
+        src = cards.timer_source(t.get("source"))
+        if src:
+            rec["source"] = src
         out.append(rec)
         seen.add(tid)
     return out
@@ -3281,59 +3293,730 @@ def draw_next_up(surf, L, now):
     draw_home_band(surf, L, deck().home_row(time.time()))
 
 
-def draw_recipe(surf, L, card):
-    """Two cards, as on the recipe screen: ingredients, then the current step with a teal bar."""
-    top = L(120)
-    bottom = content_limit(L)
-    gap = L(28)
-    height = max(L(160), bottom - top)
-    left_w = min(L(520), max(L(180), (L.w - 2 * L.m - gap) // 3))
-    ing = pygame.Rect(L.m, top, left_w, height)
-    stp = pygame.Rect(ing.right + gap, top, max(L(160), L.w - L.m - ing.right - gap), height)
-    for rect in (ing, stp):
-        pygame.draw.rect(surf, SURFACE, rect, border_radius=L(28))
-        pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
-    x, y = ing.left + L(28), ing.top + L(28)
-    cap = _line(surf, "display", L(28), "INGREDIENTS", MUTED, ing.w - L(56))
-    surf.blit(cap, (x, y))
-    y += cap.get_height() + L(8)
-    meta = _line(surf, "body", L(22), f"Serves {card['servings']}", MUTED, ing.w - L(56))
-    surf.blit(meta, (x, y))
-    y += meta.get_height() + L(16)
-    for item in card["ingredients"]:
-        if y > ing.bottom - L(40):
+def recipe_scale(L):
+    """The recipe tile is measured at 2560×1706. Other screens scale that panel to fit."""
+    return min(L.w / 2560.0, L.h / 1706.0)
+
+
+def recipe_px(L, px):
+    return max(1, int(round(float(px) * recipe_scale(L))))
+
+
+def recipe_rect(L, x, y, w, h):
+    s = recipe_scale(L)
+    return pygame.Rect(int(round(x * s)), int(round(y * s)), max(1, int(round(w * s))), max(1, int(round(h * s))))
+
+
+def recipe_frame(L):
+    """Reserved boxes from the recipe-tile SPEC. Exact at 2560×1706."""
+    return {
+        "title": recipe_rect(L, 128, 56, 620, 104),
+        "banner": recipe_rect(L, 780, 56, 1130, 104),
+        "clock": recipe_rect(L, 1930, 52, 410, 112),
+        "status": recipe_rect(L, 2440, 20, 64, 64),
+        "ingredients": recipe_rect(L, 128, 216, 560, 1246),
+        "step": recipe_rect(L, 712, 216, 1168, 1246),
+        "rail": recipe_rect(L, 1904, 216, 528, 1246),
+        "slots": [recipe_rect(L, 1904, y, 528, 400) for y in (216, 639, 1062)],
+        "hint": recipe_rect(L, 128, 1494, 2304, 84),
+        "step_text": recipe_rect(L, 776, 520, 1040, 828),
+    }
+
+
+def _bezier_ease(u):
+    """One sample of cubic-bezier(.2, 0, 0, 1). Used only to fill the lookup table."""
+    def bez(t, a, b):
+        omt = 1.0 - t
+        return 3 * omt * omt * t * a + 3 * omt * t * t * b + t * t * t
+
+    lo, hi = 0.0, 1.0
+    for _ in range(24):
+        mid = (lo + hi) / 2.0
+        if bez(mid, 0.2, 0.0) < u:
+            lo = mid
+        else:
+            hi = mid
+    return bez((lo + hi) / 2.0, 0.0, 1.0)
+
+
+_EASE = tuple(_bezier_ease(i / 32.0) for i in range(33))
+
+
+def ease_out(u):
+    """cubic-bezier(.2, 0, 0, 1), from the table above. 0 at the start, 1 at the end."""
+    if u <= 0:
+        return 0.0
+    if u >= 1:
+        return 1.0
+    x = float(u) * 32.0
+    i = int(x)
+    return _EASE[i] + (_EASE[i + 1] - _EASE[i]) * (x - i)
+
+
+def rail_translate(before, after, elapsed_ms, reduced, slot_ys):
+    """Pixels to add to each timer's new slot y. One change is one slide, clipped by the caller to the rail.
+
+    before/after map id -> slot index. Reduced motion, or 240 ms and later, is already at the new slot.
+    """
+    ids = list(after or {})
+    if reduced or elapsed_ms >= 240:
+        return {i: 0 for i in ids}
+    remain = 1.0 - ease_out(max(0.0, min(1.0, float(elapsed_ms) / 240.0)))
+    out = {}
+    for i, slot in (after or {}).items():
+        if i in (before or {}) and before[i] != slot:
+            out[i] = (slot_ys[before[i]] - slot_ys[slot]) * remain
+        else:
+            out[i] = 0
+    return out
+
+
+def recipe_name(label):
+    """First letter only, so a dish stays "Garlic bread" rather than a title-cased "Garlic Bread"."""
+    text = " ".join(str(label or "timer").split())[:24]
+    return (text[:1].upper() + text[1:]) if text else "Timer"
+
+
+def slot_title(timer):
+    """Rail name. A plain "Timer" with a whole-minute length is "Timer · 5 min"; "Timer 2" stays "Timer 2"."""
+    label = str((timer or {}).get("label") or "timer")
+    titled = recipe_name(label)
+    dur = (timer or {}).get("duration")
+    if label.strip().lower() == "timer" and isinstance(dur, (int, float)) and not isinstance(dur, bool):
+        sec = int(dur)
+        if 60 <= sec <= 86400 and sec % 60 == 0:
+            return f"Timer · {sec // 60} min"
+    return titled
+
+
+def timer_aria(title, seconds):
+    """Spoken length for the slot, e.g. "Orzo, 7 minutes 42 seconds left"."""
+    sec = max(0, int(round(float(seconds))))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h:
+        parts.append(f"{h} hour" + ("" if h == 1 else "s"))
+    if m or h:
+        parts.append(f"{m} minute" + ("" if m == 1 else "s"))
+    parts.append(f"{s} second" + ("" if s == 1 else "s"))
+    return f"{title}, {' '.join(parts)} left"
+
+
+def banner_copy(names):
+    """Ringing banner. One name, two names, or the first two plus "+ N more". Names are already capped."""
+    names = [str(n) for n in (names or []) if str(n).strip()]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return f"{names[0]} timer is done"
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]} are done"
+    return f"{names[0]}, {names[1]} + {len(names) - 2} more"
+
+
+def banner_parts(names, font, limit=350):
+    """Cap each name at `limit` px. The "+ N more" tail is never ellipsized."""
+    shown = []
+    for name in names or []:
+        text = str(name)
+        shown.append(text if font.size(text)[0] <= limit else ellipsize(font, text, limit))
+    suffix = f"+ {len(shown) - 2} more" if len(shown) >= 3 else ""
+    return {"names": shown, "text": banner_copy(shown), "suffix": suffix}
+
+
+def _timer_fraction(timer, left):
+    dur = (timer or {}).get("duration")
+    if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+        return max(0.0, min(1.0, float(left) / float(dur)))
+    return 1.0 if left > 0 else 0.0
+
+
+def _source_line(timer):
+    """'From step N' when the timer carries a recipe source, otherwise 'Set by voice'."""
+    src = cards.timer_source((timer or {}).get("source"))
+    if src:
+        return f"From step {src['step']}"
+    return "Set by voice"
+
+
+def recipe_rail(timers, epoch, order=None):
+    """Three fixed slots. Ringing timers first, in end order, then running timers, oldest first.
+
+    With more than three timers and two or fewer ringing, slot 3 is "+N more" (soonest first, 3 rows).
+    With more than two ringing, slots 1 and 2 stay full ringing slots and slot 3 is "+N more" in the
+    ringing treatment. A ringing timer is always on the rail. Banner names stay in end order.
+    """
+    rows = [t for t in (timers or []) if isinstance(t, dict) and t.get("id")]
+    by_id = {}
+    for t in rows:
+        by_id[t["id"]] = t
+    ids = []
+    for i in order or []:
+        if i in by_id and i not in ids:
+            ids.append(i)
+    for t in rows:
+        if t["id"] not in ids:
+            ids.append(t["id"])
+
+    def left_of(t):
+        return float(t.get("ends_at_epoch", 0)) - float(epoch)
+
+    def is_ringing(t):
+        return _shown_ringing(t, left_of(t))
+
+    def end_key(tid):
+        return (float(by_id[tid].get("ends_at_epoch", 0)), ids.index(tid))
+
+    def ring_slot(tid):
+        t = by_id[tid]
+        ringing = is_ringing(t)
+        title = slot_title(t)
+        left = 0.0 if ringing else max(0.0, left_of(t))
+        return {
+            "kind": "ringing" if ringing else "ring",
+            "id": tid,
+            "title": title,
+            "text": "0:00" if ringing else fmt_timer_clock(left),
+            "source": _source_line(t),
+            "done": f"{title} is done",
+            "fraction": 1.0 if ringing else round(_timer_fraction(t, left), 4),
+            "aria": timer_aria(title, 0 if ringing else left),
+        }
+
+    def more_rows(ordered):
+        out = []
+        for tid in ordered[:3]:
+            t = by_id[tid]
+            title = slot_title(t)
+            if is_ringing(t):
+                out.append({"id": tid, "title": title, "text": "0:00", "done": f"{title} · done", "ringing": True})
+            else:
+                out.append({"id": tid, "title": title, "text": fmt_timer_clock(max(0.0, left_of(t))), "ringing": False})
+        return out
+
+    ringing = sorted((tid for tid in ids if is_ringing(by_id[tid])), key=end_key)
+    running = [tid for tid in ids if not is_ringing(by_id[tid])]
+    slots = [{"kind": "empty"}, {"kind": "empty"}, {"kind": "empty"}]
+    if len(ids) <= 3:
+        for i, tid in enumerate(ringing + running):
+            slots[i] = ring_slot(tid)
+    elif len(ringing) > 2:
+        slots[0] = ring_slot(ringing[0])
+        slots[1] = ring_slot(ringing[1])
+        rest_run = sorted(running, key=lambda tid: (left_of(by_id[tid]), ids.index(tid)))
+        slots[2] = {
+            "kind": "more", "treatment": "ringing", "n": len(ids) - 2,
+            "label": f"+{len(ids) - 2} more",
+            "rows": more_rows(ringing[2:] + rest_run),
+        }
+    else:
+        show = ringing + running
+        slots[0] = ring_slot(show[0])
+        slots[1] = ring_slot(show[1])
+        rest = sorted(show[2:], key=end_key)
+        slots[2] = {"kind": "more", "n": len(show) - 2, "label": f"+{len(show) - 2} more", "rows": more_rows(rest)}
+    positions = {}
+    for i, slot in enumerate(slots):
+        if slot.get("kind") in ("ring", "ringing") and slot.get("id"):
+            positions[slot["id"]] = i
+        for row in slot.get("rows") or []:
+            if row.get("id"):
+                positions[row["id"]] = i
+    for tid in ids:
+        positions.setdefault(tid, 2)
+    return {"order": ids, "slots": slots, "banner_names": [recipe_name(by_id[tid].get("label")) for tid in ringing],
+            "positions": positions}
+
+
+RECIPE_RAIL_ORDER = []
+RECIPE_FEED_OPEN = False
+RECIPE_SHOWN = None  # {"id", "step"} of the recipe on screen, cleared when it closes
+RECIPE_CAPTION = None  # offer sentence in the hint row, {"text", "until"}
+_RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
+# Recipe paint results. Same LAST_* pattern as the other screens, kept in one block.
+LAST_RECIPE_FRAME = None
+LAST_RECIPE_RAIL = None
+LAST_RECIPE_COPY = []
+LAST_BANNER_TEXT = ""
+SLOT_STOP_SEGMENTS = (("Say ", "muted"), ("stop", "phrase"))
+
+
+def arm_recipe_screen(showing):
+    """Drop rail order and the re-pack slide when a recipe opens or closes.
+
+    Both are process globals. Left alone, the next recipe's first frame slides in from the previous one.
+    """
+    global RECIPE_FEED_OPEN, RECIPE_RAIL_ORDER, RECIPE_SHOWN, RECIPE_CAPTION, _RAIL_SLIDE
+    showing = bool(showing)
+    if showing == RECIPE_FEED_OPEN:
+        return
+    RECIPE_RAIL_ORDER = []
+    RECIPE_SHOWN = None
+    RECIPE_CAPTION = None
+    _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
+    RECIPE_FEED_OPEN = showing
+
+
+def apply_recipe_caption(text, seconds, now=None):
+    """Show the offer sentence in the hint row, or clear it. `now` is monotonic seconds."""
+    global RECIPE_CAPTION
+    now = time.monotonic() if now is None else now
+    text = " ".join(str(text or "").split())[:160]
+    if not text or not seconds:
+        RECIPE_CAPTION = None
+        return
+    RECIPE_CAPTION = {"text": text, "until": float(now) + float(seconds)}
+
+
+def recipe_caption_text(now=None):
+    cap = RECIPE_CAPTION
+    if not isinstance(cap, dict) or not cap.get("text"):
+        return None
+    now = time.monotonic() if now is None else now
+    if now >= float(cap.get("until") or 0):
+        return None
+    return cap["text"]
+
+
+def _step_timer_live(card):
+    """True when a running or ringing timer is sourced to this recipe step. Names do not count."""
+    shown = RECIPE_SHOWN if isinstance(RECIPE_SHOWN, dict) else None
+    rid = shown.get("id") if shown and shown.get("id") else None
+    if not rid and isinstance(card, dict) and isinstance(card.get("id"), str):
+        rid = card.get("id")
+    step = card.get("step") if isinstance(card, dict) else None
+    if not rid or type(step) is not int:
+        return False
+    for t in TIMER_CHIPS:
+        src = t.get("source") if isinstance(t, dict) else None
+        if isinstance(src, dict) and src.get("recipe_id") == rid and src.get("step") == step:
+            return True
+    return False
+
+
+def rail_slide_running(now=None):
+    """True during the 240 ms re-pack, and only when something actually changed slot."""
+    before = _RAIL_SLIDE.get("before") or {}
+    positions = _RAIL_SLIDE.get("positions")
+    if positions is None or before == positions or reduce_motion():
+        return False
+    t0 = _RAIL_SLIDE.get("t0") or 0.0
+    elapsed = ((time.monotonic() if now is None else now) - t0) * 1000.0
+    return elapsed < 240.0
+
+
+def feed_frame_gap(sliding, ringing, reduced):
+    """Seconds between repaints. A slide or a ringing pulse needs a frame inside the 240 ms move."""
+    if reduced:
+        return 0.9
+    if sliding or ringing:
+        return 0.12
+    return 0.9
+
+
+def sync_recipe_order(timers):
+    """Keep rail order across list posts. New ids append; dismissed ids drop and the rest slide up."""
+    global RECIPE_RAIL_ORDER
+    by = {t.get("id"): t for t in timers or [] if isinstance(t, dict) and t.get("id")}
+    have, seen = [], set()
+    for i in RECIPE_RAIL_ORDER:
+        if i in by and i not in seen:
+            have.append(i)
+            seen.add(i)
+    for t in timers or []:
+        i = t.get("id") if isinstance(t, dict) else None
+        if i and i not in seen:
+            have.append(i)
+            seen.add(i)
+    RECIPE_RAIL_ORDER = have
+    return have
+
+
+def _slide_offsets(positions, reduced, slot_ys):
+    """Start one 240 ms slide when the slot map changes. Reduced motion skips it."""
+    global _RAIL_SLIDE
+    sig = tuple(sorted((positions or {}).items()))
+    if _RAIL_SLIDE.get("sig") != sig:
+        before = _RAIL_SLIDE.get("positions") if _RAIL_SLIDE.get("positions") is not None else positions
+        _RAIL_SLIDE = {"sig": sig, "t0": time.monotonic(), "before": before or {}, "positions": dict(positions or {})}
+    elapsed = (time.monotonic() - _RAIL_SLIDE["t0"]) * 1000.0
+    return rail_translate(_RAIL_SLIDE["before"], positions or {}, elapsed, reduced, slot_ys)
+
+
+def _dashed_rect(surf, color, rect, width, dash, gap):
+    x0, y0, w, h = rect.x, rect.y, rect.w, rect.h
+    spans = (
+        (x0, y0, x0 + w, y0, 1, 0),
+        (x0 + w, y0, x0 + w, y0 + h, 0, 1),
+        (x0 + w, y0 + h, x0, y0 + h, -1, 0),
+        (x0, y0 + h, x0, y0, 0, -1),
+    )
+    for x, y, x1, y1, dx, dy in spans:
+        left = abs(x1 - x) + abs(y1 - y)
+        pos = 0
+        while pos < left:
+            run = min(dash, left - pos)
+            a = (int(x + dx * pos), int(y + dy * pos))
+            b = (int(x + dx * (pos + run)), int(y + dy * (pos + run)))
+            pygame.draw.line(surf, color, a, b, width)
+            pos += dash + gap
+
+
+def _clock_icon(px, color):
+    box = pygame.Surface((px, px), pygame.SRCALPHA)
+    c = px // 2
+    sw = max(2, px // 10)
+    pygame.draw.circle(box, color, (c, c), max(2, c - 1), sw)
+    pygame.draw.line(box, color, (c, c), (c, int(px * 0.28)), sw)
+    pygame.draw.line(box, color, (c, c), (int(px * 0.72), c), sw)
+    return box
+
+
+def _bell_icon(px, color):
+    box = pygame.Surface((px, px), pygame.SRCALPHA)
+    pygame.draw.ellipse(box, color, (int(px * 0.22), int(px * 0.16), int(px * 0.56), int(px * 0.50)))
+    pygame.draw.rect(box, color, (int(px * 0.16), int(px * 0.48), int(px * 0.68), max(2, int(px * 0.12))))
+    pygame.draw.circle(box, color, (px // 2, int(px * 0.74)), max(2, int(px * 0.08)))
+    return box
+
+
+def _static_outline(surf, rect, color, offset, thick):
+    """6 px outline sitting `offset` px outside rect. No animation."""
+    outer = rect.inflate(2 * (offset + thick), 2 * (offset + thick))
+    inner = rect.inflate(2 * offset, 2 * offset)
+    bars = (
+        pygame.Rect(outer.left, outer.top, outer.w, thick),
+        pygame.Rect(outer.left, inner.bottom, outer.w, thick),
+        pygame.Rect(outer.left, inner.top, thick, max(1, inner.h)),
+        pygame.Rect(inner.right, inner.top, thick, max(1, inner.h)),
+    )
+    for bar in bars:
+        if bar.w > 0 and bar.h > 0:
+            surf.fill(color, bar)
+
+
+def _pulse_glow(surf, rect, pulse):
+    """1 Hz amber glow, 0→18 px at 33% opacity, outside the slot. pulse 0 draws nothing."""
+    if pulse <= 0.02:
+        return
+    spread = max(1, int(round(18 * pulse)))
+    shade = pygame.Surface((rect.w + 2 * spread, rect.h + 2 * spread), pygame.SRCALPHA)
+    alpha = int(round(255 * 0.33 * pulse))
+    rad = min(rect.w, rect.h) // 2
+    pygame.draw.rect(shade, (AMBER.r, AMBER.g, AMBER.b, alpha), shade.get_rect(), border_radius=rad)
+    surf.blit(shade, (rect.left - spread, rect.top - spread))
+
+
+def _ringing_done_line(title, width, face):
+    """'<Name> is done', with the name ellipsized so the whole line fits the slot. ' is done' stays whole."""
+    suffix = " is done"
+    if face.size(title + suffix)[0] <= width:
+        return title + suffix
+    return ellipsize(face, title, max(1, width - face.size(suffix)[0])) + suffix
+
+
+def _step_spans(face, text, width):
+    """Wrapped lines as (text, start, end) into `text`. Same breaks as wrap() for single spaces."""
+    words = list(re.finditer(r"\S+", text or ""))
+    if not words:
+        return []
+    lines, cur, start, end = [], "", 0, 0
+    for match in words:
+        word = match.group()
+        trial = word if not cur else cur + " " + word
+        if face.size(trial)[0] <= width or not cur:
+            if not cur:
+                start = match.start()
+            cur, end = trial, match.end()
+        else:
+            lines.append((cur, start, end))
+            cur, start, end = word, match.start(), match.end()
+    if cur:
+        lines.append((cur, start, end))
+    return lines
+
+
+def _fitted_spans(spans, face, width, height, gap):
+    """Whole lines that fit. A cut-off step ellipsizes the last line shown."""
+    line_h = face.get_height()
+    if line_h <= 0 or height < line_h or not spans:
+        return []
+    n = 0
+    while n < len(spans) and (n + 1) * line_h + n * gap <= height:
+        n += 1
+    shown = list(spans[:n])
+    if n < len(spans) and shown:
+        text, a, b = shown[-1]
+        shown[-1] = (ellipsize(face, text, width), a, b)
+    return shown
+
+
+def _dotted_hline(surf, color, x, y, width, thick, dash):
+    """A dotted underline. The dash length is `dash`; gaps are the same. Nothing is added to the text width."""
+    gap = max(1, dash)
+    pos = 0
+    h = max(1, thick)
+    while pos < width:
+        run = min(dash, width - pos)
+        surf.fill(color, pygame.Rect(int(x + pos), int(y), max(1, int(run)), h))
+        pos += dash + gap
+
+
+def fitted_step_lines(lines, face, width, height, gap):
+    """Lines that fit in the step box, whole lines only. A cut-off step ellipsizes the last one shown."""
+    line_h = face.get_height()
+    if line_h <= 0 or height < line_h or not lines:
+        return []
+    n = 0
+    while n < len(lines) and (n + 1) * line_h + n * gap <= height:
+        n += 1
+    shown = list(lines[:n])
+    if n < len(lines) and shown:
+        shown[-1] = ellipsize(face, shown[-1], width)
+    return shown
+
+
+def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
+    """One rail slot. Empty slots stay dashed; only slot 1 says "No timers"."""
+    global LAST_RECIPE_COPY
+    rad = max(4, recipe_px(L, 37))
+    if slot.get("kind") == "empty":
+        _dashed_rect(surf, RULE2, rect, max(1, recipe_px(L, 3)), recipe_px(L, 14), recipe_px(L, 10))
+        if index == 0:
+            slot["label"] = "No timers"
+            LAST_RECIPE_COPY.append("No timers")
+            icon = _clock_icon(recipe_px(L, 64), RECIPE_FAINT)
+            label = font("body", recipe_px(L, 40)).render("No timers", True, RECIPE_FAINT)
+            block = icon.get_height() + recipe_px(L, 12) + label.get_height()
+            y = rect.top + max(0, (rect.h - block) // 2)
+            surf.blit(icon, (rect.centerx - icon.get_width() // 2, y))
+            surf.blit(label, (rect.centerx - label.get_width() // 2, y + icon.get_height() + recipe_px(L, 12)))
+        return
+    if slot.get("kind") == "more":
+        ringing_style = slot.get("treatment") == "ringing"
+        if ringing_style:
+            pygame.draw.rect(surf, ALERT_FILL, rect, border_radius=rad)
+            pygame.draw.rect(surf, AMBER, rect, max(1, recipe_px(L, 8)), border_radius=rad)
+            head_color = AMBER
+        else:
+            pygame.draw.rect(surf, SURFACE, rect, border_radius=rad)
+            pygame.draw.rect(surf, RULE, rect, max(1, recipe_px(L, 3)), border_radius=rad)
+            head_color = TEXT
+        y = rect.top + recipe_px(L, 34)
+        head = font("display", recipe_px(L, 52)).render(slot.get("label") or "", True, head_color)
+        LAST_RECIPE_COPY.append(slot.get("label") or "")
+        surf.blit(head, (rect.left + recipe_px(L, 28), y))
+        y += head.get_height() + recipe_px(L, 16)
+        name_f = font("body", recipe_px(L, 36))
+        for row in slot.get("rows") or []:
+            if row.get("ringing"):
+                bell = _bell_icon(recipe_px(L, 28), AMBER)
+                done = row.get("done") or f"{row.get('title') or ''} · done"
+                line = name_f.render(done, True, AMBER)
+                LAST_RECIPE_COPY.append(done)
+                if y + max(line.get_height(), bell.get_height()) > rect.bottom - recipe_px(L, 16):
+                    break
+                surf.blit(bell, (rect.left + recipe_px(L, 28), y + max(0, (line.get_height() - bell.get_height()) // 2)))
+                surf.blit(line, (rect.left + recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10), y))
+                y += max(line.get_height(), bell.get_height()) + recipe_px(L, 8)
+                continue
+            line = name_f.render(f"{row['title']}  {row['text']}", True, MUTED)
+            if y + line.get_height() > rect.bottom - recipe_px(L, 16):
+                break
+            surf.blit(line, (rect.left + recipe_px(L, 28), y))
+            y += line.get_height() + recipe_px(L, 8)
+        return
+    ringing = slot.get("kind") == "ringing"
+    pulse = 0.0 if reduced else _ring_pulse(epoch if epoch is not None else time.time())
+    if ringing and not reduced:
+        _pulse_glow(surf, rect, pulse)
+    if ringing:
+        pygame.draw.rect(surf, ALERT_FILL, rect, border_radius=rad)
+        pygame.draw.rect(surf, AMBER, rect, max(1, recipe_px(L, 8)), border_radius=rad)
+        if reduced:
+            _static_outline(surf, rect, AMBER, recipe_px(L, 10), recipe_px(L, 6))
+        d = recipe_px(L, 200)
+        ring, _pad = _paint_countdown_ring(d, 1.0, AMBER, 0.0 if reduced else pulse)
+        ring_at = ring.get_rect(midtop=(rect.centerx, rect.top + recipe_px(L, 16)))
+        surf.blit(ring, ring_at)
+        bell = _bell_icon(recipe_px(L, 72), AMBER)
+        surf.blit(bell, bell.get_rect(center=ring_at.center))
+        done_px = recipe_px(L, 46)
+        done_font = font("display", done_px)
+        done_text = _ringing_done_line(slot.get("title") or "", rect.w - recipe_px(L, 48), done_font)
+        done = done_font.render(done_text, True, AMBER)
+        LAST_RECIPE_COPY.append(done_text)
+        surf.blit(done, (rect.centerx - done.get_width() // 2, ring_at.bottom + recipe_px(L, 8)))
+        hint_px = recipe_px(L, 48)
+        draw_voice_hint(surf, SLOT_STOP_SEGMENTS, rect.left + recipe_px(L, 28),
+                        rect.bottom - recipe_px(L, 28) - font("body", hint_px).get_height(),
+                        px=hint_px, max_w=rect.w - recipe_px(L, 56))
+        return
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=rad)
+    pygame.draw.rect(surf, RULE, rect, max(1, recipe_px(L, 3)), border_radius=rad)
+    d = recipe_px(L, 212)
+    ring, _pad = _paint_countdown_ring(d, slot.get("fraction") or 0, LISTENING, 0.0)
+    ring_at = ring.get_rect(midtop=(rect.centerx, rect.top + recipe_px(L, 28)))
+    prev = surf.get_clip()
+    surf.set_clip(rect.clip(prev if prev else rect))
+    surf.blit(ring, ring_at)
+    title = font("display", recipe_px(L, 40)).render(slot.get("title") or "", True, TEXT)
+    digits = font("display", recipe_px(L, 64)).render(slot.get("text") or "", True, TEXT)
+    source = font("body", recipe_px(L, 32)).render(slot.get("source") or "", True, MUTED)
+    LAST_RECIPE_COPY.append(slot.get("source") or "")
+    y = ring_at.bottom + recipe_px(L, 8)
+    for img in (title, digits, source):
+        if y + img.get_height() > rect.bottom - recipe_px(L, 12):
             break
-        line = _line(surf, "body", L(42), item, TEXT, ing.w - L(56))
+        surf.blit(img, (rect.centerx - img.get_width() // 2, y))
+        y += img.get_height() + recipe_px(L, 4)
+    surf.set_clip(prev)
+
+
+def _paint_recipe_rail(surf, L, frame, epoch=None):
+    """Draw the three slots. A re-pack slides inside the rail only."""
+    global LAST_RECIPE_RAIL
+    pinned = _pinned_epoch(epoch)
+    now = pinned if pinned is not None else time.time()
+    order = sync_recipe_order(TIMER_CHIPS)
+    rail = recipe_rail(TIMER_CHIPS, now, order)
+    LAST_RECIPE_RAIL = rail
+    reduced = reduce_motion()
+    ys = [frame["slots"][i].y for i in range(3)]
+    offsets = _slide_offsets(rail["positions"], reduced, ys)
+    prev = surf.get_clip()
+    surf.set_clip(frame["rail"])
+    for i, slot in enumerate(rail["slots"]):
+        dy = 0
+        sid = slot.get("id")
+        if sid and sid in offsets:
+            dy = int(round(offsets[sid]))
+        body = frame["slots"][i].move(0, dy)
+        # The outline and glow sit outside the slot, so they are drawn unclipped below.
+        if slot.get("kind") != "ringing":
+            _paint_recipe_slot(surf, L, body, slot, i, now, reduced)
+    surf.set_clip(prev)
+    for i, slot in enumerate(rail["slots"]):
+        if slot.get("kind") != "ringing":
+            continue
+        dy = 0
+        sid = slot.get("id")
+        if sid and sid in offsets:
+            dy = int(round(offsets[sid]))
+        _paint_recipe_slot(surf, L, frame["slots"][i].move(0, dy), slot, i, now, reduced)
+
+
+def _paint_recipe_banner(surf, L, rect, parts):
+    """Amber pill in the banner slot. The bell is 64 px; names were already capped."""
+    if not parts or not parts.get("text"):
+        return
+    rad = rect.h // 2
+    pygame.draw.rect(surf, AMBER, rect, border_radius=rad)
+    bell = _bell_icon(recipe_px(L, 64), AMBER_INK)
+    surf.blit(bell, (rect.left + recipe_px(L, 40), rect.centery - bell.get_height() // 2))
+    f = font("display", max(14, recipe_px(L, 54)))
+    text = parts["text"]
+    room = rect.w - recipe_px(L, 64) - recipe_px(L, 24) - recipe_px(L, 80)
+    # The tail "+ N more" stays whole. Only a too-long single line would be cut, and names are pre-capped.
+    img = f.render(text, True, AMBER_INK)
+    if img.get_width() > room and parts.get("suffix") and text.endswith(parts["suffix"]):
+        head = text[: -len(parts["suffix"])].rstrip()
+        head_img = f.render(ellipsize(f, head, max(1, room - f.size(" " + parts["suffix"])[0])), True, AMBER_INK)
+        tail_img = f.render(" " + parts["suffix"], True, AMBER_INK)
+        x = rect.left + recipe_px(L, 40) + bell.get_width() + recipe_px(L, 24)
+        y = rect.centery - head_img.get_height() // 2
+        surf.blit(head_img, (x, y))
+        surf.blit(tail_img, (x + head_img.get_width(), y))
+        return
+    x = rect.left + recipe_px(L, 40) + bell.get_width() + recipe_px(L, 24)
+    surf.blit(img, (x, rect.centery - img.get_height() // 2))
+
+
+def draw_recipe(surf, L, card):
+    """Ingredients, the current step, the voice-hint row, and the timer rail.
+
+    Timer chips used to shrink this card through content_limit. The rail is reserved, so the step card
+    stays the same height with or without timers."""
+    global LAST_RECIPE_FRAME, LAST_RECIPE_COPY
+    frame = recipe_frame(L)
+    LAST_RECIPE_FRAME = frame
+    LAST_RECIPE_COPY = []
+    rad = max(4, recipe_px(L, 37))
+    border = max(1, recipe_px(L, 3))
+    ing, stp = frame["ingredients"], frame["step"]
+    for rect in (ing, stp):
+        pygame.draw.rect(surf, SURFACE, rect, border_radius=rad)
+        pygame.draw.rect(surf, RULE, rect, border, border_radius=rad)
+    pad = recipe_px(L, 40)
+    x, y = ing.left + pad, ing.top + pad
+    cap = _line(surf, "display", recipe_px(L, 28), "INGREDIENTS", MUTED, ing.w - 2 * pad)
+    surf.blit(cap, (x, y))
+    y += cap.get_height() + recipe_px(L, 8)
+    meta = _line(surf, "body", recipe_px(L, 28), f"Serves {card['servings']}", RECIPE_FAINT, ing.w - 2 * pad)
+    surf.blit(meta, (x, y))
+    y += meta.get_height() + recipe_px(L, 16)
+    prev = surf.get_clip()
+    surf.set_clip(ing)
+    for item in card["ingredients"]:
+        if y > ing.bottom - recipe_px(L, 28):
+            break
+        line = _line(surf, "body", recipe_px(L, 42), item, TEXT, ing.w - 2 * pad)
         surf.blit(line, (x, y))
-        y += line.get_height() + L(10)
-    sx, sy = stp.left + L(48), stp.top + L(40)
+        y += line.get_height() + recipe_px(L, 10)
+    surf.set_clip(prev)
+    sx = stp.left + recipe_px(L, 64)
+    sy = stp.top + recipe_px(L, 56)
     step_n, total = card["step"], len(card["steps"])
-    col = stp.w - L(96)
-    label = _line(surf, "display", L(52), f"Step {step_n} of {total}", LISTENING, col)
+    col = stp.w - recipe_px(L, 128)
+    label = _line(surf, "display", recipe_px(L, 52), f"Step {step_n} of {total}", LISTENING, col)
     surf.blit(label, (sx, sy))
-    sy += label.get_height() + L(18)
-    track = pygame.Rect(sx, sy, col, max(6, L(12)))
-    pygame.draw.rect(surf, SURFACE2, track, border_radius=L(6))
-    fill = max(track.h, int(track.w * step_n / total))
-    pygame.draw.rect(surf, LISTENING, (track.left, track.top, min(fill, track.w), track.h), border_radius=L(6))
-    sy = track.bottom + L(36)
-    hint_px = L(36)
-    hint_h = font("body", hint_px).get_height() + L(36)
-    body_px = L(92)
-    while body_px > L(36) and font("display", body_px).get_height() * 2 > max(1, stp.bottom - hint_h - sy):
-        body_px = int(body_px * 0.88)
+    sy += label.get_height() + recipe_px(L, 18)
+    track = pygame.Rect(sx, sy, col, max(6, recipe_px(L, 12)))
+    pygame.draw.rect(surf, SURFACE2, track, border_radius=recipe_px(L, 8))
+    fill = max(track.h, int(track.w * step_n / max(1, total)))
+    pygame.draw.rect(surf, LISTENING, (track.left, track.top, min(fill, track.w), track.h), border_radius=recipe_px(L, 8))
+    text_box = pygame.Rect(sx, track.bottom + recipe_px(L, 36), col, recipe_px(L, 828))
+    text_box = text_box.clip(stp)
+    frame["step_text"] = text_box
+    body_px = recipe_px(L, 112)
     f = font("display", body_px)
-    lines = wrap(f, card["steps"][step_n - 1], col)
-    room = max(1, (stp.bottom - hint_h - sy) // max(1, f.get_height()))
-    shown = lines[:room]
-    if len(lines) > len(shown) and shown:
-        shown[-1] = ellipsize(f, shown[-1], col)
-    for line in shown:
-        img = f.render(line if f.size(line)[0] <= col else ellipsize(f, line, col), True, TEXT)
-        surf.blit(img, (sx, sy))
-        sy += img.get_height() + L(8)
-    draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, sx, stp.bottom - L(36) - font("body", hint_px).get_height(),
-                    px=hint_px, max_w=col)
+    gap = recipe_px(L, 8)
+    step_body = card["steps"][step_n - 1]
+    lines = _fitted_spans(_step_spans(f, step_body, col), f, col, text_box.h, gap)
+    hit = cards.step_time(step_body)
+    mark = MUTED if _step_timer_live(card) else LISTENING
+    surf.set_clip(text_box)
+    ty = text_box.top
+    for line, a, b in lines:
+        img = f.render(line, True, TEXT)
+        if ty + img.get_height() > text_box.bottom:
+            break
+        surf.blit(img, (sx, ty))
+        if hit and line == step_body[a:b]:
+            lo, hi = max(hit["start"], a), min(hit["end"], b)
+            if lo < hi:
+                frag_at = lo - a
+                frag = line[frag_at:frag_at + (hi - lo)]
+                if frag:
+                    ox = f.size(line[:frag_at])[0]
+                    surf.blit(f.render(frag, True, mark), (sx + ox, ty))
+                    thick = max(1, recipe_px(L, 6))
+                    _dotted_hline(surf, mark, sx + ox, ty + img.get_height() - thick, f.size(frag)[0], thick, thick)
+        ty += img.get_height() + gap
+    surf.set_clip(prev)
+    hint = frame["hint"]
+    hint_px = recipe_px(L, 48)
+    hy = hint.top + max(0, (hint.h - font("body", hint_px).get_height()) // 2)
+    caption = recipe_caption_text()
+    if caption:
+        cap = font("body", hint_px).render(caption, True, TEXT)
+        surf.set_clip(hint)
+        surf.blit(cap, (hint.left, hy))
+        surf.set_clip(prev)
+    else:
+        draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, hint.left, hy, px=hint_px, max_w=hint.w)
+    _paint_recipe_rail(surf, L, frame)
 
 
 def _card_chrome(surf, L, rect):
@@ -3742,30 +4425,49 @@ def draw_tile_chip(surf, L, card, right_x, cy):
 
 
 def draw_feed(surf, L, now, card, colon_on=True, msg=None, state=None, t=1.0, chips=()):
-    """Full-screen recipe (the one full-screen tile). Other tiles that arrive meanwhile are chips left of the
-    top-bar clock, newest nearest it. With a voice session (msg) the upper-left badge replaces the caption."""
+    """Full-screen recipe. Sports and calendar tiles that arrive meanwhile are chips in the banner slot,
+    unless a timer is ringing: then the amber banner replaces them. Timers live in the rail, not a bottom strip."""
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_CHIP_RECTS, LAST_BADGE_RECT
+    global LAST_BANNER_TEXT, LAST_TIMER_RECT, LAST_CLOCK_RECT, LAST_TOPBAR_RECT
     surf.fill(BG)
     LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = LAST_BADGE_RECT = None
     LAST_CHIP_RECTS = []
+    LAST_BANNER_TEXT = ""
+    LAST_TIMER_RECT = None
+    frame = recipe_frame(L)
     st = (state or (msg or {}).get("state")) if isinstance(msg, dict) and msg.get("voice") else None
-    clock = draw_topbar_clock(surf, L, now) if isinstance(now, time.struct_time) else None
+    draw_status_icons(surf, L, right=frame["status"].right, cy=frame["status"].centery)
+    if isinstance(now, time.struct_time):
+        hhmm, ampm = clock_parts(now)
+        LAST_CLOCK_RECT = text_at(surf, "display", max(14, recipe_px(L, 56)), f"{hhmm} {ampm}", TEXT,
+                                  (frame["clock"].right, frame["clock"].centery), "midright")
+        LAST_TOPBAR_RECT = LAST_CLOCK_RECT
     if st in BADGE_STATES:
         draw_tile_badge(surf, L, msg, st, t)
-    elif clock is not None:
-        caption = card.get("title", "")
+    else:
+        caption = card.get("title", "") if isinstance(card, dict) else ""
         if caption:
-            title = _line(surf, "body", L(40), caption, MUTED, max(40, L.w // 3))
-            surf.blit(title, (L.m, L(34)))
-    if chips:
-        right = (clock.left if clock is not None else L.w - L.m) - L(36)
-        cy = L(34) + L(72) // 2
+            title = _line(surf, "body", max(14, recipe_px(L, 60)), caption, MUTED, frame["title"].w)
+            y = frame["title"].top + max(0, (frame["title"].h - title.get_height()) // 2)
+            surf.blit(title, (frame["title"].left, y))
+    pinned = _pinned_epoch(None)
+    now_e = pinned if pinned is not None else time.time()
+    ringing = bool(TIMER_CHIPS) and any(_shown_ringing(t, chip_left(t, pinned)) for t in TIMER_CHIPS)
+    if ringing:
+        names = recipe_rail(TIMER_CHIPS, now_e, sync_recipe_order(TIMER_CHIPS))["banner_names"]
+        face = font("display", max(14, recipe_px(L, 54)))
+        parts = banner_parts(names, face, limit=max(40, recipe_px(L, 350)))
+        LAST_BANNER_TEXT = parts["text"]
+        _paint_recipe_banner(surf, L, frame["banner"], parts)
+    elif chips:
+        right = frame["banner"].right
+        cy = frame["banner"].centery
+        gap = max(4, recipe_px(L, 12))
         for chip in reversed(list(chips)[-ChipTray.MAX:]):
             r = draw_tile_chip(surf, L, chip["card"], right, cy)
             LAST_CHIP_RECTS.insert(0, r)
-            right = r.left - L(12)
+            right = r.left - gap
     draw_recipe(surf, L, card)
-    draw_timer_strip(surf, L)
 
 
 def chip_at(x, y):
@@ -4873,12 +5575,14 @@ def main():
         sd = setup["doc"]
         if sd:  # until setup is done this is the idle screen and the screen on wake (voice is off)
             LAST_TIMER_RECT = None
+            arm_recipe_screen(False)
             disp.show(draw_hotspot if sd["mode"] == "hotspot" else draw_setup, now, sd, fade=fade, snapshot=snapshot)
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
         night = night_face(now)
         t_now = time.time()
         view_card = None
+        page = None
         if not thinking() and not msg and not night:
             page = deck().current(t_now)
             if page and page["card"]["type"] in TILE_TYPES:
@@ -4896,6 +5600,13 @@ def main():
         if tile_card:
             view_card = tile_card
         view = screen_for(sd, thinking(), msg, night, view_card, bool(TIMER_CHIPS), tile_card)
+        arm_recipe_screen(view == "feed")
+        if view == "feed" and isinstance(view_card, dict) and view_card.get("type") == "recipe":
+            rid = TILE.get("id") if tile_card else (page.get("id") if isinstance(page, dict) else None)
+            if not rid and isinstance(view_card.get("id"), str):
+                rid = view_card.get("id")
+            global RECIPE_SHOWN
+            RECIPE_SHOWN = {"id": rid, "step": view_card.get("step")} if rid else RECIPE_SHOWN
         ph = phase_now() if thinking() else 1.0
         if view == "session" and isinstance(msg, dict) and msg.get("state") == "enroll":
             disp.show(draw_enroll, now, msg, ph, wx, fade=fade, snapshot=snapshot)
@@ -4981,7 +5692,10 @@ def main():
             return
         now = time.time()
         on_timers = last_key and last_key[0] == "timers"
-        gap = 0.12 if on_timers and any_timer_ringing() else 0.9
+        on_feed = last_key and last_key[0] == "feed"
+        # A re-pack is 240 ms. Reduced motion stays on the slow tick; a slide or a ringing pulse does not.
+        gap = feed_frame_gap(bool(on_feed and rail_slide_running()),
+                             bool((on_feed or on_timers) and any_timer_ringing()), reduce_motion())
         if now - strip_at < gap:
             return
         strip_at = now
@@ -5040,8 +5754,11 @@ def main():
             wait = min(wait, 2.0)
         if TIMER_CHIPS and not setup["doc"] and not (last_key and last_key[0] == "night"):
             on_timers = last_key and last_key[0] == "timers"
-            if on_timers and any_timer_ringing():
-                wait = min(wait, 0.12)  # amber pulse is 1 Hz; a few frames show the swell
+            on_recipe = last_key and last_key[0] == "feed"
+            gap = feed_frame_gap(bool(on_recipe and rail_slide_running()),
+                                 bool((on_recipe or on_timers) and any_timer_ringing()), reduce_motion())
+            if gap < 0.5:
+                wait = min(wait, gap)  # slide or amber pulse: a few frames inside 240 ms
             else:
                 delay = 1.0 - (t % 1.0)  # next whole second, so mm:ss steps together
                 if delay < 0.05:
@@ -5064,6 +5781,8 @@ def main():
         if setup["doc"] and ev.type in (STATE, SHOW, FEED):
             continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
+            if getattr(ev, "has_caption", False):
+                apply_recipe_caption(getattr(ev, "caption", ""), getattr(ev, "caption_s", 0))
             if getattr(ev, "speech", None) is not None and tele is not None:
                 tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
@@ -5138,6 +5857,8 @@ def main():
                         pass  # chips are stored and drawn the next time the idle clock is painted
                     else:
                         paint(snapshot=not msg)
+            elif getattr(ev, "has_caption", False) and last_key and last_key[0] == "feed":
+                paint(snapshot=False)
             continue
         if ev.type == FEED:
             if getattr(ev, "recipe_closed", False):
