@@ -359,6 +359,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 #pendpop .pop,#pendpop .scrim{pointer-events:auto}
 .pop{position:absolute;z-index:5;width:360px;background:var(--gs-surface-2);border:1px solid var(--gs-rule-2);border-radius:12px;padding:16px;box-shadow:0 10px 40px rgba(0,0,0,.5)}
 .pop h3{display:flex;gap:8px;color:var(--gs-amber);font:600 var(--fs-label) var(--body);margin-bottom:6px}
+.pop h3:focus{outline:none}
 .pop p{font-size:var(--fs-label);color:var(--gs-text);line-height:1.45}
 .pop .ctx{color:var(--gs-muted);font-size:var(--fs-help);margin-top:8px}
 .pop .acts{margin-top:14px}
