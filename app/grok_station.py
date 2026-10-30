@@ -3898,7 +3898,7 @@ def state_hold(state, done, heard="", hold_s=None):
     """Seconds a voice state stays up.
 
     A finished reply (done) keeps REPLY_HOLD. The finished save (N/N saved, not a between-clip Next)
-    holds 4 s, then the tile closes. Passed, uploaded and error enrollment screens hold 10 s.
+    holds 4 s, then the tile closes. Passed, uploaded, error and failed enrollment screens hold 10 s.
     Every other enrollment stage keeps the 30 s cap in VOICE_HOLDS.
     hold_s 4 is the built-in Grok wake-word line or a failed enroll start: it does not use the notice or reply holds.
     """
@@ -3910,7 +3910,7 @@ def state_hold(state, done, heard="", hold_s=None):
         i, n, stage, extra = enroll_parse({"heard": heard})
         if stage == "saved" and n and i >= n and extra != "next":
             return 4
-        return 10 if stage in ("passed", "uploaded", "error") else VOICE_HOLDS["enroll"]
+        return 10 if stage in ("passed", "uploaded", "error", "failed") else VOICE_HOLDS["enroll"]
     return VOICE_HOLDS[state]
 
 
@@ -4067,21 +4067,22 @@ _QUIET_HINT_STAGES = ("ready", "count", "recording", "quiet", "loud", "saved")
 
 
 def _enroll_actions(stage):
-    """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn (never, 0.13.7).
+    """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn.
 
-    No Cancel button: staying quiet is how a session on the station stops.
+    rev1.5 (Noor): the station has no touch input and its voice commands don't reach this tile, so no stage
+    draws a button. enroll_hit() stays unwired.
     """
+    del stage
+    return [], False
+
+
+def _enroll_note(stage, who):
+    """rev1.5 text line in the action slot, or None. Both lines use MUTED (6.8:1 on SURFACE)."""
     if stage == "prompt":
-        return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
-    if stage in _QUIET_HINT_STAGES or stage == "error":  # 'Enrollment stopped' is plain text: no touch input
-        return [], False
-    if stage == "passed":
-        return [("done", "Done", True, False)], False
+        return "Starting in a moment…"
     if stage == "failed":
-        return [("more", "Record 5 more", True, False), ("dismiss", "Not now", False, True)], False
-    if stage in ("queued", "uploaded", "custom"):  # plain text, auto-close only: the station has no touch input
-        return [], False
-    return [("close", "Close", False, False)], False
+        return f"Say 'Hey Grok, train my wake word for {who}' to try again."
+    return None
 
 
 def _square_kinds(stage, i):
@@ -4171,12 +4172,17 @@ def _draw_quiet_hint(surf, L, slot, col_w):
     LAST_ENROLL_HINT = pygame.Rect(slot.x, y, img.get_width(), img.get_height())
 
 
-def _draw_actions(surf, L, tile, slot, col_w, stage):
-    """Buttons in the action slot. Returns nothing; hit rects land in LAST_ENROLL_BUTTONS."""
+def _draw_actions(surf, L, tile, slot, col_w, stage, who=""):
+    """Buttons in the action slot (none since rev1.5), else the stage's muted note. Hit rects land in LAST_ENROLL_BUTTONS."""
     global LAST_ENROLL_BUTTONS
     actions, _hint = _enroll_actions(stage)
     px = max(12, zpx(L, 52))
     f = font("display", px)
+    note = _enroll_note(stage, who)
+    if note and not actions:
+        nf = font("body", px)
+        img = nf.render(note if nf.size(note)[0] <= col_w else ellipsize(nf, note, col_w), True, MUTED)
+        surf.blit(img, (slot.x, slot.y + max(0, (slot.h - img.get_height()) // 2)))
     bh = min(slot.h, max(44, zpx(L, 104)))
     by = slot.y + max(0, (slot.h - bh) // 2)
     pad = zpx(L, 52)
@@ -4333,7 +4339,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
-    _draw_actions(surf, L, tile, act, col_w, stage)
+    _draw_actions(surf, L, tile, act, col_w, stage, who if who != VOICE_NAME else (phrase or who))
     if stage in _QUIET_HINT_STAGES and not success:
         _draw_quiet_hint(surf, L, act, col_w)
     surf.set_clip(prev)

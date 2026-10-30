@@ -92,7 +92,7 @@ class TrainingTile(unittest.TestCase):
                 for x in range(corner.left, corner.right, 3):
                     self.assertEqual(tuple(surf.get_at((x, y))[:3]), tuple(gs.SURFACE)[:3], stage)
 
-    def test_prompt_is_start_and_not_now_without_a_hint(self):
+    def test_prompt_has_no_buttons_and_no_voice_hint(self):
         calls = []
         real = gs.draw_voice_hint
 
@@ -106,11 +106,7 @@ class TrainingTile(unittest.TestCase):
         finally:
             gs.draw_voice_hint = real
         self.assertEqual(calls, [])
-        self.assertEqual([b[0] for b in gs.LAST_ENROLL_BUTTONS], ["start", "dismiss"])
-        tile = gs.LAST_ENROLL_RECT
-        self.assertEqual(gs.enroll_hit(tile.x + 30, tile.y + 40), "start")
-        dismiss = next(r for i, r in gs.LAST_ENROLL_BUTTONS if i == "dismiss")
-        self.assertEqual(gs.enroll_hit(*dismiss.center), "dismiss")
+        self.assertEqual(gs.LAST_ENROLL_BUTTONS, [])  # rev1.5: no buttons on the station tile
         labels = []
         real_font = gs.font
 
@@ -130,12 +126,13 @@ class TrainingTile(unittest.TestCase):
             self._draw("prompt")
         finally:
             gs.font = real_font
-        self.assertIn("Not now", labels)
+        self.assertNotIn("Not now", labels)
+        self.assertIn("Starting in a moment…", labels)
         self.assertNotIn("×", labels)
         self.assertNotIn("x", [t for t in labels if t.strip() in ("x", "×", "X")])
 
-    def test_recording_has_no_cancel_button(self):
-        """The station has no touch input. Recording draws no Cancel button and no spoken-stop hint."""
+    def test_recording_has_no_buttons_and_no_spoken_stop_hint(self):
+        """0.13.7: the spoken stop is gone, so the tile no longer says Say "stop". rev1.5: no button either."""
         calls = []
         real = gs.draw_voice_hint
 
@@ -150,7 +147,7 @@ class TrainingTile(unittest.TestCase):
             gs.draw_voice_hint = real
         self.assertEqual(calls, [])
         self.assertNotIn("stop", [b[0] for b in gs.LAST_ENROLL_BUTTONS])
-        self.assertEqual(gs.LAST_ENROLL_BUTTONS, [])
+        self.assertEqual(gs.LAST_ENROLL_BUTTONS, [])  # rev1.3/1.5: no Cancel; staying quiet is the exit
 
     def test_other_tiles_arrive_as_chips(self):
         sports = {"type": "sports", "v": 1, "league": "City league", "status": "live", "period": "2nd",
