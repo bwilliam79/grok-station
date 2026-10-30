@@ -238,5 +238,17 @@ class R6CalloutCountsSetupList(unittest.TestCase):
         self.assertIn("Set up Otto", txt)
 
 
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class R7CalloutUsesMainBotName(unittest.TestCase):
+    def test_real_name(self):
+        self.assertIn("Maeve can send each one its setup message.", _callout(_fixture(main_name="Maeve")))
+
+    def test_fallback_is_capitalised(self):
+        self.assertIn("Your main bot can send each one its setup message.", _callout(_fixture(main_name="")))
+
+    def test_no_hard_coded_name(self):
+        self.assertNotIn("Juniper", base._fn("botsCalloutHTML"))
+
+
 if __name__ == "__main__":
     unittest.main()

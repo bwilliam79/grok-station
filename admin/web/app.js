@@ -3689,8 +3689,9 @@ function botsCalloutHTML(opts) {
     const n = pending.length;
     const label = n > 1 ? "Configure all" : ("Set up " + (pending[0].name || ""));
     const title = n + " bot" + (n > 1 ? "s" : "") + " not connected";
+    const who = (opts && opts.mainName) || "Your main bot";
     return `<div class="callout tl" id="botcallout">${ICO_KEY}<div class="tx"><div class="lbl">${esc(title)}</div>` +
-      `<div class="help">Juniper can send each one its setup message. You review it first.</div></div>` +
+      `<div class="help">${esc(who)} can send each one its setup message. You review it first.</div></div>` +
       `<button class="btn s2 sm" id="cfgall" type="button">${esc(label)}</button></div>`;
   }
   if (kind === "updates") {
