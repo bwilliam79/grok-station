@@ -436,7 +436,8 @@ def persona_names():
             with open(PERSONAS_FILE) as f:
                 for p in json.load(f).get("personas", []):
                     slug, name = str(p.get("slug", "")), " ".join(str(p.get("name", "")).split())[:MAX_FROM]
-                    if re.fullmatch(r"[a-z]{2,16}", slug) and name:
+                    # Bot ids match the wake listener: a letter, then letters, digits, or dashes.
+                    if re.fullmatch(r"[a-z][a-z0-9-]{1,23}", slug) and name:
                         for k in (slug, name, *[str(a) for a in p.get("aliases", [])]):
                             if name_key(k):
                                 names[name_key(k)] = (name, slug)
@@ -4256,6 +4257,10 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     m = re.search(r"[“\"](.+?)[”\"]", prompt)
     phrase = m.group(1) if m else prompt
     who = msg.get("from") or VOICE_NAME
+    hit = persona_names().get(name_key(who))
+    label = hit[0] if hit else who
+    if label == VOICE_NAME:
+        label = phrase or label
     draw_idle(surf, L, now, wx or _ENROLL_WX, home_band=False)
     tile = enroll_tile_rect(L)
     LAST_ENROLL_RECT = tile
@@ -4284,7 +4289,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
         pygame.draw.circle(surf, _SOLID_RING[stage], av.center, int(av.w / 2), ring_w)
     col_x = tile.x + zpx(L, 720)
     col_w = max(40, tile.right - zpx(L, 80) - col_x)
-    eye = f"Wake word setup · {who if who != VOICE_NAME else (phrase or who)}"
+    eye = f"Wake word setup · {label}"
     eye_slot = pygame.Rect(col_x, tile.y + zpx(L, 61), col_w, max(1, zpx(L, 60)))
     surf.set_clip(eye_slot.clip(tile))
     ef = font("body", zpx(L, 44))
