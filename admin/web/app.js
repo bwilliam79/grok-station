@@ -3062,8 +3062,8 @@ function setupDomId(prefix, row) {
   return prefix + safe;
 }
 function setupMark(text, field, disabled) {
-  return "<mark>" + esc(text) + '</mark> <button type="button" class="tlnk" data-edit="' + field + '"' +
-    (disabled ? " disabled" : "") + ">Edit</button>";
+  return '<span class="chipedit"><mark>' + esc(text) + '</mark> <button type="button" class="tlnk" data-edit="' + field + '"' +
+    (disabled ? " disabled" : "") + ">Edit</button></span>";
 }
 function setupOwnerLabel(owner) {
   if (owner == null) return "the station owner";
@@ -3084,6 +3084,42 @@ function setupSteps(row) {
     "Reply on the station as " + setupMark(name, "name", off) + ". Your wake word is " + setupMark(wake, "wake", off) + ".",
     "Keep the webhook URL and key in your routine panel. Don't send them in any chat. " + who + " copies them into the station."
   ];
+}
+// Phone Details list under the steps (Noor 0.13.11 QA 5c): one row per editable value. DOM calls only.
+function setupDetailsItems(row) {
+  const name = (row && row.name) || "";
+  return [
+    {field: "computer", label: "Computer", value: (row && row.computer) || ""},
+    {field: "name", label: "Station name", value: name},
+    {field: "wake", label: "Wake word", value: (row && row.wake) || ("Hey " + name)}
+  ];
+}
+function setupDetailsEl(row, disabled) {
+  const box = document.createElement("div");
+  box.className = "setdetails";
+  const h = document.createElement("h4");
+  h.className = "lbl";
+  h.textContent = "Details";
+  box.appendChild(h);
+  const ul = document.createElement("ul");
+  setupDetailsItems(row).forEach(it => {
+    const li = document.createElement("li");
+    const t = document.createElement("span");
+    t.className = "dv";
+    t.textContent = it.label + " \u00b7 " + it.value;
+    const b = document.createElement("button");
+    b.className = "tlnk";
+    b.setAttribute("type", "button");
+    b.setAttribute("data-edit", it.field);
+    b.setAttribute("aria-label", "Edit " + it.label);
+    if (disabled) b.disabled = true;
+    b.textContent = "Edit";
+    li.appendChild(t);
+    li.appendChild(b);
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  return box;
 }
 function setupIcon(kind) {
   if (kind === "clock") return ICO_CLOCK;
@@ -3205,9 +3241,10 @@ function setupRowActionHTML(row, opts) {
       (open ? "\u25b4" : "\u25be") + "</button></span>";
   }
   if (m.status === "sent") {
-    return '<span class="setacts"><button class="tlnk" type="button" data-act="again" data-slug="' + slug + '"' +
-      (m.sendBlocked ? ' aria-disabled="true"' : "") + '>Resend</button>' +
-      '<button class="btn sm" type="button" data-act="paste" data-slug="' + slug + '">Paste values</button></span>';
+    // Noor 0.13.11 QA 3: same-size secondary buttons, in the order Paste values, Resend, then the row's Remove.
+    return '<span class="setacts sent"><button class="btn sm sec" type="button" data-act="paste" data-slug="' + slug + '">Paste values</button>' +
+      '<button class="btn sm sec" type="button" data-act="again" data-slug="' + slug + '"' +
+      (m.sendBlocked ? ' aria-disabled="true"' : "") + '>Resend</button></span>';
   }
   return "";
 }
@@ -3231,6 +3268,7 @@ function setupRowPanelHTML(row, opts) {
   return '<div class="setpanel' + (failed ? " is-err" : "") + '" role="region" aria-label="Set up ' + esc(bot) + '" id="' + esc(id) +
     '" data-slug="' + slug + '">' + err + '<h3 class="lbl">What ' + esc(main) + " sends " + esc(bot) + "</h3>" +
     '<ol class="steps">' + parts.map(p => "<li>" + p + "</li>").join("") + "</ol>" +
+    '<div class="setdetslot" data-detfor="' + slug + '"' + (m.editDisabled ? ' data-off="1"' : "") + "></div>" +
     '<p class="help">You see this exact message before it goes. Nothing is sent until you press Send setup.</p>' + hint +
     '<div class="acts"><button class="btn p sm" type="button" data-act="' + act + '" data-slug="' + slug + '"' +
     (blocked ? ' aria-disabled="true" aria-describedby="' + esc(hintId) + '"' : "") + ">" + (failed ? "Try again" : "Send setup") + "</button>" +
@@ -3253,7 +3291,14 @@ function setupPaintOpts(el) {
   const main = (((el && el._bots) || []).filter(b => b && b.main)[0]);
   return {mainName: (main && main.name) || "your main bot", sendBlocked: !!(main && finishNeedsUpdate(main)), now: Date.now() / 1000};
 }
+function fillSetupDetails(list, rows) {
+  list.querySelectorAll("[data-detfor]").forEach(slot => {
+    const row = rows[slot.getAttribute("data-detfor")];
+    if (row && !slot.firstChild) slot.appendChild(setupDetailsEl(row, slot.getAttribute("data-off") === "1"));
+  });
+}
 function bindSetupRows(list, el, rows) {
+  fillSetupDetails(list, rows);
   list.querySelectorAll("[data-setupbtn]").forEach(btn => btn.onclick = ev => { ev.stopPropagation(); setupToggle(el, btn.getAttribute("data-setupbtn")); });
   list.querySelectorAll("[data-setcancel]").forEach(btn => btn.onclick = ev => { ev.stopPropagation(); setupToggle(el, btn.getAttribute("data-setcancel"), false); });
   list.querySelectorAll(".setpanel").forEach(panel => panel.onkeydown = ev => {
@@ -3930,7 +3975,7 @@ function paintBots(el, bots) {
     const su = b.main ? null : setupBits(setupRows[b.slug]);
     const feed = !!(b.webhook && b.webhook.configured);
     return `<div class="botrow${note ? " hasmsg" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
-      <div><div class="lbl">${star}${esc(b.name)}${pill}</div>
+      <div><div class="lbl">${star}<span class="nm">${esc(b.name)}</span>${pill}</div>
         ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug)}</div>
       ${wakeControlHTML(b, word, st, true, el._botTrain)}
       <div class="cfg">${updateRowBtnHTML(b)}${su ? su.action : ""}<button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button>${feed ? `<span class="updslot" data-updslot="${esc(b.slug)}"></span>` : ""}<span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>${su ? su.panel : ""}`;
@@ -3940,7 +3985,7 @@ function paintBots(el, bots) {
       <div><div class="lbl">${esc(row.name)}</div>${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML("Not set up", "", "", false, "", row.key)}</div>
       <div class="ww none"></div>
       <div class="cfg">${su ? su.action : ""}
-        <button class="btn g sm" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>${su ? su.panel : ""}`;
+        <button class="btn g sm${su && /setacts sent/.test(su.action) ? " sec" : ""}" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>${su ? su.panel : ""}`;
   }).join("");
   keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
   bindSetupRows(list, el, setupRows);

@@ -878,3 +878,41 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .updsw .updlab{font-size:var(--fs-help);color:var(--gs-text)}
 .updsw .updrule{flex:1 0 100%;max-width:16rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:600px){.setpanel{margin-left:0}.setpanel .acts .btn,.setacts .btn{min-height:44px;flex:1}}
+/* 0.13.11 Noor QA batch */
+.updsw .updrule{color:var(--gs-muted);text-decoration:none;cursor:default}
+.setacts.sent{gap:8px}
+.botrow .cfg .btn.sec{min-width:112px;height:38px;padding:0 12px}
+.chipedit{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.tlnk[data-edit]{display:inline-flex;align-items:center;justify-content:center;min-width:24px;min-height:24px;padding:5px 4px;margin:-5px 0;vertical-align:middle}
+.tog:not(.on){border-color:var(--gs-field-edge)}  /* Noor QA: off track edge vs row 3.84:1 (#5A4E43 measured 2.29:1, short of 3:1) */
+.setdetails{display:none}
+@media (max-width:599px){
+  .steps .chipedit .tlnk{display:none}
+  .steps mark{background:none;border:0;color:inherit;padding:0}
+  .setdetails{display:block;margin:4px 0 8px}
+  .setdetails h4{margin:0 0 4px;font-size:var(--fs-help)}
+  .setdetails ul{list-style:none;margin:0;padding:0}
+  .setdetails li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;border-top:1px solid var(--gs-rule)}
+  .setdetails li:first-child{border-top:0}
+  .setdetails .dv{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-help)}
+  .setdetails .tlnk[data-edit]{min-height:44px;min-width:44px;margin:0}
+  #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 ww" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}
+  #blist .botrow>.avwrap{grid-area:av}
+  #blist .botrow>div:nth-child(2){display:contents}
+  #blist .botrow .lbl{grid-area:nm;display:flex;flex-wrap:wrap;align-items:center;column-gap:6px;height:auto;line-height:24px;white-space:normal;overflow:visible;min-width:0}
+  #blist .botrow .lbl .nm{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #blist .botrow .l2{grid-area:l2;height:auto;margin-top:0}
+  #blist .botrow .l2 .help{white-space:normal}
+  #blist .botrow .ww{grid-area:ww;grid-column:auto;grid-row:auto;display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+  #blist .botrow .ww.none{display:none}
+  #blist .botrow .ww>span:not(.pill){white-space:nowrap;overflow:visible}
+  #blist .botrow .cfg{grid-area:cf;grid-column:1/-1;grid-row:auto;display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:8px;min-height:0;align-self:start}
+  #blist .botrow .cfg .btn{display:inline-flex;min-height:44px;height:auto;flex:0 0 auto}
+  #blist .botrow .cfg .setacts{display:flex;flex-wrap:wrap;gap:8px;flex:1 1 auto}
+  #blist .botrow .cfg .setacts .btn{flex:1 1 auto}
+  #blist .botrow .cfg .chev{display:none}
+  #blist .botrow .cfg .updslot{flex:1 1 0;min-width:0}
+  #blist .botrow .updsw{max-width:none;margin-left:0}
+  #blist .botrow .updsw .updrule{flex:1 1 100%;max-width:none;white-space:normal}
+  #blist .botrow[data-fixed] .cfg{display:none}
+}
