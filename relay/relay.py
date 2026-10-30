@@ -1615,7 +1615,8 @@ def train_wake_request(text, bots):
     for ch in ",?!.":
         t = t.replace(ch, " ")
     t = " ".join(t.split())
-    m = re.match(r"^(?:hey grok )?train my wake word for (.+)$", t)
+    # The transcriber often writes "wakeboard" or "wake board" for "wake word" (0.13.9).
+    m = re.match(r"^(?:hey grok )?train my wake(?: word|board| board|-board) for (.+)$", t)
     if not m:
         return None
     spoken = m.group(1).strip()
