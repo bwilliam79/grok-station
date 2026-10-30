@@ -119,7 +119,7 @@ class RowSetup(unittest.TestCase):
         self.assertIn("Couldn't send.", p)
         self.assertIn("Juniper didn't answer. Check Juniper is online, then try again.", p)
         self.assertIn(">Try again<", p)
-        self.assertIn("setpanel err", p)
+        self.assertIn("setpanel is-err", p)
 
     def test_sent_and_connected_rows(self):
         st = _run(SETUP, "setupRowStatus(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
@@ -168,7 +168,8 @@ class UpdatesSwitch(unittest.TestCase):
         self.assertEqual(sw["attrs"]["data-updsw"], "otto")
         flat = json.dumps(got)
         self.assertIn("Updates", flat)
-        self.assertIn("<img src=x onerror=alert(1)>", got["kids"][1]["text"])
+        self.assertEqual(got["kids"][1]["text"], "Updates")
+        self.assertIn("<img src=x onerror=alert(1)>", got["kids"][2]["text"])
 
     def test_rule_lines(self):
         got = _run(self.NAMES, "[updatesRuleLine({on:false}), updatesRuleLine({on:true, rule:''}), "

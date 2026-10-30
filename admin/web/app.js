@@ -3228,7 +3228,7 @@ function setupRowPanelHTML(row, opts) {
   const hintId = id + "-h";
   const hint = blocked ? '<p class="help" id="' + esc(hintId) + '">' + esc(setupCopy(main, bot).block) + "</p>" : "";
   const act = failed ? "retry" : "send";
-  return '<div class="setpanel' + (failed ? " err" : "") + '" role="region" aria-label="Set up ' + esc(bot) + '" id="' + esc(id) +
+  return '<div class="setpanel' + (failed ? " is-err" : "") + '" role="region" aria-label="Set up ' + esc(bot) + '" id="' + esc(id) +
     '" data-slug="' + slug + '">' + err + '<h3 class="lbl">What ' + esc(main) + " sends " + esc(bot) + "</h3>" +
     '<ol class="steps">' + parts.map(p => "<li>" + p + "</li>").join("") + "</ol>" +
     '<p class="help">You see this exact message before it goes. Nothing is sent until you press Send setup.</p>' + hint +
@@ -3278,7 +3278,7 @@ function updatesSwitchEl(b) {
   const wrap = document.createElement("span");
   wrap.className = "updsw";
   const sw = document.createElement("button");
-  sw.className = "tog sm" + (on ? " on" : "");
+  sw.className = "tog" + (on ? " on" : "");
   sw.setAttribute("type", "button");
   sw.setAttribute("role", "switch");
   sw.setAttribute("aria-checked", on ? "true" : "false");
@@ -3286,12 +3286,13 @@ function updatesSwitchEl(b) {
   sw.setAttribute("data-updsw", slug);
   const lab = document.createElement("span");
   lab.className = "updlab";
+  lab.setAttribute("aria-hidden", "true");
   lab.textContent = "Updates";
-  sw.appendChild(lab);
   const rule = document.createElement("span");
   rule.className = "help updrule";
   rule.textContent = updatesRuleLine(fu);
   wrap.appendChild(sw);
+  wrap.appendChild(lab);
   wrap.appendChild(rule);
   return wrap;
 }
