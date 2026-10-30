@@ -18,7 +18,7 @@ import grok_station as gs
 import pygame
 import train_flow
 
-HINT = "To stop, stay quiet."
+HINT = "To stop, stay quiet for 3 seconds."  # 0.13.9 gs-voice-train rev1.6
 INTRO = "Okay. I'll record you 5 times. Say Juniper after each chime. To stop, stay quiet."
 MORE = "Okay. I'll add 5 more. Say Juniper after each chime. To stop, stay quiet."
 # Stages that used to draw ("stop", "Cancel"). The hint replaces that button.
@@ -122,10 +122,10 @@ class StationCancel(unittest.TestCase):
         more = train_flow.voice_train_plan(hit, has_model=True)
         self.assertEqual(plan["say"], INTRO)
         self.assertEqual(more["say"], MORE)
-        # Two silent clips still stop and save nothing. That path is unchanged.
+        # rev1.6: silence through the countdown stops and says nothing was saved.
         second = train_flow.silent_clip(2, "Juniper", voice=True)
         self.assertEqual(second["action"], "stop")
-        self.assertNotIn("saved", second["say"].lower())
+        self.assertEqual(second["say"], "Stopped. Nothing was saved.")
 
 
 if __name__ == "__main__":

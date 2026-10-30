@@ -3817,6 +3817,8 @@ ENROLL_STAGES = {
     "passed": ("success", "Ready", LISTENING, None),
     "failed": ("idle", "Not yet", MUTED, None),
     "error": ("idle", "Stopped", MUTED, None),
+    "stopping": ("idle", "Stopping", MUTED, "flat"),  # rev1.6: 3 s silent countdown
+    "stopped": ("idle", "Stopped", MUTED, None),  # rev1.6: nothing (new) was saved
 }
 ENROLL_ANIM = {"ready": ("enroll_ready", 0.9, False), "saved": ("enroll_saved", 0.3, False),
                "recording": ("listening", PULSE_PERIOD, True), "queued": ("thinking", SPIN_PERIOD, True)}
@@ -3858,22 +3860,30 @@ def enroll_copy(phrase, i, n, stage, extra):
     if stage == "prompt":
         return f"Say {q}", "Say it the way you normally would, after each chime.", MUTED, \
             f"{n} clips · about {max(1, round(n * 6 / 60))} min", 0.0
+    # 0.13.9 fix round 1a: every recording stage keeps "Say “<phrase>”" as the heading; status is the secondary line.
+    pinned = f"Say {q}" if phrase else "Wake word setup"
     if stage == "ready":
-        return "Get ready…", f"Say {q} right after the chime.", MUTED, clip, bar
+        return pinned, f"Get ready… {clip}", MUTED, clip, bar
     if stage == "count":
         digit = extra if extra in ("1", "2", "3") else "3"
-        return digit, "Recording in 3…", MUTED, f"{i} of {n}" if n else None, bar
+        return pinned, f"Recording in {digit}…", MUTED, f"{i} of {n}" if n else None, bar
     if stage == "recording":
-        return f"Listening… {i} of {n}", "Speak after the chime.", LISTENING, f"{i} of {n}" if n else None, bar
+        return pinned, f"Listening… {clip}", LISTENING, f"{i} of {n}" if n else None, bar
     if stage == "loud":
-        return "Too loud", f"Step back a little or speak softer. Clip {i} will retry.", MUTED, clip, bar
+        return pinned, f"Too loud. Step back a little. Clip {i} will retry.", MUTED, clip, bar
     if stage == "quiet":
-        return "Try again", "I didn't hear it. Again after the chime.", MUTED, f"{i} of {n}" if n else clip, bar
+        return pinned, "I didn't hear it. Again after the chime.", MUTED, f"{i} of {n}" if n else clip, bar
+    if stage == "stopping":  # rev1.6: one silent clip, then 3, 2, 1
+        digit = extra if extra in ("1", "2", "3") else "3"
+        return pinned, f"I didn't hear it. Stopping in {digit}…", MUTED, f"{i} of {n}" if n else clip, bar
+    if stage == "stopped":  # the session is over; the restart line is drawn under it (draw_enroll)
+        head = "Stopped. Nothing new was saved." if extra == "topup" else "Stopped. Nothing was saved."
+        return head, "", MUTED, f"{i} of {n}" if n else None, bar
     if stage == "saved":
         if n and i >= n and extra != "next":
             return "Saved. Checking the recordings.", "", MUTED, None, 1.0  # the deck: this line only, 4 s
-        sub = "Next" if extra == "next" and i < n else ""
-        return f"{i} of {n} saved", sub, MUTED, f"{i} of {n}" if n else None, i / n if n else None
+        sub = f"Clip {i} saved. Next…" if extra == "next" and i < n else f"Clip {i} saved."
+        return pinned, sub, MUTED, f"{i} of {n}" if n else None, i / n if n else None
     if stage == "uploaded":
         return f"All {n} clips saved", "Uploaded for training. You can use the station as usual.", MUTED, "Uploaded ✓", 1.0
     if stage == "queued":
@@ -3909,6 +3919,8 @@ def state_hold(state, done, heard="", hold_s=None):
     if state == "enroll":
         i, n, stage, extra = enroll_parse({"heard": heard})
         if stage == "saved" and n and i >= n and extra != "next":
+            return 4
+        if stage == "stopped":  # rev1.6: the stopped tile holds 4 s
             return 4
         return 10 if stage in ("passed", "uploaded", "error", "failed") else VOICE_HOLDS["enroll"]
     return VOICE_HOLDS[state]
@@ -3947,7 +3959,7 @@ ENROLL_RING = {
     "ready": "enroll_ready", "recording": "listening", "saved": "enroll_saved",
     "uploaded": "success", "passed": "success", "queued": "thinking",
 }
-_DASH_RING = {"quiet": MUTED, "loud": MUTED, "failed": AMBER}
+_DASH_RING = {"quiet": MUTED, "loud": MUTED, "failed": AMBER, "stopping": MUTED}
 _SOLID_RING = {"prompt": MUTED, "error": MUTED, "custom": MUTED}
 _ENROLL_SQUARES = 5
 
@@ -4062,8 +4074,8 @@ def _dashed_ring(surf, cx, cy, outer, width, color, dash, gap):
 
 
 # The station has no touch input. These stages used to draw Cancel; the hint replaces it.
-QUIET_HINT = "To stop, stay quiet."
-_QUIET_HINT_STAGES = ("ready", "count", "recording", "quiet", "loud", "saved")
+QUIET_HINT = "To stop, stay quiet for 3 seconds."  # gs-voice-train rev1.6
+_QUIET_HINT_STAGES = ("ready", "count", "recording", "quiet", "loud", "saved", "stopping")
 
 
 def _enroll_actions(stage):
@@ -4088,7 +4100,7 @@ def _enroll_note(stage, who):
 def _square_kinds(stage, i):
     """Five squares. The heard count can still say "of 10"; the row is always five."""
     kinds = ["empty"] * _ENROLL_SQUARES
-    if stage in ("queued", "prompt", "error", "custom"):
+    if stage in ("queued", "prompt", "error", "custom", "stopped"):
         return kinds
     if stage in ("passed", "uploaded"):
         return ["kept"] * _ENROLL_SQUARES
@@ -4099,7 +4111,7 @@ def _square_kinds(stage, i):
     cur = max(1, min(_ENROLL_SQUARES, int(i) or 1))
     for k in range(cur - 1):
         kinds[k] = "kept"
-    if stage in ("quiet", "loud", "failed"):
+    if stage in ("quiet", "loud", "failed", "stopping"):
         kinds[cur - 1] = "bad"
     elif stage == "recording":
         kinds[cur - 1] = "now"
@@ -4309,6 +4321,8 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     ef = font("body", zpx(L, 44))
     surf.blit(ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
     head, sub, scolor, status, _bar = enroll_copy(phrase, i, n, stage, extra)
+    if stage == "stopped":
+        sub = f"Say 'Hey Grok, train my wake word for {label}' to try again."
     hf = font("display", _fit_px_step("display", head, col_w, zpx(L, 128), zpx(L, 96), zpx(L, 8)))
     # Descent is negative. Ascent minus descent is the line box, and it does not depend on the string.
     head_h = max(1, hf.get_ascent() - hf.get_descent())

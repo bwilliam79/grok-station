@@ -92,19 +92,24 @@ def train_steps(start, n=ENROLL_COUNT, gap_s=RETRY_S):
     return steps
 
 
-def silent_clip(streak, bot, voice=True):
-    """The first silent clip retries. The second silent clip in a row stops the session.
+SILENT_COUNTDOWN_S = 3  # 0.13.9 (gs-voice-train rev1.6): one silent clip starts a 3 s on-screen countdown
 
-    voice=True keeps the spoken Hey Grok line. A Record voice tap (voice=False) uses the touch lines.
+
+def silent_clip(streak, bot, voice=True, topup=False):
+    """One silent clip starts the 3 s countdown (rev1.6). Silence through the countdown is streak 2: stop.
+
+    The stop heading is "Stopped. Nothing was saved." ("Nothing new" on a top-up), with the voice restart
+    line under it on the station tile. voice=True speaks the heading. A Record voice tap (voice=False) keeps
+    the touch lines for the admin dialog.
     """
     who = " ".join(str(bot or "").split()) or "the bot"
     if int(streak) >= 2:
-        # "station" is the tile line: the voice restart line however the session started (rev1.3 copy deck).
-        station = "Stopped. Say 'Hey Grok, train my wake word for %s' to try again." % who
+        head = "Stopped. Nothing new was saved." if topup else "Stopped. Nothing was saved."
+        restart = "Say 'Hey Grok, train my wake word for %s' to try again." % who
         if voice:
-            return {"action": "stop", "say": station, "station": station}
-        return {"action": "stop", "say": SILENT_TOUCH_SAY, "note": SILENT_TOUCH_NOTE, "station": station}
-    return {"action": "retry", "say": QUIET_SAY}
+            return {"action": "stop", "say": head, "station": head, "restart": restart}
+        return {"action": "stop", "say": SILENT_TOUCH_SAY, "note": SILENT_TOUCH_NOTE, "station": head, "restart": restart}
+    return {"action": "countdown", "seconds": SILENT_COUNTDOWN_S}
 
 
 def mic_stopped_line(bot):

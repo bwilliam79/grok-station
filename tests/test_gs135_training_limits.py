@@ -16,6 +16,11 @@ import numpy as np  # noqa: E402
 import grok_wake as gw  # noqa: E402
 
 
+def _tone():
+    t = np.arange(1280)
+    return (np.sin(t * 0.2) * 3000).astype(np.int16)
+
+
 def _zeros(raw=False):
     return np.zeros(1280, np.int16)
 
@@ -165,7 +170,9 @@ class TrainingCap(TrainingLimits):
                 tick["cycles"] += 1
             elif gw.ENROLL_STATE.get("pause"):
                 gw.enroll_control({"op": "resume"})
-            return _zeros()
+            # 0.13.9 (rev1.6): one silent clip now ends a session after a 3 s countdown, so the clips here
+            # carry a steady tone; the loop runs until the 30-minute cap, as before.
+            return _tone()
 
         buf = io.StringIO()
         with redirect_stdout(buf):

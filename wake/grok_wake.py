@@ -1159,11 +1159,23 @@ def control_server():
     CONTROL_HTTPD.serve_forever()
 
 
+def _frame_db(pcm, f=320):
+    """dBFS of each 20 ms frame (16 kHz)."""
+    n = len(pcm) // f
+    return 20 * np.log10(np.sqrt(np.mean(pcm[:n * f].astype(np.float32).reshape(n, f) ** 2, 1)) / 32768 + 1e-9)
+
+
+def heard_speech(pcm):
+    """trim_clip's level rule without its clip-length rule: any 20 ms frame at -45 dBFS or louder."""
+    if len(pcm) < 320:
+        return False
+    return bool(_frame_db(pcm).max() >= -45)
+
+
 def trim_clip(pcm):
     """Speech region by 20 ms frame energy (above max(-50 dBFS, peak - 30 dB)), padded 0.25 s. None if no speech."""
     f = 320
-    n = len(pcm) // f
-    e = 20 * np.log10(np.sqrt(np.mean(pcm[:n * f].astype(np.float32).reshape(n, f) ** 2, 1)) / 32768 + 1e-9)
+    e = _frame_db(pcm, f)
     on = np.where(e > max(-50.0, e.max() - 30))[0]
     if not len(on) or e.max() < -45:
         return None
@@ -1818,6 +1830,23 @@ def capture_enroll_clip(read16, play, chime_samples=None):
         return raw[chime_end:chime_end + speech_n]
 
 
+def silent_countdown(read16, tick, seconds=None):
+    """rev1.6: show 3, 2, 1 (1 s each) while reading the mic. True as soon as the audio read so far has a frame
+    at trim_clip's speech level (an energy check, not a command); False after the countdown or a discard."""
+    secs = int(getattr(train_flow, "SILENT_COUNTDOWN_S", 3) if seconds is None else seconds)
+    heard = []
+    for k in range(secs, 0, -1):
+        if ENROLL_STATE.get("discard"):
+            return False
+        tick(k)
+        for _ in range(int(1.0 / 0.08)):
+            heard.append(np.asarray(read16()).ravel())
+        pcm = np.clip(np.concatenate(heard).astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
+        if heard_speech(pcm):
+            return True
+    return False
+
+
 def enroll(req, read16, play):
     """Record req["count"] clips onto this Pi. Training does not run here."""
     if train_flow is None:
@@ -1883,18 +1912,23 @@ def enroll(req, read16, play):
             pcm = np.clip(raw.astype(np.float32) * GAIN, -32768, 32767).astype("<i2")
             clip = trim_clip(pcm)
             if clip is None and not clipped:
-                # One silent clip retries. A second silent clip in a row stops; nothing is saved.
-                silent += 1
-                decision = silent_clip(silent, label, voice=voice)
+                # rev1.6: one silent clip starts a 3 s countdown. Speech during it (trim_clip's level rule,
+                # heard_speech; not a command) cancels it and the clip retries; silence through it stops, nothing saved.
                 print(f"enroll clip {i} rejected (quiet)", flush=True)
-                show(i, "quiet")
                 _note_clip(i, sent, "quiet", "quiet", bool(prior), n)
-                if decision["action"] == "stop":
-                    ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])
+                if ENROLL_STATE.get("pause"):
+                    continue  # an admin pause wins: _enroll_hold waits, then this clip retries
+                if silent_countdown(read16, lambda k: show(i, "stopping", str(k))):
+                    print(f"enroll countdown cancelled: speech (clip {i})", flush=True)
+                    tries += 1
+                    if tries >= 3 * n:
+                        break
+                    continue
+                if ENROLL_STATE.get("discard"):
                     break
-                for _ in range(int(RETRY_S / 0.08)):
-                    read16()
-                continue
+                decision = silent_clip(2, label, voice=voice, topup=bool(prior))
+                ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])
+                break
             if clipped or clip is None:
                 silent = 0
                 tries += 1
@@ -1921,10 +1955,11 @@ def enroll(req, read16, play):
                     read16()
             i += 1
         if ENROLL_STATE.get("silent_stop"):
-            msg, station_msg = ENROLL_STATE.pop("silent_stop")
+            msg, _station_msg = ENROLL_STATE.pop("silent_stop")
             shutil.rmtree(d, ignore_errors=True)
             enroll_stage("failed", msg, phrase, ses)  # admin dialog line
-            post_state("notice", text=station_msg)  # station tile: the voice restart line
+            # Station tile (rev1.6): "Stopped. Nothing (new) was saved." heading, restart line under it, 4 s.
+            show(i, "stopped", "topup" if prior else "")
             return
         if ENROLL_STATE.get("discard"):
             timed_out = bool(ENROLL_STATE.pop("timed_out", False))

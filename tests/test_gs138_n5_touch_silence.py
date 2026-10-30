@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A Record voice tap stops after two silent clips and saves nothing (gs138 N5).
+"""A Record voice tap stops after one silent clip and a 3 s countdown and saves nothing (gs138 N5, rev1.6).
 
 Voice-started sessions keep their stop line. The touch screen uses the silent
 error: "I didn't hear anything. Nothing new was saved." /
@@ -18,14 +18,13 @@ import grok_wake as gw  # noqa: E402
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 TOUCH_SAY = "I didn't hear anything. Nothing new was saved."
 TOUCH_NOTE = "Tap Record voice to try again."
-VOICE_STOP = "Stopped. Say 'Hey Grok, train my wake word for Juniper' to try again."
+VOICE_STOP = "Stopped. Nothing was saved."  # 0.13.9 rev1.6
 
 
 class SilentClipCopy(unittest.TestCase):
     def test_voice_stop_copy_unchanged(self):
         first = gw.silent_clip(1, "Juniper")
-        self.assertEqual(first["action"], "retry")
-        self.assertEqual(first["say"], "I didn't hear it. Again after the chime.")
+        self.assertEqual(first["action"], "countdown")  # 0.13.9 rev1.6
         second = gw.silent_clip(2, "Juniper")
         self.assertEqual(second["action"], "stop")
         self.assertEqual(second["say"], VOICE_STOP)
@@ -38,7 +37,7 @@ class SilentClipCopy(unittest.TestCase):
         self.assertEqual(gw.train_flow.SILENT_TOUCH_SAY, TOUCH_SAY)
         self.assertEqual(gw.train_flow.SILENT_TOUCH_NOTE, TOUCH_NOTE)
         first = gw.silent_clip(1, "Juniper", voice=False)
-        self.assertEqual(first, {"action": "retry", "say": "I didn't hear it. Again after the chime."})
+        self.assertEqual(first, {"action": "countdown", "seconds": 3})  # 0.13.9 rev1.6
         second = gw.silent_clip(2, "Kitchen", voice=False)
         self.assertEqual(second["action"], "stop")
         self.assertEqual(second["say"], TOUCH_SAY)
@@ -95,11 +94,14 @@ class TouchEnrollSilence(unittest.TestCase):
             gw.ENROLL_STATE["busy"] = old[4]
             gw.ENROLL_STATE["last"] = old[5]
             gw.ENROLL_STATE.pop("silent_stop", None)
-        self.assertEqual(posted.count("recording"), 2)
-        self.assertEqual(posted.count("quiet"), 2)
+        # 0.13.9 rev1.6: one silent clip, then the 3 s countdown, then stop.
+        self.assertEqual(posted.count("recording"), 1)
+        self.assertEqual(posted.count("quiet"), 0)
         self.assertNotIn("saved", posted)
         self.assertNotIn("error", posted)
-        self.assertEqual(notices, [VOICE_STOP])  # station tile: voice restart line (rev1.3 copy deck); admin keeps TOUCH_SAY
+        self.assertEqual(notices, [])  # 0.13.9 rev1.6: the station shows an enroll "stopped" tile, not a notice
+        self.assertEqual(posted[-1], "stopped")
+        self.assertEqual(posted.count("stopping"), 3)  # 3, 2, 1
         self.assertEqual(saved, [])
         self.assertFalse(busy)
         self.assertEqual(last.get("stage"), "failed")

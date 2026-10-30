@@ -59,7 +59,8 @@ class SuccessHold(unittest.TestCase):
         self.assertEqual(gs.state_hold("enroll", False, "0/5|passed|"), 10)
         head, sub, _color, status, _bar = gs.enroll_copy("Juniper", 5, 5, "saved", "")
         self.assertEqual((head, sub, status), (SUCCESS, "", None))  # L1: no stale progress line
-        self.assertEqual(gs.enroll_copy("Juniper", 4, 5, "saved", "next")[0], "4 of 5 saved")
+        # 0.13.9 fix round 1a: a between-clip save keeps the phrase heading; status is the secondary line.
+        self.assertEqual(gs.enroll_copy("Juniper", 4, 5, "saved", "next")[:2], ("Say “Juniper”", "Clip 4 saved. Next…"))
         seen = []
         real = gs.font
         gs.font = lambda kind, px: _Font(real(kind, px), seen)

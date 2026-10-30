@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "relay"))
 import train_flow as tf  # noqa: E402
 
-VOICE_STOP = "Stopped. Say 'Hey Grok, train my wake word for Juniper' to try again."
+VOICE_STOP = "Stopped. Nothing was saved."  # 0.13.9 rev1.6 heading; the restart line is drawn under it
 MIC_STATION = 'The microphone stopped while recording. Say "Hey Grok, train my wake word for Juniper" to try again.'
 MIC_ADMIN = ("The microphone stopped while recording. "
              "Say 'Hey Grok, train my wake word for Juniper' or press Record voice to try again.")
@@ -42,7 +42,7 @@ class StationLines(unittest.TestCase):
     def test_listener_posts_station_lines(self):
         wake = _src("wake/grok_wake.py")
         self.assertIn('ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])', wake)
-        self.assertIn('post_state("notice", text=station_msg)', wake)
+        self.assertIn('show(i, "stopped", "topup" if prior else "")', wake)  # rev1.6: an enroll stage, 4 s
         self.assertIn('post_state("notice", text=train_flow.mic_stopped_station_line(station_bot_name(persona, label)))', wake)
 
     def test_station_renderer_never_says_record_voice(self):
@@ -56,10 +56,10 @@ class TableStrings(unittest.TestCase):
 
     def test_station_strings(self):
         st = _src("app/grok_station.py")
-        for s in ("Recording in 3…", "To stop, stay quiet.", "I didn't hear it. Again after the chime.",
-                  "Saved. Checking the recordings."):
+        for s in ("Recording in {digit}…", "To stop, stay quiet for 3 seconds.", "I didn't hear it. Again after the chime.",
+                  "Saved. Checking the recordings.", "I didn't hear it. Stopping in {digit}…", "Stopped. Nothing was saved.",
+                  "Stopped. Nothing new was saved.", "Listening… {clip}"):
             self.assertIn(s, st)
-        self.assertIn('"Listening… {i} of {n}"'.replace('"', ""), st.replace('f"', "").replace('"', ""))
         self.assertIn("Okay. I'll record you 5 times. Say %s after each chime. To stop, stay quiet.", _src("relay/train_flow.py"))
         self.assertIn("Okay. I'll add 5 more. Say %s after each chime. To stop, stay quiet.", _src("relay/train_flow.py"))
         self.assertIn("I don't have a bot called %s.", _src("relay/train_flow.py"))

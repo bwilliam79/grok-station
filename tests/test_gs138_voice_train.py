@@ -68,16 +68,14 @@ class VoiceStart(unittest.TestCase):
             self.assertEqual(between[0].get("cue"), "Next", start)
             self.assertEqual(between[0]["gap_s"], gw.RETRY_S, start)
 
-    def test_two_silent_clips_stop(self):
-        first = gw.silent_clip(1, "Juniper")
-        self.assertEqual(first["action"], "retry")
-        self.assertEqual(first["say"], "I didn't hear it. Again after the chime.")
+    def test_silent_clip_counts_down_then_stops(self):
+        # 0.13.9 (gs-voice-train rev1.6): one silent clip starts the 3 s countdown; silence through it stops.
+        self.assertEqual(gw.silent_clip(1, "Juniper"), {"action": "countdown", "seconds": 3})
         second = gw.silent_clip(2, "Juniper")
         self.assertEqual(second["action"], "stop")
-        self.assertEqual(
-            second["say"],
-            "Stopped. Say 'Hey Grok, train my wake word for Juniper' to try again.")
-        self.assertEqual(gw.silent_clip(1, "Juniper")["action"], "retry")
+        self.assertEqual(second["say"], "Stopped. Nothing was saved.")
+        self.assertEqual(second["restart"], "Say 'Hey Grok, train my wake word for Juniper' to try again.")
+        self.assertEqual(gw.silent_clip(2, "Juniper", topup=True)["say"], "Stopped. Nothing new was saved.")
 
     def test_enroll_never_scores_and_the_relay_ends(self):
         """A recording window is not a command because enroll owns the mic.
