@@ -99,7 +99,7 @@ class IntegrationsBack(unittest.TestCase):
         rule = re.search(r"a\.iback\{([^}]*)\}", css)
         self.assertIsNotNone(rule, "missing a.iback rule")
         body = rule.group(1)
-        self.assertIn("min-height:24px", body)
+        self.assertIn("min-height:44px", body)  # N6 (0.13.8): 44 px tap target
         self.assertIn("text-decoration:none", body)
         self.assertIn("color:var(--gs-muted)", body)
         hover = re.search(r"a\.iback:hover\{([^}]*)\}", css)
