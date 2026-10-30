@@ -895,6 +895,12 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(refused.status, 400)
             self.assertLess(refused.status, 500)
             self.assertEqual(calls, [])
+            # F3: fixed error text, nothing from the request echoed back.
+            self.assertEqual(await refused.json(), {"error": "not found"})
+            odd = await client.post("/admin/bots/setup-relay", headers=headers,
+                                    json=dict(body, slug="pip<x>"))
+            self.assertEqual((odd.status, await odd.json()), (404, {"error": "not found"}))
+            self.assertEqual(calls, [])
         finally:
             if client is not None:
                 await client.close()
