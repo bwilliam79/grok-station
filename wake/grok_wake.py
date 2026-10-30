@@ -37,29 +37,69 @@ import numpy as np
 import wait_tone
 
 
-def _load_train_flow():
+def _train_flow_file_ok(path, root_uid=0):
+    """Same rule as relay.code_file_ok: a real root-owned 0644 file, every parent a real
+    root-owned directory that is not group- or other-writable. A symlink is refused."""
+    import stat
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return False
+    if st.st_uid != root_uid or stat.S_IMODE(st.st_mode) != 0o644:
+        return False
+    p = os.path.dirname(os.path.abspath(path))
+    while True:
+        try:
+            dst = os.lstat(p)
+        except OSError:
+            return False
+        if stat.S_ISLNK(dst.st_mode) or not stat.S_ISDIR(dst.st_mode) or dst.st_uid != root_uid or dst.st_mode & 0o022:
+            return False
+        parent = os.path.dirname(p)
+        if parent == p:
+            return True
+        p = parent
+
+
+def _load_train_flow(path=None):
     """The one copy lives beside the relay, which is root-owned when installed.
 
     This listener must not keep a second copy under wake/: grok can edit that tree,
     and the relay used to exec it. Repo and install share the same layout
     (wake/ and relay/ are siblings).
+    Fails closed: a missing, symlinked or untrusted file (or one that will not load) logs one
+    line and returns None. The listener keeps running with wake-word training disabled.
     """
     import importlib.util
-    here = os.path.dirname(os.path.abspath(__file__))
-    path = os.path.normpath(os.path.join(os.path.dirname(here), "relay", "train_flow.py"))
-    spec = importlib.util.spec_from_file_location("gs_train_flow", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    import stat
+    if path is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.normpath(os.path.join(os.path.dirname(here), "relay", "train_flow.py"))
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            raise RuntimeError("not a regular file")
+        if os.path.abspath(path).startswith("/opt/grok-station" + os.sep) and not _train_flow_file_ok(path):
+            raise RuntimeError("untrusted")
+        spec = importlib.util.spec_from_file_location("gs_train_flow", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        print(f"wake-word training disabled: train_flow unavailable ({type(e).__name__})", flush=True)
+        return None
 
 
 train_flow = _load_train_flow()
+TRAINING_OFF = {"error": "Wake-word training is unavailable on this station."}
 
-voice_train_plan = train_flow.voice_train_plan
-train_steps = train_flow.train_steps
-silent_clip = train_flow.silent_clip
-mic_stopped_line = train_flow.mic_stopped_line
-CANCEL_SAY = train_flow.CANCEL_SAY
+voice_train_plan = getattr(train_flow, "voice_train_plan", None)
+train_steps = getattr(train_flow, "train_steps", None)
+silent_clip = getattr(train_flow, "silent_clip", None)
+mic_stopped_line = getattr(train_flow, "mic_stopped_line", None)
+CANCEL_SAY = getattr(train_flow, "CANCEL_SAY", "")
 
 E = os.environ.get
 MODEL = E("WAKE_MODEL", "/opt/grok-station/wake/models/hey_grok.onnx")  # the built-in word; used if the config is unreadable
@@ -1036,6 +1076,8 @@ def control_server():
                 code, obj = enroll_control(body)
                 return self._r(code, obj)
             if self.path == "/enroll/open-tile":
+                if train_flow is None:
+                    return self._r(503, TRAINING_OFF)
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
                     body = json.loads(self.rfile.read(n) or b"{}")
@@ -1085,6 +1127,8 @@ def control_server():
                 return self._r(503, {"error": "Couldn't reset the microphone."})
             if self.path != "/enroll":
                 return self._r(404, {"error": "not found"})
+            if train_flow is None:
+                return self._r(503, TRAINING_OFF)
             try:
                 j = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 1024)) or b"{}")
             except Exception:
@@ -1776,6 +1820,8 @@ def capture_enroll_clip(read16, play, chime_samples=None):
 
 def enroll(req, read16, play):
     """Record req["count"] clips onto this Pi. Training does not run here."""
+    if train_flow is None:
+        return
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
     words = phrase.replace("_", " ").title()
     say = f"“{words}”"
