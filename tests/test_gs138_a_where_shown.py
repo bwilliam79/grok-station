@@ -43,7 +43,7 @@ class StationLines(unittest.TestCase):
         wake = _src("wake/grok_wake.py")
         self.assertIn('ENROLL_STATE["silent_stop"] = (decision["say"], decision["station"])', wake)
         self.assertIn('post_state("notice", text=station_msg)', wake)
-        self.assertIn('post_state("notice", text=train_flow.mic_stopped_station_line(persona_name(persona)))', wake)
+        self.assertIn('post_state("notice", text=train_flow.mic_stopped_station_line(station_bot_name(persona, label)))', wake)
 
     def test_station_renderer_never_says_record_voice(self):
         self.assertNotIn("Record voice", _src("app/grok_station.py"))

@@ -20,7 +20,7 @@ class MicStopDeck(unittest.TestCase):
 
     def test_listener_passes_the_display_label(self):
         src = open(os.path.join(ROOT, "wake", "grok_wake.py"), encoding="utf-8").read()
-        self.assertIn("train_flow.mic_stopped_station_line(persona_name(persona))", src)
+        self.assertIn("train_flow.mic_stopped_station_line(station_bot_name(persona, label))", src)
 
 
 if __name__ == "__main__":

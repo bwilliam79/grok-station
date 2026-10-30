@@ -206,7 +206,7 @@ def sync_personas():
             got += 1
     tmp = os.path.join(PORTRAITS, ".personas.tmp")
     with open(tmp, "w") as f:
-        json.dump({"personas": [{"slug": str(p.get("slug", ""))[:16], "name": str(p.get("name", ""))[:20],
+        json.dump({"personas": [{"slug": str(p.get("slug", ""))[:24], "name": str(p.get("name", ""))[:20],
                                  "aliases": [str(a)[:30] for a in p.get("aliases", [])][:5]} for p in items]}, f)
     os.replace(tmp, os.path.join(PORTRAITS, "personas.json"))
     print(f"personas synced: {len(items)} names, {got} portraits", flush=True)
@@ -1968,7 +1968,7 @@ def enroll(req, read16, play):
             enroll_stage("failed", mic_stopped_line(label), phrase, ses)
         shutil.rmtree(d, ignore_errors=True)
         if train_flow is not None and (ENROLL_STATE.get("last") or {}).get("stage") == "failed":
-            post_state("notice", text=train_flow.mic_stopped_station_line(persona_name(persona)))  # leaves enroll mode
+            post_state("notice", text=train_flow.mic_stopped_station_line(station_bot_name(persona, label)))  # leaves enroll mode
         else:
             post_state("idle")  # take the display out of enroll mode
         raise
@@ -2243,6 +2243,14 @@ def persona_name(slug):
     except (OSError, ValueError, AttributeError):
         pass
     return "Grok"
+
+
+def station_bot_name(persona, label):
+    """Display name for station copy; the wake word label on a lookup miss, never Grok for another persona."""
+    name = persona_name(persona)
+    if name == "Grok" and persona != "grok":
+        return label or name
+    return name
 
 
 def find_card(tool):
