@@ -52,9 +52,9 @@ def voice_train_plan(hit, has_model=False):
     label = wake_speak_label(phrase, hit.get("name"))
     topup = bool(has_model)
     if topup:
-        say = "Okay. I'll add 5 more. Say %s after each chime." % label
+        say = "Okay. I'll add 5 more. Say %s after each chime. To stop, stay quiet." % label
     else:
-        say = "Okay. I'll record you 5 times. Say %s after each chime." % label
+        say = "Okay. I'll record you 5 times. Say %s after each chime. To stop, stay quiet." % label
     return {
         "begin": True,
         "phase": "ready",

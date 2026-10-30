@@ -134,8 +134,8 @@ class TrainingTile(unittest.TestCase):
         self.assertNotIn("×", labels)
         self.assertNotIn("x", [t for t in labels if t.strip() in ("x", "×", "X")])
 
-    def test_recording_has_stop_button_and_no_spoken_stop_hint(self):
-        """0.13.7: the spoken stop is gone, so the tile no longer says Say "stop"; the Stop button stays."""
+    def test_recording_has_no_cancel_button(self):
+        """The station has no touch input. Recording draws no Cancel button and no spoken-stop hint."""
         calls = []
         real = gs.draw_voice_hint
 
@@ -149,7 +149,8 @@ class TrainingTile(unittest.TestCase):
         finally:
             gs.draw_voice_hint = real
         self.assertEqual(calls, [])
-        self.assertEqual([b[0] for b in gs.LAST_ENROLL_BUTTONS], ["stop"])
+        self.assertNotIn("stop", [b[0] for b in gs.LAST_ENROLL_BUTTONS])
+        self.assertEqual(gs.LAST_ENROLL_BUTTONS, [])
 
     def test_other_tiles_arrive_as_chips(self):
         sports = {"type": "sports", "v": 1, "league": "City league", "status": "live", "period": "2nd",

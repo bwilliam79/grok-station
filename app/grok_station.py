@@ -2148,6 +2148,8 @@ _MARK_PX = (64, 128, 256, 512, 1024)  # assets/brand/mark-<px>.png, rendered fro
 LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None  # last session portrait blit, so the ring can spin in place
 LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = None    # training tile and its fixed avatar box
 LAST_ENROLL_BUTTONS = []                        # (id, rect) in screen px, for enroll_hit
+LAST_ENROLL_HINT = None                         # muted "To stop, stay quiet." line; the station has no Cancel
+LAST_ENROLL_PROGRESS = None                     # progress row the hint sits under
 LAST_ENROLL_STAGE = None
 LAST_COLON_RECT = LAST_COLON_GLYPH = None       # last clock colon, so it can blink without a full repaint
 LAST_DIGITS_RECT = None
@@ -3011,10 +3013,12 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
     global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
     global LAST_WEATHER_RECT, LAST_OFFLINE_RECT, LAST_DATE_RECT, LAST_CLOCK_RECT
     global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_BUTTONS, LAST_ENROLL_STAGE
+    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS
     LAST_TOPBAR_RECT = LAST_CARD_RECT = LAST_PORTRAIT_RECT = LAST_PORTRAIT_ARGS = None
     LAST_WEATHER_RECT = LAST_OFFLINE_RECT = LAST_DATE_RECT = LAST_CLOCK_RECT = None
     LAST_ENROLL_RECT = LAST_ENROLL_AVATAR = LAST_ENROLL_STAGE = None
     LAST_ENROLL_BUTTONS = []
+    LAST_ENROLL_HINT = LAST_ENROLL_PROGRESS = None
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = L(70) + int(L.extra_y * 0.3)
@@ -4029,12 +4033,20 @@ def _dashed_ring(surf, cx, cy, outer, width, color, dash, gap):
         dist += period
 
 
+# The station has no touch input. These stages used to draw Cancel; the hint replaces it.
+QUIET_HINT = "To stop, stay quiet."
+_QUIET_HINT_STAGES = ("ready", "count", "recording", "quiet", "loud", "saved")
+
+
 def _enroll_actions(stage):
-    """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn (never, 0.13.7)."""
+    """(id, label, primary, text_only) for the action row, and whether a voice hint is drawn (never, 0.13.7).
+
+    No Cancel button: staying quiet is how a session on the station stops.
+    """
     if stage == "prompt":
         return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
-    if stage in ("ready", "count", "recording", "quiet", "loud", "saved"):
-        return [("stop", "Cancel", False, False)], False
+    if stage in _QUIET_HINT_STAGES:
+        return [], False
     if stage == "passed":
         return [("done", "Done", True, False)], False
     if stage == "failed":
@@ -4115,6 +4127,18 @@ def _draw_progress(surf, L, slot, col_w, stage, i, status):
             pygame.draw.rect(surf, fills[kind], rect, border_radius=rad)
             _progress_mark(surf, rect, kind)
         x += sq + gap
+
+
+def _draw_quiet_hint(surf, L, slot, col_w):
+    """Muted "To stop, stay quiet." under the progress. Not a button."""
+    global LAST_ENROLL_HINT
+    px = max(14, zpx(L, 44))
+    f = font("body", px)
+    text = QUIET_HINT if f.size(QUIET_HINT)[0] <= col_w else ellipsize(f, QUIET_HINT, col_w)
+    img = f.render(text, True, MUTED)
+    y = slot.y + max(0, (slot.h - img.get_height()) // 2)
+    surf.blit(img, (slot.x, y))
+    LAST_ENROLL_HINT = pygame.Rect(slot.x, y, img.get_width(), img.get_height())
 
 
 def _draw_actions(surf, L, tile, slot, col_w, stage):
@@ -4205,6 +4229,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     """
     global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG
     global LAST_ENROLL_RECT, LAST_ENROLL_AVATAR, LAST_ENROLL_STAGE
+    global LAST_ENROLL_HINT, LAST_ENROLL_PROGRESS
     i, n, stage, extra = enroll_parse(msg)
     prompt = msg.get("text") or ""
     m = re.search(r"[“\"](.+?)[”\"]", prompt)
@@ -4260,12 +4285,15 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
             surf.blit(sf.render(ln, True, scolor), (col_x, y))
             y += step
     prog = pygame.Rect(col_x, tile.y + zpx(L, 521), col_w, max(1, zpx(L, 88)))
+    LAST_ENROLL_PROGRESS = pygame.Rect(prog)
     surf.set_clip(prog.clip(tile))
     _draw_progress(surf, L, prog, col_w, stage, i, status)
     act = pygame.Rect(col_x, tile.y + zpx(L, 641), col_w, max(1, zpx(L, 104)))
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
     _draw_actions(surf, L, tile, act, col_w, stage)
+    if stage in _QUIET_HINT_STAGES:
+        _draw_quiet_hint(surf, L, act, col_w)
     surf.set_clip(prev)
     _draw_enroll_chips(surf, L)
     draw_timer_strip(surf, L)
