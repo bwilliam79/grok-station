@@ -758,7 +758,8 @@ a.iback:focus-visible{outline:3px solid #3FD3B6;outline-offset:2px;color:var(--g
 .stnote{margin:6px 0 0 58px;font-size:var(--fs-help);color:var(--gs-muted)}
 .tlnk{font:inherit;color:var(--gs-teal);text-decoration:underline;background:none;border:0;padding:0 4px;cursor:pointer}
 .tlnk:focus-visible{outline:3px solid var(--gs-teal);outline-offset:2px}
-@media (min-width:768px){.tlnk[data-edit],.spop .tlnk[data-act="maintest"]{display:inline-flex;align-items:center;min-height:24px;vertical-align:middle}}
+@media (min-width:768px){.tlnk[data-edit]{display:inline-flex;align-items:center;min-height:24px;vertical-align:middle}}
+@media (min-width:768px){.spop .tlnk[data-act="maintest"]{display:inline-flex;align-items:center;min-height:24px;vertical-align:middle}}
 .schip{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-help);margin-top:2px}
 .schip .ic{width:16px;height:16px;flex:none}
 .sinfo{min-width:0}
