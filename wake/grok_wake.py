@@ -32,7 +32,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 5 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request, wave
+import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, types, urllib.parse, urllib.request, wave
 import numpy as np
 import wait_tone
 
@@ -1568,6 +1568,42 @@ def build_fewshot(phrase, persona, session=None):
                 pass
 
 
+MARGIN_LOG = E("WAKE_MARGIN_LOG", os.path.join(ENROLLED_DIR, "pair-margins.jsonl"))
+MARGIN_LOG_MAX = 64 * 1024
+
+
+def log_margins(phrase, others, pairs, path=None, now=None):
+    """bq-0019 C4: one JSON line per pair for tuning SEP_MARGIN. Word ids and numbers only: no audio, transcript
+    or path. Local, mode 0600, capped (the older half is dropped past MARGIN_LOG_MAX). Never read at runtime."""
+    path = path or MARGIN_LOG
+    try:
+        lines = []
+        for name, om in others:
+            pc = pairs.get(name) or {}
+            lines.append(json.dumps({"t": int(now or time.time()), "word": str(phrase)[:24],
+                                     "other": str(getattr(om, "word_id", ""))[:24], "ok": bool(pc.get("ok")),
+                                     "misroutes": pc.get("misroutes"), "min_margin": pc.get("min_margin"),
+                                     "pass_rate": pc.get("pass_rate")}) + "\n")
+        if not lines:
+            return
+        old = b""
+        try:
+            with open(path, "rb") as f:
+                old = f.read()
+        except OSError:
+            pass
+        data = old + "".join(lines).encode()
+        if len(data) > MARGIN_LOG_MAX:
+            data = data[len(data) - MARGIN_LOG_MAX // 2:]
+            data = data[data.find(b"\n") + 1:]
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(path + ".tmp", path)
+    except OSError:
+        print("fewshot: margin log not written", flush=True)
+
+
 def _build_fewshot(phrase, persona):
     import fewshot as fs
     clips, noise = phrase_clips(phrase)
@@ -1586,12 +1622,14 @@ def _build_fewshot(phrase, persona):
         if isinstance(w, dict) and w.get("kind") == "fewshot" and w.get("name") != phrase:
             try:
                 t = fs.load(w["path"])
-                negs += t  # the other words must not set this one off
-                om = fs.Matcher(t); om.threshold = float(w.get("threshold", 0.9))
-                others.append((str(w["name"]).replace("_", " ").title(), om))
+                # bq-0019: the other word is no longer a plain negative; fs.pair_check races the two words both ways.
+                om = fs.Matcher(t); om.threshold = float(w.get("threshold", 0.9)); om.templates = t
+                om.word_id = str(w["name"])
             except (OSError, ValueError, KeyError, TypeError):
-                pass
+                om = types.SimpleNamespace(threshold=None, templates=None, word_id=str(w.get("name")))  # C1: fails closed
+            others.append((str(w.get("name")).replace("_", " ").title(), om))
     cal = fs.calibrate(frames, lens, negs, others)
+    log_margins(phrase, others, cal.get("pairs") or {})
     if cal.get("templates") and BUILTIN != phrase:
         hg = hey_grok_hears(frames)
         cal["hey_grok"] = round(hg, 3)

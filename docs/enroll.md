@@ -86,3 +86,7 @@ and `persona`) in `/var/lib/grok-station/wakewords`, then run `grok_wake.py --sy
 An uploaded model replaces a recorded word with the same name. See `train/README.md`.
 
 Privacy: recordings stay on the station. There is no speaker id, and nothing is uploaded.
+
+## Words that sound alike (0.13.12)
+
+A recorded word can sound close to another recorded word (Hey Jules and Hey Miles) as long as the station tells them apart. When a word is built, it is checked against every other recorded word, both ways. The station replays the listener's own rule (the same threshold, 2 frames in a row, and the higher score wins) on each recording of the new word, leaving that recording's own template out, and on each saved template of the other word, again leaving that template out. The pair passes only when nothing goes to the wrong word, and the new word beats the other by at least 0.05 on 80% of its recordings. If either word has fewer than 3 saved templates, or any score can't be read, the pair fails with "It sounds too much like <word>". The Hey Grok check is unchanged. Each check adds one line of numbers and word ids to `pair-margins.jsonl` next to the recorded words (mode 0600, at most 64 KB). It is kept only for tuning, and the listener never reads it.

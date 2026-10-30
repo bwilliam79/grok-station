@@ -19,6 +19,11 @@ MAX_TEMPLATES = 20     # CPU cap: at most 20 recordings per word are kept (the m
 STAY_PENALTY = 0.08    # holding on one template row costs a little more, so noise can't idle along a template
 TOPK = 2
 MARGIN = 0.03          # the weakest recording kept must clear the loudest negative by this much
+# bq-0019 (Nix GO with conditions, Oct 30 2026): two recorded words may sound alike if the station still tells
+# them apart. SEP_MARGIN is a floor (C5): never below MARGIN; a change goes back to Nix with measured margins.
+SEP_MARGIN = max(0.05, MARGIN)
+MIN_PAIR_TEMPLATES = 3  # C1: a word with fewer saved templates cannot be checked, so the pair fails
+PATIENCE = 2            # the listener's FEWSHOT_PATIENCE: consecutive frames at or over the threshold
 VERSION = 1
 
 
@@ -111,12 +116,73 @@ def peak(matcher, frames):
     return p
 
 
+def race(a, thr_a, b, thr_b, frames, patience=PATIENCE):
+    """Replay the listener's Detector on one stream with two words: "a", "b" or None, plus each peak.
+
+    Same rule as grok_wake.Detector.feed: a word hits after `patience` frames in a row at or over its
+    threshold; on the first frame with a hit, the higher score wins. A NaN score raises ValueError (C1)."""
+    a.reset(); b.reset()
+    na = nb = 0
+    pa = pb = 0.0
+    winner = None
+    for e in _unit(frames):
+        sa, sb = a.feed(e), b.feed(e)
+        if not (np.isfinite(sa) and np.isfinite(sb)):
+            raise ValueError("score")
+        pa, pb = max(pa, sa), max(pb, sb)
+        na = na + 1 if sa >= thr_a else 0
+        nb = nb + 1 if sb >= thr_b else 0
+        if winner is None:
+            hits = [(s, k) for s, k, n in ((sa, "a", na), (sb, "b", nb)) if n >= patience]
+            if hits:
+                winner = max(hits)[1]
+    a.reset(); b.reset()
+    return winner, pa, pb
+
+
+def pair_check(tmpl, word_frames, thr, other_templates, other_thr):
+    """bq-0019: can the listener tell this word from another recorded word? Returns a dict of numbers only.
+
+    ok needs all of: no recording of this word goes to the other word; no saved template of the other word goes
+    to this word; and on at least 80% of this word's recordings, this word's peak beats the other's by SEP_MARGIN.
+    Both sides are leave-one-out: a recording is never scored against its own template (C6c). Fewer than
+    MIN_PAIR_TEMPLATES on either side, a bad threshold, or a NaN fails closed (C1)."""
+    out = {"ok": False, "misroutes": 0, "min_margin": None, "pass_rate": 0.0}
+    try:
+        ot = [np.asarray(t, np.float32) for t in (other_templates or [])]
+        if len(tmpl) < MIN_PAIR_TEMPLATES or len(ot) < MIN_PAIR_TEMPLATES or len(word_frames) != len(tmpl):
+            return out
+        thr, other_thr = float(thr), float(other_thr)
+        if not (np.isfinite(thr) and np.isfinite(other_thr)):
+            return out
+        full_other, margins, mis = Matcher(ot), [], 0
+        for j in range(len(tmpl)):
+            mine = Matcher(tmpl[:j] + tmpl[j + 1:])
+            win, pa, pb = race(mine, thr, full_other, other_thr, word_frames[j])
+            mis += win == "b"
+            margins.append(pa - pb)
+        full_mine = Matcher(tmpl)
+        for k in range(len(ot)):
+            theirs = Matcher(ot[:k] + ot[k + 1:])
+            win, _, _ = race(full_mine, thr, theirs, other_thr, ot[k])
+            mis += win == "a"
+        if not all(np.isfinite(m) for m in margins):
+            return out
+        rate = sum(m >= SEP_MARGIN for m in margins) / len(margins)
+        out.update(misroutes=int(mis), min_margin=round(float(min(margins)), 3), pass_rate=round(float(rate), 3))
+        out["ok"] = mis == 0 and sum(m >= SEP_MARGIN for m in margins) >= reps_needed(len(margins))
+    except (ValueError, TypeError, FloatingPointError):
+        out["ok"] = False
+    return out
+
+
 def calibrate(word_frames, word_lens, negatives, others=()):
     """Pick templates and a threshold from one word's recordings.
 
     word_frames: per recording, the padded clip's full embedding stream. word_lens: clip seconds.
     negatives: embedding streams that must not trigger (room noise, generic speech, other words).
-    others: (name, Matcher) for the other enrolled words, checked for collisions both ways.
+    others: (name, Matcher) for the other enrolled words. The Matcher carries .threshold and .templates (its saved
+    templates). Every pair is checked both ways with pair_check (bq-0019); a Matcher without them fails closed.
     Returns a dict: ok, threshold, templates, pos (leave-one-out peaks), neg_max, heard, message.
     """
     tmpl = [clip_frames(f, s) for f, s in zip(word_frames, word_lens)]
@@ -130,15 +196,17 @@ def calibrate(word_frames, word_lens, negatives, others=()):
     keep = sorted(order[:MAX_TEMPLATES].tolist())
     m = Matcher([tmpl[i] for i in keep])
     neg = [peak(m, f) for f in negatives]
-    collide = []
-    for name, om in others:  # this word's recordings heard by another word, or the other's ... by this one
-        if max(peak(om, f) for f in word_frames) >= getattr(om, "threshold", 1.0):
-            collide.append(name)
     neg_max = max(neg, default=0.0)
     pos_s = sorted(pos, reverse=True)
     need = reps_needed(n)
     floor = pos_s[need - 1]                          # the weakest of the recordings we must hear
     thr = float(np.clip(max(neg_max + MARGIN, (floor + neg_max) / 2), 0.5, 0.97))
+    collide, pairs = [], {}
+    for name, om in others:  # every other recorded word, both ways (C2); Hey Grok is checked by the listener (C3)
+        pc = pair_check(tmpl, word_frames, thr, getattr(om, "templates", None), getattr(om, "threshold", None))
+        pairs[name] = pc
+        if not pc["ok"]:
+            collide.append(name)
     heard = int(sum(p >= thr for p in pos))
     ok = heard >= need and floor >= neg_max + MARGIN and not collide
     if collide:
@@ -149,7 +217,7 @@ def calibrate(word_frames, word_lens, negatives, others=()):
         msg = (f"Not good enough yet. It heard {heard} of {n} recordings. "
                "Train more to add 5 more recordings, somewhere quiet.")
     return {"ok": bool(ok), "threshold": round(thr, 3), "templates": [tmpl[i] for i in keep], "pos": [round(p, 3) for p in pos],
-            "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "message": msg}
+            "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "pairs": pairs, "message": msg}
 
 
 def save(path, templates, meta):
