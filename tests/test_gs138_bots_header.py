@@ -32,7 +32,8 @@ def _icons():
 def _run(expr, extra=""):
     src = "\n".join(_fn(n) for n in (
         "joinBotNames", "botsCalloutKind", "botsQuietHidden", "botsHeaderShell",
-        "botsCalloutHTML", "revokeAllCopy"))
+        "botsCalloutHTML", "revokeAllCopy", "openConfigureAll"))
+    # openConfigureAll calls setupUnconnected / openSetupBots; the expression stubs them when it needs to.
     prog = "const esc = s => String(s == null ? '' : s);\n" + _icons() + "\n" + extra + "\n" + src + \
         "\nprocess.stdout.write(JSON.stringify(" + expr + "));"
     out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, check=True)

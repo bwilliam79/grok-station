@@ -57,10 +57,10 @@ class InfoScreensNoButton(unittest.TestCase):
                 self.assertNotIn("Close", seen, (stage, size))
                 self.assertTrue(any(title in s for s in seen), (stage, size, seen))
 
-    def test_other_stages_unchanged(self):
-        self.assertEqual([a[0] for a in gs._enroll_actions("prompt")[0]], ["start", "dismiss"])
-        self.assertEqual([a[0] for a in gs._enroll_actions("failed")[0]], ["more", "dismiss"])
-        self.assertEqual([a[0] for a in gs._enroll_actions("passed")[0]], ["done"])
+    def test_other_stages_draw_no_buttons_either(self):
+        # 0.13.9 (gs-voice-train rev1.5): no stage draws a button; prompt and failed show a muted note instead.
+        for stage in ("prompt", "failed", "passed"):
+            self.assertEqual(gs._enroll_actions(stage), ([], False), stage)
 
 
 if __name__ == "__main__":

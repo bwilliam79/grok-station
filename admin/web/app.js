@@ -3644,7 +3644,6 @@ function openPasteValues(row, el) {
   };
 }
 // rev3: 2+ not set up → Configure all; exactly one → Set up {bot}. Update wins over either.
-// rev3 kinds: 2+ not set up → "configure"; exactly one → "setup". Update wins over either.
 // "Not set up" is an imported name that is not a bot yet (pendingTeammates). Not gated on the main bot.
 // Update {main} first wins over the update callout, which wins over Configure all, which wins over the updates hint.
 function botsCalloutKind(opts) {
@@ -3673,6 +3672,7 @@ function botsHeaderShell() {
     `</ul><button class="btn p sm" id="add" type="button">Add bot</button></div>`;
 }
 function botsCalloutHTML(opts) {
+  const pending = (opts && opts.pending) || [];
   const kind = botsCalloutKind(opts);
   const behind = (opts && opts.behind) || [];
   if (kind === "empty") {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Noor option C (0.13.8): the Configure all / Set up callout waits for 0.13.9's "Set up bots" list.
+"""Noor option C (0.13.8) held the Configure all / Set up callout for 0.13.9's "Set up bots" list.
 
-0.13.8 renders no setup callout for 1 or 2+ bots not set up, nothing sets a bot up automatically,
-the other callouts keep their order, and the Not set up rows keep Set up and Remove.
+0.13.9 restores that callout (tests/test_gs139_*.py cover it). What stays from 0.13.8: the other
+callouts keep their order, and the Not set up rows keep Set up and Remove.
 """
 import json
 import os
@@ -24,25 +24,6 @@ def _html(bots, pending, behind=None):
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class HoldSetupCallout(unittest.TestCase):
-    def test_no_callout_for_one_bot_not_set_up(self):
-        self.assertEqual(_html(MAIN, [{"name": "Otto"}]), "")
-
-    def test_no_callout_for_two_or_more(self):
-        self.assertEqual(_html(MAIN, [{"name": "Otto"}, {"name": "Pip"}, {"name": "Maple"}]), "")
-
-    def test_no_automatic_setup_path(self):
-        self.assertNotIn("function openConfigureAll(", JS)
-        self.assertNotIn("cfgall", JS)
-        self.assertNotIn("Configure all", JS)
-        # addBot has exactly two callers: a row's Set up click and the Add bot button.
-        callers = [JS[JS.rfind("\n", 0, m.start()) + 1:JS.find("\n", m.start())].strip()
-                   for m in re.finditer(r"\baddBot\(", JS)]
-        callers = [c for c in callers if not c.startswith("function addBot(")]
-        self.assertEqual(callers, ["if (row) addBot(el._voices || [], el, {name: row.name});",
-                                   "const openAdd = () => addBot(el._voices || data.voices || [], el);"])
-        self.assertIn("if (addBtn) addBtn.onclick = openAdd;", JS)
-        self.assertNotIn("openAdd()", JS)
-
     def test_other_callouts_keep_their_order(self):
         self.assertIn("Add your main bot first", _html([], [{"name": "Otto"}, {"name": "Pip"}]))
         upd = _html(MAIN, [{"name": "Otto"}, {"name": "Pip"}], BEHIND)

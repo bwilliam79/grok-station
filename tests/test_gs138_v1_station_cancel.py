@@ -107,10 +107,10 @@ class StationCancel(unittest.TestCase):
             self.assertEqual(bg, tile_bg, stage)
             self.assertGreaterEqual(contrast(hints[0], bg), 4.5, stage)
 
-    def test_prompt_keeps_its_buttons_and_admin_copy_is_untouched(self):
-        """Cancel is the station control that goes. Start / Not now stay. Stop and discard is admin-only."""
+    def test_prompt_draws_no_buttons_and_admin_copy_is_untouched(self):
+        """0.13.9 (rev1.5): prompt has no Start / Not now either. Stop and discard stays admin-only."""
         _surf, seen = self._draw("prompt")
-        self.assertEqual([b[0] for b in gs.LAST_ENROLL_BUTTONS], ["start", "dismiss"])
+        self.assertEqual(gs.LAST_ENROLL_BUTTONS, [])
         self.assertNotIn(HINT, [text for text, _c in seen])
         admin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "admin", "web", "app.js")
         with open(admin, encoding="utf-8") as fh:

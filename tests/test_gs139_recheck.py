@@ -109,9 +109,9 @@ class R1PhoneSheetCloseClearsTabBar(unittest.TestCase):
             self.assertLessEqual(d["close"]["y"] + d["close"]["h"], d["bar"]["y"], (w, d))
 
     def test_shared_pop_rule_pads_by_tab_bar_plus_safe_area(self):
-        tab_h = re.search(r"\.tabs\{[^}]*height:(\d+)px", CSS).group(1)
+        # 0.13.8 V3 lifts the sheet itself above the tab bar; R1 shares that rule on rebase.
         pop = re.search(r"\n  \.pop\{([^}]*)\}", CSS).group(1)
-        self.assertIn("calc(%spx + env(safe-area-inset-bottom))" % tab_h, pop)
+        self.assertIn("bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom))", pop)
 
 
 CHIP_PROBE = """
