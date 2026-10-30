@@ -910,6 +910,10 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow .cfg .btn{display:inline-flex;min-height:44px;height:auto;flex:0 0 auto}
   #blist .botrow .cfg .setacts{display:flex;flex-wrap:wrap;gap:8px;flex:1 1 auto}
   #blist .botrow .cfg .setacts .btn{flex:1 1 auto}
+  /* bq-0025 (Noor): sent row at phone width: Paste values, Resend, Remove in one row of 3 equal columns, 44 px tall */
+  #blist .botrow .cfg.sent3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+  #blist .botrow .cfg.sent3 .setacts{display:contents}
+  #blist .botrow .cfg.sent3 .btn{width:100%;min-width:0;min-height:44px;padding-left:4px;padding-right:4px;white-space:nowrap}
   #blist .botrow .cfg .chev{display:none}
   #blist .botrow .cfg .updslot{flex:1 1 0;min-width:0}
   #blist .botrow .updsw{max-width:none;margin-left:0}

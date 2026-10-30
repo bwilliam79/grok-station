@@ -3984,7 +3984,7 @@ function paintBots(el, bots) {
     return `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
       <div><div class="lbl">${esc(row.name)}</div>${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML("Not set up", "", "", false, "", row.key)}</div>
       <div class="ww none"></div>
-      <div class="cfg">${su ? su.action : ""}
+      <div class="cfg${su && /setacts sent/.test(su.action) ? " sent3" : ""}">${su ? su.action : ""}
         <button class="btn g sm${su && /setacts sent/.test(su.action) ? " sec" : ""}" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>${su ? su.panel : ""}`;
   }).join("");
   keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
