@@ -131,5 +131,24 @@ class R2ChipNeverTruncates(unittest.TestCase):
                 self.assertLessEqual(c["sw"], c["cw"] + 1, (w, c))
 
 
+SCRIM_PROBE = OPEN_MAPLE + """
+  const h = document.getElementById('hdr').getBoundingClientRect();
+  const hit = document.elementFromPoint(h.left + h.width / 2, h.top + h.height / 2);
+  res.header = hit ? (hit.dataset.smsgScrim ? 'scrim' : (hit.id || hit.className || hit.tagName)) : null;
+  const b = document.getElementById('pbar').getBoundingClientRect();
+  const hb = document.elementFromPoint(b.left + 10, b.bottom - 4);
+  res.bar = hb ? (hb.dataset.smsgScrim ? 'scrim' : (hb.closest('.pop') ? 'sheet' : (hb.id || hb.className || hb.tagName))) : null;
+"""
+
+
+@unittest.skipUnless(CHROME, "Chrome not installed")
+class R3ScrimCoversHeaderAndTabBar(unittest.TestCase):
+    def test_header_hit_lands_on_scrim_while_sheet_open(self):
+        for w in (390, 320):
+            d = chrome(w, SCRIM_PROBE)
+            self.assertEqual(d["header"], "scrim", (w, d))
+            self.assertIn(d["bar"], ("scrim", "sheet"), (w, d))
+
+
 if __name__ == "__main__":
     unittest.main()

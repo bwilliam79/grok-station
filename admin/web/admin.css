@@ -418,10 +418,10 @@ a.need:hover{text-decoration:underline}
   .botrow .ww{min-height:28px}
   .botrow .tog::before{inset:-11px -2px}
   .bmsg::before{inset:-12px -4px}
-  .pop{position:fixed;left:0;right:0;bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom));width:auto;border-radius:18px 18px 0 0;padding:12px 20px 20px;z-index:5}
+  .pop{position:fixed;left:0;right:0;bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom));width:auto;border-radius:18px 18px 0 0;padding:12px 20px 20px;z-index:12}
   .pop::before{content:"";display:block;width:36px;height:4px;border-radius:4px;background:var(--gs-rule-2);margin:0 auto 14px}
   .pop .acts .btn{width:100%;min-height:48px}
-  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:4}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:11}
   .botrow .ww{grid-column:2;grid-row:2}
   .botrow .ww>span:not(.pill){white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .botrow .cfg{grid-column:3;grid-row:1}
