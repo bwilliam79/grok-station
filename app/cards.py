@@ -710,11 +710,18 @@ def _team(doc):
 
 
 def _dish_name(value):
-    """Optional recipe field. Title case, 16 characters. "orzo" and "ORZO" are schema errors."""
-    text = escape_text(value, 16)
-    for word in text.split(" "):
-        if not word[0].isupper() or any(ch.isupper() for ch in word[1:]):
-            raise CardError("schema")
+    """Optional recipe field, 16 characters, kept exactly as the recipe gives it ("McRib", "Garlic bread").
+
+    All caps or all lowercase is title-cased once here ("GARLIC BREAD" -> "Garlic Bread"). Noor, Oct 30.
+    """
+    if not isinstance(value, str) or len(" ".join(value.split())) > 16:
+        raise CardError("schema")
+    text = " ".join(escape_text(value, 16).split())
+    if not text:
+        raise CardError("schema")
+    letters = [c for c in text if c.isalpha()]
+    if letters and (all(c.isupper() for c in letters) or all(c.islower() for c in letters)):
+        text = " ".join(w[:1].upper() + w[1:].lower() for w in text.split(" "))
     return text
 
 
@@ -1062,6 +1069,7 @@ _TIME_RE = re.compile(
     r"forty|fifty|sixty|seventy|eighty|ninety)"
     r"(?:[ \t-]+)(minutes|minute|mins|min|hours|hour|hrs|hr)\b",
     re.IGNORECASE)
+_RANGE_LOW = re.compile(r"\b(\d{1,4})\s*(?:-|\u2013|\u2014|to)\s*$", re.IGNORECASE)
 _OFFER_YES = frozenset({"yes", "yeah", "yep", "sure", "okay", "ok", "please", "do it", "set it"})
 _OFFER_NO = frozenset({"no", "nope", "no thanks", "not now"})
 OFFER_NO_SAY = "Okay."
@@ -1085,10 +1093,14 @@ def step_time(text):
     "10 minutes", "20 min", "1 hour", and "twenty minutes" match. A later time in the
     same step is ignored.
     """
-    match = _TIME_RE.search(str(text or ""))
+    text = str(text or "")
+    match = _TIME_RE.search(text)
     if not match:
         return None
     raw = match.group(1).casefold()
+    low = _RANGE_LOW.search(text[:match.start()])
+    if low and raw.isdigit():  # "10-12 minutes" / "10 to 12 minutes": offer the lower bound (R2-8)
+        raw = low.group(1)
     n = int(raw) if raw.isdigit() else _TIME_WORDS.get(raw)
     if not n or n < 1:
         return None
@@ -1102,6 +1114,15 @@ def step_time(text):
     return {"start": match.start(), "end": match.end(), "seconds": seconds, "minutes": minutes}
 
 
+def _span_words(minutes, adjective=False):
+    """'1 hour' / '2 hours' for whole hours, else minutes. adjective: '1-hour', '10-minute' (R2-8)."""
+    n = int(minutes)
+    if n >= 60 and n % 60 == 0:
+        h = n // 60
+        return f"{h}-hour" if adjective else f"{h} hour{'s' if h != 1 else ''}"
+    return f"{n}-minute" if adjective else f"{n} minute{'s' if n != 1 else ''}"
+
+
 def build_timer_offer(text, dish, step):
     """Spoken offer for a step that mentions a time, or None."""
     hit = step_time(text)
@@ -1109,19 +1130,17 @@ def build_timer_offer(text, dish, step):
         return None
     n = hit["minutes"]
     if isinstance(dish, str) and dish.strip():
-        say = f"Want a {n}-minute timer for the {dish.strip().casefold()}?"
+        say = f"Want a {_span_words(n, True)} timer for the {dish.strip().casefold()}?"
         label = dish.strip()
     else:
-        say = f"Want a {n}-minute timer for this step?"
+        say = f"Want a {_span_words(n, True)} timer for this step?"
         label = f"Step {step}"
     return {"say": say, "minutes": n, "seconds": hit["seconds"], "label": label}
 
 
 def timer_set_say(name, minutes):
     """'Orzo timer set for 10 minutes.'"""
-    n = int(minutes)
-    unit = "minute" if n == 1 else "minutes"
-    return f"{name} timer set for {n} {unit}."
+    return f"{name} timer set for {_span_words(minutes)}."
 
 
 def offer_answer(text):
@@ -1391,9 +1410,11 @@ class Deck:
 # The relay checks the bot's Updates switch and forwards it to the station's localhost /show.
 # HARD RULE (owner): the feed is visual only. Nothing here speaks, plays a sound or wakes a bot.
 import datetime as _dt  # noqa: E402
+import unicodedata  # noqa: E402
 
 UPDATE_TYPES = ("needs_you", "heads_up", "working_on", "done")
 LINE_MAX = 80
+UPD_RAW_MAX = 320  # raw NFKC line length accepted before clip_line
 RULE_MAX = 60
 UPD_ROTATE_S = ROTATE_DEFAULT        # 20 s, confirmed by the owner
 DONE_FADE_S = 30 * 60                  # Done fades (aged look) at 30 min
@@ -1452,6 +1473,8 @@ def validate_update(doc):
         raise CardError("schema")
     if body.get("type") not in UPDATE_TYPES:
         raise CardError("schema")
+    if not isinstance(body.get("line"), str) or len(unicodedata.normalize("NFKC", body["line"])) > UPD_RAW_MAX:
+        raise CardError("schema")  # Nix L2: an over-long raw line is refused, not silently clipped
     out = {"type": body["type"], "line": clip_line(body.get("line")), "time": _upd_iso(body.get("time"))}
     if "expires_at" in body and body["type"] != "needs_you":   # ignored for Needs you (SPEC)
         out["expires_at"] = _upd_iso(body.get("expires_at"))
@@ -1563,30 +1586,20 @@ def update_slots(needs, others, step, slots=UPD_SLOTS):
 
 
 def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
-    """Position text above the band (SPEC): '' when nothing rotates."""
-    n_needs, n_oth = len(needs), len(others)
-    free = slots - min(n_needs, 2)
-    text = ""
-    if n_oth > free and free > 0:
-        first = ((step * free) % n_oth) + 1
-        span = f"{first}" if free == 1 else f"{first}\u2013{min(n_oth, first + free - 1)}"
+    """'Updates · 2–3 of 4' over the whole set; never names a type (Noor rev2). '' when nothing rotates."""
+    pinned = len(update_slots(needs, [], step, slots)) if needs else 0
+    total = len(needs) + len(others)
+    if total <= slots:
+        return ""
+    free = slots - min(len(needs), 2)
+    if len(needs) > 2 or free <= 0 or not others:
+        lo, hi = 1, pinned
     else:
-        span = None
-    if n_needs >= 3:
-        s = (step * 2) % n_needs + 1
-        text = f"Needs you {s}\u2013{min(n_needs, s + 1)} of {n_needs}"
-        if span:
-            text += f" \u00b7 others {span} of {n_oth}"
-    elif n_needs == 2:
-        text = "2 Needs you" + (f" \u00b7 others {span} of {n_oth}" if span else "")
-    elif n_needs == 1:
-        text = "Needs you" + (f" \u00b7 {int(span.split(chr(8211))[0]) + 1}\u2013"
-                              f"{int(span.split(chr(8211))[-1]) + 1} of {n_oth + 1}" if span else "")
-    elif span:
-        text = f"{span} of {n_oth}"
-    if text and paused:
-        text = "Paused \u00b7 " + text
-    return text
+        start = (step * free) % len(others)
+        lo = pinned + start + 1
+        hi = pinned + min(len(others), start + free)
+    text = f"Updates \u00b7 {lo}\u2013{hi} of {total}" if hi > lo else f"Updates \u00b7 {lo} of {total}"
+    return ("Paused \u00b7 " + text) if paused else text
 
 
 def update_band_state(feed, now, step, *, night=False, bot_talking=False, timer_ringing=False, paused=False):

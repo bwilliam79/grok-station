@@ -906,7 +906,11 @@ class Rev4Dish(unittest.TestCase):
         named = cards.validate_card(dict(RECIPE, dish="Orzo"))
         self.assertEqual(named["dish"], "Orzo")
         self.assertEqual(cards.validate_card(dict(RECIPE, dish="Garlic Bread"))["dish"], "Garlic Bread")
-        for bad in ("orzo", "ORZO", "Garlic bread", "x" * 17, ""):
+        # 0.13.10 (Noor, Oct 30): kept as given; all caps / all lowercase title-cased once.
+        self.assertEqual(cards.validate_card(dict(RECIPE, dish="orzo"))["dish"], "Orzo")
+        self.assertEqual(cards.validate_card(dict(RECIPE, dish="ORZO"))["dish"], "Orzo")
+        self.assertEqual(cards.validate_card(dict(RECIPE, dish="Garlic bread"))["dish"], "Garlic bread")
+        for bad in ("x" * 17, ""):
             # 0.13.10 (R2-5): a malformed dish is dropped and the recipe still validates.
             self.assertNotIn("dish", cards.validate_card(dict(RECIPE, dish=bad)))
         hit = cards.step_time("Boil the orzo for 10 minutes, then rest 5 minutes.")
@@ -921,7 +925,7 @@ class Rev4Dish(unittest.TestCase):
         self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", None, 3)["say"],
                          "Want a 10-minute timer for this step?")
         self.assertEqual(cards.build_timer_offer("Bake 1 hour.", None, 2)["say"],
-                         "Want a 60-minute timer for this step?")
+                         "Want a 1-hour timer for this step?")
         self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", "Orzo", 3)["label"], "Orzo")
         self.assertEqual(cards.build_timer_offer("Boil for 10 minutes.", None, 3)["label"], "Step 3")
         self.assertEqual(cards.timer_set_say("Orzo", 10), "Orzo timer set for 10 minutes.")

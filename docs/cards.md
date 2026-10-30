@@ -40,7 +40,7 @@ The card itself is at most 4096 bytes of JSON. `v` must be the integer 1. Any ot
 
 | Type | Fields |
 |---|---|
-| `recipe` | `title` (60), `servings` 1..48, `ingredients` 1..12 of 48, `steps` 1..12 of 160, `step` 1..len(steps), optional `dish` (16, title case, for example `Orzo`; a malformed `dish` is dropped and the recipe still shows) |
+| `recipe` | `title` (60), `servings` 1..48, `ingredients` 1..12 of 48, `steps` 1..12 of 160, `step` 1..len(steps), optional `dish` (16, shown as given, for example `Orzo` or `McRib`; all caps or all lowercase is title-cased once; an over-long or empty `dish` is dropped and the recipe still shows) |
 | `sports` | `league` (24), `home` and `away` teams, `home_score` and `away_score` 0..999, `status` `live`\|`final`\|`scheduled`\|`delayed`, `period` (16), `schedule` 0..4 of `{label` 48, `when` 24}` |
 | `calendar` | `date` `YYYY-MM-DD`, `events` 0..8 of `{time` 16, `title` 48}`. The display shows five rows. The first is next (teal), then a summary line |
 | `home` | `title` (24), `items` 1..6 of `{label` 32, `value` 24, optional `trend` `up`\|`down}` |
@@ -91,6 +91,8 @@ Clear: `{"v":1,"op":"update_clear","id":"table"}`.
 | `expires_at` | optional, ISO 8601; Heads-up leaves then (2 h if missing). Ignored for Needs you |
 | `feed_rule` | optional, up to 60 characters: the rule the bot keeps for its own feed, shown under its Updates switch. Empty means All updates |
 
-Unknown fields are rejected. The relay refuses an update with `403` while the bot's Updates switch is off, and every bot starts off. Turning a bot off removes its updates from the station at once. The line and the rule get the secret lint, and the reply PII lint when privacy mode is on.
+Unknown fields are rejected, and a raw `line` over 320 characters (after NFKC) is `400`. The relay refuses an update with `403` and `{"error":"updates_off"}` while the bot's Updates switch is off (only after the signature verifies), and every bot starts off. A refused (`403` or `422`) update still spends its nonce, so the same blob can't be replayed later. The raw line and rule are linted before the line is shortened. Turning a bot off removes its updates from the station at once. The line and the rule get the secret lint, and the reply PII lint when privacy mode is on.
 
-On the station: Needs you stays until the bot clears it or sends a new update with the same id. One Working on per bot (the next one replaces it). Done looks faded at 30 minutes and leaves at 2 hours; Working on and Heads-up without `expires_at` leave at 2 hours. The feed holds at most 8 per bot and 48 in total, in memory only. Updates are never spoken and never make a sound.
+On the station: Needs you stays until the bot clears it or sends a new update with the same id. One Working on per bot (the next one replaces it). Done looks faded at 30 minutes and leaves at 2 hours; Working on and Heads-up without `expires_at` leave at 2 hours. The feed holds at most 8 per bot and 48 in total, in memory only. When the relay starts it tells the station which bots are on, and rows from any other bot are dropped. Updates are never spoken and never make a sound.
+
+The row is three equal tiles, each a header (avatar letter, bot name, type word, age) and the line in up to 2 lines. Above it, "Updates · 2–3 of 4" shows where the rotation is. While a bot talks or a timer rings, the row stays up and stops rotating, and the reply shows as one line under it ("Juniper, replying to you “…”"). "Hey Grok, pause updates" (or "stop updates") holds the rotation until "Hey Grok, resume updates" or 10 minutes; Grok answers "Updates paused." or "Updates resumed." At night the row is hidden.

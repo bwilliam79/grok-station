@@ -430,7 +430,7 @@ def timers_save():
 
 
 def _clean_timer_label(s):
-    return " ".join(re.sub(r"[^\w '\-]", " ", str(s or "")).split())[:24] or "timer"
+    return " ".join(re.sub(r"[^\w '\-\u00b7]", " ", str(s or "")).split())[:24] or "timer"
 
 
 _CARD_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
@@ -809,10 +809,13 @@ def timers_tick():
     _expire_rings(time.time())
     with TIMERS_LOCK:
         due = [(k, dict(v)) for k, v in TIMERS.items() if not v.get("ringing") and _timer_left(v) <= 0]
+    rang = False
     if due and not LIVE["session"] and LIVE["play"]:
         for k, v in due:
             _ring_one(k, v)
-    if not LIVE["session"] and LIVE["play"]:
+        rang = True
+    # R2-9: the tick that played a first ring skips the repeat tone, so the two never overlap.
+    if not rang and not LIVE["session"] and LIVE["play"]:
         _tone_repeats(time.monotonic())
 
 

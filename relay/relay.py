@@ -2790,6 +2790,25 @@ async def session(req):
                             if end:
                                 return end
                             continue
+                        # "Hey Grok, pause|stop|resume updates" (SPEC rev3/rev4): a reply to the wake word only.
+                        pause_hit = updates_pause_reply(heard, st)
+                        if pause_hit:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st["answered_utt"] = st.get("utt")
+                            await asyncio.to_thread(post_station_show, {"v": 1, "op": "updates_pause",
+                                                                        "on": pause_hit[0] == "pause"})
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            await play_fixed(pause_hit[1], voice, TTS_SHORT_S)
+                            log("updates " + pause_hit[0])
+                            st["release_model"] = not persona_routed(st["persona"])
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         # Bare goodbye/stop/cancel, including turn 1. No "heard": that flips the display to thinking.
                         # "stop" while a timer is ringing falls through so the tool can dismiss it.
                         if session_local_exit(heard, st.get("timers")):
@@ -3056,6 +3075,8 @@ async def session(req):
                             if ev.get("name") == "set_timer":
                                 args = recipe_timer_args(args, st)
                             out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
+                            if ev.get("name") == "set_timer" and out.get("ok") and step_timer_say(args):
+                                out["say"] = step_timer_say(args)  # the model says exactly this (R2-2)
                             # card or timer message; a failed tool sends nothing. stop-all is one message per timer.
                             for pi_msg in station_tools.pi_timer_messages(to_pi):
                                 await pi.send_json(pi_msg)
@@ -3842,6 +3863,20 @@ def arm_offer_window(st, now=None):
     return off
 
 
+UPDATES_PAUSE_SAY = {"pause": "Updates paused.", "resume": "Updates resumed."}
+
+
+def updates_pause_reply(heard, st, now=None):
+    """(action, sentence) for "pause|stop|resume updates", else None. The station holds the pause (10 min idle)."""
+    try:
+        action = load_cards().updates_pause_command(heard)
+    except Exception:
+        action = None
+    if action is None:
+        return None
+    return action, UPDATES_PAUSE_SAY[action]
+
+
 def offer_missed_say(out):
     """What Grok says when "yes" can't set the timer, e.g. "Eight timers are already running." (R2-4)."""
     err = out.get("error") if isinstance(out, dict) else None
@@ -3867,8 +3902,37 @@ def recipe_timer_args(args, st):
     if named or args.get("source"):
         return args
     args["source"] = {"recipe_id": rec["id"], "step": rec["step"]}
-    args["label"] = rec.get("dish") or f"Step {rec['step']}"
+    # Noor R2-2 ruling (Oct 30): "Step n · 10 min". Steps carry no short name in card v1, so none is added.
+    args["label"] = f"Step {rec['step']} \u00b7 {_short_span(station_tools._seconds(args))}"
     return args
+
+
+def _short_span(sec):
+    if not isinstance(sec, int) or sec < 1:
+        return "timer"
+    if sec % 3600 == 0:
+        return f"{sec // 3600} h"
+    if sec % 60 == 0:
+        return f"{sec // 60} min"
+    return f"{sec} s"
+
+
+def step_timer_say(args):
+    """'Timer for step 3, 10 minutes.' for a step timer made by recipe_timer_args, else None (R2-2)."""
+    src = args.get("source") if isinstance(args, dict) else None
+    label = args.get("label") if isinstance(args, dict) else None
+    if not isinstance(src, dict) or not isinstance(label, str) or not label.startswith("Step "):
+        return None
+    sec = station_tools._seconds(args)
+    if not isinstance(sec, int) or sec < 1:
+        return None
+    if sec % 3600 == 0:
+        span = f"{sec // 3600} hour{'s' if sec != 3600 else ''}"
+    elif sec % 60 == 0:
+        span = f"{sec // 60} minute{'s' if sec != 60 else ''}"
+    else:
+        span = f"{sec} seconds"
+    return f"Timer for step {src.get('step')}, {span}."
 
 
 def recipe_taken(heard, post):
@@ -4218,6 +4282,30 @@ def lint_show(show, hosts=(), names=(), pii=True):
     return None
 
 
+def _spend_nonce(seen, show, now):
+    """Record (bot, nonce) for a verified update that was refused (403/422), so it can't be replayed."""
+    try:
+        if isinstance(seen, botreply.ShowSeen):
+            seen.reserve(show["bot"], show["nonce"], show["exp_ms"], now)
+        elif isinstance(seen, set):
+            seen.add((show["bot"], show["nonce"]))
+    except (OSError, KeyError):
+        pass
+
+
+def lint_update_texts(texts, hosts=(), names=(), pii=True):
+    """Secret lint, and the reply PII lint when pii_mode is on, on raw update text. Fail closed."""
+    pii_on = True if pii is None else bool(pii)
+    try:
+        for text in texts:
+            why = _lint_field(text, hosts, names, False) or (_lint_field(text, hosts, names, True) if pii_on else None)
+            if why:
+                return why
+    except Exception:
+        return "error"
+    return None
+
+
 def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, rate_now=None,
                 seen=None, now_ms=None, pii=True, hosts=(), names=()):
     """Verify a sealed card and hand it to post(show) -> HTTP status. Testable without aiohttp.
@@ -4233,8 +4321,15 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
     cap = mod.TTL_HARD if ttl_max is None else ttl_max
     now = int(time.time() * 1000) if now_ms is None else now_ms
 
+    raw_texts = []
+
     def parse(doc):
         if isinstance(doc, dict) and doc.get("op") in mod.UPDATE_OPS:
+            body = doc.get("update") if isinstance(doc.get("update"), dict) else {}
+            # Nix L2: lint the raw NFKC text, before clip_line can cut a secret in half.
+            for key in ("line", "feed_rule"):
+                if isinstance(body.get(key), str):
+                    raw_texts.append(unicodedata.normalize("NFKC", body[key]))
             return mod.validate_update(doc)  # 0.13.10 bot updates feed: same envelope, same checks
         return mod.validate_show(doc, cap)
 
@@ -4243,9 +4338,17 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
                                     rate_now=rate_now, seen=seen, now_ms=now)
     except botreply.Reject as rej:
         return _reject_show(rej)
-    if show.get("op") in mod.UPDATE_OPS and not updates_on(show.get("bot")):
-        return _reject_show(botreply.Reject(403, "updates_off", show.get("bot", "-")))
-    if lint_show(show, hosts, names, pii):
+    is_update = show.get("op") in mod.UPDATE_OPS
+    if is_update and not updates_on(show.get("bot")):
+        # I-1: 403 only after the signature verified. L5: the nonce is spent even on a refusal.
+        _spend_nonce(seen, show, now)
+        return 403, {"error": "updates_off"}, botreply.Reject(403, "updates_off", show.get("bot", "-"))
+    lint_hit = lint_show(show, hosts, names, pii)
+    if not lint_hit and is_update:
+        lint_hit = lint_update_texts(raw_texts, hosts, names, pii)
+    if lint_hit:
+        if is_update:
+            _spend_nonce(seen, show, now)  # L5
         return _reject_show(botreply.Reject(422, "lint", show.get("bot", "-")))
     reserved = False
     if isinstance(seen, botreply.ShowSeen):
@@ -4307,16 +4410,20 @@ def _write_updates_doc(bots, rules):
     atomic_write(updates_path(), data, 0o600)
 
 
+_UPDATES_LOCK = threading.Lock()
+
+
 def note_feed_rule(slug, rule):
     """Remember the rule a bot last sent ("" = All updates). Best effort; never blocks the update."""
-    rules = read_feed_rules()
-    if rules.get(slug) == rule:
-        return
-    rules[slug] = rule
-    try:
-        _write_updates_doc(read_updates(), rules)
-    except OSError:
-        pass
+    with _UPDATES_LOCK:
+        rules = read_feed_rules()
+        if rules.get(slug) == rule:
+            return
+        rules[slug] = rule
+        try:
+            _write_updates_doc(read_updates(), rules)
+        except OSError:
+            pass
 
 
 def updates_on(slug):
@@ -4325,6 +4432,14 @@ def updates_on(slug):
 
 
 def write_updates(slug, on):
+    """Returns (was_on, now_on). One lock with note_feed_rule (Nix L4)."""
+    with _UPDATES_LOCK:
+        was = read_updates().get(slug) is True
+        _write_updates_locked(slug, on)
+    return was, bool(on)
+
+
+def _write_updates_locked(slug, on):
     cur = read_updates()
     if on:
         cur[slug] = True
@@ -4334,9 +4449,25 @@ def write_updates(slug, on):
     return cur
 
 
-def post_station_updates_drop(slug, post=None):
-    """Switching a bot off removes its rows from the station now (localhost /show, op updates_off)."""
-    return post_station_show({"v": 1, "op": "updates_off", "bot": slug}, post=post)
+def post_station_updates_drop(slug, post=None, tries=2):
+    """Switching a bot off removes its rows from the station now. True when the station said 200 (Nix L3)."""
+    for _ in range(max(1, tries)):
+        if post_station_show({"v": 1, "op": "updates_off", "bot": slug}, post=post) == 200:
+            return True
+    return False
+
+
+def post_station_updates_only(post=None, tries=3):
+    """Relay startup: the station keeps rows only for bots whose switch is on (Nix L3)."""
+    keep = sorted(read_updates())
+    for _ in range(max(1, tries)):
+        if post_station_show({"v": 1, "op": "updates_only", "bots": keep}, post=post) == 200:
+            return True
+    return False
+
+
+async def start_updates_sync(app):
+    asyncio.get_running_loop().run_in_executor(None, post_station_updates_only)
 
 
 async def admin_updates_put(req):
@@ -4349,13 +4480,14 @@ async def admin_updates_put(req):
     if not _known(slug) or not isinstance(body, dict) or set(body) != {"on"} or type(body["on"]) is not bool:
         return web.json_response({"error": "bad request"}, status=400)
     try:
-        write_updates(slug, body["on"])
+        was, now_on = write_updates(slug, body["on"])
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
-    if not body["on"]:
-        post_station_updates_drop(slug)
-    log(f"updates {'on' if body['on'] else 'off'} {slug}")
-    return web.json_response({"ok": True, "on": body["on"]})
+    out = {"ok": True, "on": now_on, "was": was}
+    if not now_on and not await asyncio.to_thread(post_station_updates_drop, slug):
+        out["station"] = "pending"  # saved; the station still shows its rows until the next sync
+    log(f"updates {slug} {'on' if was else 'off'}->{'on' if now_on else 'off'}")  # Nix L1
+    return web.json_response(out)
 
 
 def factory_reset_policy():
@@ -6288,6 +6420,8 @@ async def voice_show(req):
     audit_reply(getattr(info, "bot", "-"), "-", getattr(info, "verdict", "error"), len(raw))
     if status == 503:
         return web.json_response({"error": "unavailable"}, status=503)
+    if status == 403 and body == {"error": "updates_off"}:
+        return web.json_response(body, status=403)
     if status != 200:
         return _reply_error(status)
     return web.json_response({"ok": True})
@@ -6404,6 +6538,7 @@ if __name__ == "__main__":
     async def start_voices(_app):
         _app["voices"] = asyncio.create_task(load_voices())  # retries every 5 min until the list loads
     app.on_startup.append(start_voices)
+    app.on_startup.append(start_updates_sync)
     log(f"relay on {BIND}:{PORT} model={MODEL} voice={VOICE} key={'set' if KEY else 'MISSING'} tokens={len(TOKENS)} "
         f"keyterms={len(KEYTERMS)} tz={TZ} caps=turn {MAX_SESSION:g}s/session {MAX_TOTAL:g}s (no daily cap) "
         f"alerts={'on' if os.path.isdir(ALERT_DIR) else 'log only'}")

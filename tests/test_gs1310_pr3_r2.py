@@ -55,7 +55,7 @@ class R2_4_YesAtEightTimers(unittest.TestCase):
 
 class R2_5_BadDishKeepsTheCard(unittest.TestCase):
     def test_a_malformed_dish_is_dropped_not_the_recipe(self):
-        for bad in ("orzo", "McRib", "x" * 17, "", 5):
+        for bad in ("x" * 17, "", "   ", 5):  # "orzo"/"McRib" are valid since Noor's Oct 30 dish ruling
             out = cards.validate_card(dict(RECIPE, dish=bad))
             self.assertEqual(out["type"], "recipe")
             self.assertNotIn("dish", out)

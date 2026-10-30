@@ -580,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
             j = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             return self._reply(400, {"error": "bad json"})
-        if isinstance(j, dict) and j.get("op") in cards.UPDATE_OPS + ("updates_off",):
+        if isinstance(j, dict) and j.get("op") in cards.UPDATE_OPS + ("updates_off", "updates_pause", "updates_only"):
             if not card_from_here(self.client_address[0]):
                 return self._reply(403, {"error": "localhost only"})
             try:
@@ -775,6 +775,7 @@ def apply_show(doc, cache, deck, now=None, on_logo=logo_landed):
 
 
 UPDATES = None
+UPDATES_PAUSE_S = 600  # a voice pause lasts until "resume updates" or 10 minutes
 
 
 def updates_feed():
@@ -791,6 +792,21 @@ def apply_update(doc, feed, now=None):
         raise cards.CardError("schema")
     body = dict(doc)
     bot = body.pop("bot", None)
+    if body.get("op") == "updates_only":
+        # Relay startup sync: drop rows for every bot whose Updates switch is off. Relay-only, no bot field.
+        keep = body.get("bots")
+        if (bot is not None or set(body) != {"v", "op", "bots"} or body.get("v") != 1 or not isinstance(keep, list)
+                or len(keep) > 64 or not all(cards.bot_slug_ok(b) for b in keep)):
+            raise cards.CardError("schema")
+        for b in {r["bot"] for r in feed.items.values()} - set(keep):
+            feed.drop_bot(b)
+        return "only", "-", "-"
+    if body.get("op") == "updates_pause":
+        # Relay-only (localhost + bearer), after "Hey Grok, pause|resume updates". No bot field.
+        if bot is not None or set(body) != {"v", "op", "on"} or body.get("v") != 1 or type(body.get("on")) is not bool:
+            raise cards.CardError("schema")
+        feed.paused_until = (time.time() if now is None else now) + UPDATES_PAUSE_S if body["on"] else None
+        return "pause" if body["on"] else "resume", "-", "-"
     if not cards.bot_slug_ok(bot):
         raise cards.CardError("schema")
     if body.get("op") == "updates_off":
@@ -2526,7 +2542,7 @@ def clean_timers(items):
             continue
         if not 1_000_000_000 <= float(ends) <= 20_000_000_000:
             continue
-        label = " ".join(re.sub(r"[^\w '\-]", " ", str(t.get("label") or "")).split())[:24] or "timer"
+        label = " ".join(re.sub(r"[^\w '\-\u00b7]", " ", str(t.get("label") or "")).split())[:24] or "timer"
         rec = {"id": tid, "label": label, "ends_at_epoch": float(ends), "ringing": bool(t.get("ringing"))}
         dur = t.get("duration")
         if isinstance(dur, bool) or not isinstance(dur, (int, float)) or not math.isfinite(float(dur)):
@@ -3069,7 +3085,7 @@ def draw_card(surf, card, x, y, max_w, max_h):
     return rect
 
 
-def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
+def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     """The idle clock, date and weather. Returns the lowest y they use, which is where the bottom zone starts.
     home_band=False leaves out the home cards: the bottom zone is in use."""
     global LAST_TOPBAR_RECT, LAST_CARD_RECT, LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS
@@ -3102,7 +3118,7 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True):
     elif wx.data:
         draw_weather(surf, L, wx.data, base)
     if home_band:
-        draw_next_up(surf, L, now)
+        draw_next_up(surf, L, now, talking=talking)
     draw_timer_strip(surf, L)
     draw_status_icons(surf, L)
     return max(r.bottom for r in (LAST_DATE_RECT, LAST_CLOCK_RECT, LAST_WEATHER_RECT, LAST_OFFLINE_RECT) if r)
@@ -3380,34 +3396,76 @@ def idle_band_rows(now, night=False, paused=False):
     return tiles
 
 
+def update_title_lines(L, text, width):
+    """The update line in at most 2 lines; a longer one ends with an ellipsis on line 2 (band rev2)."""
+    f = font("body", L(40))
+    lines = wrap(f, text, width)
+    if len(lines) <= 2:
+        return lines
+    return [lines[0], ellipsize(f, " ".join(lines[1:]), width)]
+
+
+def update_tile_height(L):
+    """Header (avatar row) plus 2 title lines. Every tile in the band uses this one height."""
+    head = max(L(72), font("body", L(40)).get_height() + font("body", L(30)).get_height() + L(8))
+    return L(24) + head + L(16) + 2 * font("body", L(40)).get_height() + L(4) + L(24)
+
+
 def _paint_update_tile(surf, L, rect, row, now):
-    """One update tile: pill word (never colour alone), bot name and age, the line. Draws only."""
+    """One update tile (Noor u-04): avatar initial, bot name, pill word (never colour alone) and age,
+    then the line in 2 lines max. Draws only."""
     t = row["type"]
     needs = t == "needs_you"
     aged = row.get("aged")
-    pygame.draw.rect(surf, ALERT_FILL if needs else SURFACE if not aged else BG, rect, border_radius=L(20))
+    pygame.draw.rect(surf, SURFACE if not aged else BG, rect, border_radius=L(20))
     edge = AMBER if needs else RULE2
     pygame.draw.rect(surf, edge, rect, width=max(1, L(6) if needs else L(3)), border_radius=L(20))
     color = AMBER if t in ("needs_you", "heads_up") else LISTENING if t == "done" and not aged else MUTED
-    pill_f = font("display" if needs else "body", L(30))
+    x, y = rect.left + L(28), rect.top + L(24)
+    d = L(72)
+    ring = AMBER if needs else (RULE2 if aged else LISTENING)
+    pygame.draw.circle(surf, ring, (x + d // 2, y + d // 2), d // 2, max(1, L(4)))
+    ini = font("body", L(36)).render((row["bot"][:1] or "?").upper(), True, TEXT)
+    surf.blit(ini, ini.get_rect(center=(x + d // 2, y + d // 2)))
+    tx = x + d + L(20)
+    name = _line(surf, "body", L(40), row["bot"].capitalize(), TEXT, rect.right - tx - L(28))
+    surf.blit(name, (tx, y - L(4)))
+    pill_f = font("display" if needs else "body", L(28))
     word = pill_f.render(("! " if needs else "") + UPDATE_PILL[t], True, AMBER_INK if needs else color)
-    pill = pygame.Rect(rect.left + L(28), rect.top + L(20), word.get_width() + L(28), word.get_height() + L(8))
+    pill = pygame.Rect(tx, y - L(4) + name.get_height() + L(4), word.get_width() + L(24), word.get_height() + L(6))
     if needs:
-        pygame.draw.rect(surf, AMBER, pill, border_radius=pill.h // 2)
+        pygame.draw.rect(surf, AMBER, pill, border_radius=L(8))
     else:
-        pygame.draw.rect(surf, color, pill, width=max(1, L(2)), border_radius=pill.h // 2)
-    surf.blit(word, (pill.left + L(14), pill.top + L(4)))
-    meta = _line(surf, "body", L(30), f"{row['bot'].capitalize()} · {update_age(now - row['time'])}",
-                 MUTED, rect.right - pill.right - L(56))
-    surf.blit(meta, (rect.right - L(28) - meta.get_width(), pill.top + L(4)))
-    line = _line(surf, "display" if needs else "body", L(44), row["line"], MUTED if aged else TEXT, rect.w - L(56))
-    surf.blit(line, (rect.left + L(28), pill.bottom + L(24)))
+        pygame.draw.rect(surf, color, pill, width=max(1, L(2)), border_radius=L(8))
+    surf.blit(word, (pill.left + L(12), pill.top + L(3)))
+    age = font("body", L(28)).render(update_age(now - row["time"]), True, MUTED)
+    surf.blit(age, (pill.right + L(14), pill.top + L(3)))
+    f = font("display" if needs else "body", L(40))
+    ly = max(y + d, pill.bottom) + L(16)
+    for text in update_title_lines(L, row["line"], rect.w - L(56)):
+        img = f.render(text, True, MUTED if aged else TEXT)
+        surf.blit(img, (rect.left + L(28), ly))
+        ly += img.get_height() + L(4)
 
 
-def draw_next_up(surf, L, now):
+def updates_paused(now, talking=False):
+    """Visible but paused: a bot is talking, a timer is ringing, or a voice pause (10 min) is on."""
+    until = updates_feed().paused_until
+    if until is not None and now >= until:
+        updates_feed().paused_until = until = None
+    ringing = any(isinstance(c, dict) and c.get("ringing") for c in TIMER_CHIPS)
+    return bool(talking or ringing or until is not None)
+
+
+def has_updates(now):
+    needs, rest = updates_feed().ordered(now)
+    return bool(needs or rest)
+
+
+def draw_next_up(surf, L, now, talking=False):
     """Home cards and bot updates in the lower band. Empty: nothing, so the idle clock stays where it is."""
     wall = time.time()
-    rows = idle_band_rows(wall)
+    rows = idle_band_rows(wall, paused=updates_paused(wall, talking))
     homes = [r for r in rows if r.get("kind") != "update"]
     draw_home_band(surf, L, homes if len(homes) == len(rows) else [])
     if len(homes) != len(rows):
@@ -3424,7 +3482,7 @@ def _draw_mixed_band(surf, L, rows, now):
         return
     gap, n = L(16), min(3, len(rows))
     width = (L.w - 2 * L.m - gap * 2) // 3
-    height = min(L(280), floor_y - top)
+    height = min(update_tile_height(L), floor_y - top)  # header + 2 lines; same for every tile
     for i, row in enumerate(rows[:n]):
         rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
         if row.get("kind") == "update":
@@ -3682,6 +3740,7 @@ _RAIL_SLIDE = {"sig": None, "t0": 0.0, "before": {}, "positions": None}
 LAST_RECIPE_FRAME = None
 LAST_RECIPE_RAIL = None
 LAST_RECIPE_COPY = []
+LAST_RECIPE_TARGETS = []  # test hook: one entry per ringing timer drawn (slot or "+N more" row), with its height
 LAST_BANNER_TEXT = ""
 SLOT_STOP_SEGMENTS = (("Say ", "muted"), ("stop", "phrase"))
 
@@ -3948,6 +4007,9 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
                     break
                 surf.blit(bell, (rect.left + recipe_px(L, 28), y + max(0, (line.get_height() - bell.get_height()) // 2)))
                 surf.blit(line, (rect.left + recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10), y))
+                LAST_RECIPE_TARGETS.append({"id": row.get("id"), "text": done, "h": max(line.get_height(), bell.get_height()),
+                                            "fits": recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10)
+                                            + line.get_width() <= rect.w - recipe_px(L, 16)})
                 y += max(line.get_height(), bell.get_height()) + recipe_px(L, 8)
                 continue
             line = name_f.render(f"{row['title']}  {row['text']}", True, MUTED)
@@ -3963,6 +4025,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     if ringing:
         pygame.draw.rect(surf, ALERT_FILL, rect, border_radius=rad)
         pygame.draw.rect(surf, AMBER, rect, max(1, recipe_px(L, 8)), border_radius=rad)
+        LAST_RECIPE_TARGETS.append({"id": slot.get("id"), "text": slot.get("title") or "", "h": rect.h, "fits": True})
         if reduced:
             _static_outline(surf, rect, AMBER, recipe_px(L, 10), recipe_px(L, 6))
         d = recipe_px(L, 200)
@@ -4071,6 +4134,7 @@ def draw_recipe(surf, L, card):
     frame = recipe_frame(L)
     LAST_RECIPE_FRAME = frame
     LAST_RECIPE_COPY = []
+    LAST_RECIPE_TARGETS[:] = []
     rad = max(4, recipe_px(L, 37))
     border = max(1, recipe_px(L, 3))
     ing, stp = frame["ingredients"], frame["step"]
@@ -4376,6 +4440,27 @@ LAST_PORTRAIT_BG = None
 LAST_CHIP_RECTS = []
 
 
+LAST_REPLY_LINE = None  # test hook: the one-line reply drawn under a paused updates row
+
+
+def draw_reply_line(surf, L, msg, state):
+    """'<Name>, replying to you  “text”' on one line above the timer strip (Noor u-04)."""
+    global LAST_REPLY_LINE
+    who = msg.get("from") or VOICE_NAME
+    text = msg.get("text") or ""
+    if state == "thinking":
+        text = thinking_body(text)
+    lead = font("body", L(36)).render(f"{who}, replying to you", True, MUTED)
+    y = content_limit(L) - lead.get_height() - L(8)
+    x = L.m + L(28)
+    surf.blit(lead, (x, y))
+    quote = f"\u201c{' '.join(text.split())}\u201d" if text.strip() else ""
+    body = _line(surf, "body", L(40), quote, TEXT, L.w - 2 * L.m - lead.get_width() - L(56)) if quote else None
+    if body:
+        surf.blit(body, (x + lead.get_width() + L(20), y - (body.get_height() - lead.get_height()) // 2))
+    LAST_REPLY_LINE = {"who": who, "text": quote, "y": y}
+
+
 def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     """A bot state in the bottom zone: avatar on the left, name, heard line and the 4-line reply window on the
     right, and the state icon and word at the top right."""
@@ -4486,8 +4571,14 @@ def draw_zone(surf, L, now, wx, colon_on=True, zone=None, t=1.0, tele=None, now_
     global LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE
     zone = zone or {}
     busy = bool(zone.get("tile") or zone.get("voice"))
-    top_of = draw_idle(surf, L, now, wx, colon_on, home_band=not busy)
     LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
+    if zone.get("voice") and not zone.get("tile") and has_updates(time.time()):
+        # SPEC rev3/rev4 (u-04): while a bot talks the updates row stays up, paused, and the reply is one
+        # line under it instead of the full bottom zone.
+        draw_idle(surf, L, now, wx, colon_on, home_band=True, talking=True)
+        draw_reply_line(surf, L, zone["voice"], zone.get("state"))
+        return
+    top_of = draw_idle(surf, L, now, wx, colon_on, home_band=not busy)
     if not busy:
         return
     rect = zone_rect(L, top_of)

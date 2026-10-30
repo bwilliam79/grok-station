@@ -423,7 +423,7 @@ def parse_timers(raw, now):
 
 
 def clean_label(s):
-    s = " ".join(re.sub(r"[^\w '\-]", " ", str(s or "")).split())[:24]
+    s = " ".join(re.sub(r"[^\w '\-\u00b7]", " ", str(s or "")).split())[:24]
     return s or "timer"
 
 

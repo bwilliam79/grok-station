@@ -5308,8 +5308,13 @@ class Handler(BaseHTTPRequestHandler):
         status, data = got
         if status != 200 or not (isinstance(data, dict) and data.get("ok") is True):
             return self.relay_fail(status, data)
-        audit(slug, "updates-" + ("on" if j["on"] else "off"))
-        return self.send(200, {"ok": True, "on": j["on"]})
+        was = "on" if isinstance(data, dict) and data.get("was") is True else "off"
+        audit_change("updates-" + slug, was, "on" if j["on"] else "off",
+                     AUTH.session_public_id(self.cookie("gs_session")))  # Nix L1
+        out = {"ok": True, "on": j["on"]}
+        if isinstance(data, dict) and data.get("station") == "pending":
+            out["station"] = "pending"
+        return self.send(200, out)
 
     def bots_helper_update(self, slug):
         """Ask a home bot to update its helper. The webhook carries only kind update_helper: no command, no URL."""

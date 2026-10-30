@@ -145,6 +145,143 @@ class RelayGate(unittest.TestCase):
         self.assertEqual(posts, [])
 
 
+class NixLowFindings(RelayGate):
+    """Nix design GO, Low findings L1-L6 and I-1."""
+    def _raw(self, doc):
+        return tc._seal(self.station, self.signer, json.dumps(doc, separators=(",", ":")))
+
+    def _accept(self, raw, seen=None):
+        posts = []
+        out = self.relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(50, 60),
+                                     lambda s: posts.append(s) or 200, ttl_max=3600, seen=seen)
+        return out, posts
+
+    def test_corrupt_or_non_dict_file_is_off(self):
+        for blob in (b"{not json", b"[]", b'"on"', b'{"bots": []}', b'{"bots": {"jules": "yes"}}'):
+            with open(self.relay.updates_path(), "wb") as f:
+                f.write(blob)
+            self.assertFalse(self.relay.updates_on("jules"), blob)
+
+    def test_internal_ops_and_a_bot_field_in_the_signed_doc_are_400(self):
+        self.relay.write_updates("jules", True)
+        for doc in (dict(tc._meta(), v=1, op="updates_off"), dict(upd(), bot="jules"),
+                    dict(tc._meta(), v=1, op="updates_only", bots=[]), dict(tc._meta(), v=1, op="updates_pause", on=True)):
+            (status, _, _), posts = self._accept(self._raw(doc))
+            self.assertEqual(status, 400, doc.get("op"))
+            self.assertEqual(posts, [])
+
+    def test_an_op_swap_after_signing_fails(self):
+        self.relay.write_updates("jules", True)
+        from nacl.public import SealedBox
+        msg = json.dumps(upd(), separators=(",", ":")).encode()
+        signed = bytes(self.signer.sign(msg))
+        swapped = signed[:64] + msg.replace(b'"op":"update"', b'"op":"update_clear"')
+        sealed = SealedBox(self.station.public_key).encrypt(swapped)
+        raw = json.dumps({"v": 1, "bot": "jules", "sealed": tc._b64(sealed)}).encode()
+        (status, _, _), posts = self._accept(raw)
+        self.assertIn(status, (400, 401, 403))
+        self.assertEqual(posts, [])
+
+    def test_update_nonce_replay_is_caught_and_refusals_spend_the_nonce(self):
+        seen = set()
+        raw = self._raw(upd())
+        (status, body, _), _ = self._accept(raw, seen)  # switch off: 403, nonce spent (L5)
+        self.assertEqual((status, body), (403, {"error": "updates_off"}))  # I-1
+        self.relay.write_updates("jules", True)
+        (status, _, _), posts = self._accept(raw, seen)
+        self.assertEqual(status, 409)
+        self.assertEqual(posts, [])
+        raw = self._raw(upd(line="key sk-" + "A" * 40))
+        self.assertEqual(self._accept(raw, seen)[0][0], 422)
+        self.assertEqual(self._accept(raw, seen)[0][0], 409)
+        raw = self._raw(upd("u2"))
+        self.assertEqual(self._accept(raw, seen)[0][0], 200)
+        self.assertEqual(self._accept(raw, seen)[0][0], 409)
+
+    def test_raw_line_is_linted_before_clipping_and_over_320_is_400(self):
+        self.relay.write_updates("jules", True)
+        secret_at_the_cut = ("word " * 15) + "sk-" + "A" * 40  # clip_line would drop the key
+        self.assertNotIn("sk-", cards.clip_line(secret_at_the_cut))
+        self.assertEqual(self._accept(self._raw(upd(line=secret_at_the_cut)))[0][0], 422)
+        self.assertEqual(self._accept(self._raw(upd(line="a" * 321)))[0][0], 400)
+        self.assertEqual(self._accept(self._raw(upd(line="a " * 160)))[0][0], 200)
+
+    def test_drop_retries_then_reports_pending_and_startup_sync_keeps_only_on_bots(self):
+        sent = []
+        real = self.relay._station_env_values
+        self.relay._station_env_values = lambda keys: {"GROK_STATION_TOKEN": "t", "GROK_STATION_PORT": "8787"}
+        try:
+            codes = iter([503, 200])
+            self.assertTrue(self.relay.post_station_updates_drop("jules", post=lambda b, t, p: next(codes)))
+            self.assertFalse(self.relay.post_station_updates_drop("jules", post=lambda b, t, p: 503))
+            self.relay.write_updates("jules", True)
+            self.assertTrue(self.relay.post_station_updates_only(post=lambda b, t, p: sent.append(json.loads(b)) or 200))
+            self.assertTrue(self.relay.post_station_updates_drop("jules", post=lambda b, t, p: 200))
+        finally:
+            self.relay._station_env_values = real
+        self.assertEqual(sent, [{"v": 1, "op": "updates_only", "bots": ["jules"]}])
+        f = cards.UpdateFeed()
+        gs.apply_update(dict(upd(), bot="jules"), f)
+        gs.apply_update(dict(upd(), bot="otto"), f)
+        gs.apply_update({"v": 1, "op": "updates_only", "bots": ["jules"]}, f)
+        self.assertEqual({r["bot"] for r in f.items.values()}, {"jules"})
+
+    def test_one_lock_for_switch_and_rule_writes(self):
+        import threading
+        errs = []
+
+        def flip(i):
+            try:
+                self.relay.write_updates("jules", i % 2 == 0)
+                self.relay.note_feed_rule("jules", "Rule %d" % i)
+            except Exception as e:  # pragma: no cover
+                errs.append(e)
+        ts = [threading.Thread(target=flip, args=(i,)) for i in range(40)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(errs, [])
+        with open(self.relay.updates_path()) as fh:
+            doc = json.load(fh)
+        self.assertEqual(set(doc), {"bots", "rules"})
+        self.assertTrue(doc["rules"]["jules"].startswith("Rule "))
+        self.assertIsInstance(self.relay._UPDATES_LOCK, type(threading.Lock()))
+
+    def test_admin_put_validation_and_old_new_log(self):
+        import asyncio
+        r = self.relay
+        logs = []
+        saved = (r.admin_gate, r.admin_json, r._known, r.log, r.post_station_updates_drop)
+
+        async def gate(req):
+            return None
+
+        def run(body, slug="jules", gate_fn=gate):
+            async def aj(req):
+                return body
+            r.admin_gate, r.admin_json = gate_fn, aj
+            req = type("Q", (), {"match_info": {"slug": slug}})()
+            resp = asyncio.run(r.admin_updates_put(req))
+            return resp.status, json.loads(resp.body)
+        try:
+            r._known = lambda s: s == "jules"
+            r.log = lambda *a: logs.append(" ".join(map(str, a)))
+            r.post_station_updates_drop = lambda slug: False
+            for bad in ({"on": "yes"}, {"on": True, "x": 1}, {}):
+                self.assertEqual(run(bad)[0], 400, bad)
+            self.assertEqual(run({"on": True}, slug="ghost")[0], 400)
+
+            async def no_session(req):
+                from aiohttp import web
+                return web.json_response({"error": "unauthorized"}, status=401)
+            self.assertEqual(run({"on": True}, gate_fn=no_session)[0], 401)
+            self.assertEqual(run({"on": True}), (200, {"ok": True, "on": True, "was": False}))
+            self.assertEqual(run({"on": False}), (200, {"ok": True, "on": False, "was": True, "station": "pending"}))
+            self.assertIn("updates jules off->on", logs)
+            self.assertIn("updates jules on->off", logs)
+        finally:
+            r.admin_gate, r.admin_json, r._known, r.log, r.post_station_updates_drop = saved
+
+
 class StationApply(unittest.TestCase):
     def test_apply_put_clear_and_off(self):
         f = cards.UpdateFeed()

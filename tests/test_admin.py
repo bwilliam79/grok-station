@@ -1843,6 +1843,42 @@ class DimDisplay(unittest.TestCase):
         self.assertIn("action=dim-auto-sensor", buf.getvalue())
 
 
+
+class UpdatesSwitchProxy(unittest.TestCase):
+    """0.13.10 bot updates feed: PUT /api/bots/<slug>/updates forwards only {"on": bool} (Nix L6)."""
+    def setUp(self):
+        self.c = signed_in()
+        self.calls = []
+        self._rc = ga.relay_call
+
+        def fake(method, path, payload=None, timeout=10):
+            self.calls.append((method, path, payload))
+            if path == "/admin/bots/ghost/updates":
+                return 400, {"error": "bad request"}
+            return 200, {"ok": True, "on": payload["on"], "was": False}
+        ga.relay_call = fake
+
+    def tearDown(self):
+        ga.relay_call = self._rc
+
+    def test_no_session_is_401(self):
+        self.assertEqual(C().req("PUT", "/api/bots/kai/updates", {"on": True})[0], 401)
+        self.assertEqual(self.calls, [])
+
+    def test_bad_bodies_never_reach_the_relay(self):
+        for body in ({"on": "yes"}, {"on": True, "x": 1}, {}, {"on": 1}):
+            self.assertEqual(self.c.req("PUT", "/api/bots/kai/updates", body)[0], 400, body)
+        self.assertEqual(self.calls, [])
+
+    def test_unknown_slug_is_refused_and_good_call_audits_old_new(self):
+        st, _ = self.c.req("PUT", "/api/bots/ghost/updates", {"on": True})
+        self.assertNotEqual(st, 200)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            st, j = self.c.req("PUT", "/api/bots/kai/updates", {"on": True})
+        self.assertEqual((st, j), (200, {"ok": True, "on": True}))
+        self.assertEqual(self.calls[-1], ("PUT", "/admin/bots/kai/updates", {"on": True}))
+
 if __name__ == "__main__":
     unittest.main()
 
