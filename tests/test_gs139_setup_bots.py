@@ -208,8 +208,9 @@ class SetupBotsUI(unittest.TestCase):
         self.assertIn(">Retry<", failed)
         self.assertNotIn("Still can't reach", failed)
         again = _html(_row("failed", fails=2))
-        self.assertIn("Still can't reach Juniper.", again)
-        self.assertIn(">Test Juniper's connection<", again)
+        # gs139 N1: the second-failure line and the test link moved to the message popover (setupMessagePopHTML).
+        self.assertNotIn("Still can't reach Juniper.", again)
+        self.assertIn('class="ssub"', again)
         self.assertIn(">Retry<", again)
         connected = _html(_row("connected"))
         self.assertIn('class="schip teal"', connected)

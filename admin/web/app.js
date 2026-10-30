@@ -3156,9 +3156,17 @@ function setupRowHTML(row, opts) {
   const expanded = !!opts.expanded;
   const letter = esc(String((row.name || row.slug || "?").trim().slice(0, 1).toUpperCase() || "?"));
   const chip = '<span class="schip ' + m.colour + '">' + setupIcon(m.icon) + "<span>" + esc(m.text) + "</span></span>";
-  // The Sent sub-line ("No OK card yet?") sits next to the chip, on the status line.
-  const stuckSub = m.status === "sent" && m.sub ? '<span class="ssub2 help">' + esc(m.sub) + "</span>" : "";
-  const line = '<div class="sline" role="status">' + chip + stuckSub + "</div>";
+  // One status line. The Sent sub-line ("No OK card yet?") sits next to the chip. A stuck or failure
+  // message is cut to one line with an ellipsis; tapping the line shows the full text (showSetupMessage).
+  let line;
+  if (m.colour === "amb" || (m.status === "sent" && !!m.sub)) {
+    line = '<div class="sline" role="status"><button type="button" class="ssub" data-ssub="' + esc(row.slug || "") +
+      '" aria-haspopup="dialog" aria-expanded="false"><span class="schip ' + m.colour + '">' + setupIcon(m.icon) +
+      '<span class="ct">' + esc(m.text) + "</span></span>" +
+      (m.sub ? '<span class="sep help"> \u00b7 </span><span class="tx ssub2 help">' + esc(m.sub) + "</span>" : "") + "</button></div>";
+  } else {
+    line = '<div class="sline" role="status">' + chip + "</div>";
+  }
   let disc = "";
   if (m.disclose) {
     disc = '<button class="disc" type="button" data-slug="' + esc(row.slug || "") + '" aria-expanded="' +
@@ -3173,22 +3181,87 @@ function setupRowHTML(row, opts) {
     acts += '<button class="' + cls + '" type="button"' + extra + ">" + esc(a.label) + "</button>";
   });
   if (m.sendBlocked) acts += '<div class="help" id="' + esc(m.hintId) + '">' + esc(m.block) + "</div>";
-  let sub = "";
-  if (m.sub && m.status !== "sent") sub += '<div class="help">' + esc(m.sub) + "</div>";
-  if (m.again) {
-    sub += '<div class="help">' + esc(m.again) + ' <button type="button" class="tlnk" data-act="maintest" data-slug="' +
-      esc(row.slug || "") + '">' + esc(m.testLink) + "</button></div>";
-  }
   let steps = "";
   if (expanded && m.disclose) {
     const parts = setupSteps(Object.assign({}, row, {editDisabled: m.editDisabled}));
     steps = '<ol class="steps" id="' + esc(m.stepsId) + '">' + parts.map(p => "<li>" + p + "</li>").join("") +
       '</ol><p class="stnote">' + esc(m.note) + "</p>";
   }
-  return '<div class="setr">' +
+  const quiet = !m.disclose && !m.actions.length ? " quiet" : "";
+  return '<div class="setr' + quiet + '">' +
     '<span class="avwrap" data-slug="' + esc(row.slug || "") + '"><span class="monoav">' + letter + "</span></span>" +
     '<div class="sinfo"><div class="lbl">' + esc(row.name || "") + "</div>" + line + "</div>" +
-    disc + '<div class="sendc2">' + acts + sub + "</div></div>" + steps;
+    disc + '<div class="sendc2"><div class="racts">' + acts + "</div></div></div>" + steps;
+}
+function setupMessageDetail(m) {
+  m = m || {};
+  return {title: m.text || "", body: m.sub || "", again: m.again || "", testLink: m.testLink || ""};
+}
+function setupMessagePopHTML(d, phone) {
+  d = d || {};
+  const modal = phone ? "true" : "false";
+  const again = d.again ? '<p class="ctx">' + esc(d.again) + ' <button type="button" class="tlnk" data-act="maintest">' +
+    esc(d.testLink) + "</button></p>" : "";
+  return '<div class="pop spop" role="dialog" aria-modal="' + modal + '" aria-labelledby="smsgtitle"><h3 id="smsgtitle" tabindex="-1">' +
+    '<span class="gl" aria-hidden="true">\u26a0\ufe0e</span><span>' + esc(d.title) + "</span></h3>" +
+    (d.body ? "<p>" + esc(d.body) + "</p>" : "") + again +
+    '<div class="acts"><button class="btn" type="button" id="smsgx">Close</button></div></div>';
+}
+function showSetupMessage(btn, el, row, opts) {
+  if (!btn || !row) return;
+  closeBotMessage();
+  const m = setupRowModel(row, opts || {});
+  const phone = !!(window.matchMedia && window.matchMedia("(max-width: 767px)").matches);
+  const wrap = document.createElement("div");
+  wrap.id = "smsgpop";
+  wrap.innerHTML = (phone ? '<div class="scrim" data-smsg-scrim="1"></div>' : "") + setupMessagePopHTML(setupMessageDetail(m), phone);
+  document.body.appendChild(wrap);
+  btn.setAttribute("aria-expanded", "true");
+  const pop = wrap.querySelector(".pop");
+  const info = btn.closest ? btn.closest(".sinfo") : null;
+  if (!phone && pop && (info || btn).getBoundingClientRect) {
+    const box = (info || btn).getBoundingClientRect();
+    pop.style.left = (box.left + (window.scrollX || 0)) + "px";
+    pop.style.top = (box.bottom + (window.scrollY || 0)) + "px";
+  }
+  const slug = String(row.slug || "").replace(/[^a-z0-9-]/gi, "");
+  const back = () => {
+    if (btn.isConnected && btn.focus) return btn.focus();
+    const live = slug ? document.querySelector('.ssub[data-ssub="' + slug + '"]') : null;
+    if (live && live.focus) live.focus();
+  };
+  const close = () => {
+    if (botMessageCloser === close) botMessageCloser = null;
+    document.removeEventListener("click", onDoc);
+    btn.setAttribute("aria-expanded", "false");
+    if (wrap.parentNode) wrap.remove();
+    back();
+  };
+  const onDoc = ev => {
+    if (!wrap.isConnected) { document.removeEventListener("click", onDoc); return; }
+    if (pop && pop.contains(ev.target)) return;
+    if (btn.contains && btn.contains(ev.target)) return;
+    close();
+  };
+  wrap.addEventListener("keydown", ev => {
+    if (ev.key === "Escape") { ev.preventDefault(); close(); return; }
+    if (!phone || ev.key !== "Tab" || !pop) return;
+    const list = Array.prototype.filter.call(pop.querySelectorAll("button, [href]"), n => !n.disabled);
+    if (!list.length) return;
+    const first = list[0], last = list[list.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  });
+  const scrim = wrap.querySelector("[data-smsg-scrim]");
+  if (scrim) scrim.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
+  const x = $("#smsgx", wrap);
+  if (x) x.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); };
+  const test = wrap.querySelector('[data-act="maintest"]');
+  if (test) test.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); close(); openMainTest(el); };
+  if (!phone) document.addEventListener("click", onDoc);
+  botMessageCloser = close;
+  const head = $("#smsgtitle", wrap);
+  if (head && head.focus) head.focus();
 }
 function setupListHTML(rows, opts) {
   opts = opts || {};
@@ -3361,11 +3434,17 @@ function paintSetupList(el) {
   if (!setupListVisible(el)) { host.innerHTML = ""; return; }
   const main = ((el._bots || []).filter(b => b && b.main)[0]);
   const rows = setupListRows(el);
-  host.innerHTML = setupListHTML(rows, {
+  const paintOpts = {
     mainName: (main && main.name) || "your main bot",
     sendBlocked: !!(main && finishNeedsUpdate(main)),
     expanded: el._setupExpanded || {},
     now: Date.now() / 1000
+  };
+  host.innerHTML = setupListHTML(rows, paintOpts);
+  host.querySelectorAll(".ssub").forEach(btn => btn.onclick = ev => {
+    ev.stopPropagation();
+    const row = rows.filter(r => r.slug === btn.getAttribute("data-ssub"))[0];
+    showSetupMessage(btn, el, row, Object.assign({}, paintOpts, {now: Date.now() / 1000}));
   });
   host.querySelectorAll(".disc").forEach(btn => btn.onclick = () => {
     const slug = btn.getAttribute("data-slug");

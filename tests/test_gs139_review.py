@@ -69,6 +69,46 @@ UNKNOWN = base._row("not_set_up", unknown=True)
 
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
+class N1FixedRowHeight(unittest.TestCase):
+    def test_message_is_one_tappable_line_in_the_info_column(self):
+        for row in (STUCK, FAILED, UNKNOWN):
+            html = _html(row)
+            info, btns = _cols(html)
+            self.assertNotIn('class="help"', btns, row["status"])
+            self.assertEqual(html.count('class="ssub"'), 1, row["status"])
+            self.assertIn('class="ssub"', info)
+            self.assertIn('aria-haspopup="dialog"', info)
+
+    def test_failure_extras_move_to_the_popover(self):
+        html = _html(FAILED)
+        self.assertNotIn("Still can't reach", html)
+        self.assertNotIn('data-act="maintest"', html)
+        self.assertIn("function showSetupMessage(", JS)
+        pop = _fn("setupMessagePopHTML")
+        self.assertIn('data-act="maintest"', pop)
+
+    def test_row_height_is_fixed(self):
+        self.assertRegex(FLAT, r"\.setr\{[^}]*height:48px")
+        self.assertRegex(FLAT, r"\.ssub\.tx\{[^}]*white-space:nowrap[^}]*text-overflow:ellipsis")
+        phone = _phone_rules()
+        self.assertRegex(phone, r"\.setr\{[^}]*height:164px")
+        self.assertRegex(phone, r"\.racts\{[^}]*flex-direction:row")
+
+    def test_tap_opens_full_text(self):
+        paint = _fn("paintSetupList")
+        self.assertIn(".ssub", paint)
+        self.assertIn("showSetupMessage(", paint)
+        d = _run("setupMessageDetail(setupRowModel(%s, {mainName: 'Juniper', now: 1000}))" % json.dumps(FAILED))
+        self.assertEqual(d["title"], "Couldn't reach Juniper")
+        self.assertEqual(d["body"], "Otto's setup wasn't sent. Check that Juniper's computer is on, then try again.")
+        self.assertEqual(d["again"], "Still can't reach Juniper.")
+        pop = _run("setupMessagePopHTML(%s, true)" % json.dumps(d))
+        self.assertIn("Test Juniper's connection", pop)
+        self.assertIn('aria-modal="true"', pop)
+
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
 class N4StuckSubLine(unittest.TestCase):
     def test_no_ok_card_sits_next_to_the_sent_chip(self):
         html = _html(STUCK)
