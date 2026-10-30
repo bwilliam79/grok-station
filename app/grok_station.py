@@ -4073,7 +4073,7 @@ def _enroll_actions(stage):
     """
     if stage == "prompt":
         return [("start", "Start", True, False), ("dismiss", "Not now", False, True)], False
-    if stage in _QUIET_HINT_STAGES:
+    if stage in _QUIET_HINT_STAGES or stage == "error":  # 'Enrollment stopped' is plain text: no touch input
         return [], False
     if stage == "passed":
         return [("done", "Done", True, False)], False
