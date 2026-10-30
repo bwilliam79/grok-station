@@ -236,6 +236,13 @@ class RoundTrip(unittest.IsolatedAsyncioTestCase):
         # give these round trips a fresh, empty limits file and put the old object back afterwards.
         self.addCleanup(setattr, relay, "_limits", relay._limits)
         relay._limits = handoff.Limits(os.path.join(TMP, "handoff.json"), relay.today)
+        # Same for the state paths read once at import (NI2): another suite may have imported relay first.
+        fresh = tempfile.mkdtemp(dir=TMP)  # per test: no pending file from an earlier test (any order)
+        for name, val in (("PENDING_DIR", os.path.join(fresh, "pending")), ("REPLIES_DIR", os.path.join(fresh, "replies")),
+                          ("REPLY_WAIT", 3.0), ("ALERT_DIR", os.path.join(TMP, "none")),
+                          ("PERSONAS_FILE", os.path.join(TMP, "none.json"))):
+            self.addCleanup(setattr, relay, name, getattr(relay, name))
+            setattr(relay, name, val)
         self.calls, self.mode, self.auths, self.paths, self.pendings = [], "reply", [], [], []
 
         async def hook(req):
