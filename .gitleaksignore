@@ -1,0 +1,6 @@
+# Synthetic test tokens in tests/test_handoff.py (Nix 0.13.8 follow-up 1). Per-finding fingerprints only; no path or regex allow.
+be7ac811c0d31cd811a48908c5a755837f67e208:tests/test_handoff.py:generic-api-key:43
+be7ac811c0d31cd811a48908c5a755837f67e208:tests/test_handoff.py:generic-api-key:44
+781564bdec035febd9e51272fe3550f67c2446d9:tests/test_handoff.py:generic-api-key:40
+tests/test_handoff.py:generic-api-key:45
+tests/test_handoff.py:generic-api-key:46
