@@ -910,3 +910,17 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewOwnerEscaped(unittest.TestCase):
+    """The owner name is escaped in the on-screen steps, like the bot name and computer."""
+
+    def test_owner_name_is_html_escaped(self):
+        row = dict(OTTO, owner='<img src=x onerror="a()">')
+        real_esc = JS[JS.index("const esc = s =>"):JS.index(";\n", JS.index("const esc = s =>")) + 1]
+        prog = real_esc + "\n" + _fn("setupOwnerLabel") + "\n" + _fn("setupMark") + "\n" + _fn("setupSteps") + \
+            "\nprocess.stdout.write(JSON.stringify(setupSteps(" + json.dumps(row) + ")));"
+        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, check=True)
+        blob = " ".join(json.loads(out.stdout))
+        self.assertNotIn("<img", blob)
+        self.assertIn("&lt;img src=x", blob)

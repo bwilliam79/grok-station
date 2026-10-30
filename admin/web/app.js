@@ -3066,7 +3066,7 @@ function setupSteps(row) {
   const wake = (row && row.wake) || ("Hey " + name);
   const computer = (row && row.computer) || "";
   const off = !!(row && row.editDisabled);
-  const who = setupOwnerLabel(row && row.owner);
+  const who = esc(setupOwnerLabel(row && row.owner));
   const poss = who + "'s";
   return [
     "Show " + who + " a confirm card in this chat. Only go ahead if " + who + " says yes.",
