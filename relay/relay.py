@@ -2765,8 +2765,9 @@ async def session(req):
                             result = train_session_result(plan)
                             voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
                             if result["say"]:
-                                # The built-in Grok sentence is longer than a 6 s filler. One speak, no enroll.
-                                cap = TTS_REPLY_S if result.get("hold_s") == 4 else TTS_SHORT_S
+                                # The built-in Grok sentence and the train intro (it ends "To stop, stay quiet.")
+                                # are longer than a 6 s filler, so neither is cut off.
+                                cap = TTS_REPLY_S if (result.get("hold_s") == 4 or plan.get("begin")) else TTS_SHORT_S
                                 await play_fixed(plan["say"], voice, cap)
                             fail_say = ""
                             if result["enroll"]:
