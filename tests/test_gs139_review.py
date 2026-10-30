@@ -126,5 +126,40 @@ class N4StuckSubLine(unittest.TestCase):
         self.assertNotIn("No OK card yet?", html)
 
 
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class N3FixedButtonColumn(unittest.TestCase):
+    def _slots(self, html):
+        _, btns = _cols(html)
+        return re.findall(r'<(?:button|span)[^>]*data-slot="(\w)"[^>]*?(?:data-act="(\w+)")?[^>]*>', btns)
+
+    def test_send_and_send_again_share_one_slot(self):
+        fresh = _cols(_html(base._row("not_set_up")))[1]
+        stuck = _cols(_html(STUCK))[1]
+        unknown = _cols(_html(UNKNOWN))[1]
+        failed = _cols(_html(FAILED))[1]
+        for btns, act in ((fresh, "send"), (stuck, "again"), (unknown, "again"), (failed, "retry")):
+            self.assertRegex(btns, r'data-slot="a"[^>]*data-act="%s"' % act)
+        self.assertRegex(stuck, r'data-slot="b"[^>]*data-act="paste"')
+        # Both slots are always drawn, so slot a never moves when slot b is empty.
+        for btns in (fresh, unknown, failed):
+            self.assertIn('data-slot="b"', btns)
+
+    def test_button_column_has_a_fixed_width(self):
+        m = re.search(r"\.sendc2\{([^}]*)\}", FLAT)
+        self.assertIsNotNone(m)
+        self.assertRegex(m.group(1), r"(^|;)width:\d+px")
+        self.assertRegex(FLAT, r"\.racts\{[^}]*grid-template-columns:\d+px\d+px")
+
+    def test_help_text_never_in_the_button_column(self):
+        for row in (base._row("not_set_up"), FAILED, STUCK):
+            html = _html(row, sendBlocked=True)
+            info, btns = _cols(html)
+            self.assertNotIn("help", btns)
+            self.assertIn("Update Juniper first", info)
+            hid = re.search(r'aria-describedby="([^"]+)"', btns).group(1)
+            self.assertIn('id="%s"' % hid, info)
+
+
 if __name__ == "__main__":
     unittest.main()

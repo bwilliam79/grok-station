@@ -3159,13 +3159,18 @@ function setupRowHTML(row, opts) {
   // One status line. The Sent sub-line ("No OK card yet?") sits next to the chip. A stuck or failure
   // message is cut to one line with an ellipsis; tapping the line shows the full text (showSetupMessage).
   let line;
-  if (m.colour === "amb" || (m.status === "sent" && !!m.sub)) {
+  const hasMsg = m.colour === "amb" || (m.status === "sent" && !!m.sub);
+  // Help text belongs to the status, never the button column. With a message line already there it is
+  // kept for screen readers only (the callout says the same thing).
+  const hint = m.sendBlocked ? '<span class="' + (hasMsg ? "sr help" : "ssub2 help") + '" id="' + esc(m.hintId) + '">' +
+    esc(m.block) + "</span>" : "";
+  if (hasMsg) {
     line = '<div class="sline" role="status"><button type="button" class="ssub" data-ssub="' + esc(row.slug || "") +
       '" aria-haspopup="dialog" aria-expanded="false"><span class="schip ' + m.colour + '">' + setupIcon(m.icon) +
       '<span class="ct">' + esc(m.text) + "</span></span>" +
-      (m.sub ? '<span class="sep help"> \u00b7 </span><span class="tx ssub2 help">' + esc(m.sub) + "</span>" : "") + "</button></div>";
+      (m.sub ? '<span class="sep help"> \u00b7 </span><span class="tx ssub2 help">' + esc(m.sub) + "</span>" : "") + "</button>" + hint + "</div>";
   } else {
-    line = '<div class="sline" role="status">' + chip + "</div>";
+    line = '<div class="sline" role="status">' + chip + hint + "</div>";
   }
   let disc = "";
   if (m.disclose) {
@@ -3173,15 +3178,17 @@ function setupRowHTML(row, opts) {
       (expanded ? "true" : "false") + '" aria-controls="' + esc(m.stepsId) + '">Setup steps ' +
       (expanded ? "\u25b4" : "\u25be") + "</button>";
   }
-  let acts = "";
+  // Fixed button column with two slots. Slot a: Send setup, Send setup again or Retry. Slot b: Paste values.
+  // An empty slot is still drawn, so slot a never moves.
+  const slots = {a: '<span class="slot" data-slot="a"></span>', b: '<span class="slot" data-slot="b"></span>'};
   m.actions.forEach(a => {
     const cls = a.primary ? "btn p sm" : "btn sm";
-    let extra = ' data-act="' + a.act + '" data-slug="' + esc(row.slug || "") + '"';
+    const slot = a.act === "paste" ? "b" : "a";
+    let extra = ' data-slot="' + slot + '" data-act="' + a.act + '" data-slug="' + esc(row.slug || "") + '"';
     if (a.blocked) extra += ' aria-disabled="true" aria-describedby="' + esc(m.hintId) + '"';
-    acts += '<button class="' + cls + '" type="button"' + extra + ">" + esc(a.label) + "</button>";
+    slots[slot] = '<button class="' + cls + '" type="button"' + extra + ">" + esc(a.label) + "</button>";
   });
-  if (m.sendBlocked) acts += '<div class="help" id="' + esc(m.hintId) + '">' + esc(m.block) + "</div>";
-  let steps = "";
+  const acts = m.actions.length ? slots.a + slots.b : "";  let steps = "";
   if (expanded && m.disclose) {
     const parts = setupSteps(Object.assign({}, row, {editDisabled: m.editDisabled}));
     steps = '<ol class="steps" id="' + esc(m.stepsId) + '">' + parts.map(p => "<li>" + p + "</li>").join("") +
