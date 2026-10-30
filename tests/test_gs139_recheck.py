@@ -200,5 +200,43 @@ class R5DesktopTestLinkHeight(unittest.TestCase):
             self.assertGreaterEqual(d["link"]["h"], 24, (w, d))
 
 
+def _callout(el_js):
+    names = ("joinBotNames", "setupCopy", "botsCalloutKind", "botsCalloutHTML", "setupComputerSuggestions",
+             "setupMainComputer", "setupListRows", "setupUnconnected", "pendingTeammates", "botIdFromName", "paintBotCallout")
+    src = _src(names)
+    i = JS.index("const BOT_ID_RE = ")
+    prog = ("const esc = s => String(s == null ? '' : s);\n" + base._icons() + "\n" + JS[i:JS.index(";\n", i) + 1] + "\n" +
+            "const host = {innerHTML: ''};\nconst $ = s => (s === '#botcall' ? host : null);\n"
+            "const document = {getElementById: () => null};\nfunction finishNeedsUpdate() { return false; }\n" +
+            src + "\npaintBotCallout(" + el_js + ");\nprocess.stdout.write(JSON.stringify(host.innerHTML));")
+    out = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
+    if out.returncode:
+        raise AssertionError(out.stderr[-800:])
+    return re.sub(r"<[^>]+>", " ", json.loads(out.stdout))
+
+
+def _fixture(main_name="Juniper", setup=None, imported=("Nova", "Wren")):
+    bots = [{"slug": "juniper", "name": main_name, "main": True},
+            {"slug": "otto", "name": "Otto"}, {"slug": "pip", "name": "Pip"},
+            {"slug": "ivy", "name": "Ivy", "webhook": {"configured": True}}]
+    el = {"_bots": bots, "_setup": {"rows": setup or {"pip": {"status": "connected"}}},
+          "_imported": {"rows": [{"name": n, "state": "new"} for n in imported]}}
+    return json.dumps(el)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class R6CalloutCountsSetupList(unittest.TestCase):
+    def test_count_matches_unconnected_setup_rows(self):
+        # Otto (not set up), Nova and Wren (roster) are unconnected; Pip connected, Ivy already.
+        txt = _callout(_fixture())
+        self.assertIn("3 bots not connected", txt)
+        self.assertIn("Configure all", txt)
+
+    def test_singular_uses_same_count(self):
+        txt = _callout(_fixture(imported=(), setup={"pip": {"status": "connected"}}))
+        self.assertIn("1 bot not connected", txt)
+        self.assertIn("Set up Otto", txt)
+
+
 if __name__ == "__main__":
     unittest.main()

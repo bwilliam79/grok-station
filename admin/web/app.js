@@ -3714,12 +3714,16 @@ function revokeAllCopy(names) {
   return {title: title, body: body, help: help, action: action};
 }
 // Configure all (2+) and Set up {bot} (exactly one) both open the same Set up bots list.
+function setupUnconnected(el) {
+  return setupListRows(el).filter(r => r.status !== "connected" && r.status !== "already");
+}
 function openConfigureAll(el) {
-  if (pendingTeammates(el).length) openSetupBots(el);
+  if (setupUnconnected(el).length) openSetupBots(el);
 }
 function paintBotCallout(el) {
   const bots = (el && el._bots) || [];
-  const pending = pendingTeammates(el);
+  // Same rows as the Set up bots list: everything not Connected or Already connected.
+  const pending = setupUnconnected(el);
   const behind = bots.filter(b => finishNeedsUpdate(b)).map(b => ({slug: b.slug, name: b.name || b.slug}));
   const main = bots.filter(b => b && b.main)[0];
   const hint = el && el._setup && el._setup.hint;
