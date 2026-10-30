@@ -3183,6 +3183,26 @@ def reopen_delay(reason, now, last, gap=30.0, base=2.0):
     return base
 
 
+# 0.13.9: a mic left stuck (only silence, or stalled reads) used to reopen forever. Three silence/stall
+# reopens inside STUCK_WINDOW_S, outside a session, ask MicRecovery for a "stuck" USB reset.
+STUCK_REOPENS = []
+STUCK_COUNT, STUCK_WINDOW_S = 3, 120.0
+
+
+def note_stuck_reopen(reason, busy, now):
+    """Record one reopen. Returns the request result when it asked for a reset, else None."""
+    if reason not in ("silence", "stall") or busy:
+        STUCK_REOPENS.clear()
+        return None
+    STUCK_REOPENS.append(now)
+    while STUCK_REOPENS and now - STUCK_REOPENS[0] > STUCK_WINDOW_S:
+        STUCK_REOPENS.pop(0)
+    if len(STUCK_REOPENS) < STUCK_COUNT or RECOVERY is None:
+        return None
+    STUCK_REOPENS.clear()
+    return RECOVERY.request("stuck")
+
+
 def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, stall_s=3.0, silence_s=10.0,
                        chunk_s=0.08, sleep=None, log=None, gap=30.0, now=None, n_bytes=None, on_open=None):
     """Open capture, read until it should reopen, repeat. find_card runs on every round."""
@@ -3223,6 +3243,12 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
         log(f"capture reopen: {reason}")
         log("capture ended; restarting")
         reasons.append(reason)
+        try:
+            busy = in_session() if callable(in_session) else bool(in_session)
+            if note_stuck_reopen(reason, busy, now()) is not None:
+                log("mic stuck: asked for a USB reset")
+        except Exception as exc:
+            log(f"mic stuck check failed: {type(exc).__name__}")
         n += 1
         if rounds is not None and n >= rounds:
             break
@@ -3235,6 +3261,11 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
         finally:
             LIVE["reopen_by"] = None
     return reasons
+
+
+def _flag_for(reason):
+    """"stuck" (0.13.9) rides the drought switch: both are automatic resets for a mic that stopped hearing."""
+    return "drought" if reason == "stuck" else reason
 
 
 class MicRecovery:
@@ -3264,10 +3295,10 @@ class MicRecovery:
         self._last_reset = None
 
     def request(self, reason):
-        if reason not in ("button", "night", "drought"):
+        if reason not in ("button", "night", "drought", "stuck"):
             return "off"
         flags = self.flags()
-        if not flags.get(reason):
+        if not flags.get(_flag_for(reason)):
             return "off"
         if reason == "night":
             loc = self.local(self.now())
@@ -3288,7 +3319,7 @@ class MicRecovery:
             return
         self._last_poll = now
         flags = self.flags()
-        if self.pending and not flags.get(self.pending):
+        if self.pending and not flags.get(_flag_for(self.pending)):
             self.pending = None
         if self.pending == "night" and not night_window(self.local(now)):
             self.pending = None
@@ -3339,7 +3370,7 @@ class MicRecovery:
 
     def _run(self, reason):
         flags = self.flags()
-        if not flags.get(reason):
+        if not flags.get(_flag_for(reason)):
             self.pending = None
             return "off"
         if reason == "night":
