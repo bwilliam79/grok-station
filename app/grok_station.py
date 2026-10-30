@@ -436,7 +436,8 @@ def persona_names():
             with open(PERSONAS_FILE) as f:
                 for p in json.load(f).get("personas", []):
                     slug, name = str(p.get("slug", "")), " ".join(str(p.get("name", "")).split())[:MAX_FROM]
-                    # Bot ids match the wake listener: a letter, then letters, digits, or dashes.
+                    # Bot ids match admin SLUG_RE and relay handoff.BOT_SLUG: a letter, then letters, digits or dashes.
+                    # No dot or slash, so find_portrait() joins slug + ext inside PORTRAIT_DIRS only.
                     if re.fullmatch(r"[a-z][a-z0-9-]{1,23}", slug) and name:
                         for k in (slug, name, *[str(a) for a in p.get("aliases", [])]):
                             if name_key(k):
