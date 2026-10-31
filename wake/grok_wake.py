@@ -1176,7 +1176,8 @@ def control_server():
                 except ValueError:
                     return self._r(400, {"error": "bad json"})
                 ok, err = forget_word(body.get("name") if isinstance(body, dict) else None)
-                return self._r(200 if ok else (409 if err == "busy" else 400), {"ok": ok, "error": err})
+                code = 200 if ok else 409 if err == "busy" else 500 if err == "write failed" else 400
+                return self._r(code, {"ok": ok, "error": err})
             if self.path == "/test-sound":
                 if LIVE["session"] or ENROLL_STATE["busy"] or not LIVE["play"]:
                     return self._r(409, {"error": "busy"})
@@ -2295,23 +2296,36 @@ def forget_word(name):
         return False, "busy"
     if (ENROLL_STATE.get("last") or {}).get("phrase") == name:
         ENROLL_STATE["last"] = None  # or /status keeps reporting it and the admin re-creates the row
-    shutil.rmtree(os.path.join(ENROLL_DIR, name), ignore_errors=True)
-    for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
-        try:
-            os.remove(os.path.join(ENROLLED_DIR, fn))
-        except OSError:
-            pass
+    # NIX-1313-08: a failed removal is logged and reported (the admin page shows it), never assumed done.
     cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
+    target = os.path.join(ENROLL_DIR, name)
     try:
-        with open(cfgp) as f:
-            doc = json.load(f)
-        words = [w for w in doc.get("words", []) if isinstance(w, dict) and w.get("name") != name]
-        if len(words) != len(doc.get("words", [])):
-            with open(cfgp + ".tmp", "w") as f:
-                f.write(json.dumps({"words": words}, indent=1))
-            os.replace(cfgp + ".tmp", cfgp)
-    except (OSError, ValueError, AttributeError):
-        pass
+        if os.path.lexists(target):
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target)
+            else:
+                os.unlink(target)
+        for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
+            target = os.path.join(ENROLLED_DIR, fn)
+            try:
+                os.remove(target)
+            except FileNotFoundError:
+                pass
+        target = cfgp
+        try:
+            doc = json.loads(open(cfgp).read())
+        except FileNotFoundError:
+            doc = {}
+        except ValueError:
+            doc = {}
+        old = doc.get("words", []) if isinstance(doc, dict) else []
+        words = [w for w in old if isinstance(w, dict) and w.get("name") != name]
+        if len(words) != len(old):
+            safe_io.replace_file(cfgp, json.dumps({"words": words}, indent=1), "enrolled", mode=0o644)
+    except OSError as e:
+        print(f"wakeword forget failed {type(e).__name__} {target}", flush=True)
+        RELOAD.set()
+        return False, "write failed"
     RELOAD.set()
     return True, None
 

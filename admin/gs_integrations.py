@@ -817,8 +817,10 @@ def hb_clear_block():
         return
     try:
         os.unlink(path)
-    except OSError:
+    except FileNotFoundError:
         pass
+    except OSError as e:
+        print(f"homebridge block clear failed {type(e).__name__} {path}", flush=True)
 
 
 def hb_base_text(raw):

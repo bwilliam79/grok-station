@@ -198,8 +198,10 @@ class Auth:
             self._load_note = ["setup"]
             try:
                 os.unlink(path("sessions.json"))
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                print(f"admin sessions clear failed {type(e).__name__}", flush=True)
             return
         raw = read_json(path("sessions.json"), {})
         if not isinstance(raw, dict):
@@ -233,8 +235,8 @@ class Auth:
     def _save_sessions(self):
         try:
             write_json(path("sessions.json"), self.sessions)
-        except OSError:
-            pass
+        except OSError as e:  # sessions stay in memory; a restart signs people out
+            print(f"admin sessions save failed {type(e).__name__}", flush=True)
 
     @property
     def rec(self):
@@ -263,8 +265,10 @@ class Auth:
                 return
             try:
                 os.unlink(f)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                print(f"setup file clear failed {type(e).__name__} {f}", flush=True)
             return
         old = read_json(f, {})
         if not self.code:  # same boot (tmpfs): keep the code already on screen
@@ -1136,7 +1140,14 @@ def delete_wake_word(name, reload=True):
     if safe:  # file paths only for a checked name, never ../ or a slash
         for fn in (name + ".onnx", name + ".json"):
             unlink_in(WAKE_DROP_DIR, fn)
-        drop_phrase_leftovers(name)
+        # NIX-1313-08: the wake listener (grok) owns the inbox and the enrolled list; on a station grok-admin
+        # cannot write either. Our sweep is a best effort after the listener's OK, but without that OK a
+        # failed sweep is reported, never assumed done.
+        try:
+            drop_phrase_leftovers(name)
+        except OSError:
+            if code != 200:
+                return (500, {"error": "Couldn't delete that wake word. Try again in a minute."})
     cfg = read_json(WAKE_CONFIG, {})
     keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
     if keep_hidden:
@@ -1637,30 +1648,37 @@ def unlink_in(folder, fn):
 
 
 def drop_phrase_leftovers(name):
-    """Remove what the wake listener may have left: every enroll session, the recorded model, the list entry.
+    """Remove what the wake listener would have removed: every enroll session, the recorded model, the list entry.
 
-    Runs after /forget, and covers a listener that was down or refused. Missing files are fine.
-    name must already pass wake_name_ok; the session folder is checked to sit inside the inbox.
+    Only when /forget was not confirmed. Those folders belong to grok (install.sh:178-179, :278-279), so on a station
+    this fails with EACCES; that is logged ('wakeword delete failed') and raised for the caller to report.
+    Missing files are fine. name must already pass wake_name_ok; the session folder must sit inside the inbox.
     """
     import shutil
     if not wake_name_ok(name) or name == BUILTIN_WORD:
         return
-    d = os.path.join(ENROLL_INBOX, name)
-    if os.path.islink(d):
-        unlink_in(ENROLL_INBOX, name)  # the link only, never what it points at
-    elif os.path.isdir(d) and os.path.dirname(os.path.realpath(d)) == os.path.realpath(ENROLL_INBOX):
-        shutil.rmtree(d, ignore_errors=True)  # rmtree does not follow symlinks inside the tree
-    enrolled_dir = os.path.dirname(ENROLLED)
-    for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
-        unlink_in(enrolled_dir, fn)
+    target = ENROLL_INBOX
     try:
+        d = os.path.join(ENROLL_INBOX, name)
+        target = d
+        if os.path.islink(d):
+            os.unlink(d)  # the link only, never what it points at
+        elif os.path.isdir(d) and os.path.dirname(os.path.realpath(d)) == os.path.realpath(ENROLL_INBOX):
+            shutil.rmtree(d)  # rmtree does not follow symlinks inside the tree
+        enrolled_dir = os.path.dirname(ENROLLED)
+        for fn in (name + ".onnx", name + ".json", name + ".fewshot.npz"):
+            target = os.path.join(enrolled_dir, fn)
+            if os.path.lexists(target):
+                os.unlink(target)
+        target = ENROLLED
         doc = read_json(ENROLLED, {})
         words = doc.get("words", []) if isinstance(doc, dict) else []
         keep = [w for w in words if not (isinstance(w, dict) and w.get("name") == name)]
         if len(keep) != len(words):
             safe_io.replace_file(ENROLLED, json.dumps({"words": keep}, indent=1), "enrolled", mode=0o644)
-    except (OSError, ValueError, AttributeError):
-        pass
+    except OSError as e:
+        print(f"wakeword delete failed {type(e).__name__} {target}", flush=True)
+        raise
 
 
 def enrolled_entries():
@@ -2662,8 +2680,8 @@ def drop_stale_guest():
     doc.pop("guest", None)
     try:
         write_json(p, doc, 0o640)
-    except OSError:
-        pass
+    except OSError as e:
+        print(f"t1 guest clear failed {type(e).__name__} {p}", flush=True)
 
 
 def schedule_persona_sync(delay=30):
@@ -3371,7 +3389,8 @@ def append_audit(line):
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
-    except OSError:
+    except OSError as e:  # the line itself is never logged
+        print(f"admin audit write failed {type(e).__name__} {p}", flush=True)
         return
 
 

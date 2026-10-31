@@ -325,8 +325,10 @@ def apply_brightness(level, root="/", stamp=None):
             write_backlight(100, root)
             try:
                 os.remove(stamp)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                print(f"dim stamp remove failed {type(e).__name__} {stamp}", flush=True)
             return "released"
         return "leave"
     try:
@@ -343,13 +345,15 @@ def apply_brightness(level, root="/", stamp=None):
                     os.makedirs(folder, exist_ok=True)
                 with open(stamp, "w") as handle:
                     handle.write("1\n")
-            except OSError:
-                pass
+            except OSError as e:
+                print(f"dim stamp write failed {type(e).__name__} {stamp}", flush=True)
         elif stamp and os.path.isfile(stamp):
             try:
                 os.remove(stamp)
-            except OSError:
+            except FileNotFoundError:
                 pass
+            except OSError as e:
+                print(f"dim stamp remove failed {type(e).__name__} {stamp}", flush=True)
         return "backlight"
     set_overlay(None if n >= 100 else n)
     return "overlay"

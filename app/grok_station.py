@@ -532,12 +532,7 @@ class Weather:
         while True:
             try:
                 self.data, self.ok_at = self.fetch(), time.time()
-                try:
-                    os.makedirs(os.path.dirname(WX_CACHE), exist_ok=True)
-                    with open(WX_CACHE, "w") as f:
-                        json.dump({"data": self.data, "ok_at": self.ok_at}, f)
-                except OSError:
-                    pass
+                save_weather_cache(self.data, self.ok_at)
                 pygame.event.post(pygame.event.Event(WEATHER))
                 time.sleep(WX_EVERY)
             except Exception as e:
@@ -742,6 +737,17 @@ def deck():
         DECK = cards.Deck(rotate_s=cards.rotate_s(E("GROK_STATION_CARD_ROTATE", "")),
                           ttl_max=cards.ttl_cap(E("GROK_STATION_CARD_TTL_MAX", "")))
     return DECK
+
+
+def save_weather_cache(data, ok_at, path=None):
+    """CacheDirectory=grok-station (grok-station.service:13). A failed save is logged, never silent."""
+    path = path or WX_CACHE
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"data": data, "ok_at": ok_at}, f)
+    except OSError as e:
+        print(f"weather cache save failed {type(e).__name__} {path}", flush=True)
 
 
 def logo_cache():

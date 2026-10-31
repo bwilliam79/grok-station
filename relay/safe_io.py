@@ -228,3 +228,17 @@ def replace_file(path, data, what, mode=0o600):
         except OSError:
             pass
         raise
+    _fsync_dir(directory, what)
+
+
+def _fsync_dir(directory, what):
+    """NIX-1313-07: make the rename durable. Logged, not raised: the new file is already in place with its data
+    fsynced, so raising would tell the caller the write failed when it did not."""
+    try:
+        dfd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOEXEC)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError as e:
+        _log[0](f"{what} dir fsync failed {type(e).__name__} {directory}")
