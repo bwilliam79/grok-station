@@ -801,9 +801,7 @@ def save_timer_state(path, timers, now, wall_now=None):
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        tmp = path + ".tmp"
-        safe_io.write_file(tmp, json.dumps({"saved_wall": float(wall_now), "timers": doc_timers}), "timers", mode=0o600)
-        os.replace(tmp, path)
+        safe_io.replace_file(path, json.dumps({"saved_wall": float(wall_now), "timers": doc_timers}), "timers", mode=0o600)
     except OSError:
         return False
     return True

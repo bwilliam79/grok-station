@@ -49,6 +49,10 @@ while True:
     p = os.path.dirname(p)
 PY
 install -o root -g root -m644 "$S/wake/gain.py" /opt/grok-station/gain.py.new && mv /opt/grok-station/gain.py.new /opt/grok-station/gain.py
+# 0.13.13 (NIX-1313-05): safe_io.py is one root-owned copy in $O/relay; the relay, the wake listener and the admin
+# page all import it from there (the parent check above already passed for /opt/grok-station).
+install -d -o root -g root -m755 /opt/grok-station/relay
+install -o root -g root -m644 "$S/relay/safe_io.py" /opt/grok-station/relay/safe_io.py.new && mv /opt/grok-station/relay/safe_io.py.new /opt/grok-station/relay/safe_io.py
 # 0.13.8: the relay loads train_flow.py from its own directory, never the grok-owned wake tree.
 # Same parent-dir rule as gain.py. The relay directory is created by install.sh before this runs.
 if [ -d /opt/grok-station/relay ]; then

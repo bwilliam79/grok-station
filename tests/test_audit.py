@@ -47,10 +47,13 @@ class AuditLog(unittest.TestCase):
         fresh = os.path.join(self.tmp, "fresh-eperm.log")
         with mock.patch("os.fchmod", deny), mock.patch("os.chmod", deny):
             self.assertTrue(r._append_audit(path, "NEW\n", 0o600))
-            self.assertTrue(r._append_audit(fresh, "NEW\n", 0o640))
+            # NIX-1313-04: a file this call creates must get its mode; a failed fchmod there is a refusal.
+            # An existing append-only file is never chmodded, so it still takes the line.
+            with self.assertRaises(OSError):
+                r._append_audit(fresh, "NEW\n", 0o640)
         self.assertEqual(open(path).read(), "OLD\nNEW\n")
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), before)
-        self.assertEqual(open(fresh).read(), "NEW\n")
+        self.assertFalse(os.path.exists(fresh))  # removed, not left behind with the umask mode
 
     def test_mode_set_only_when_this_call_creates_the_file(self):
         r = self.relay

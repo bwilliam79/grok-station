@@ -30,6 +30,11 @@ except ImportError:  # installed next to this file once the helper is shipped; t
         return int(hashlib.sha256(slug.encode()).hexdigest(), 16) % 18 + 1
 
 import cards
+# NIX-1313-05: the one shared safe_io (relay/safe_io.py). Installed: /opt/grok-station/relay (root 0755) beside this
+# file; repo: ../relay.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[len(sys.path):] = [os.path.join(_HERE, "relay"), os.path.join(_HERE, os.pardir, "relay")]
+import safe_io  # noqa: E402
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -1250,8 +1255,7 @@ def read_update_available(cache_path=None, version_path=None):
     cache_path = cache_path or E("GROK_STATION_UPDATE_CHECK", "/var/lib/grok-station/admin/update-check.json")
     version_path = version_path or E("GROK_STATION_VERSION_FILE", "/opt/grok-station/VERSION")
     try:
-        with open(cache_path) as f:
-            cache = json.load(f)
+        cache = safe_io.read_json(cache_path, safe_io.SMALL_JSON, "update-check")  # admin/: written by grok-admin
     except (OSError, ValueError):
         return False
     try:
@@ -5478,8 +5482,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
 # ---------------------------------------------------------------- setup needed / password reset / hotspot (admin page)
 def read_setup():
     try:
-        with open(SETUP_FILE) as f:
-            d = json.load(f)
+        d = safe_io.read_json(SETUP_FILE, safe_io.SMALL_JSON, "setup")  # /run/grok-station-admin: written by grok-admin
         if d.get("mode") == "key":  # password set, xAI key still missing: no code to show
             return d
         return d if d.get("mode") in ("setup", "reset", "hotspot") and re.fullmatch(r"[2-9A-HJ-NP-Z]{6}", str(d.get("code", ""))) else None

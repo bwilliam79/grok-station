@@ -333,9 +333,7 @@ class Limits:
         return s
 
     def _save(self, s):
-        tmp = self.path + ".tmp"
-        safe_io.write_file(tmp, json.dumps(s), "handoff limits", mode=0o600)
-        os.replace(tmp, self.path)
+        safe_io.replace_file(self.path, json.dumps(s), "handoff limits", mode=0o600)
 
     def take(self, bot, rid, now=None, test=False, preempt=None):
         """Reserve one handoff; None if allowed, else the reason. Counted before the POST, so failures count.
@@ -449,9 +447,7 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
            "tier_max": 0, "test": bool(test), "reply_by": str(reply_by or "")}
     if kind in ("bot_list", "update_helper", "update_bot"):
         doc["kind"] = kind
-    tmp = os.path.join(pdir, f".{rid}.tmp")
-    safe_io.write_file(tmp, json.dumps(doc), "pending", mode=0o644)
-    os.replace(tmp, os.path.join(pdir, rid + ".json"))
+    safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc), "pending", mode=0o644)
 
 
 def remove_pending(pdir, rid):

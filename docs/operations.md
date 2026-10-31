@@ -136,3 +136,38 @@ Service names and the `systemctl` / `journalctl` commands are in [architecture.m
 - **"No framebuffer (/dev/fb0)":** reboot so the display driver loads.
 - **The screen stays bright at night:** open Display and set Brightness to Schedule, Sunrise, or Light sensor. Off leaves the backlight alone. With no backlight file, the station draws a dark layer instead. See [dimming.md](dimming.md).
 - **The installer says "Needs 64-bit Raspberry Pi OS (aarch64)":** re-image with the 64-bit Lite image.
+
+## File trust inventory (0.13.13, NIX-1313-03/04/05)
+
+Every read or write of a file in a folder that a *different* service can write goes through `relay/safe_io.py`
+(one root-owned copy in `/opt/grok-station/relay`, imported by the relay, the wake listener, the display and the admin page):
+O_NOFOLLOW and O_NONBLOCK on open, a regular file by fstat, a size cap on reads; writes also need our own uid, one
+hard link and a successful fchmod, and tmp-then-rename uses a random O_EXCL temp. A refusal is logged as
+`{what} read refused {reason} {path}` or `write refused` and falls back as if the file were missing.
+
+| Folder | Owner:group, mode | Set by | Writers | Readers | safe_io |
+|---|---|---|---|---|---|
+| `/var/lib/grok-station` | root:root 0755 | install.sh:158 | root | all | n/a (no files read at the top) |
+| `$V/state`, `bots`, `voice`, `audit`, `personas`, `portraits`, `alerts`, `wakewords` | grok-relay:grok-admin 0770 | install.sh:155-156 | relay, admin | relay, admin, wake (wakewords) | yes |
+| `$V/voice/{minted,pending,replies,ack}` | grok-relay:grok-admin 0770 | install.sh:162-163 | relay | relay | yes |
+| `$V/home-status` | grok-relay:grok 2770 | install.sh:172 | relay, admin | relay, admin | yes |
+| `$V/late` | grok-relay:grok 2770 | install.sh:175 | relay | wake | yes |
+| `$V/integrations` | grok-admin:grok-admin 2750 | install.sh:169 | admin | relay, admin | not needed: only the admin writes |
+| `$V/enroll/inbox` | grok:grok 0750 | install.sh:178-179 | wake | wake, admin | admin side yes (reader is not the writer); wake side not needed |
+| `$V/admin` | grok-admin:grok 0750 | grok-station-admin.service:11-12 | admin | admin, wake, display | wake and display side yes |
+| `/run/grok-station-admin` | grok-admin:grok 0750 | grok-station-admin.service:13-14 | admin | wake, display (setup.json) | wake and display side yes |
+| `/run/grok-station` | grok 0755 (systemd default) | grok-station.service:12 | display | admin (preview snapshot) | admin side yes |
+| `/opt/grok-station/wake`, `wake/models`, `wake/models/enrolled`, `/opt/grok-station/portraits` | grok 0755 | install.sh:278-279 (safe-mkdirs default 0755) | wake (grok) | wake, display | not needed: the only writer is the reader's own user |
+| `/opt/grok-station/relay` | root:root 0755 | install.sh:208, tools/install-files.sh | root | relay, wake, admin | n/a (code) |
+| `/etc/grok-station/secrets` | root:root 0711, files per token | install.sh:136 | root | each service its token | n/a (root-written) |
+
+Out of scope, and why: reads in grok_wake.py of `/opt/grok-station/wake/*` (timers.json, wakewords.json, enrolled
+list, models, margin log), the enroll inbox, and `/opt/grok-station/portraits`, and their fixed-name `.tmp` rewrites:
+those folders are writable only by grok, the same user that reads them, so no other service can plant a FIFO, link
+or file there. Token reads under `/etc/grok-station/secrets` are root-written. `$V/admin/relay-audit.log`,
+`t1.json` and the admin's other own state files are written and read only by grok-admin.
+
+Allowed foreign owners for writes: none. Every relay write or append target (voice-busy, audit logs, late jobs,
+alerts, pending, timers, handoff limits, the Homebridge block flag) is created by the relay itself; the admin's
+writes to the shared Homebridge flag go through its own random-temp rename, so the relay never opens a file the
+admin owns for writing. `safe_io` accepts an `owners=` uid list for a future shared target; it is unused.

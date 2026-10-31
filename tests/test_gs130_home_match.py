@@ -202,7 +202,7 @@ class Match(unittest.TestCase):
         ])
         home_src = open(os.path.join(ROOT, "relay", "home.py"), encoding="utf-8").read()
         self.assertIn('safe_io.read_json(path, 1024, "homebridge block")', home_src)
-        self.assertIn('safe_io.write_file(tmp,', home_src)
+        self.assertIn('safe_io.replace_file(path,', home_src)
 
 
 class Host(unittest.TestCase):

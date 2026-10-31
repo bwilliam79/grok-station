@@ -844,14 +844,9 @@ def _hb_write_block(kind):
     directory = os.path.dirname(path) or "."
     try:
         os.makedirs(directory, exist_ok=True)
-        tmp = path + ".tmp"
-        safe_io.write_file(tmp, json.dumps({"blocked": kind}) + "\n", "homebridge block", mode=0o640, fsync=True)
-        os.replace(tmp, path)
+        safe_io.replace_file(path, json.dumps({"blocked": kind}) + "\n", "homebridge block", mode=0o640)
     except OSError:
-        try:
-            os.unlink(path + ".tmp")
-        except OSError:
-            pass
+        pass  # replace_file already removed its own random temp
 
 
 def _hb_mem_clear():

@@ -2325,15 +2325,11 @@ def _share_with_wake(path, directory=False):
 
 def _write_late_file(path, data, what):
     """late/ is group-writable (2770): safe_io open (no symlink, no FIFO), then share by fd, never by path."""
-    fd = safe_io.open_write(path, what, 0o600)
+    fd = safe_io.open_write(path, what, 0o640)  # mode by fchmod; a failed fchmod is a refusal (NIX-1313-04)
     try:
         view = memoryview(data)
         while view:
             view = view[os.write(fd, view):]
-        try:
-            os.fchmod(fd, 0o640)
-        except OSError:
-            pass
         try:
             import grp
             os.fchown(fd, -1, grp.getgrnam("grok").gr_gid)
@@ -3543,16 +3539,6 @@ def actor_ok(s):
     return isinstance(s, str) and _ACTOR.fullmatch(s) is not None
 
 
-def _mode_best_effort(fn, *args):
-    """Apply a mode. EPERM, EACCES and ENOTSUP are ignored so a host append-only flag cannot drop the write."""
-    try:
-        fn(*args)
-    except OSError as e:
-        ignored = (errno.EPERM, errno.EACCES, getattr(errno, "ENOTSUP", None), getattr(errno, "EOPNOTSUPP", None))
-        if e.errno not in ignored:
-            raise
-
-
 def _append_audit(path, line, mode):
     """O_APPEND|O_WRONLY. Mode is set only when this call creates the file. Never read, truncate, rename or delete."""
     directory = os.path.dirname(path) or "."
@@ -3560,8 +3546,6 @@ def _append_audit(path, line, mode):
         return False
     fd, created = safe_io.open_append(path, "audit", mode)  # NIX-1313-03: no symlink, no FIFO
     try:
-        if created:
-            _mode_best_effort(os.fchmod, fd, mode)  # umask must not widen a file this call just created
         os.write(fd, line.encode())
         os.fsync(fd)
     finally:

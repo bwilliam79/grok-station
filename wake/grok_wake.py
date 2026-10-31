@@ -35,6 +35,10 @@ step, and scored on the same embedding stream as Hey Grok.
 import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, stat, subprocess, sys, threading, time, types, urllib.parse, urllib.request, wave
 import numpy as np
 import wait_tone
+# NIX-1313-05: the one shared safe_io (relay/safe_io.py). Repo: ../relay; installed: /opt/grok-station/relay, root 0755.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "relay"))
+import safe_io  # noqa: E402
+safe_io.set_log(lambda m: print(m, flush=True))
 
 
 def _train_flow_file_ok(path, root_uid=0):
@@ -263,21 +267,14 @@ def t1_query():
     """
     guest = False
     try:
-        with open(T1_FILE) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(T1_FILE, safe_io.SMALL_JSON, "t1")  # admin/ (grok-admin 0750): not ours
         if isinstance(doc, dict) and "guest" in doc:
             guest = doc.get("guest") is True
             doc.pop("guest", None)
-            tmp = f"{T1_FILE}.{os.getpid()}.tmp"
-            try:
-                with open(tmp, "w") as f:
-                    json.dump(doc, f)
-                os.replace(tmp, T1_FILE)
+            try:  # random O_EXCL temp, checked like any write (NIX-1313-04)
+                safe_io.replace_file(T1_FILE, json.dumps(doc), "t1", mode=0o640)
             except OSError:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
+                pass
     except (OSError, ValueError, AttributeError):
         guest = False
     return urllib.parse.quote(json.dumps({"guest": guest, "last_tap": int(LAST_TAP["at"])}, separators=(",", ":")))
@@ -867,8 +864,7 @@ def take_card(ev):
 
 def setup_mode():
     try:
-        with open(SETUP_FILE) as f:
-            m = json.load(f).get("mode")
+        m = safe_io.read_json(SETUP_FILE, safe_io.SMALL_JSON, "setup").get("mode")
         return m if m in ("setup", "reset", "hotspot", "key") else None
     except (OSError, ValueError, AttributeError):
         return None
@@ -949,8 +945,7 @@ def enroll_phrases():
         if wake_name_ok(n) and persona_ok(ps):
             out[n] = ps
     try:
-        with open(OVERRIDES) as f:
-            ov = json.load(f)
+        ov = safe_io.read_json(OVERRIDES, safe_io.SMALL_JSON, "wake-overrides")
     except (OSError, ValueError):
         ov = {}
     if isinstance(ov, dict):
@@ -2254,8 +2249,7 @@ def load_dropped_wakewords(directory=None):
             continue
         stem = fn[:-5]
         try:
-            with open(os.path.join(directory, fn)) as f:
-                doc = json.load(f)
+            doc = safe_io.read_json(os.path.join(directory, fn), safe_io.SMALL_JSON, "dropped wakeword")
         except (OSError, ValueError):
             print(f"wakeword {stem}: checksum mismatch", flush=True)
             continue
@@ -2272,7 +2266,7 @@ def load_dropped_wakewords(directory=None):
             continue
         op = os.path.join(directory, name + ".onnx")
         try:
-            blob = open(op, "rb").read()
+            blob = safe_io.read_bytes(op, safe_io.MODEL_MAX, "dropped wakeword")
         except OSError:
             print(f"wakeword {name}: checksum mismatch", flush=True)
             continue
@@ -2405,8 +2399,7 @@ def load_model():
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
     try:  # admin page: per-word on/off, sensitivity, and custom phrase -> persona
-        with open(OVERRIDES) as f:
-            ov = json.load(f)
+        ov = safe_io.read_json(OVERRIDES, safe_io.SMALL_JSON, "wake-overrides")
     except (OSError, ValueError):
         ov = {}
     apply_wake_overrides(entries, ov)
@@ -2558,8 +2551,7 @@ def load_late_job(late_id):
     if not _LATE_ID.fullmatch(str(late_id or "")):
         return None
     try:
-        with open(os.path.join(LATE_DIR, late_id + ".json")) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(os.path.join(LATE_DIR, late_id + ".json"), safe_io.SMALL_JSON, "late job")
     except (OSError, ValueError):
         return None
     if not isinstance(doc, dict) or not isinstance(doc.get("text"), str) or not doc["text"].strip():
@@ -2596,8 +2588,7 @@ def play_late(job):
     pcm_name, dev = job.get("pcm") or "", LIVE.get("play")
     if pcm_name and dev and _LATE_PCM.fullmatch(pcm_name):
         try:
-            with open(os.path.join(LATE_DIR, pcm_name), "rb") as f:
-                pcm = f.read()
+            pcm = safe_io.read_bytes(os.path.join(LATE_DIR, pcm_name), safe_io.AUDIO_MAX, "late pcm")
             if pcm:
                 p = subprocess.Popen(["aplay", "-q", "-D", dev, "-f", "S16_LE", "-r", "24000", "-c", "1", "-t", "raw"],
                                      stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -3193,8 +3184,7 @@ def mic_reset_flags(path=None):
     path = path or os.environ.get("WAKE_MIC_RESET_FILE", "/var/lib/grok-station/admin/mic-reset.json")
     data = {}
     try:
-        with open(path) as f:
-            got = json.load(f)
+        got = safe_io.read_json(path, safe_io.SMALL_JSON, "mic-reset")
         if isinstance(got, dict):
             data = got
     except (OSError, ValueError):

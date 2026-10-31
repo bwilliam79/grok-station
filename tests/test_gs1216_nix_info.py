@@ -37,9 +37,11 @@ class PortraitCacheRace(unittest.TestCase):
         new_ns, new_body = 1_900_000_000_123_456_789, b"\x89PNG\r\n\x1a\n" + b"1" * 99
         new_v = "%x-%x" % (new_ns, len(new_body))
 
-        def racing_open(path, *a, **kw):
-            fh = real_open(path, *a, **kw)
-            if a[:1] == ("rb",) and os.path.realpath(str(path)) == os.path.realpath(f):
+        real_os_open = os.open
+
+        def racing_open(path, flags, *a, **kw):  # 0.13.13: the portrait is read through safe_io (os.open on an fd)
+            fh = real_os_open(path, flags, *a, **kw)
+            if not flags & (os.O_WRONLY | os.O_RDWR) and os.path.realpath(str(path)) == os.path.realpath(f):
                 tmp = f + ".up"
                 with real_open(tmp, "wb") as w:
                     w.write(new_body)  # the upload lands while we hold the old file's handle
@@ -52,9 +54,11 @@ class PortraitCacheRace(unittest.TestCase):
                 fh.write(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
             return ga.portrait_version("zed")
 
-        ga.open = racing_open
-        self.addCleanup(lambda: delattr(ga, "open"))
-        st, cc, body = self.get("?v=" + new_v)
+        ga.safe_io.os.open = racing_open
+        try:
+            st, cc, body = self.get("?v=" + new_v)
+        finally:
+            ga.safe_io.os.open = real_os_open
         self.assertEqual((st, len(body)), (200, 72))  # the old bytes went out
         self.assertEqual(ga.portrait_version("zed"), new_v)  # and the new picture is now on disk
         self.assertEqual(cc, "no-store", "old bytes cached under the new picture's version")

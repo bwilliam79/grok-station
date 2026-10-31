@@ -11,7 +11,9 @@ grok-relay (primary group grok-admin) can read it and nothing else can. ADMIN_AL
 No support-bundle endpoint exists. redact_registry() is what a bundle should
 write: host becomes "redacted", names and aliases become the device id.
 """
-import http.client, ipaddress, json, os, re, secrets, socket, ssl, struct, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+import http.client, ipaddress, json, os, re, secrets, socket, ssl, struct, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "relay"))  # relay/safe_io.py
+import safe_io  # noqa: E402
 
 BLINK_S = 0.4
 MDNS_GROUP = ("224.0.0.251", 5353)
@@ -783,8 +785,7 @@ def hb_block_kind():
     if not path:
         return None
     try:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "homebridge block")  # home-status/: group grok writes
     except (OSError, ValueError):
         return None
     if not isinstance(doc, dict):

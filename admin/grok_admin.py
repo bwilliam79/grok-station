@@ -13,6 +13,9 @@ import base64, hashlib, hmac, http.client, http.cookies, ipaddress, json, os, re
 import subprocess, threading, time, urllib.error, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+# NIX-1313-05: the one shared safe_io (relay/safe_io.py). Repo: ../relay; installed: /opt/grok-station/relay, root 0755.
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "relay"))
+import safe_io  # noqa: E402
 
 E = os.environ.get
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,9 +76,10 @@ def path(*p):
 
 
 def read_json(p, default):
+    """Our state files and files other services write (enrolled list, overrides): O_NOFOLLOW|O_NONBLOCK, regular,
+    at most 1 MB (safe_io). Missing, refused or malformed is default."""
     try:
-        with open(p) as f:
-            return json.load(f)
+        return safe_io.read_json(p, safe_io.LARGE_JSON, os.path.basename(p))
     except (OSError, ValueError):
         return default
 
@@ -1011,8 +1015,8 @@ def _session_fingerprint(directory, names):
         digest.update(fn.encode())
         digest.update(b"\0")
         try:
-            with open(os.path.join(directory, fn), "rb") as f:
-                digest.update(hashlib.sha256(f.read()).digest())
+            digest.update(hashlib.sha256(safe_io.read_bytes(os.path.join(directory, fn), safe_io.AUDIO_MAX,
+                                                            "enroll clip")).digest())
         except OSError:
             return None
     return digest.digest()
@@ -1040,8 +1044,7 @@ def finished_clip_files(phrase_dir):
         if not real.startswith(root + os.sep):
             continue
         try:
-            with open(os.path.join(real, "session.json")) as f:
-                doc = json.load(f)
+            doc = safe_io.read_json(os.path.join(real, "session.json"), safe_io.SMALL_JSON, "enroll session")
         except (OSError, ValueError):
             continue
         if not isinstance(doc, dict):
@@ -1655,10 +1658,7 @@ def drop_phrase_leftovers(name):
         words = doc.get("words", []) if isinstance(doc, dict) else []
         keep = [w for w in words if not (isinstance(w, dict) and w.get("name") == name)]
         if len(keep) != len(words):
-            tmp = ENROLLED + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump({"words": keep}, f, indent=1)
-            os.replace(tmp, ENROLLED)
+            safe_io.replace_file(ENROLLED, json.dumps({"words": keep}, indent=1), "enrolled", mode=0o644)
     except (OSError, ValueError, AttributeError):
         pass
 
@@ -4298,8 +4298,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_get_preview(self, p, q, j):
         try:
-            with open(SNAPSHOT, "rb") as f:
-                return self.send(200, body=f.read(), ctype="image/png")
+            return self.send(200, body=safe_io.read_bytes(SNAPSHOT, safe_io.SCREEN_MAX, "snapshot"), ctype="image/png")
         except OSError:
             return self.send(404, {"error": "no snapshot yet"})
 
@@ -4772,22 +4771,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         base = os.path.realpath(os.path.dirname(PERSONAS))
         for ext, ctype in (("png", "image/png"), ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("webp", "image/webp")):
-            f = os.path.realpath(os.path.join(base, parts[3] + "." + ext))
-            if not (f.startswith(base + os.sep) and os.path.isfile(f)):
-                continue
+            f = os.path.join(base, parts[3] + "." + ext)  # no realpath/isfile: O_NOFOLLOW and fstat decide (NIX-1313-05)
             try:
-                if os.path.getsize(f) > 2_000_000:
-                    continue
-                with open(f, "rb") as fh:
-                    st = os.fstat(fh.fileno())
-                    if st.st_size > 2_000_000:
-                        continue
-                    body = fh.read(2_000_001)
-                if len(body) != st.st_size:  # it changed while we read it; don't let a cache keep this copy
-                    st = None
-                return self.send(200, body=body, ctype=ctype, cache=portrait_cache(q, st))
+                body, st = safe_io.read_bytes_stat(f, 2_000_000, "portrait")
+            except FileNotFoundError:
+                continue
             except OSError:
                 return self.send(404, {"error": "not found"})
+            if len(body) != st.st_size:  # it changed while we read it; don't let a cache keep this copy
+                st = None
+            return self.send(200, body=body, ctype=ctype, cache=portrait_cache(q, st))
         return self.send(404, {"error": "not found"})
 
     # -- bots (proxied to the relay; webhook keys are not stored here)
