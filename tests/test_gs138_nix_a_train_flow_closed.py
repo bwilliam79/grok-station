@@ -17,6 +17,8 @@ def _tree(with_flow):
     d = tempfile.mkdtemp()
     shutil.copytree(os.path.join(ROOT, "wake"), os.path.join(d, "wake"))
     os.makedirs(os.path.join(d, "relay"))
+    # 0.13.13: safe_io.py is always installed in relay/ (install.sh, tools/install-files.sh); only train_flow varies.
+    shutil.copy(os.path.join(ROOT, "relay", "safe_io.py"), os.path.join(d, "relay", "safe_io.py"))
     if with_flow == "symlink":
         os.symlink(os.path.join(ROOT, "relay", "train_flow.py"), os.path.join(d, "relay", "train_flow.py"))
     return d
