@@ -167,6 +167,45 @@ def file_mode(mode):
     return mode
 
 
+STATE_READ_MAX = 64 * 1024  # NIX-1313-01: cap for JSON read from group-writable state/
+OFFERED_VOICES_MAX = 512
+
+
+def read_state_json(path, what):
+    """NIX-1312-01 pattern for state/ files: O_NOFOLLOW, regular file only, at most STATE_READ_MAX bytes.
+    Missing returns None quietly; a symlink, non-regular, oversized or malformed file is refused (None) and logged."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        log(f"{what} read refused {type(e).__name__} {path}")
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            log(f"{what} read refused not-regular {path}")
+            return None
+        if st.st_size > STATE_READ_MAX:
+            log(f"{what} read refused oversized {path}")
+            return None
+        data = b""
+        while len(data) <= STATE_READ_MAX:
+            chunk = os.read(fd, STATE_READ_MAX + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+        if len(data) > STATE_READ_MAX:
+            log(f"{what} read refused oversized {path}")
+            return None
+        return json.loads(data.decode("utf-8"))
+    except (OSError, ValueError) as e:
+        log(f"{what} read refused {type(e).__name__} {path}")
+        return None
+    finally:
+        os.close(fd)
+
+
 def atomic_write(path, data, mode=0o600):
     """Write path by temp file in the same directory, fsync, then rename. One file, no partial reads."""
     mode = file_mode(mode)
@@ -179,8 +218,7 @@ def atomic_write(path, data, mode=0o600):
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
-        os.chmod(path, mode)
+        os.replace(tmp, path)  # NIX-1313-02: mode set by fchmod above; no chmod by path (follows symlinks)
     except Exception:
         try:
             os.unlink(tmp)
@@ -1985,14 +2023,13 @@ def offered_voices():
 
 def seed_offered_voices():
     """Load STATE_DIR/state/voices-offered.json into VOICES. Invalid or missing files leave VOICES alone."""
-    try:
-        with open(offered_path()) as f:
-            doc = json.load(f)
-    except (OSError, ValueError):
-        return False
+    doc = read_state_json(offered_path(), "voices: offered")
     voices = doc.get("voices") if isinstance(doc, dict) else None
     if not isinstance(voices, list) or not voices:
         return False
+    if len(voices) > OFFERED_VOICES_MAX:  # NIX-1313-01: keep the first OFFERED_VOICES_MAX, like the NIX-1312-01 cap
+        log(f"voices: offered list capped {len(voices)}>{OFFERED_VOICES_MAX} {offered_path()}")
+        voices = voices[:OFFERED_VOICES_MAX]
     good = []
     for v in voices:
         if not isinstance(v, str):
@@ -4400,11 +4437,7 @@ def updates_path():
 
 
 def _updates_doc():
-    try:
-        with open(updates_path(), encoding="utf-8") as f:
-            doc = json.load(f)
-    except (OSError, ValueError):
-        return {}
+    doc = read_state_json(updates_path(), "updates")
     return doc if isinstance(doc, dict) else {}
 
 
@@ -5965,19 +5998,15 @@ PORTRAIT_EXTS = ("png", "jpg", "jpeg", "webp")
 
 
 def _avatar_auto_disk():
-    try:
-        with open(AVATAR_AUTO_FILE) as f:
-            doc = json.load(f)
-    except (OSError, ValueError):
-        return {}
+    doc = read_state_json(AVATAR_AUTO_FILE, "avatar-auto")
     return {k: v for k, v in doc.items() if isinstance(k, str)} if isinstance(doc, dict) else {}
 
 
 def _avatar_auto_save(doc):
     try:
         atomic_write(AVATAR_AUTO_FILE, json.dumps(doc, sort_keys=True).encode())
-    except OSError:
-        pass
+    except OSError as e:
+        log(f"avatar-auto save failed {type(e).__name__} {AVATAR_AUTO_FILE}")
 
 
 def avatar_auto_mark(slug):
