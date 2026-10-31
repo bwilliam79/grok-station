@@ -9,6 +9,7 @@ bound pending file, single use, expiry; the answer is spoken only while the sess
 agent, length and verdict only. There is no guest mode on this path.
 """
 import json, math, os, re, secrets, time, unicodedata, urllib.parse
+import safe_io
 
 REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
 Q_MAX, REPLY_MAX = 500, 400
@@ -319,8 +320,7 @@ class Limits:
 
     def _load(self):
         try:
-            with open(self.path) as f:
-                s = json.load(f)
+            s = safe_io.read_json(self.path, safe_io.LARGE_JSON, "handoff limits")
         except (OSError, ValueError):
             s = {}
         if not isinstance(s, dict):
@@ -334,8 +334,7 @@ class Limits:
 
     def _save(self, s):
         tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(s, f)
+        safe_io.write_file(tmp, json.dumps(s), "handoff limits", mode=0o600)
         os.replace(tmp, self.path)
 
     def take(self, bot, rid, now=None, test=False, preempt=None):
@@ -451,9 +450,7 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
     if kind in ("bot_list", "update_helper", "update_bot"):
         doc["kind"] = kind
     tmp = os.path.join(pdir, f".{rid}.tmp")
-    with open(tmp, "w") as f:
-        json.dump(doc, f)
-    os.chmod(tmp, 0o644)
+    safe_io.write_file(tmp, json.dumps(doc), "pending", mode=0o644)
     os.replace(tmp, os.path.join(pdir, rid + ".json"))
 
 
@@ -491,8 +488,7 @@ def take_reply(rdir, rid, bot, nonce, hosts=(), seen=None, note_ok=False, names=
     A reply for a different request_id cannot satisfy this one (a test rid never resolves a real request)."""
     p = os.path.join(rdir, rid + ".json")
     try:
-        with open(p) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(p, safe_io.SMALL_JSON, "reply")
     except FileNotFoundError:
         return None, None
     except (OSError, ValueError):

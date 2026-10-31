@@ -8,6 +8,7 @@ including a port ("127.0.0.1:PORT"). Tests only. Leave it unset on a Pi:
 loopback is refused, and a public address is refused either way.
 """
 import asyncio, base64, ipaddress, json, os, re, socket, time, urllib.parse
+import safe_io
 
 import aiohttp
 import aiohttp.resolver
@@ -823,7 +824,7 @@ def _hb_blocked():
     if not path:
         return None
     try:
-        doc = json.loads(open(path, encoding="utf-8").read(1024))
+        doc = safe_io.read_json(path, 1024, "homebridge block")
     except (OSError, ValueError):
         return None
     if not isinstance(doc, dict):
@@ -844,11 +845,7 @@ def _hb_write_block(kind):
     try:
         os.makedirs(directory, exist_ok=True)
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"blocked": kind}) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.chmod(tmp, 0o640)
+        safe_io.write_file(tmp, json.dumps({"blocked": kind}) + "\n", "homebridge block", mode=0o640, fsync=True)
         os.replace(tmp, path)
     except OSError:
         try:

@@ -5,6 +5,7 @@ Spoken confirm rules (Nix): station mic only, only after the read-back has finis
 utterance must be "yes, save it". The read-back never contains that phrase. Shared (non own-notes) changes need a tap.
 Gates: guest mode off, not 10 PM to 7 AM, and a physical tap on the station in the last 30 min ("recent tap")."""
 import datetime, json, os, re, secrets, time
+import safe_io
 from zoneinfo import ZoneInfo
 
 E = os.environ.get
@@ -110,8 +111,7 @@ def write_event(p, verdict, how, source, station, now=None, confirms_dir=None):
            "source": source, "at_ms": int(now * 1000), "readback_done_ms": int(p.readback_done * 1000) if p.readback_done else None,
            "station": {"guest": station.get("guest", True), "last_tap_ms": int(station.get("last_tap", 0) * 1000)}}
     tmp = os.path.join(d, f".{p.rid}.{secrets.token_hex(4)}.tmp")
-    with open(tmp, "w") as f:
-        json.dump(doc, f)
+    safe_io.write_file(tmp, json.dumps(doc), "t1 confirm", mode=0o644, excl=True)
     os.replace(tmp, os.path.join(d, p.rid + ".json"))
     p.done = True
     return doc

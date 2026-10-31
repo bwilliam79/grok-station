@@ -206,7 +206,7 @@ st_display() {
 
 st_relay() {  # native venv, loopback only
   run install -d -o root -g root -m 0755 $O/relay
-for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py home.py; do run install -m644 relay/$f $O/relay/; done
+for f in relay.py handoff.py tools.py t1.py botreply.py late_answer.py voices.py home.py safe_io.py; do run install -m644 relay/$f $O/relay/; done
   # 0.13.8: train_flow.py is the one copy, root-owned beside relay.py. grok owns $O/wake, so the
   # relay must not exec a file from there. Same parent check as gain.py (Nix M1b).
   if [ "$DRY" = 1 ]; then echo "+ check $O/relay and its parents are root-owned"; else

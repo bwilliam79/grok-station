@@ -11,6 +11,7 @@ display card ({"type":"card",...}); timers still send timer_set / timer_cancel. 
 The weather card has no place name and no coordinates — those stay in the tool output for the spoken answer only.
 """
 import datetime, json, os, re, secrets, sys, time, urllib.parse
+import safe_io
 from zoneinfo import ZoneInfo, available_timezones
 
 E = os.environ.get
@@ -801,8 +802,7 @@ def save_timer_state(path, timers, now, wall_now=None):
         if parent:
             os.makedirs(parent, exist_ok=True)
         tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump({"saved_wall": float(wall_now), "timers": doc_timers}, f)
+        safe_io.write_file(tmp, json.dumps({"saved_wall": float(wall_now), "timers": doc_timers}), "timers", mode=0o600)
         os.replace(tmp, path)
     except OSError:
         return False
@@ -816,8 +816,7 @@ def load_timer_state(path, wall_now):
     restart, so this is the restart rule; MonoClock covers a running process.
     """
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "timers")
     except (OSError, ValueError):
         return {}
     if not isinstance(doc, dict):

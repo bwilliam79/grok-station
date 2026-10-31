@@ -5,6 +5,7 @@ A reply is SealedBox(station public key) around an Ed25519 attached signature of
 """
 import base64, json, os, re, tempfile, threading, time, unicodedata
 import handoff
+import safe_io
 from nacl.exceptions import CryptoError
 from nacl.public import PrivateKey, SealedBox
 from nacl.signing import VerifyKey
@@ -88,8 +89,7 @@ def keys_path(bots_dir):
 def load_keys(path):
     """{"killed": bool, "keys": {slug: b64}}. A missing or corrupt file is no keys (replies fail closed)."""
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.LARGE_JSON, "bot keys")
     except (OSError, ValueError):
         return {"killed": False, "keys": {}}
     if not isinstance(doc, dict):
@@ -245,8 +245,7 @@ def _rows(raw):
 
 def _load_rtt(path):
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "rtt")
     except (OSError, ValueError):
         doc = {}
     if not isinstance(doc, dict):
@@ -543,8 +542,7 @@ class ShowSeen:
 
     def _load(self, now_ms):
         try:
-            with open(self.path) as f:
-                rows = json.load(f)
+            rows = safe_io.read_json(self.path, safe_io.LARGE_JSON, "show-seen")
         except (OSError, ValueError):
             return []
         if not isinstance(rows, list):

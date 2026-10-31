@@ -194,13 +194,15 @@ class Match(unittest.TestCase):
         line = [ln for ln in open(os.path.join(ROOT, "install.sh")) if ln.startswith("for f in relay.py")][0]
         self.assertIn("home.py", line)
         opens = re.findall(r"open\([^)]*\)", open(os.path.join(ROOT, "relay", "home.py"), encoding="utf-8").read())
-        # Registry read, Homebridge creds, the block flag, and the rewrite of that flag. Nothing else.
+        # Registry read and Homebridge creds. Nothing else opens directly: the block flag (group-writable
+        # home-status/) is read and rewritten through safe_io (NIX-1313-03).
         self.assertEqual(opens, [
             'open(path, "rb")',
             'open(raw, encoding="utf-8")',
-            'open(path, encoding="utf-8")',
-            'open(tmp, "w", encoding="utf-8")',
         ])
+        home_src = open(os.path.join(ROOT, "relay", "home.py"), encoding="utf-8").read()
+        self.assertIn('safe_io.read_json(path, 1024, "homebridge block")', home_src)
+        self.assertIn('safe_io.write_file(tmp,', home_src)
 
 
 class Host(unittest.TestCase):

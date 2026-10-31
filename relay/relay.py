@@ -33,6 +33,7 @@ except ModuleNotFoundError as _e:  # a venv from an older install: say which pac
           "(it installs relay/requirements.txt on every run).", file=_sys.stderr, flush=True)
     raise SystemExit(1)
 import handoff
+import safe_io
 import home
 import voices
 import late_answer
@@ -167,45 +168,15 @@ def file_mode(mode):
     return mode
 
 
-STATE_READ_MAX = 64 * 1024  # NIX-1313-01: cap for JSON read from group-writable state/
+STATE_READ_MAX = safe_io.SMALL_JSON  # NIX-1313-01: cap for JSON read from group-writable state/
 OFFERED_VOICES_MAX = 512
 VOICE_LIST_MAX = 256 * 1024  # xAI voice-list response bound
 
 
 def read_state_json(path, what):
-    """NIX-1312-01 pattern for state/ files: O_NOFOLLOW, regular file only, at most STATE_READ_MAX bytes.
-    Missing returns None quietly; a symlink, non-regular, oversized or malformed file is refused (None) and logged."""
-    try:
-        # NIX-1313-03: O_NONBLOCK so a planted FIFO cannot block open(); fstat below refuses it (regular files ignore it)
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
-    except FileNotFoundError:
-        return None
-    except OSError as e:
-        log(f"{what} read refused {type(e).__name__} {path}")
-        return None
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            log(f"{what} read refused not-regular {path}")
-            return None
-        if st.st_size > STATE_READ_MAX:
-            log(f"{what} read refused oversized {path}")
-            return None
-        data = b""
-        while len(data) <= STATE_READ_MAX:
-            chunk = os.read(fd, STATE_READ_MAX + 1 - len(data))
-            if not chunk:
-                break
-            data += chunk
-        if len(data) > STATE_READ_MAX:
-            log(f"{what} read refused oversized {path}")
-            return None
-        return json.loads(data.decode("utf-8"))
-    except (OSError, ValueError) as e:
-        log(f"{what} read refused {type(e).__name__} {path}")
-        return None
-    finally:
-        os.close(fd)
+    """NIX-1313-01/03: safe_io read (O_NOFOLLOW|O_NONBLOCK, regular file, at most STATE_READ_MAX). None when missing,
+    refused or malformed; refusals are logged."""
+    return safe_io.read_json_or_none(path, STATE_READ_MAX, what, lambda m: log(m))
 
 
 def atomic_write(path, data, mode=0o600):
@@ -247,8 +218,7 @@ def webhooks():
         return {}
     if mt != _hooks["mtime"]:
         try:
-            with open(WEBHOOKS_FILE) as f:
-                _hooks["map"] = handoff.load_webhooks(f.read())
+            _hooks["map"] = handoff.load_webhooks(safe_io.read_text(WEBHOOKS_FILE, safe_io.LARGE_JSON, "webhooks"))
         except OSError:
             _hooks["map"] = {}
         _hooks["mtime"] = mt
@@ -391,6 +361,9 @@ def log(*a):
     print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+safe_io.set_log(lambda m: log(m))  # late-bound: tests that swap relay.log still capture refusals
+
+
 def today():
     return datetime.datetime.now(ZoneInfo(TZ)).strftime("%Y-%m-%d")
 
@@ -416,8 +389,9 @@ def alert(kind, title, message, priority=4):
     log("ALERT", kind, title)
     if os.path.isdir(ALERT_DIR):
         try:
-            with open(os.path.join(ALERT_DIR, f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json"), "w") as f:
-                json.dump({"title": title, "message": message, "priority": priority, "tags": ["grok-station"]}, f)
+            safe_io.write_file(os.path.join(ALERT_DIR, f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.json"),
+                               json.dumps({"title": title, "message": message, "priority": priority,
+                                           "tags": ["grok-station"]}), "alert", mode=0o644, excl=True)
         except OSError as e:
             log("alert write failed", type(e).__name__)
 
@@ -505,8 +479,7 @@ def load_overlay_doc():
     """
     base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "key_mode": {}, "reply_host": {}}
     try:
-        with open(overlay_path()) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(overlay_path(), safe_io.LARGE_JSON, "personas-overlay")
     except (OSError, ValueError):
         return base
     if not isinstance(doc, dict):
@@ -573,8 +546,7 @@ def persona_list():
     items, hosts, names = [], [], []
     if os.path.isfile(PERSONAS_FILE):
         try:
-            with open(PERSONAS_FILE) as f:
-                doc = json.load(f)
+            doc = safe_io.read_json(PERSONAS_FILE, safe_io.LARGE_JSON, "personas")
             items = doc.get("personas", []) if isinstance(doc, dict) else []
             # A stale top-level "guest" key is ignored. household_names is the private name list for the PII lint.
             hosts = [h.casefold() for h in doc.get("private_hostnames", []) if isinstance(h, str) and re.fullmatch(r"[A-Za-z0-9.-]{2,63}", h)]
@@ -828,8 +800,7 @@ def _configured_names():
 
 def _load_imported():
     try:
-        with open(imported_path()) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(imported_path(), safe_io.LARGE_JSON, "imported")
     except (OSError, ValueError):
         doc = {}
     if not isinstance(doc, dict):
@@ -985,8 +956,7 @@ def _take_list_file(rid, bot, nonce):
     """
     path = os.path.join(REPLIES_DIR, rid + ".json")
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "list reply")
     except FileNotFoundError:
         return None, None
     except (OSError, ValueError):
@@ -1330,8 +1300,7 @@ def read_ack_cache(slug, name, voice):
     if not ack_slug_ok(slug):
         return None
     try:
-        with open(ack_cache_path(slug, name, voice), "rb") as f:
-            data = f.read(_ACK_PCM_MAX + 1)
+        data = safe_io.read_bytes(ack_cache_path(slug, name, voice), _ACK_PCM_MAX, "ack cache")
     except OSError:
         return None
     if not data or len(data) > _ACK_PCM_MAX:
@@ -1989,6 +1958,14 @@ async def personas_route(req):
         "portraits_version": _portraits_version})
 
 
+def _portrait_bytes(path):
+    """Portrait bytes, or None when missing, empty or refused. No isfile-then-open: the fd checks decide."""
+    try:
+        return safe_io.read_bytes(path, safe_io.PORTRAIT_MAX, "portrait") or None
+    except OSError:
+        return None
+
+
 async def portrait_route(req):
     src = lock_key(req)
     if locked_out(src):
@@ -1998,18 +1975,16 @@ async def portrait_route(req):
         return web.json_response({"error": "unauthorized"}, status=401)
     slug = req.match_info.get("slug", "")
     if SLUG.match(slug) or handoff.bot_slug_ok(slug):
-        uploaded = os.path.join(PORTRAIT_WRITE, slug + ".png")
-        if os.path.isfile(uploaded) and 0 < os.path.getsize(uploaded) <= 2 << 20:
-            with open(uploaded, "rb") as fh:
-                return web.Response(body=fh.read(), content_type="image/png", headers={"Cache-Control": "no-store"})
+        body = _portrait_bytes(os.path.join(PORTRAIT_WRITE, slug + ".png"))
+        if body:
+            return web.Response(body=body, content_type="image/png", headers={"Cache-Control": "no-store"})
     p = persona_list().get(slug) if SLUG.match(slug) else None  # registry slugs only
     name = p.get("portrait") if p else None
     for d in PORTRAIT_DIRS if name else []:
-        f = os.path.join(d, name)
-        if os.path.isfile(f) and os.path.getsize(f) <= 2 << 20:
+        body = _portrait_bytes(os.path.join(d, name))
+        if body:
             ctype = "image/png" if name.endswith(".png") else "image/jpeg"
-            with open(f, "rb") as fh:
-                return web.Response(body=fh.read(), content_type=ctype, headers={"Cache-Control": "no-store"})
+            return web.Response(body=body, content_type=ctype, headers={"Cache-Control": "no-store"})
     return web.json_response({"error": "not found"}, status=404)
 
 
@@ -2156,15 +2131,7 @@ def _mark_busy(n):
             if not os.path.isdir(directory):
                 return
             # NIX-1313-03: state/ is group-writable; a planted FIFO or symlink must not block or redirect this write
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
-            try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    log(f"voice-busy write refused not-regular {path}")
-                    return
-                os.ftruncate(fd, 0)
-                os.write(fd, b"1\n")
-            finally:
-                os.close(fd)
+            safe_io.write_file(path, b"1\n", "voice-busy", mode=0o644)
         else:
             try:
                 os.remove(path)
@@ -2271,8 +2238,7 @@ def _pickup_late_file(rid):
     """If the reply file for this parked id is already on disk, deliver it and remove the file."""
     path = os.path.join(REPLIES_DIR, rid + ".json")
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "late reply")
     except (OSError, ValueError):
         return
     if not isinstance(doc, dict) or doc.get("request_id") != rid or not isinstance(doc.get("text"), str):
@@ -2357,6 +2323,26 @@ def _share_with_wake(path, directory=False):
         pass
 
 
+def _write_late_file(path, data, what):
+    """late/ is group-writable (2770): safe_io open (no symlink, no FIFO), then share by fd, never by path."""
+    fd = safe_io.open_write(path, what, 0o600)
+    try:
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+        try:
+            os.fchmod(fd, 0o640)
+        except OSError:
+            pass
+        try:
+            import grp
+            os.fchown(fd, -1, grp.getgrnam("grok").gr_gid)
+        except (KeyError, OSError, ImportError):
+            pass
+    finally:
+        os.close(fd)
+
+
 def _write_late_job(rid, text, who, pcm):
     """Job file plus optional PCM. The wake listener reads them; the HTTP body stays the id."""
     if not handoff.REQUEST_ID.fullmatch(str(rid or "")):
@@ -2367,16 +2353,10 @@ def _write_late_job(rid, text, who, pcm):
     pcm_name = ""
     if pcm:
         pcm_path = os.path.join(directory, rid + ".pcm")
-        with open(pcm_path, "wb") as f:
-            f.write(pcm)
-            f.flush()
-        _share_with_wake(pcm_path)
+        _write_late_file(pcm_path, pcm, "late pcm")
         pcm_name = rid + ".pcm"
     path = os.path.join(directory, rid + ".json")
-    with open(path, "w") as f:
-        json.dump({"text": text, "who": who, "pcm": pcm_name}, f)
-        f.flush()
-    _share_with_wake(path)
+    _write_late_file(path, json.dumps({"text": text, "who": who, "pcm": pcm_name}).encode(), "late job")
     return True
 
 
@@ -3351,8 +3331,7 @@ def audit_mirror_path():
 
 def read_json_file(path):
     try:
-        with open(path) as f:
-            return json.load(f)
+        return safe_io.read_json(path, safe_io.LARGE_JSON, os.path.basename(path))
     except (OSError, ValueError):
         return None
 
@@ -3579,12 +3558,7 @@ def _append_audit(path, line, mode):
     directory = os.path.dirname(path) or "."
     if not os.path.isdir(directory):
         return False
-    try:
-        fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
-        created = True
-    except FileExistsError:
-        fd = os.open(path, os.O_APPEND | os.O_WRONLY)  # no O_CREAT: the file is already there
-        created = False
+    fd, created = safe_io.open_append(path, "audit", mode)  # NIX-1313-03: no symlink, no FIFO
     try:
         if created:
             _mode_best_effort(os.fchmod, fd, mode)  # umask must not widen a file this call just created
@@ -3592,8 +3566,6 @@ def _append_audit(path, line, mode):
         os.fsync(fd)
     finally:
         os.close(fd)
-    if created:
-        _mode_best_effort(os.chmod, path, mode)
     return True
 
 
@@ -3701,8 +3673,7 @@ def read_pii_mode():
         return bool(_policy["pii"])
     pii = True
     try:
-        with open(path) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "policy")
         if isinstance(doc, dict) and isinstance(doc.get("pii_mode"), bool):
             pii = doc["pii_mode"]
     except (OSError, ValueError):
@@ -3737,8 +3708,7 @@ def logo_hosts_path():
 def read_logo_hosts():
     """Allowlist mirrored for the admin API. The display reads GROK_STATION_LOGO_HOSTS, not this file."""
     try:
-        with open(logo_hosts_path()) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(logo_hosts_path(), safe_io.SMALL_JSON, "logo-hosts")
     except FileNotFoundError:
         return list(load_cards().DEFAULT_LOGO_HOSTS)  # never saved: the display uses the same default
     except (OSError, ValueError):
@@ -4809,8 +4779,7 @@ def drop_minted(slug):
 def registry_index():
     """Slugs in the read-only registry file, whether or not they are hidden."""
     try:
-        with open(PERSONAS_FILE) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(PERSONAS_FILE, safe_io.LARGE_JSON, "personas")
         items = doc.get("personas", []) if isinstance(doc, dict) else []
     except (OSError, ValueError, AttributeError):
         return {}
@@ -5516,8 +5485,7 @@ def _read_helper_file():
     """helpers.json as a dict. Missing is normal ({}) unless this process already saw the file (then it is treated
     as damaged). Unreadable or corrupt reads as {} with _helper_file_bad set; logged once with no names or contents."""
     try:
-        with open(HELPER_FILE) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(HELPER_FILE, safe_io.LARGE_JSON, "helpers")
         if not isinstance(doc, dict):
             raise ValueError("not an object")
     except FileNotFoundError:
@@ -6125,8 +6093,7 @@ def _pending_doc(rid):
     if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
         return None
     try:
-        with open(os.path.join(PENDING_DIR, rid + ".json")) as f:
-            doc = json.load(f)
+        doc = safe_io.read_json(os.path.join(PENDING_DIR, rid + ".json"), safe_io.SMALL_JSON, "pending")
     except (OSError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
