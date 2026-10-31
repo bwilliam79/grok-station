@@ -142,9 +142,11 @@ def open_write(path, what, mode=0o600, excl=False, owners=None):
         if not created:
             os.ftruncate(fd, 0)
     except BaseException:
-        os.close(fd)
-        if created:
-            _unlink_quiet(path)  # created by this call: never leave a file with the wrong mode behind
+        try:
+            if created:
+                _unlink_if_same(fd, path)  # created by this call: never leave a file with the wrong mode behind
+        finally:
+            os.close(fd)
         raise
     return fd
 
@@ -164,9 +166,14 @@ def _create_or_open(path, mode, what, owners):
     raise _refuse(what, "write", "vanished", path)
 
 
-def _unlink_quiet(path):
+def _unlink_if_same(fd, path):
+    """NIX-1313-09: unlink path only if it is still the file open on fd (same st_dev and st_ino), so a file swapped in
+    at path is never removed. The caller closes fd after this, so the inode cannot be reused during the compare."""
     try:
-        os.unlink(path)
+        a = os.fstat(fd)
+        b = os.lstat(path)
+        if (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino):
+            os.unlink(path)
     except OSError:
         pass
 
@@ -190,8 +197,10 @@ def open_append(path, what, mode=0o600, create=True, owners=None):
             try:
                 _fchmod(fd, mode, what, path)
             except BaseException:
-                os.close(fd)
-                _unlink_quiet(path)  # created by this call: do not leave a file with the wrong mode behind
+                try:
+                    _unlink_if_same(fd, path)  # created by this call: do not leave a file with the wrong mode behind
+                finally:
+                    os.close(fd)
                 raise
             return fd, True
     return _open_w(path, os.O_APPEND, mode, what, owners), False
@@ -219,15 +228,23 @@ def replace_file(path, data, what, mode=0o600):
     import secrets
     directory = os.path.dirname(path) or "."
     tmp = os.path.join(directory, ".%s.%s.tmp" % (os.path.basename(path), secrets.token_hex(8)))
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    fd = open_write(tmp, what, mode, excl=True)  # cleans up its own temp (by identity) if fchmod fails
     try:
-        write_file(tmp, data, what, mode, excl=True, fsync=True)
+        view = memoryview(data)
+        while view:
+            n = os.write(fd, view)
+            view = view[n:]
+        os.fsync(fd)
         os.replace(tmp, path)
     except BaseException:
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+            _unlink_if_same(fd, tmp)  # NIX-1313-09: only our temp, compared before the fd is closed
+        finally:
+            os.close(fd)
         raise
+    os.close(fd)
     _fsync_dir(directory, what)
 
 
