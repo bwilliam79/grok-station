@@ -427,7 +427,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
 
             r.VOICES.clear()
             r._personas["mtime"] = None
-            path = os.path.join(self.tmp, "voices", "offered.json")
+            path = os.path.join(self.tmp, "state", "voices-offered.json")
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 json.dump({"voices": ["ara", "customvoice"]}, f)

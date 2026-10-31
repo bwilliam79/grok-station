@@ -500,7 +500,7 @@ class InstructionTemplates(unittest.TestCase):
             self.assertIn("--voice", pic, label)
             self.assertEqual(pic.count('"$HOME/.local/share/grok-station/avatar-<slug>.png"'), 2, label)
             self.assertLess(len(text), 12000, label)
-            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.12."), label)
+            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.13."), label)
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
         self.assertEqual(docs.count(_VOICE_SENTENCE), 2)

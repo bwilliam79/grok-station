@@ -1975,7 +1975,7 @@ async def portrait_route(req):
 
 
 def offered_path():
-    return os.path.join(STATE_DIR, "voices", "offered.json")
+    return os.path.join(STATE_DIR, "state", "voices-offered.json")  # top of STATE_DIR is root 0755; state/ is relay-owned
 
 
 def offered_voices():
@@ -1984,7 +1984,7 @@ def offered_voices():
 
 
 def seed_offered_voices():
-    """Load STATE_DIR/voices/offered.json into VOICES. Invalid or missing files leave VOICES alone."""
+    """Load STATE_DIR/state/voices-offered.json into VOICES. Invalid or missing files leave VOICES alone."""
     try:
         with open(offered_path()) as f:
             doc = json.load(f)
@@ -2057,8 +2057,8 @@ async def fetch_voices():
         try:
             atomic_write(offered_path(),
                          (json.dumps({"voices": sorted(VOICES)}) + "\n").encode(), 0o644)
-        except OSError:
-            pass
+        except OSError as e:
+            log(f"voices: offered save failed {type(e).__name__} {offered_path()}")
     log(f"voices: {len(VOICES)} offered")
     _personas["mtime"] = None  # re-validate the registry against the list
     persona_list()
@@ -4395,7 +4395,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
 
 
 def updates_path():
-    return os.path.join(STATE_DIR, "updates.json")
+    # state/ is relay-owned (install.sh); the top of STATE_DIR is root 0755 and bots/updates.json is UPDATES_FILE.
+    return os.path.join(STATE_DIR, "state", "updates.json")
 
 
 def _updates_doc():
@@ -4499,7 +4500,8 @@ async def admin_updates_put(req):
         return web.json_response({"error": "bad request"}, status=400)
     try:
         was, now_on = write_updates(slug, body["on"])
-    except OSError:
+    except OSError as e:
+        log(f"updates save failed {type(e).__name__} {updates_path()}")
         return web.json_response({"error": "unavailable"}, status=500)
     out = {"ok": True, "on": now_on, "was": was}
     if not now_on and not await asyncio.to_thread(post_station_updates_drop, slug):
@@ -5958,7 +5960,7 @@ async def admin_avatar_request(req):
 
 
 _avatar_auto = {}  # slug -> time of the automatic picture ask (0.12.16); mirrors avatar-auto.json
-AVATAR_AUTO_FILE = os.path.join(STATE_DIR, "avatar-auto.json")  # survives a restart; 0600 like other state
+AVATAR_AUTO_FILE = os.path.join(STATE_DIR, "state", "avatar-auto.json")  # survives a restart; relay-owned state/
 PORTRAIT_EXTS = ("png", "jpg", "jpeg", "webp")
 
 
