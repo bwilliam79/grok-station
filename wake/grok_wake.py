@@ -32,7 +32,7 @@ Hey Grok (models/hey_grok.onnx) is the only built-in word and is always on. With
 Recorded wake words (wake/fewshot.py) are built on this station from the user's 5 recordings, with no training
 step, and scored on the same embedding stream as Hey Grok.
 """
-import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, subprocess, sys, threading, time, types, urllib.parse, urllib.request, wave
+import base64, datetime, hashlib, hmac, json, os, queue, re, shutil, stat, subprocess, sys, threading, time, types, urllib.parse, urllib.request, wave
 import numpy as np
 import wait_tone
 
@@ -1588,9 +1588,12 @@ def log_margins(phrase, others, pairs, path=None, now=None):
             return
         old = b""
         try:  # NIX-1312-01: no symlink, and at most MARGIN_LOG_MAX bytes from the tail
-            rfd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            rfd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # NIX-1313-03: a FIFO cannot block open()
             try:
-                size = os.fstat(rfd).st_size
+                st = os.fstat(rfd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise OSError("margin log is not a regular file")
+                size = st.st_size
                 if size > MARGIN_LOG_MAX:
                     os.lseek(rfd, size - MARGIN_LOG_MAX, os.SEEK_SET)
                 while len(old) < MARGIN_LOG_MAX:

@@ -176,7 +176,8 @@ def read_state_json(path, what):
     """NIX-1312-01 pattern for state/ files: O_NOFOLLOW, regular file only, at most STATE_READ_MAX bytes.
     Missing returns None quietly; a symlink, non-regular, oversized or malformed file is refused (None) and logged."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        # NIX-1313-03: O_NONBLOCK so a planted FIFO cannot block open(); fstat below refuses it (regular files ignore it)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     except FileNotFoundError:
         return None
     except OSError as e:
@@ -2154,8 +2155,13 @@ def _mark_busy(n):
             directory = os.path.dirname(path) or "."
             if not os.path.isdir(directory):
                 return
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            # NIX-1313-03: state/ is group-writable; a planted FIFO or symlink must not block or redirect this write
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
             try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    log(f"voice-busy write refused not-regular {path}")
+                    return
+                os.ftruncate(fd, 0)
                 os.write(fd, b"1\n")
             finally:
                 os.close(fd)

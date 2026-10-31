@@ -185,6 +185,27 @@ class NixFix(unittest.TestCase):  # NIX-1312-01 / NIX-1312-02
             self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
             self.assertEqual(json.loads(open(p).read().splitlines()[-1])["word"], "hey_jules")
 
+    def test_margin_log_fifo_does_not_block(self):  # NIX-1313-03
+        import signal
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "m.jsonl")
+        os.mkfifo(p, 0o600)
+
+        class Hang(Exception):  # not an OSError, so log_margins cannot swallow it
+            pass
+
+        def fire(*a):
+            raise Hang("blocked on a FIFO")
+        old = signal.signal(signal.SIGALRM, fire)
+        signal.alarm(3)
+        try:
+            self.gw.log_margins("hey_jules", [("Hey Miles", self.om)], self.pairs, path=p, now=1_700_000_000)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
+        self.assertTrue(stat.S_ISREG(os.lstat(p).st_mode))
+        self.assertEqual(json.loads(open(p).read().splitlines()[-1])["word"], "hey_jules")
+
     def test_oversized_log_is_read_bounded_and_capped(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "m.jsonl")

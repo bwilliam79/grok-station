@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import stat
 import sys
 import tempfile
@@ -16,7 +17,9 @@ import relay  # noqa: E402
 BIG = 70 * 1024
 
 
-class StateReaders(unittest.TestCase):
+class _StateDir:
+    """Temp STATE_DIR with state/; relay globals saved and restored."""
+
     def setUp(self):
         self.top = tempfile.mkdtemp()
         self.state = os.path.join(self.top, "state")
@@ -43,6 +46,8 @@ class StateReaders(unittest.TestCase):
         self._write(self.outside, doc)
         os.symlink(self.outside, path)
 
+
+class StateReaders(_StateDir, unittest.TestCase):
     # seed_offered_voices
     def test_voices_symlink_refused(self):
         self._link(relay.offered_path(), {"voices": ["eve", "rex"]})
@@ -228,6 +233,72 @@ class FetchVoicesBounds(unittest.TestCase):  # Nix round 2: fetch_voices cap and
     def test_normal_response_still_works(self):
         self._run(json.dumps({"voices": [{"voice_id": "Eve"}, {"voice_id": "rex"}]}).encode())
         self.assertEqual(relay.VOICES, {"eve", "rex"})
+
+
+class _Hang(Exception):
+    pass
+
+
+def _guard(seconds=3):
+    """signal.alarm guard: a regression that blocks on a FIFO fails instead of hanging the suite."""
+    def fire(*a):
+        raise _Hang("blocked on a FIFO")  # not an OSError, so no reader can swallow it
+    old = signal.signal(signal.SIGALRM, fire)
+    signal.alarm(seconds)
+
+    def done():
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old)
+    return done
+
+
+class FifoRefused(_StateDir, unittest.TestCase):  # NIX-1313-03
+    def _fifo(self, path):
+        os.mkfifo(path, 0o660)
+
+    def _call(self, fn):
+        done = _guard()
+        try:
+            return fn()
+        finally:
+            done()
+
+    def _refused(self):
+        self.assertTrue(any("read refused not-regular" in l for l in self.logs), self.logs)
+
+    def test_updates_fifo(self):
+        self._fifo(relay.updates_path())
+        self.assertIsNone(self._call(lambda: relay.read_state_json(relay.updates_path(), "updates")))
+        self.assertEqual(self._call(relay._updates_doc), {})
+        self._refused()
+
+    def test_avatar_fifo(self):
+        self._fifo(relay.AVATAR_AUTO_FILE)
+        self.assertIsNone(self._call(lambda: relay.read_state_json(relay.AVATAR_AUTO_FILE, "avatar-auto")))
+        self.assertEqual(self._call(relay._avatar_auto_disk), {})
+        self._refused()
+
+    def test_voices_offered_fifo(self):
+        self._fifo(relay.offered_path())
+        self.assertIsNone(self._call(lambda: relay.read_state_json(relay.offered_path(), "voices: offered")))
+        self.assertFalse(self._call(relay.seed_offered_voices))
+        self._refused()
+
+    def test_voice_busy_fifo(self):
+        p = os.path.join(self.state, "voice-busy")
+        self._fifo(p)
+        saved = os.environ.get("VOICE_BUSY")
+        os.environ["VOICE_BUSY"] = p
+        saved_busy = relay.stats.get("busy")
+        try:
+            self._call(lambda: relay._mark_busy(1))
+        finally:
+            relay.stats["busy"] = saved_busy
+            if saved is None:
+                os.environ.pop("VOICE_BUSY", None)
+            else:
+                os.environ["VOICE_BUSY"] = saved
+        self.assertTrue(stat.S_ISFIFO(os.lstat(p).st_mode))
 
 
 if __name__ == "__main__":
