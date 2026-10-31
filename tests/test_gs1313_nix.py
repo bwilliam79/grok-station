@@ -214,6 +214,17 @@ class FetchVoicesBounds(unittest.TestCase):  # Nix round 2: fetch_voices cap and
         self.assertFalse(os.path.exists(relay.offered_path()))
         self.assertTrue(any("oversized" in l for l in self.logs), self.logs)
 
+    def test_seeded_plus_live_merge_capped(self):
+        with open(relay.offered_path(), "w") as f:
+            json.dump({"voices": [f"a{i}" for i in range(400)]}, f)
+        self.assertTrue(relay.seed_offered_voices())
+        self._run(json.dumps({"voices": [{"voice_id": f"b{i}"} for i in range(400)]}).encode())
+        self.assertEqual(len(relay.VOICES), 512)
+        self.assertEqual(relay.VOICES, set(sorted([f"a{i}" for i in range(400)] + [f"b{i}" for i in range(400)])[:512]))
+        with open(relay.offered_path()) as f:
+            self.assertEqual(len(json.load(f)["voices"]), 512)
+        self.assertTrue(any("offered list capped 800>512" in l for l in self.logs), self.logs)
+
     def test_normal_response_still_works(self):
         self._run(json.dumps({"voices": [{"voice_id": "Eve"}, {"voice_id": "rex"}]}).encode())
         self.assertEqual(relay.VOICES, {"eve", "rex"})

@@ -2022,6 +2022,16 @@ def offered_voices():
     return VOICES if VOICES else BUILTIN_VOICES
 
 
+def _cap_voices():
+    """Hard cap on the merged VOICES total: keep the first OFFERED_VOICES_MAX in sorted order (the order the save writes)."""
+    if len(VOICES) > OFFERED_VOICES_MAX:
+        n = len(VOICES)
+        keep = sorted(VOICES)[:OFFERED_VOICES_MAX]
+        VOICES.clear()
+        VOICES.update(keep)
+        log(f"voices: offered list capped {n}>{OFFERED_VOICES_MAX} {offered_path()}")
+
+
 def seed_offered_voices():
     """Load STATE_DIR/state/voices-offered.json into VOICES. Invalid or missing files leave VOICES alone."""
     doc = read_state_json(offered_path(), "voices: offered")
@@ -2040,6 +2050,7 @@ def seed_offered_voices():
             return False
         good.append(s)
     VOICES.update(good)
+    _cap_voices()
     _personas["mtime"] = None
     log(f"voices: seeded {len(VOICES)} from offered.json")
     return True
@@ -2103,6 +2114,7 @@ async def fetch_voices():
             log(f"voices: offered list capped {len(ids)}>{OFFERED_VOICES_MAX} {offered_path()}")
             ids = ids[:OFFERED_VOICES_MAX]
         VOICES.update(ids)
+        _cap_voices()
     except Exception as e:
         log("voices: list failed, personas not voice-checked:", type(e).__name__)
     if VOICES:
