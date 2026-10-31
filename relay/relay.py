@@ -169,6 +169,7 @@ def file_mode(mode):
 
 STATE_READ_MAX = 64 * 1024  # NIX-1313-01: cap for JSON read from group-writable state/
 OFFERED_VOICES_MAX = 512
+VOICE_LIST_MAX = 256 * 1024  # xAI voice-list response bound
 
 
 def read_state_json(path, what):
@@ -2086,8 +2087,22 @@ async def fetch_voices():
     try:
         async with ClientSession() as http, http.get("https://api.x.ai/v1/tts/voices", headers={"Authorization": f"Bearer {KEY}"},
                                                      timeout=10) as r:
-            j = await r.json()
-        VOICES.update(v.get("voice_id", "").lower() for v in j.get("voices", []) if v.get("voice_id"))
+            body = b""
+            while len(body) <= VOICE_LIST_MAX:  # Nix: bounded read, refuse anything larger
+                chunk = await r.content.read(VOICE_LIST_MAX + 1 - len(body))
+                if not chunk:
+                    break
+                body += chunk
+        if len(body) > VOICE_LIST_MAX:
+            log(f"voices: list refused oversized >{VOICE_LIST_MAX}")
+            raise ValueError("voice list too large")
+        j = json.loads(body.decode("utf-8"))
+        ids = [str(v.get("voice_id", "")).strip().lower() for v in j.get("voices", []) if v.get("voice_id")]
+        ids = [i for i in ids if _VOICE_ID.fullmatch(i)]
+        if len(ids) > OFFERED_VOICES_MAX:
+            log(f"voices: offered list capped {len(ids)}>{OFFERED_VOICES_MAX} {offered_path()}")
+            ids = ids[:OFFERED_VOICES_MAX]
+        VOICES.update(ids)
     except Exception as e:
         log("voices: list failed, personas not voice-checked:", type(e).__name__)
     if VOICES:

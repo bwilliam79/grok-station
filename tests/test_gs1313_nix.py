@@ -1,5 +1,6 @@
 """NIX-1313-01 / NIX-1313-02: state/ readers refuse symlinks and oversized files, cap the offered voices,
 atomic_write sets the mode only by fchmod, and a failed avatar-auto save is logged."""
+import asyncio
 import json
 import os
 import shutil
@@ -132,6 +133,90 @@ class AtomicWriteMode(unittest.TestCase):
             relay.os.chmod = real
         self.assertEqual(calls, [])
         self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o640)
+
+
+class _Content:
+    def __init__(self, body, rec):
+        self.body, self.rec = body, rec
+
+    async def read(self, n=-1):
+        n = len(self.body) if n < 0 else n
+        out, self.body = self.body[:n], self.body[n:]
+        self.rec["read"] += len(out)
+        return out
+
+
+class _Resp:
+    def __init__(self, body, rec):
+        self.body, self.rec = body, rec
+        self.content = _Content(body, rec)
+
+    async def json(self):  # an unbounded read of the whole body
+        self.rec["unbounded"] = True
+        return json.loads(self.body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _Session:
+    def __init__(self, body, rec):
+        self.body, self.rec = body, rec
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def get(self, *a, **k):
+        return _Resp(self.body, self.rec)
+
+
+class FetchVoicesBounds(unittest.TestCase):  # Nix round 2: fetch_voices cap and bounded read
+    def setUp(self):
+        self.top = tempfile.mkdtemp()
+        os.mkdir(os.path.join(self.top, "state"), 0o770)
+        self.saved = (relay.STATE_DIR, relay.log, relay.ClientSession, set(relay.VOICES), relay.persona_list)
+        relay.STATE_DIR = self.top
+        self.logs = []
+        relay.log = lambda *a: self.logs.append(" ".join(map(str, a)))
+        relay.persona_list = lambda: {}
+        relay.VOICES.clear()
+        self.rec = {"read": 0, "unbounded": False}
+
+    def tearDown(self):
+        relay.STATE_DIR, relay.log, relay.ClientSession, v, relay.persona_list = self.saved
+        relay.VOICES.clear()
+        relay.VOICES.update(v)
+        shutil.rmtree(self.top, ignore_errors=True)
+
+    def _run(self, doc_bytes):
+        relay.ClientSession = lambda *a, **k: _Session(doc_bytes, self.rec)
+        asyncio.run(relay.fetch_voices())
+
+    def test_over_long_list_capped_in_memory_and_on_disk(self):
+        self._run(json.dumps({"voices": [{"voice_id": f"v{i}"} for i in range(600)]}).encode())
+        self.assertEqual(len(relay.VOICES), 512)
+        with open(relay.offered_path()) as f:
+            self.assertEqual(len(json.load(f)["voices"]), 512)
+        self.assertTrue(any("offered list capped 600>512" in l for l in self.logs), self.logs)
+
+    def test_oversized_response_refused_with_bounded_read(self):
+        body = json.dumps({"voices": [{"voice_id": "eve"}], "pad": "x" * (300 * 1024)}).encode()
+        self._run(body)
+        self.assertFalse(self.rec["unbounded"])
+        self.assertLessEqual(self.rec["read"], relay.VOICE_LIST_MAX + 1)
+        self.assertEqual(relay.VOICES, set())
+        self.assertFalse(os.path.exists(relay.offered_path()))
+        self.assertTrue(any("oversized" in l for l in self.logs), self.logs)
+
+    def test_normal_response_still_works(self):
+        self._run(json.dumps({"voices": [{"voice_id": "Eve"}, {"voice_id": "rex"}]}).encode())
+        self.assertEqual(relay.VOICES, {"eve", "rex"})
 
 
 if __name__ == "__main__":
