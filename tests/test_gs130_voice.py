@@ -504,7 +504,7 @@ class InstructionTemplates(unittest.TestCase):
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
         self.assertEqual(docs.count(_VOICE_SENTENCE), 2)
-        self.assertEqual(docs.count("Grok Station instructions, release 0.13.12."), 2)
+        self.assertEqual(docs.count("Grok Station instructions, release 0.13.13."), 2)
         self.assertIn("never replaced by a report", docs)  # 0.13.0: the add-bot picker stays; a report only seeds
 
 
