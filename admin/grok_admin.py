@@ -1147,7 +1147,7 @@ def delete_wake_word(name, reload=True):
             drop_phrase_leftovers(name)
         except OSError:
             if code != 200:
-                return (500, {"error": "Couldn't delete that wake word. Try again in a minute."})
+                return (500, {"error": "⚠ Couldn't delete that wake word. It's still saved. Try again in a minute."})
     cfg = read_json(WAKE_CONFIG, {})
     keep_hidden = name in configured_phrase_names(cfg) or (name.startswith("hey_") and name[4:] in {b["slug"] for b in known_bots()})
     if keep_hidden:

@@ -2941,7 +2941,8 @@ function paintUnused(el) {
     const rec = n === 1 ? "1 recording" : n + " recordings";
     const label = w.label || wordLabel(w);
     return `<div class="urow"><div><div>${esc(label)}</div><div class="help">${esc(why)} · ${esc(rec)}</div></div>
-      <button class="btn dg sm right" type="button" data-udel="${esc(w.name)}" data-ulabel="${esc(label)}" data-ucount="${n}">Delete</button></div>`;
+      <button class="btn dg sm right" type="button" data-udel="${esc(w.name)}" data-ulabel="${esc(label)}" data-ucount="${n}">Delete</button></div>
+      <div class="help" role="status" aria-live="polite" data-umsg="${esc(w.name)}"></div>`;
   }).join("");
   list.querySelectorAll("[data-udel]").forEach(btn => btn.onclick = () => {
     const label = btn.dataset.ulabel || "this wake word";
@@ -2953,6 +2954,10 @@ function paintUnused(el) {
       go: async () => {
         const r = await api("DELETE", "/api/wakewords/" + encodeURIComponent(btn.dataset.udel), {});
         if (r && r.ok) { toast(label + " deleted."); refreshBots(el); }
+        else {
+          const msg = [...list.querySelectorAll("[data-umsg]")].find(m => m.dataset.umsg === btn.dataset.udel);
+          if (msg) msg.textContent = (r && r.data && r.data.error) || "";
+        }
         return r;
       }
     });
