@@ -133,17 +133,35 @@ def _open_w(path, flags, mode, what, owners=None):
 def open_write(path, what, mode=0o600, excl=False, owners=None):
     """Write fd on a regular file, truncated, mode set by fchmod. O_CREAT (O_EXCL when excl). Refused for a symlink,
     a FIFO, a foreign owner, a hard link, or a failed fchmod."""
-    fd = _open_w(path, os.O_CREAT | (os.O_EXCL if excl else 0), mode, what, owners)
+    if excl:
+        fd, created = _open_w(path, os.O_CREAT | os.O_EXCL, mode, what, owners), True
+    else:
+        fd, created = _create_or_open(path, mode, what, owners)
     try:
         _fchmod(fd, mode, what, path)
-        if not excl:
+        if not created:
             os.ftruncate(fd, 0)
     except BaseException:
         os.close(fd)
-        if excl:
-            _unlink_quiet(path)  # created by this call
+        if created:
+            _unlink_quiet(path)  # created by this call: never leave a file with the wrong mode behind
         raise
     return fd
+
+
+def _create_or_open(path, mode, what, owners):
+    """(fd, created): O_CREAT|O_EXCL first, else the existing file without O_CREAT. If the file vanishes between the
+    two opens, try once more, then refuse."""
+    for _ in range(2):
+        try:
+            return _open_w(path, os.O_CREAT | os.O_EXCL, mode, what, owners), True
+        except FileExistsError:
+            pass
+        try:
+            return _open_w(path, 0, mode, what, owners), False
+        except FileNotFoundError:
+            continue
+    raise _refuse(what, "write", "vanished", path)
 
 
 def _unlink_quiet(path):

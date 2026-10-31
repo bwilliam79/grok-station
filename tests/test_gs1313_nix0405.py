@@ -145,6 +145,55 @@ class Nix04Writes(Base):
         self.assertEqual(json.load(open(path)), {"blocked": "admin"})
 
 
+class Nix07OpenWriteCreated(Base):
+    """open_write without excl: a file this call created is removed on a failed fchmod; an existing one is kept."""
+
+    def _deny(self):
+        def deny(*a):
+            raise PermissionError(1, "denied")
+        return mock.patch.object(safe_io.os, "fchmod", deny)
+
+    def test_new_file_fchmod_failure_leaves_nothing(self):
+        p = self.p("new.json")
+        with self._deny(), self.assertRaises(safe_io.Refused):
+            safe_io.open_write(p, "t", mode=0o640)
+        self.assertFalse(os.path.exists(p))
+        self.logged("write refused fchmod")
+
+    def test_new_file_write_file_fchmod_failure_leaves_nothing(self):
+        p = self.p("new2.json")
+        with self._deny(), self.assertRaises(safe_io.Refused):
+            safe_io.write_file(p, "x", "t", mode=0o640)
+        self.assertFalse(os.path.exists(p))
+
+    def test_existing_file_fchmod_failure_is_kept_and_refused(self):
+        p = self.p("old.json")
+        with open(p, "w") as f:
+            f.write("OLD")
+        with self._deny(), self.assertRaises(safe_io.Refused):
+            safe_io.write_file(p, "NEW", "t", mode=0o640)
+        self.assertEqual(open(p).read(), "OLD")  # not unlinked, not truncated
+        self.logged("write refused fchmod")
+
+    def test_vanished_between_opens_is_retried(self):
+        p = self.p("race.json")
+        real = safe_io.os.open
+        calls = []
+
+        def racing(path, flags, *a, **k):
+            calls.append(flags)
+            if len(calls) == 1:
+                raise FileExistsError(17, "exists")  # it existed for O_EXCL ...
+            if len(calls) == 2:
+                raise FileNotFoundError(2, "gone")   # ... and was gone for the plain open
+            return real(path, flags, *a, **k)
+        with mock.patch.object(safe_io.os, "open", racing):
+            fd = safe_io.open_write(p, "t", mode=0o600)
+        os.close(fd)
+        self.assertTrue(os.path.isfile(p))
+        self.assertEqual(len(calls), 3)
+
+
 class Nix05Wake(Base):
     @classmethod
     def setUpClass(cls):
