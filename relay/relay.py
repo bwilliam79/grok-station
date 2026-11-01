@@ -3535,6 +3535,19 @@ _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too 
                415: "unsupported media type", 422: "lint", 429: "too many"}
 
 
+def log_reply_reject(rej):
+    """0.13.15: one journal line per refused reply: status, verdict code, bot slug, request id.
+    Only validated fixed-shape fields; never the body, a key, a token, or the reply text."""
+    status = rej.status if type(getattr(rej, "status", None)) is int else 0
+    verdict = getattr(rej, "verdict", None)
+    why = verdict if isinstance(verdict, str) and _REPLY_VERDICT.fullmatch(verdict) else "error"
+    bot = getattr(rej, "bot", None)
+    who = bot if handoff.bot_slug_ok(bot) else "-"
+    rid = getattr(rej, "rid", None)
+    req = rid if isinstance(rid, str) and handoff.REQUEST_ID.fullmatch(rid) else "-"
+    log(f"reply {status} reason={why} agent={who} rid={req}")
+
+
 def actor_ok(s):
     return isinstance(s, str) and _ACTOR.fullmatch(s) is not None
 
@@ -6234,6 +6247,7 @@ async def voice_reply(req):
                                 names=_personas.get("names") or (), source=list_source_slug)
     except botreply.Reject as rej:
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
+        log_reply_reject(rej)
         reason = reply_reason(rej)
         if reason in ("pii", "secret", "schema"):
             _BLOCKED[rej.rid] = reason  # the waiting handoff (if any) ends with a message, not a 3-minute hang
