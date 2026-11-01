@@ -6,6 +6,14 @@ After=sound.target grok-station.service
 User=grok
 SupplementaryGroups=audio
 EnvironmentFile=-/etc/grok-station/wake.env
+# 0.13.14 (Nix PI-01): wake/ is root-owned code; no bytecode cache is written next to it.
+Environment=PYTHONDONTWRITEBYTECODE=1
+# timers.json lives here (grok-owned 0750); was $O/wake/timers.json
+StateDirectory=grok-station-wake
+StateDirectoryMode=0750
+# The mic reset (sudo gs-usb-reset, root) keeps its lock and last-reset time in this file; strict makes /run
+# read-only, so it is created here first (root, 0600, kept if present) and listed in ReadWritePaths.
+ExecStartPre=+/bin/sh -c 'umask 077; [ -e /run/gs-usb-reset.lock ] || : > /run/gs-usb-reset.lock'
 ExecStart=/opt/grok-station/wake-venv/bin/python /opt/grok-station/wake/grok_wake.py
 Restart=always
 RestartSec=3
@@ -14,6 +22,14 @@ MemoryMax=450M
 Nice=-5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=2
+# 0.13.14 (Nix PI-02). Writes: wake/models/enrolled (trained models, enrolled list, pair-margins.jsonl),
+# portraits/ (persona cache for the display), /var/lib/grok-station/enroll (recorded clips and sessions),
+# /var/lib/grok-station/late (spoken late answers are deleted), the StateDirectory (timers.json), and the mic reset
+# lock. No NoNewPrivileges: the mic reset runs `sudo -n gs-usb-reset`, which needs setuid sudo.
+ProtectSystem=strict
+ReadWritePaths=-/opt/grok-station/wake/models/enrolled -/opt/grok-station/portraits -/var/lib/grok-station/enroll -/var/lib/grok-station/late -/run/gs-usb-reset.lock
+ProtectHome=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

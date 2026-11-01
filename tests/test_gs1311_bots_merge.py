@@ -161,21 +161,20 @@ class UpdatesSwitch(unittest.TestCase):
             self.assertNotIn(bad, src)
         b = {"slug": "otto", "name": "Otto", "feed_updates": {"on": True, "rule": "<img src=x onerror=alert(1)>"}}
         got = _run(self.NAMES, "dump(updatesSwitchEl(%s))" % json.dumps(b), dom=True)
-        sw = got["kids"][0]
+        sw = got["kids"][0]  # 0.13.14: one button holds the track, the word and the hidden bot name
         self.assertEqual(sw["tag"], "button")
         self.assertEqual(sw["attrs"]["role"], "switch")
         self.assertEqual(sw["attrs"]["aria-checked"], "true")
         self.assertEqual(sw["attrs"]["data-updsw"], "otto")
         flat = json.dumps(got)
         self.assertIn("Updates", flat)
-        self.assertEqual(got["kids"][1]["text"], "Updates")
-        self.assertIn("<img src=x onerror=alert(1)>", got["kids"][2]["text"])
+        self.assertEqual(sw["kids"][1]["text"], "Updates")
+        self.assertIn("<img src=x onerror=alert(1)>", got["kids"][1]["text"])
 
     def test_rule_lines(self):
         got = _run(self.NAMES, "[updatesRuleLine({on:false}), updatesRuleLine({on:true, rule:''}), "
                    "updatesRuleLine({on:true, rule:'Only Done and Needs you'}), updatesRuleLine(null)]")
-        self.assertEqual(got, ["Off: nothing shows on the station", "All updates", "Only Done and Needs you",
-                               "Off: nothing shows on the station"])
+        self.assertEqual(got, ["Updates off", "All updates", "Only Done and Needs you", "Updates off"])  # 0.13.14
 
     def test_admin_passes_the_switch_state(self):
         base = {"slug": "otto", "name": "Otto", "webhook": {}, "status": {}}

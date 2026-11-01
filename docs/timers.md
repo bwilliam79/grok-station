@@ -34,7 +34,7 @@ During a conversation that is not a recipe, the timers stay a chip strip at the 
 
 Two files, both rewritten by replacing a temporary file:
 
-- Wake listener: `/opt/grok-station/wake/timers.json` (override `WAKE_TIMERS`). This is the ringer. It stores a wall deadline and, while the process is up, a monotonic deadline. A restart re-bases the monotonic clock from the wall deadline.
+- Wake listener: `/var/lib/grok-station-wake/timers.json` (override `WAKE_TIMERS`; before 0.13.14 it was `/opt/grok-station/wake/timers.json`, which is read once when the new file is missing). This is the ringer. It stores a wall deadline and, while the process is up, a monotonic deadline. A restart re-bases the monotonic clock from the wall deadline.
 - Relay: `/var/lib/grok-station/state/timers.json` (override `GROK_TIMER_STATE`). This is the voice book, so a relay restart still knows the names. While the relay process is up, deadlines use a monotonic clock. The file itself stores remaining time against wall time, because the monotonic clock does not survive a restart.
 
 Each new voice session sends the wake listener's list. That list wins. If a client sends no list, the relay reads its file and hands the timers back. A ringing one is handed back as already done, not as a new countdown. The station does not open a new port for this.

@@ -6,10 +6,14 @@ so a symlink grok planted at $O/wake or $O/wake/models would hand grok whatever 
 component is opened with O_NOFOLLOW relative to its parent's descriptor, created if missing, and chowned
 and chmodded through that descriptor. A symlink anywhere on the way is refused and nothing past it is touched.
 
-Usage: safe-mkdirs.py [--mode 0750] [--group GROUP] USER BASE REL [REL ...]   (REL like wake/models; default mode
-       0755, default group USER's primary group)
+Usage: safe-mkdirs.py [--mode 0750] [--group GROUP] [--leaf] USER BASE REL [REL ...]   (REL like wake/models; default
+       mode 0755, default group USER's primary group)
        safe-mkdirs.py --put USER BASE RELDIR SRC [SRC ...]
        safe-mkdirs.py --replace BASE RELDIR NAME < NEW-CONTENT
+
+--leaf (0.13.14, Nix PI-01) gives only the last component of each REL to USER. Components before it must already
+exist (nothing is created there) and are walked with O_NOFOLLOW but never chowned or chmodded, so
+`--leaf grok BASE wake/models/enrolled` leaves the root-owned wake/ and wake/models alone.
 
 --put copies each SRC into the existing BASE/RELDIR (walked the same way, nothing created) as USER, mode 0644:
 written to a fresh temp name through the directory's descriptor, fchowned, then renamed over the final name in
@@ -67,24 +71,28 @@ def _parts(rel):
     return parts
 
 
-def mkdirs(base, rels, uid, gid, mode=0o755, root_uid=None):
+def mkdirs(base, rels, uid, gid, mode=0o755, root_uid=None, leaf=False):
     base = os.path.abspath(base)
     bfd = _open_base(base, root_uid)
     try:
         for rel in rels:
             fd, shown = os.dup(bfd), base
             try:
-                for p in _parts(rel):
+                parts = _parts(rel)
+                for i, p in enumerate(parts):
+                    last = i == len(parts) - 1
                     shown = os.path.join(shown, p)
-                    try:
-                        os.mkdir(p, mode, dir_fd=fd)
-                    except FileExistsError:
-                        pass
+                    if last or not leaf:
+                        try:
+                            os.mkdir(p, mode, dir_fd=fd)
+                        except FileExistsError:
+                            pass
                     nfd = _open(p, fd, shown)
                     os.close(fd)
                     fd = nfd
-                    os.fchown(fd, uid, gid)
-                    os.fchmod(fd, mode)
+                    if last or not leaf:
+                        os.fchown(fd, uid, gid)
+                        os.fchmod(fd, mode)
             finally:
                 os.close(fd)
     finally:
@@ -197,8 +205,12 @@ def main(argv):
             sys.stderr.write("safe-mkdirs: %s\n" % e)
             return 1
         return 0
-    mode, group = 0o755, None
-    while argv[:1] in (["--mode"], ["--group"]) and len(argv) > 1:
+    mode, group, leaf = 0o755, None, False
+    while argv[:1] in (["--mode"], ["--group"], ["--leaf"]) and len(argv) > 1:
+        if argv[0] == "--leaf":
+            leaf = True
+            argv = argv[1:]
+            continue
         if argv[0] == "--mode":
             mode = int(argv[1], 8)
         else:
@@ -213,7 +225,7 @@ def main(argv):
         import grp
         gid = grp.getgrnam(group).gr_gid
     try:
-        mkdirs(argv[1], argv[2:], pw.pw_uid, gid, mode=mode)
+        mkdirs(argv[1], argv[2:], pw.pw_uid, gid, mode=mode, leaf=leaf)
     except Refused as e:
         sys.stderr.write("safe-mkdirs: %s\n" % e)
         return 1

@@ -157,15 +157,31 @@ hard link and a successful fchmod, and tmp-then-rename uses a random O_EXCL temp
 | `$V/admin` | grok-admin:grok 0750 | grok-station-admin.service:11-12 | admin | admin, wake, display | wake and display side yes |
 | `/run/grok-station-admin` | grok-admin:grok 0750 | grok-station-admin.service:13-14 | admin | wake, display (setup.json) | wake and display side yes |
 | `/run/grok-station` | grok 0755 (systemd default) | grok-station.service:12 | display | admin (preview snapshot) | admin side yes |
-| `/opt/grok-station/wake`, `wake/models`, `wake/models/enrolled`, `/opt/grok-station/portraits` | grok 0755 | install.sh:278-279 (safe-mkdirs default 0755) | wake (grok) | wake, display | not needed: the only writer is the reader's own user |
+| `/opt/grok-station/wake`, `wake/models`, `wake/lines` (code: grok_wake.py, gain.py, fewshot.py, wait_tone.py, wakewords.json, chime.wav, shipped models, lines) | root:root 0755, files 0644 (0.13.14, Nix PI-01) | install.sh st_wake, tools/install-files.sh | root (installer) | wake, admin | n/a (code) |
+| `/opt/grok-station/wake/models/enrolled`, `/opt/grok-station/portraits` | grok 0755 | install.sh st_wake (safe-mkdirs; enrolled with --leaf) | wake (grok) | wake, display, admin | not needed: the only writer is the reader's own user |
+| `/var/lib/grok-station-wake` (timers.json) | grok 0750 | grok-station-wake.service StateDirectory (0.13.14) | wake | wake | not needed: only the wake listener |
 | `/opt/grok-station/relay` | root:root 0755 | install.sh:208, tools/install-files.sh | root | relay, wake, admin | n/a (code) |
 | `/etc/grok-station/secrets` | root:root 0711, files per token | install.sh:136 | root | each service its token | n/a (root-written) |
 
-Out of scope, and why: reads in grok_wake.py of `/opt/grok-station/wake/*` (timers.json, wakewords.json, enrolled
-list, models, margin log), the enroll inbox, and `/opt/grok-station/portraits`, and their fixed-name `.tmp` rewrites:
+Out of scope, and why: reads in grok_wake.py of `/opt/grok-station/wake/*` (wakewords.json, enrolled
+list, models, margin log; timers.json is in `/var/lib/grok-station-wake` since 0.13.14), the enroll inbox, and `/opt/grok-station/portraits`, and their fixed-name `.tmp` rewrites:
 those folders are writable only by grok, the same user that reads them, so no other service can plant a FIFO, link
 or file there. Token reads under `/etc/grok-station/secrets` are root-written. `$V/admin/relay-audit.log`,
 `t1.json` and the admin's other own state files are written and read only by grok-admin.
+
+Service sandbox (0.13.14, Nix PI-02). Each unit is ProtectSystem=strict (everything read-only except /dev, /proc, /sys
+and the paths below) with PrivateTmp=yes. What each one writes, from the code:
+
+| Unit | Writes (ReadWritePaths, or a systemd-made dir) | ProtectHome | NoNewPrivileges |
+|---|---|---|---|
+| grok-station (display) | /var/cache/grok-station (CacheDirectory: weather.json, logos/, dim-level); /run/grok-station (RuntimeDirectory: last.png); /dev/fb0 and /sys/class/backlight are API trees strict leaves writable. ExecStartPre `+` lines run unsandboxed. | yes | yes |
+| grok-station-wake | /opt/grok-station/wake/models/enrolled (models, wakewords.enrolled.json, pair-margins.jsonl); /opt/grok-station/portraits (persona cache); /var/lib/grok-station/enroll (clips, sessions, building.json); /var/lib/grok-station/late (spoken jobs deleted); /var/lib/grok-station-wake (StateDirectory: timers.json); /run/gs-usb-reset.lock (the sudo'd mic reset; pre-created by ExecStartPre). t1.json in $V/admin is rewritten only when grok can write there (it can't: grok-admin 0750), so it is not listed. | yes | no: `sudo -n gs-usb-reset` |
+| grok-station-admin | /var/lib/grok-station (admin state, enroll inbox, wakewords drop, tls, integrations, home-status); /etc/grok-station (helper: env, wake.env, secrets, tls); /etc/hosts (helper, hostname change); /etc/NetworkManager/system-connections (helper, Wi-Fi join); /opt/grok-station/wake/models/enrolled (enrolled list); the install clone (drop-in source-dir.conf, helper's git fetch); /run/grok-station-admin (RuntimeDirectory). | no: the clone is usually in a home folder | no: sudo helper |
+| grok-station-relay | unchanged (already hardened). | yes | yes |
+
+The admin page's root helper runs inside the admin unit's sandbox (sudo does not leave the mount namespace), which
+is why its writes are in the admin list. nmcli, hostnamectl, timedatectl and systemctl talk to daemons over D-Bus,
+outside the sandbox.
 
 Allowed foreign owners for writes: none. Every relay write or append target (voice-busy, audit logs, late jobs,
 alerts, pending, timers, handoff limits, the Homebridge block flag) is created by the relay itself; the admin's

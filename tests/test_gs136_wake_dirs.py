@@ -34,7 +34,8 @@ def _dir_step(shim):
     body = src[src.index("st_wake() {\n") + len("st_wake() {\n"):]
     body = body[:body.index('  _wake_venv || return 1')]
     me = getpass.getuser()
-    return (body.replace("-o grok -g grok", "").replace(" - grok ", " - %s " % me)
+    return (body.replace("-o grok -g grok", "").replace(" - grok ", " - %s " % me).replace(" - root ", " - %s " % me)
+            .replace(" --leaf grok ", " --leaf %s " % me)
             .replace("tools/safe-mkdirs.py", shim))
 
 

@@ -52,7 +52,7 @@ class Install(unittest.TestCase):
         src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         local = {m for m in re.findall(r"^\s*import (\w+)", src, re.M) if os.path.isfile(os.path.join(ROOT, "wake", m + ".py"))}
         self.assertIn("wait_tone", local)
-        full = [l for l in open(os.path.join(ROOT, "install.sh")) if "wake/grok_wake.py" in l and '--put grok "$O" wake ' in l][0]
+        full = [l for l in open(os.path.join(ROOT, "install.sh")) if "wake/grok_wake.py" in l and '--put root "$O" wake ' in l][0]  # 0.13.14 PI-01: root-owned code
         upd = open(os.path.join(ROOT, "tools", "install-files.sh")).read()
         for m in local:
             self.assertIn(f"wake/{m}.py", full)
@@ -95,16 +95,17 @@ class Install(unittest.TestCase):
     def test_pi3_audio_and_permissions(self):
         sh = open(os.path.join(ROOT, "install.sh")).read()
         self.assertRegex(sh, r"usermod -aG grok-admin,audio grok-admin")  # admin page lists sound cards
-        self.assertIn("wake/models/enrolled portraits < tools/safe-mkdirs.py", sh)  # wake listener writes the persona cache (sync_personas PermissionError)
+        self.assertIn('--leaf grok "$O" wake/models/enrolled < tools/safe-mkdirs.py', sh)
+        self.assertIn('python3 -I - grok "$O" portraits < tools/safe-mkdirs.py', sh)  # wake listener writes the persona cache (sync_personas PermissionError)
         admin = open(os.path.join(ROOT, "systemd", "grok-station-admin.service")).read()
-        self.assertIn("SupplementaryGroups=adm audio", admin)
+        self.assertIn("SupplementaryGroups=systemd-journal audio", admin)  # 0.13.14 PI-04
         wake = open(os.path.join(ROOT, "systemd", "grok-station-wake.service")).read()
         self.assertNotIn("CPUQuota", wake)  # the quota starved arecord on a Pi 3B (overruns)
         src = open(os.path.join(ROOT, "wake", "grok_wake.py")).read()
         self.assertIn("--buffer-time=", src); self.assertIn("--period-time=", src)
         self.assertIn('download_models(["feature-models-only"])', sh)
         self.assertNotIn("wake/models/*.onnx", sh)
-        self.assertIn('--put grok "$O" wake/models wake/models/hey_grok.onnx', sh)
+        self.assertIn('--put root "$O" wake/models wake/models/hey_grok.onnx', sh)
         for n in ("ash", "jules", "kai", "miles", "piper", "rhea"):  # retired starter models are removed on update
             self.assertIn("$O/wake/models/hey_%s.onnx" % n, sh)
         self.assertNotIn("rm -f $O/wake/models/enrolled", sh)

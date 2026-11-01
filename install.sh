@@ -275,8 +275,11 @@ _old_wake_venv_remove() {
 st_wake() {
   # portraits: persona cache the wake listener writes. Not `install -d -o grok`: it follows a symlink grok planted
   # and chowns the target to grok (0.13.6). safe-mkdirs refuses any symlink on the way.
-  if [ "$DRY" = 1 ]; then echo "+ safe-mkdirs grok $O wake/models/enrolled portraits"; else
-    python3 -I - grok "$O" wake wake/models wake/models/enrolled portraits < tools/safe-mkdirs.py \
+  # 0.13.14 (Nix PI-01): wake/ and wake/models are root:root 0755 (code); only wake/models/enrolled is grok's.
+  if [ "$DRY" = 1 ]; then echo "+ safe-mkdirs root $O wake wake/models; --leaf grok $O wake/models/enrolled; grok $O portraits"; else
+    { python3 -I - root "$O" wake wake/models < tools/safe-mkdirs.py &&
+      python3 -I - --leaf grok "$O" wake/models/enrolled < tools/safe-mkdirs.py &&
+      python3 -I - grok "$O" portraits < tools/safe-mkdirs.py; } \
       || { echo "refusing to set up $O/wake: a path there is a symlink or not a directory"; return 1; }
   fi
   _wake_venv || return 1
@@ -288,12 +291,12 @@ st_wake() {
     requests "websockets>=17"
   run $WV/bin/python -c 'import openwakeword.utils as u; u.download_models(["feature-models-only"])'
   fi
-  run python3 -I - --put grok "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put root "$O" wake wake/grok_wake.py wake/gain.py wake/fewshot.py wake/wait_tone.py wake/wakewords.json < tools/safe-mkdirs.py  # root-owned code (PI-01); dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   run python3 -I tools/rm-stale-train-flow.py "$O"  # 0.13.8: old grok-owned train_flow.py and .pyc; no symlink follow (Nix b)
   # Only the built-in Hey Grok model ships. Custom words are trained or uploaded into $O/wake/models/enrolled.
-  run python3 -I - --put grok "$O" wake/models wake/models/hey_grok.onnx < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put root "$O" wake/models wake/models/hey_grok.onnx < tools/safe-mkdirs.py  # root-owned (PI-01); dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # Everyday-speech bank (synthetic voices) that recorded wake words are checked against (wake/fewshot.py).
-  run python3 -I - --put grok "$O" wake/models wake/models/fewshot_negatives.npz < tools/safe-mkdirs.py  # dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
+  run python3 -I - --put root "$O" wake/models wake/models/fewshot_negatives.npz < tools/safe-mkdirs.py  # root-owned (PI-01); dir fds, O_NOFOLLOW (Nix 0.13.6 L3)
   # 0.9.4: drop the starter models 0.9.2 used to ship, and their override entries. Only these six exact files in
   # $O/wake/models (never models/enrolled), and an override is kept when an enrolled model of that name exists.
   sh_ "rm -f $O/wake/models/hey_ash.onnx $O/wake/models/hey_jules.onnx $O/wake/models/hey_kai.onnx $O/wake/models/hey_miles.onnx $O/wake/models/hey_piper.onnx $O/wake/models/hey_rhea.onnx"
@@ -339,10 +342,13 @@ st_boot() {  # boot splash and kiosk; hides the blinking console cursor
 }
 
 st_web() {  # admin page (HTTPS) and services
-  if [ "$MODE" = update ]; then run sh tools/install-files.sh "$PWD" "$VER"
-  else run env GROK_STATION_NO_RESTART=1 sh tools/install-files.sh "$PWD" "$VER"; fi
   # Update button on the admin page: a fixed oneshot unit that re-runs bootstrap.sh from this clone.
   sh_ "printf '%s\\n' '$PWD' > /etc/grok-station/source-dir && chmod 0644 /etc/grok-station/source-dir"
+  # 0.13.14 (Nix PI-02): the admin unit is ProtectSystem=strict and the root helper's update check runs git in this
+  # clone, so the clone (only) is writable there. Rewritten every run: the clone can move.
+  sh_ "install -d -m755 /etc/systemd/system/grok-station-admin.service.d && printf '[Service]\\nReadWritePaths=\"-%s\"\\n' '$PWD' > /etc/systemd/system/grok-station-admin.service.d/source-dir.conf && chmod 0644 /etc/systemd/system/grok-station-admin.service.d/source-dir.conf"
+  if [ "$MODE" = update ]; then run sh tools/install-files.sh "$PWD" "$VER"
+  else run env GROK_STATION_NO_RESTART=1 sh tools/install-files.sh "$PWD" "$VER"; fi
   run install -o root -g root -m755 tools/grok-station-update /usr/local/lib/grok-station/grok-station-update
   run install -m644 systemd/grok-station-update.service /etc/systemd/system/
   run usermod -aG grok-admin,audio grok-admin   # admin_token (group grok-admin); audio: list mics and speakers
@@ -355,6 +361,8 @@ st_web() {  # admin page (HTTPS) and services
     run systemctl stop grok-station-admin grok-station grok-station-wake grok-station-relay || true
   fi
   _old_wake_venv_remove  # the wake unit now starts $WV/bin/python
+  # 0.13.14 (Nix PI-03): the root-owned wake/venv left from before 0.13.7 (grok can't remove it), and wake/__pycache__.
+  run python3 -I tools/wake-code-perms.py "$O"
 }
 
 st_health() {

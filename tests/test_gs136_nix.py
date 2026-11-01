@@ -72,6 +72,9 @@ class Base(unittest.TestCase):
         """Run as this user: drop root-only owner flags, point the tool at the shim, run runuser as a no-op."""
         text = text.replace("-o grok -g grok", "").replace("-o root -g grok", "")
         text = text.replace("python3 -I - --put grok ", "python3 -I - --put %s " % ME)
+        text = text.replace("python3 -I - --put root ", "python3 -I - --put %s " % ME)  # 0.13.14 PI-01
+        text = re.sub(r"\bpython3 -I - root\b", "python3 -I - %s" % ME, text)
+        text = text.replace(" --leaf grok ", " --leaf %s " % ME)
         text = re.sub(r"\bpython3 -I - grok\b", "python3 -I - %s" % ME, text)
         text = re.sub(r"\bpython3 -I - (--\S+ \S+ )grok\b", r"python3 -I - \g<1>%s" % ME, text)
         text = text.replace('< "$S/tools/safe-mkdirs.py"', '< "%s"' % self.shim)
@@ -100,6 +103,7 @@ class M1(Base):
         os.makedirs(os.path.join(S, "wake", "lines"))
         os.makedirs(os.path.join(S, "tools"))
         shutil.copy(TOOL, os.path.join(S, "tools", "safe-mkdirs.py"))
+        shutil.copy(os.path.join(ROOT, "tools", "make-chime.py"), os.path.join(S, "tools", "make-chime.py"))
         for n in ("grok_wake.py", "gain.py", "fewshot.py", "wait_tone.py"):
             open(os.path.join(S, "wake", n), "w").write("# %s\n" % n)
         open(os.path.join(S, "wake", "models", "fewshot_negatives.npz"), "wb").write(b"npz")
@@ -192,6 +196,7 @@ class L3(Base):
                         ignore=shutil.ignore_patterns("venv", "__pycache__"))
         os.mkdir(os.path.join(S, "tools"))
         shutil.copy(TOOL, os.path.join(S, "tools", "safe-mkdirs.py"))
+        shutil.copy(os.path.join(ROOT, "tools", "make-chime.py"), os.path.join(S, "tools", "make-chime.py"))
         script = 'set -eu\nDRY=0\nO="%s"\nrun() { "$@"; }\n%s\n' % (O, self._fix("\n".join(lines)))
         r = subprocess.run(["sh", "-c", script], capture_output=True, text=True, cwd=S)
         self.assertNotEqual(r.returncode, 0)

@@ -3,22 +3,29 @@
 # usage: install-files.sh <repo dir> <version>
 set -eu
 S=$1; V=${2:-dev}
-id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G adm -M -d /nonexistent -s /usr/sbin/nologin grok-admin
+id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G systemd-journal -M -d /nonexistent -s /usr/sbin/nologin grok-admin
+# 0.13.14 (Nix PI-04): the admin page reads the journal (journalctl), never /var/log, so systemd-journal, not adm.
+usermod -aG systemd-journal grok-admin
+if id -nG grok-admin | tr ' ' '\n' | grep -qx adm; then gpasswd -d grok-admin adm >/dev/null; fi
 install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets
 install -d -o root -g root -m755 /usr/local/lib/grok-station
 install -m755 "$S/app/grok_station.py" /opt/grok-station/grok_station.py.new && mv /opt/grok-station/grok_station.py.new /opt/grok-station/grok_station.py
 install -m644 "$S/app/dimming.py" /opt/grok-station/dimming.py
 install -m644 "$S/app/cards.py" /opt/grok-station/cards.py.new && mv /opt/grok-station/cards.py.new /opt/grok-station/cards.py
 if [ -d /opt/grok-station/wake ]; then  # wake listener installed (docs/wake.md)
-  # Root writes into grok-owned dirs only through safe-mkdirs --put (dir fds, O_NOFOLLOW; Nix 0.13.6 L3).
-  python3 -I - --put grok /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" < "$S/tools/safe-mkdirs.py"
-  # Not `install -d -o grok`: root would follow a symlink grok planted and chown its target (Nix 0.13.6 M1).
-  python3 -I - grok /opt/grok-station wake/models wake/models/enrolled < "$S/tools/safe-mkdirs.py"
-  python3 -I - --put grok /opt/grok-station wake/models "$S/wake/models/fewshot_negatives.npz" < "$S/tools/safe-mkdirs.py"
+  # 0.13.14 (Nix PI-01): the listener's code and folders are root:root (0644 / 0755); only wake/models/enrolled is
+  # grok's. Root writes through dir fds, O_NOFOLLOW (safe-mkdirs; Nix 0.13.6 L3/M1). --leaf: only enrolled is chowned.
+  python3 -I - root /opt/grok-station wake wake/models < "$S/tools/safe-mkdirs.py"
+  python3 -I - --leaf grok /opt/grok-station wake/models/enrolled < "$S/tools/safe-mkdirs.py"
+  python3 -I - --put root /opt/grok-station wake "$S/wake/grok_wake.py" "$S/wake/gain.py" "$S/wake/fewshot.py" "$S/wake/wait_tone.py" < "$S/tools/safe-mkdirs.py"
+  python3 -I - --put root /opt/grok-station wake/models "$S/wake/models/fewshot_negatives.npz" < "$S/tools/safe-mkdirs.py"
+  chd=$(mktemp -d)  # the chime used to be written by the listener into wake/ at its first start
+  python3 -I "$S/tools/make-chime.py" "$chd/chime.wav" && python3 -I - --put root /opt/grok-station wake "$chd/chime.wav" < "$S/tools/safe-mkdirs.py"
+  rm -rf -- "$chd"
 fi
 if [ -d /opt/grok-station/wake ] && [ -d "$S/wake/lines" ]; then
-  python3 -I - grok /opt/grok-station wake/lines < "$S/tools/safe-mkdirs.py"
-  python3 -I - --put grok /opt/grok-station wake/lines "$S"/wake/lines/*.wav < "$S/tools/safe-mkdirs.py"
+  python3 -I - root /opt/grok-station wake/lines < "$S/tools/safe-mkdirs.py"
+  python3 -I - --put root /opt/grok-station wake/lines "$S"/wake/lines/*.wav < "$S/tools/safe-mkdirs.py"
 fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 install -m644 "$S/admin/gs_routine.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" /opt/grok-station/admin/
@@ -82,6 +89,8 @@ install -m644 "$S"/systemd/grok-station.service "$S"/systemd/grok-station-admin.
 [ -d /opt/grok-station/wake ] && install -m644 "$S"/systemd/grok-station-wake.service /etc/systemd/system/
 echo "$V" > /opt/grok-station/VERSION
 systemctl daemon-reload
+# 0.13.14 (Nix PI-01/PI-03): drop wake/__pycache__ and the unused root-owned wake/venv (after the new unit is in place).
+if [ -d /opt/grok-station/wake ]; then python3 -I "$S/tools/wake-code-perms.py" /opt/grok-station; fi
 systemctl enable grok-station-admin.service >/dev/null 2>&1 || true
 if [ "${GROK_STATION_NO_RESTART:-0}" != 1 ]; then  # a fresh install starts everything at its reboot instead
   systemctl restart grok-station || true

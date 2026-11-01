@@ -23,6 +23,7 @@ def helper():
 
 
 def call(g, fn, *args, stdin=""):
+    os.environ["GROK_STATION_HELPER_TEST"] = "1"  # 0.13.14 PI-05: the repo wake/gain.py is a test-only candidate
     old = sys.stdin
     sys.stdin = io.StringIO(stdin)
     buf = io.StringIO()
@@ -35,6 +36,7 @@ def call(g, fn, *args, stdin=""):
                 code = e.code if isinstance(e.code, int) else 1
     finally:
         sys.stdin = old
+        os.environ.pop("GROK_STATION_HELPER_TEST", None)
     line = buf.getvalue().strip().splitlines()
     return code, json.loads(line[-1] if line else "{}")
 

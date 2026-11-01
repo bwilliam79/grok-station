@@ -70,14 +70,16 @@ def station_gain():
     """wake/gain.py: device gain defaults. No numpy, so this helper can load it. None if it isn't there.
 
     0.13.7 (Nix M1b): installed, only the root-owned copy /opt/grok-station/gain.py is loaded (tools/install-files.sh
-    puts it there), never $O/wake/gain.py, which grok can edit. The first candidate is the repo checkout (tests)."""
+    puts it there), never $O/wake/gain.py, which grok can edit.
+    0.13.14 (Nix PI-05): the repo checkout's wake/gain.py is a candidate only under tests: GROK_STATION_HELPER_TEST=1
+    and not running as root. sudo drops the variable, and a root run never looks past the root-owned copy."""
     import importlib.util
     cached = getattr(station_gain, "_mod", None)
     if cached:
         return cached
     cands = []
     here = globals().get("__file__")
-    if here:
+    if here and os.environ.get("GROK_STATION_HELPER_TEST") == "1" and os.geteuid() != 0:
         cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "wake", "gain.py"))
     cands.append("/opt/grok-station/gain.py")
     for p in cands:

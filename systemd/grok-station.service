@@ -18,6 +18,14 @@ ExecStart=/usr/bin/python3 /opt/grok-station/grok_station.py
 Restart=always
 RestartSec=3
 MemoryMax=300M
+# 0.13.14 (Nix PI-02). Writes: /var/cache/grok-station (CacheDirectory: weather, logos, dim stamp) and
+# /run/grok-station (RuntimeDirectory: last.png); /dev/fb0 and /sys backlight are API trees strict leaves alone.
+# The ExecStartPre lines run with + (full privileges), so none of this applies to them.
+ProtectSystem=strict
+ReadWritePaths=/var/cache/grok-station /run/grok-station
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target

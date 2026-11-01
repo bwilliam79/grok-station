@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 User=grok-admin
 Group=grok
-SupplementaryGroups=adm audio
+# 0.13.14 (Nix PI-04): systemd-journal, not adm: the page reads the journal (journalctl), never /var/log.
+SupplementaryGroups=systemd-journal audio
 UMask=0027
 StateDirectory=grok-station/admin
 StateDirectoryMode=0750
@@ -20,6 +21,16 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=3
 MemoryMax=120M
+# 0.13.14 (Nix PI-02). The root helper (sudo) runs inside this sandbox too, so its writes are listed:
+# /var/lib/grok-station (admin state, enroll inbox, wakewords drop, tls, integrations, home-status),
+# /etc/grok-station (env, wake.env, secrets, tls: helper), /etc/hosts (helper rewrites it in place on a rename),
+# /etc/NetworkManager/system-connections (helper writes the Wi-Fi join file), wake/models/enrolled (enrolled list).
+# The update check runs git in the install clone; install.sh adds that folder in the drop-in
+# grok-station-admin.service.d/source-dir.conf. No ProtectHome: that clone is usually in a home folder.
+# No NoNewPrivileges: the page needs sudo for the helper.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/grok-station /etc/grok-station /etc/hosts -/etc/NetworkManager/system-connections -/opt/grok-station/wake/models/enrolled
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

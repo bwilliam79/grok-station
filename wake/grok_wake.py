@@ -247,7 +247,9 @@ LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
-TIMERS_FILE = E("WAKE_TIMERS", "/opt/grok-station/wake/timers.json")
+# 0.13.14 (Nix PI-01): wake/ is root-owned, so the ringer's file lives in the unit's StateDirectory (grok-owned).
+TIMERS_FILE = E("WAKE_TIMERS", "/var/lib/grok-station-wake/timers.json")
+TIMERS_LEGACY = "/opt/grok-station/wake/timers.json"  # read once when TIMERS_FILE is missing (before 0.13.14)
 TIMERS, TIMERS_LOCK = {}, threading.Lock()
 RING_HOLD = 60.0  # ringing chip stays up this long after the chimes and the spoken notice
 MAX_STATION_TIMERS = 8
@@ -386,10 +388,19 @@ def _anchor_timer(v, now_w, now_m):
 
 
 def timers_load():
-    try:
-        with open(TIMERS_FILE) as f:
-            d = json.load(f)
-    except (OSError, ValueError):
+    d = None
+    for path in (TIMERS_FILE, TIMERS_LEGACY if TIMERS_FILE != TIMERS_LEGACY else None):
+        if not path:
+            continue
+        try:
+            with open(path) as f:
+                d = json.load(f)
+            break
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return
+    if d is None:
         return
     if not isinstance(d, dict):
         return
@@ -3660,7 +3671,10 @@ def _mic_poll():
 def main():
     global RECOVERY
     RECOVERY = MicRecovery(run_usb_reset)
-    make_chime(CHIME)
+    try:  # 0.13.14: the installer writes wake/chime.wav (root-owned folder); a failed write here is not fatal
+        make_chime(CHIME)
+    except OSError as e:
+        print(f"chime write failed {type(e).__name__} {CHIME}", flush=True)
     if RELAY_URL:
         threading.Thread(target=persona_loop, daemon=True).start()
     stale_build()

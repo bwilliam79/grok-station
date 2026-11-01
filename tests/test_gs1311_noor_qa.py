@@ -81,7 +81,9 @@ class ChipEditUnit(unittest.TestCase):
 
 class UpdatesLine(unittest.TestCase):
     def test_rule_line_not_clickable(self):
-        self.assertIn(".updsw .updrule{color:var(--gs-muted);text-decoration:none;cursor:default}", CSS)
+        # 0.13.14 (Noor bots-row-fix rev1): the line is a muted status line, not a link; the old rule is replaced.
+        self.assertIn(".updsw .updrule{height:20px;line-height:20px;color:var(--gs-muted);", CSS)
+        self.assertNotRegex(CSS, r"\.updrule[^{]*\{[^}]*(cursor:pointer|text-decoration:underline)")
 
     def test_off_track_edge(self):
         self.assertIn(".tog:not(.on){border-color:var(--gs-field-edge)}", CSS)
