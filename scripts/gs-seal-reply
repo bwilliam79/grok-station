@@ -766,7 +766,7 @@ def cmd_show(slug):
         doc = json.loads(text)
     except ValueError:
         raise Refused()
-    if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
+    if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear", "update", "update_clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
         raise Refused()
     _reject_if_secret(text)
     _check_tree()

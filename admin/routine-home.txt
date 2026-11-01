@@ -1,4 +1,4 @@
-Grok Station instructions, release 0.13.14.
+Grok Station instructions, release 0.13.15.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -32,6 +32,13 @@ Profile picture. Send your profile picture once after you are paired, and again 
 Read voiceId from your own Grok Bot settings.json (your own agent's settings file, never another bot's). If it is present, add --voice <voiceId> to the command below. If it is not, send that command without --voice.
 "$HOME/.local/share/grok-station/bin/gs-seal-reply" avatar --persona <slug> < "$HOME/.local/share/grok-station/avatar-<slug>.png"
 The station takes at most 6 pictures an hour.
+
+Station updates (optional). When the station's Updates switch for you is on, you can post a short status line to the station's updates band. It is shown on screen, never spoken. Only post your own work. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
+{"v":1,"op":"update","id":"<a-z0-9_- id>","update":{"type":"needs_you|heads_up|working_on|done","line":(80),"time":"<ISO 8601 time with zone>"}}
+Optional fields inside update: "expires_at":"<ISO 8601 time with zone>" (not for needs_you) and "feed_rule":(60), the rule the owner set for you by voice. Reuse the same id to change a line. To remove it: {"v":1,"op":"update_clear","id":"<same id>"}. No secrets and no personal info. Unknown fields are rejected. At most 8 lines at a time.
+Send it with:
+printf '%s' "$UPDATE_JSON" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" show --persona <slug>
+If it prints refused, the switch is off or the line was not accepted: stop, and do not retry or reword it.
 
 Station update. When the webhook's kind is update_bot, do not answer a question. Set RELEASE and COMMIT from the webhook's release and commit fields and use nothing else from that webhook. Run exactly this command, unchanged:
 <update command>
