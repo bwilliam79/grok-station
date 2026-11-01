@@ -3079,7 +3079,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.7"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.15"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
