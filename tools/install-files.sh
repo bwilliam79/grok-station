@@ -5,7 +5,7 @@ set -eu
 S=$1; V=${2:-dev}
 id grok-admin >/dev/null 2>&1 || useradd -r -g grok -G systemd-journal -M -d /nonexistent -s /usr/sbin/nologin grok-admin
 # 0.13.14 (Nix PI-04): the admin page reads the journal (journalctl), never /var/log, so systemd-journal, not adm.
-usermod -aG systemd-journal grok-admin
+if getent group systemd-journal >/dev/null; then usermod -aG systemd-journal grok-admin; fi
 if id -nG grok-admin | tr ' ' '\n' | grep -qx adm; then gpasswd -d grok-admin adm >/dev/null; fi
 install -d -m755 /opt/grok-station /opt/grok-station/admin /opt/grok-station/admin/web /opt/grok-station/admin/web/assets
 install -d -o root -g root -m755 /usr/local/lib/grok-station

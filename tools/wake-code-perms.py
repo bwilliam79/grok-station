@@ -98,7 +98,11 @@ def remove_old_venv(wfd, unit=UNIT, root_uid=None):
     if not shutil.rmtree.avoids_symlink_attacks:
         _log("left wake/venv: this Python's rmtree can follow symlinks")
         return False
-    shutil.rmtree("venv", dir_fd=wfd)
+    try:
+        shutil.rmtree("venv", dir_fd=wfd)
+    except OSError as e:  # partly removed is fine; never abort the install over it
+        _log("left part of wake/venv (%s)" % type(e).__name__)
+        return False
     return True
 
 

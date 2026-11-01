@@ -320,6 +320,15 @@ class Pi03WakeCodePerms(unittest.TestCase):
         self.run_tool()
         self.assertEqual(os.listdir(outside), ["x.pyc"])
 
+    def test_rmtree_failure_does_not_abort(self):
+        real = self.t.shutil.rmtree
+        def boom(*a, **k):
+            raise PermissionError("x")
+        boom.avoids_symlink_attacks = True
+        self.t.shutil.rmtree = boom
+        self.addCleanup(setattr, self.t.shutil, "rmtree", real)
+        self.run_tool()
+
     def test_install_runs_it_after_the_unit_is_installed(self):
         text = _read("tools/install-files.sh")
         self.assertLess(text.index("systemctl daemon-reload"), text.index("wake-code-perms.py"))
@@ -390,7 +399,7 @@ class Pi04NoAdm(unittest.TestCase):
         text = _read("tools/install-files.sh")
         self.assertNotRegex(text, r"-G adm\b")
         self.assertIn("gpasswd -d grok-admin adm", text)
-        self.assertIn("usermod -aG systemd-journal grok-admin", text)
+        self.assertIn("if getent group systemd-journal >/dev/null; then usermod -aG systemd-journal grok-admin; fi", text)
 
     def test_admin_never_reads_var_log(self):
         self.assertNotIn("/var/log", _read("admin/grok_admin.py"))
