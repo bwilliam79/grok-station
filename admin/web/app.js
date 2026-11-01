@@ -3456,6 +3456,11 @@ function setupMainComputer(el) {
   return (main && main.reply_host) || "";
 }
 // One setup row per bot that isn't the main bot, keyed by slug (drawn inside the Bots list rows).
+// 0.13.16: the typed setup_relay's display state for a Sent row (relayed, failed, expired), else "".
+function setupRelayState(draft) {
+  const v = draft && draft.relay;
+  return v === "relayed" || v === "failed" || v === "expired" ? v : "";
+}
 function setupListRows(el) {
   const bots = (el && el._bots) || [];
   const stored = (el && el._setup && el._setup.rows) || {};
@@ -3478,7 +3483,7 @@ function setupListRows(el) {
       ownComputer: ownComputer, mainComputer: mainComputer,
       status: (configured && !inflow) ? "already" : st,
       sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner,
-      unknown: !!draft.unknown
+      unknown: !!draft.unknown, relay: setupRelayState(draft)
     });
   });
   pendingTeammates(el).forEach(row => {
@@ -3493,7 +3498,7 @@ function setupListRows(el) {
       computer: draft.computer || pendingSuggestions[0] || "",
       ownComputer: "", mainComputer: mainComputer,
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
-      configured: false, pending: true, owner: owner, unknown: !!draft.unknown
+      configured: false, pending: true, owner: owner, unknown: !!draft.unknown, relay: setupRelayState(draft)
     });
   });
   return out;

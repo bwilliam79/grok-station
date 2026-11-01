@@ -770,6 +770,18 @@ class RowStates(unittest.TestCase):
                     "[setupRowStatus(%s, {mainName: 'Rhea', now: %d}), setupRowActionHTML(%s, {mainName: 'Rhea', now: %d})]"
                     % (json.dumps(row), now, json.dumps(row), now))
 
+    def test_list_rows_carry_the_relay_state(self):
+        # Found by the frames: setupListRows copied fields one by one and dropped relay, so rows stayed "sent".
+        from test_gs1311_bots_merge import _run
+        names = ("setupRelayState", "setupListRows", "setupMainComputer", "setupComputerSuggestions", "pendingTeammates",
+                 "botIdFromName")
+        el = {"_bots": [{"slug": "otto", "name": "Otto", "webhook": {"configured": False}}],
+              "_setup": {"rows": {"otto": {"status": "sent", "sent_at": 5, "relay": "relayed"}}}}
+        rows = _run(names, "setupListRows(%s)" % json.dumps(el))
+        self.assertEqual(rows[0]["relay"], "relayed")
+        el["_setup"]["rows"]["otto"]["relay"] = "<b>"
+        self.assertEqual(_run(names, "setupListRows(%s)" % json.dumps(el))[0]["relay"], "")
+
     def test_states(self):
         row = {"slug": "otto", "name": "Otto", "status": "sent", "sent_at": 1000, "fails": 0}
         s, a = self._status(dict(row, relay="relayed"))
