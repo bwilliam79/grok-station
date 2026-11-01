@@ -3235,7 +3235,9 @@ function setupResendWaitMin(row, opts) {
   const sent = Number(row.sent_at) || 0;
   if (!sent) return 0;
   const now = opts && opts.now != null ? opts.now : Date.now() / 1000;
-  const left = SETUP_STUCK_S - (now - sent);
+  // A 409's retry wait (opts.throttle[slug] = until, epoch s) holds the button too, so it matches the 409 line.
+  const until = Number(opts && opts.throttle && opts.throttle[row.slug]) || 0;
+  const left = Math.max(SETUP_STUCK_S - (now - sent), until - now);
   return left > 0 ? Math.max(1, Math.ceil(left / 60)) : 0;
 }
 function setupSentHelper(row, opts) {
@@ -3247,7 +3249,9 @@ function setupThrottleLine(bot, mins) {
 }
 function setupRowStatusHTML(row, opts) {
   const s = setupRowStatus(row, opts);
-  const thr = row && row.status === "sent" && opts && opts.throttle && opts.throttle[row.slug];
+  const until = row && row.status === "sent" && opts && opts.throttle ? Number(opts.throttle[row.slug]) || 0 : 0;
+  const now = opts && opts.now != null ? opts.now : Date.now() / 1000;
+  const thr = until > now ? setupThrottleLine(row.name, setupResendWaitMin(row, opts)) : "";
   return '<div class="sline" role="status" aria-live="polite"><span class="schip ' + s.colour + '">' + setupIcon(s.icon) +
     "<span>" + esc(s.text) + "</span></span></div>" +
     (thr ? '<div class="shelp sthrottle help" role="status">' + esc(thr) + "</div>"  // the 409 line replaces the helper
@@ -3545,7 +3549,7 @@ async function setupSend(row, el, btn) {
   if (r.status === 409 && el && row.status === "sent") {  // bots-row-sent rev1 fallback: inline, no toast
     const wl = Number(r.data && (r.data.wait_left || r.data.retry_after_s)) || SETUP_STUCK_S;
     el._setupThrottle = el._setupThrottle || {};
-    el._setupThrottle[row.slug] = setupThrottleLine(row.name, Math.ceil(wl / 60));
+    el._setupThrottle[row.slug] = Date.now() / 1000 + wl;  // until; button and line both count down from it
   } else if (el && el._setupThrottle) delete el._setupThrottle[row.slug];
   if (outcome.row === "again" && el) {
     el._setup = el._setup || {};
