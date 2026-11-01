@@ -440,3 +440,39 @@ class Pi05GainCandidates(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Nix131401SoundsCandidates(unittest.TestCase):
+    """NIX-1314-01: as root (or without the test flag) the helper loads only /opt/grok-station/sounds.py."""
+
+    def _seen(self, flag, env_py=None):
+        h = _load("admin/grok-station-helper", "gs_helper_1314_sounds")
+        seen = []
+        real = h.os.path.isfile
+        h.os.path.isfile = lambda p: seen.append(p) or False
+        self.addCleanup(setattr, h.os.path, "isfile", real)
+        keys = ("GROK_STATION_HELPER_TEST", "GROK_STATION_SOUNDS_PY")
+        old = {k: os.environ.pop(k, None) for k in keys}
+        if flag:
+            os.environ["GROK_STATION_HELPER_TEST"] = "1"
+        if env_py:
+            os.environ["GROK_STATION_SOUNDS_PY"] = env_py
+        try:
+            h.station_sounds.__dict__.pop("_mod", None)
+            h.station_sounds()
+        finally:
+            for k in keys:
+                os.environ.pop(k, None)
+                if old[k] is not None:
+                    os.environ[k] = old[k]
+        return seen
+
+    def test_env_and_repo_copy_ignored_without_the_test_flag(self):
+        self.assertEqual(self._seen(False, "/tmp/evil-sounds.py"), ["/opt/grok-station/sounds.py"])
+
+    @NOT_ROOT
+    def test_env_and_repo_copy_only_under_the_test_flag(self):
+        seen = self._seen(True, "/tmp/test-sounds.py")
+        self.assertEqual(seen[0], "/tmp/test-sounds.py")
+        self.assertTrue(seen[1].endswith("sounds.py") and seen[1] != "/opt/grok-station/sounds.py")
+        self.assertEqual(seen[-1], "/opt/grok-station/sounds.py")

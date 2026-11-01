@@ -38,16 +38,20 @@ SETTINGS = {  # section -> {key: (env file, validator)}
 
 
 def station_sounds():
-    """Catalog module. Next to this checkout, else the installed copy. None if it isn't there."""
+    """Catalog module: the installed root-owned copy /opt/grok-station/sounds.py. None if it isn't there.
+
+    0.13.14 (NIX-1314-01, same gate as station_gain/PI-05): GROK_STATION_SOUNDS_PY and the checkout's sounds.py are
+    candidates only under tests: GROK_STATION_HELPER_TEST=1 and not running as root."""
     import importlib.util
     cached = getattr(station_sounds, "_mod", None)
     if cached:
         return cached
     cands = []
-    if os.environ.get("GROK_STATION_SOUNDS_PY"):
+    testing = os.environ.get("GROK_STATION_HELPER_TEST") == "1" and os.geteuid() != 0
+    if testing and os.environ.get("GROK_STATION_SOUNDS_PY"):
         cands.append(os.environ["GROK_STATION_SOUNDS_PY"])
     here = globals().get("__file__")
-    if here:
+    if testing and here:
         cands.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(here))), "sounds.py"))
     cands.append("/opt/grok-station/sounds.py")
     for p in cands:

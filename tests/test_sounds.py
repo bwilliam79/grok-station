@@ -34,9 +34,11 @@ def call(g, fn, *args, stdin=""):
 
 class Catalog(unittest.TestCase):
     def setUp(self):
-        keys = ("GROK_STATION_SOUNDS", "GROK_STATION_SOUNDS_PY", "WAKE_CHIME", "ALARM_SOUND", "LISTEN_TONE", "END_TONE")
+        keys = ("GROK_STATION_SOUNDS", "GROK_STATION_SOUNDS_PY", "GROK_STATION_HELPER_TEST", "WAKE_CHIME", "ALARM_SOUND",
+                "LISTEN_TONE", "END_TONE")
         self._env = {k: os.environ.get(k) for k in keys}
         os.environ["GROK_STATION_SOUNDS"] = SHIPPED
+        os.environ["GROK_STATION_HELPER_TEST"] = "1"  # NIX-1314-01: the helper honors the repo sounds.py only under tests
         os.environ["GROK_STATION_SOUNDS_PY"] = os.path.join(ROOT, "sounds.py")
         os.environ["WAKE_CHIME"] = os.path.join(ROOT, "wake", "missing-chime.wav")
         for k in ("ALARM_SOUND", "LISTEN_TONE", "END_TONE"):
