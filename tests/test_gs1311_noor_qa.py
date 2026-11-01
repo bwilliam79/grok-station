@@ -30,7 +30,7 @@ class SentRowButtons(unittest.TestCase):
     def test_order_and_same_kind(self):
         a = _run(SETUP, "setupRowActionHTML(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
         btns = re.findall(r'<button class="([^"]*)"[^>]*>([^<]*)</button>', a)
-        self.assertEqual([t for _, t in btns], ["Send request again", "Enter details myself"])  # 0.13.15 bots-row-sent rev1
+        self.assertEqual([t for _, t in btns], ["Send again in 4 min", "Enter details myself"])  # 0.13.15 Noor QA: countdown in the button
         self.assertEqual({c for c, _ in btns}, {"btn sm sec"})
         self.assertNotIn("tlnk", a)
 

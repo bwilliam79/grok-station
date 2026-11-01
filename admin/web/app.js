@@ -3240,20 +3240,18 @@ function setupResendWaitMin(row, opts) {
 }
 function setupSentHelper(row, opts) {
   const bot = (row && row.name) || "this bot";
-  const wait = setupResendWaitMin(row, opts);
-  return bot + " replies with its webhook details, and they fill in here on their own. If it's taking a while, send the request again or enter the details yourself." +
-    (wait ? " You can send it again in " + wait + " min." : "");
+  return bot + "\u2019s webhook details fill in here when it replies.";
 }
 function setupThrottleLine(bot, mins) {
-  return "\u26a0 Still waiting for " + (bot || "this bot") + ". You can send the request again in " + Math.max(1, mins | 0) + " min.";
+  return "\u26a0 Still waiting for " + (bot || "this bot") + ". Try again in " + Math.max(1, mins | 0) + " min.";
 }
 function setupRowStatusHTML(row, opts) {
   const s = setupRowStatus(row, opts);
   const thr = row && row.status === "sent" && opts && opts.throttle && opts.throttle[row.slug];
   return '<div class="sline" role="status" aria-live="polite"><span class="schip ' + s.colour + '">' + setupIcon(s.icon) +
     "<span>" + esc(s.text) + "</span></span></div>" +
-    (s.helper ? '<div class="shelp help">' + esc(s.helper) + "</div>" : "") +
-    (thr ? '<div class="sthrottle help" role="status">' + esc(thr) + "</div>" : "");
+    (thr ? '<div class="shelp sthrottle help" role="status">' + esc(thr) + "</div>"  // the 409 line replaces the helper
+         : s.helper ? '<div class="shelp help">' + esc(s.helper) + "</div>" : "");
 }
 // The row's own action: Set up (filled teal, rev1.1) while the bot still needs setup, Resend after a send.
 function setupRowActionHTML(row, opts) {
@@ -3270,10 +3268,10 @@ function setupRowActionHTML(row, opts) {
   if (m.status === "sent") {
     // Noor bots-row-sent rev1: Send request again, Enter details myself, then the row's Remove. All secondary.
     const bot = esc(row.name || "this bot");
-    const wait = setupResendWaitMin(row, opts) > 0;
+    const wait = setupResendWaitMin(row, opts);  // live minutes; the list repaints every few seconds
     return '<span class="setacts sent"><button class="btn sm sec" type="button" data-act="again" data-slug="' + slug + '"' +
-      ' aria-label="Send the setup request to ' + bot + ' again"' +
-      (m.sendBlocked || wait ? ' aria-disabled="true"' : "") + '>Send request again</button>' +
+      ' aria-label="Send the setup request to ' + bot + (wait ? " again, available in " + wait + " minutes" : " again") + '"' +
+      (m.sendBlocked || wait ? ' aria-disabled="true"' : "") + ">" + (wait ? "Send again in " + wait + " min" : "Send request again") + "</button>" +
       '<button class="btn sm sec" type="button" data-act="paste" data-slug="' + slug + '" aria-label="Enter ' + bot +
       '\'s webhook details myself">Enter details myself</button></span>';
   }

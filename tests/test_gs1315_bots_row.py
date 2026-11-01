@@ -29,25 +29,27 @@ class Rev3(unittest.TestCase):
 
 
 class SentCopy(unittest.TestCase):
+    """Noor 0.13.15 QA: one helper line, countdown in the disabled button, 409 replaces the helper, fixed height."""
     def test_labels(self):
-        self.assertIn('" \\u00b7 waiting for its reply"', JS)
         self.assertIn('"Setup request sent to " + bot', JS)
-        self.assertIn(">Send request again</button>", JS)
+        self.assertIn('" \\u00b7 waiting for its reply"', JS)
+        self.assertIn('bot + "\\u2019s webhook details fill in here when it replies."', JS)
+        self.assertNotIn("send the request again or enter the details yourself", JS)
         self.assertIn(">Enter details myself</button>", JS)
-        self.assertIn("' aria-label=\"Send the setup request to ' + bot + ' again\"'", JS)
         self.assertNotIn(">Resend</button>", JS)
-        self.assertNotIn(">Paste values</button>", JS)
-        self.assertIn("they fill in here on their own. If it's taking a while, send the request again or enter the details yourself.", JS)
 
-    def test_order_again_then_details(self):
-        i = JS.index('<span class="setacts sent">')
-        seg = JS[i:i + 700]
-        self.assertLess(seg.index("Send request again"), seg.index("Enter details myself"))
+    def test_countdown_in_button(self):
+        self.assertIn('(wait ? "Send again in " + wait + " min" : "Send request again")', JS)
+        self.assertIn('" again, available in " + wait + " minutes"', JS)
+        self.assertNotIn("You can send it again in", JS)
 
-    def test_throttle_shown(self):
-        self.assertIn('" You can send it again in " + wait + " min."', JS)
-        self.assertIn('"\\u26a0 Still waiting for " + (bot || "this bot") + ". You can send the request again in "', JS)
-        self.assertRegex(JS, r"m\.sendBlocked \|\| wait \? ' aria-disabled=\"true\"'")
+    def test_throttle_replaces_helper(self):
+        self.assertIn('"\\u26a0 Still waiting for " + (bot || "this bot") + ". Try again in " + Math.max(1, mins | 0) + " min."', JS)
+        self.assertIn("(thr ? '<div class=\"shelp sthrottle help\" role=\"status\">' + esc(thr) + \"</div>\"", JS)
+
+    def test_fixed_sent_height_and_compact_phone_configure(self):
+        self.assertIn("#blist .botrow.sentrow{height:100px;min-height:100px;max-height:100px;overflow:hidden}", CSS)
+        self.assertIn("#blist .botrow.sentrow>.cfg .btn{flex:0 0 auto;width:auto}", CSS)
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ class RowSetup(unittest.TestCase):
         st = _run(SETUP, "setupRowStatus(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
         self.assertEqual(st["text"], "Setup request sent to Otto \u00b7 waiting for its reply")  # 0.13.15 Noor bots-row-sent rev1
         a = _run(SETUP, "setupRowActionHTML(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
-        self.assertIn(">Send request again<", a)
+        self.assertIn(">Send again in 4 min<", a)  # 0.13.15 Noor QA: sent 100 s ago, countdown in the button
         self.assertNotIn("btn-setup--needs", a)
         for s in ("connected", "already"):
             a = _run(SETUP, "setupRowActionHTML(%s, %s)" % (json.dumps(_row(status=s)), json.dumps(OPTS)))
