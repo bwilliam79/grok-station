@@ -101,7 +101,7 @@ class PerPersonaPicturePath(unittest.TestCase):
         for name in ("routine-cloud.txt", "routine-home.txt"):
             texts[name] = open(os.path.join(ROOT, "admin", name), encoding="utf-8").read()
         for i in ("BOT_ROUTINE", "BOT_ROUTINE_HOME"):
-            start = JS.index("const " + i + " = `")
+            start = JS.index("const " + i + " = String.raw`")
             texts["app.js " + i] = JS[start:JS.index("`;", start)]
         for name, t in texts.items():
             pic = t[t.index("Profile picture."):t.index("Station update.")]

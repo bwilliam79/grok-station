@@ -153,49 +153,33 @@ class SetupSend(unittest.TestCase):
         return ga.setup_send(doc, slug, poster=poster, **opt)
 
     def test_idempotent_resend_keeps_one_record_and_the_same_message(self):
-        # Base code has no setup_send (AttributeError). A send that called add_bot, rebuilt the
-        # text, or posted a double-click twice would fail the assertions below.
+        # 0.13.16: the relay sends typed parameters (setup_relay), so no free text is built or frozen here.
+        # A send that called add_bot, or posted a double-click twice, would fail the assertions below.
         doc = {"rows": {}}
-        code, body = self._send(doc, lambda msg: self.messages.append(msg) or True)
+        code, body = self._send(doc, lambda target: self.messages.append(target) or True)
         self.assertEqual(code, 200)
-        code, body = self._send(doc, lambda msg: self.messages.append(msg) or True, now=1005)
+        code, body = self._send(doc, lambda target: self.messages.append(target) or True, now=1005)
         self.assertEqual(code, 200)
-        self.assertEqual(self.messages[0], self.messages[1])
-        self.assertGreater(len(self.messages[0]), 500)
-        self.assertIn('start with "Grok Station instructions"', self.messages[0])
-        self.assertIn("don't create a second", self.messages[0])
-        self.assertIn("the station owner copies them into the station.", self.messages[0])
-        self.assertNotIn("\n", self.messages[0])
-        self.assertIn("yes. Step 2: If you already", self.messages[0])
-        # The webhook cleaner drops newline controls. The relay still sends spaces before the payload.
-        wire = handoff.payload("ab" * 8, "juniper", self.messages[0].replace("\n", " "),
-                               "2026-10-29T00:00:00Z", cap=4000)["question"]
-        bare = handoff.payload("ab" * 8, "juniper", self.messages[0],
-                               "2026-10-29T00:00:00Z", cap=4000)["question"]
-        self.assertIn("yes. Step 2: If you already", wire)
-        self.assertIn("the station owner copies them into the station.", wire)
-        self.assertGreater(len(wire), 500)
-        self.assertEqual(bare, wire)
-        relay_fn = RELAY[RELAY.index("async def admin_setup_relay"):RELAY.index("async def admin_cards_get")]
-        self.assertLess(relay_fn.index('replace("\\n", " ")'), relay_fn.index("handoff.payload("))
+        self.assertEqual(self.messages, ["otto", "otto"])
+        relay_fn = RELAY[RELAY.index("async def admin_setup_relay(req)"):RELAY.index("async def admin_cards_get")]
+        self.assertIn('set(body) != {"actor", "slug", "target", "mode"}', relay_fn)
+        self.assertIn("handoff.setup_relay_payload(", relay_fn)
+        self.assertNotIn("question", relay_fn)
         self.assertEqual(self.added, [])
         self.assertEqual(len(self.records), 1)
         self.assertEqual(self.records[0]["webhook"]["key"], "secretkey1")
         self.assertEqual(self.records[0]["public_key"], "abc")
         self.assertEqual(len(doc["rows"]), 1)
+        self.assertEqual(doc["rows"]["otto"]["message"], "")
         self.assertNotIn("message", body["setup"]["rows"]["otto"])
         self.assertNotIn("secretkey1", json.dumps(body))
-        # A later edit does not rewrite the frozen bytes. Retry sends the original message.
         self.assertEqual(ga.setup_draft(doc, "otto", known=KNOWN, now=1006, computer="Shed computer")[0], 409)
-        doc["rows"]["otto"]["status"] = "failed"  # Edit is allowed again; the frozen message stays
+        doc["rows"]["otto"]["status"] = "failed"  # Edit is allowed again
         code, _ = ga.setup_draft(doc, "otto", known=KNOWN, now=1006, computer="Shed computer")
         self.assertEqual(code, 200)
         self.assertEqual(doc["rows"]["otto"]["computer"], "Shed computer")
-        self.assertIn("Office computer", doc["rows"]["otto"]["message"])
-        self.assertNotIn("Shed", doc["rows"]["otto"]["message"])
-        self._send(doc, lambda msg: self.messages.append(msg) or True, now=1010)
-        self.assertEqual(self.messages[-1], self.messages[0])
-        self.assertNotIn("Shed", self.messages[-1])
+        self._send(doc, lambda target: self.messages.append(target) or True, now=1010)
+        self.assertEqual(self.messages[-1], "otto")
 
     def test_concurrent_sends_post_once(self):
         doc = {"rows": {}}
@@ -371,15 +355,14 @@ class Rev33Owner(unittest.TestCase):
                 doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
                 now=1000, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
             self.assertEqual(code, 200)
-            self.assertIn("Sam's home computer", doc["rows"]["otto"]["message"])
+            self.assertEqual(doc["rows"]["otto"]["message"], "")  # 0.13.16: typed setup_relay, no free text
             self.assertNotIn("message", body["setup"]["rows"]["otto"])
             self.assertEqual(body["setup"]["owner"], "Sam")
             self._auth({"password": "kept"})
             ga.setup_send(
                 doc, "otto", known=KNOWN, main_slug="juniper", main_name="Juniper", main_outdated=False,
                 now=1005, poster=lambda msg: True, name="Otto", wake="Hey Otto", computer="Office computer")
-            self.assertIn("Sam", doc["rows"]["otto"]["message"])
-            self.assertNotIn("the station owner", doc["rows"]["otto"]["message"])
+            self.assertEqual(doc["rows"]["otto"]["message"], "")
         finally:
             ga._SETUP_INFLIGHT.clear()
             if existed:
@@ -437,7 +420,8 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             "WEBHOOKS_FILE": r.WEBHOOKS_FILE, "PERSONAS_FILE": r.PERSONAS_FILE, "ADMIN_TOKEN": r.ADMIN_TOKEN,
             "voices": set(r.VOICES),
             "personas": {k: (dict(v) if isinstance(v, dict) else v) for k, v in r._personas.items()},
-            "ClientSession": r.ClientSession,
+            "ClientSession": r.ClientSession, "setup_station_values": r.setup_station_values,
+            "station_release": r.station_release, "PENDING_DIR": r.PENDING_DIR, "SETUP_STATE_FILE": r.SETUP_STATE_FILE,
         }
         calls = []
 
@@ -494,14 +478,19 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             client = TestClient(TestServer(app))
             await client.start_server()
             headers = {"Authorization": "Bearer admin-secret", "X-Client-Cert-Fp": "c" * 64}
-            body = {"actor": "admin", "message": "Step 1: Show the station owner a confirm card."}
+            # 0.13.16: typed setup_relay body; the station values come from the relay's own state.
+            r.setup_station_values = lambda: ("https://grok-station.local", "ab" * 32, "A" * 43 + "=")
+            r.station_release = lambda: "0.13.16"
+            r.PENDING_DIR = os.path.join(tmp, "pending")
+            r.SETUP_STATE_FILE = os.path.join(tmp, "setup-relay.json")
+            body = {"actor": "admin", "target": "otto", "mode": "cloud"}
             ok = await client.post("/admin/bots/setup-relay", headers=headers,
                                    json=dict(body, slug="juniper"))
             self.assertEqual(ok.status, 202, await ok.text())
             self.assertEqual(calls, ["open", main_url])
             calls.clear()
             refused = await client.post("/admin/bots/setup-relay", headers=headers,
-                                        json=dict(body, slug="otto"))
+                                        json=dict(body, slug="otto", target="juniper"))
             self.assertGreaterEqual(refused.status, 400)
             self.assertLess(refused.status, 500)
             self.assertEqual(calls, [])
@@ -515,6 +504,8 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             if client is not None:
                 await client.close()
             r.ClientSession = snap["ClientSession"]
+            for k in ("setup_station_values", "station_release", "PENDING_DIR", "SETUP_STATE_FILE"):
+                setattr(r, k, snap[k])
             r.WEBHOOKS_FILE = snap["WEBHOOKS_FILE"]
             r.PERSONAS_FILE = snap["PERSONAS_FILE"]
             r.ADMIN_TOKEN = snap["ADMIN_TOKEN"]

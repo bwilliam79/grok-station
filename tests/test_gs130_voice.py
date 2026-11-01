@@ -490,7 +490,7 @@ class InstructionTemplates(unittest.TestCase):
         copies = {"routine-home.txt": home, "routine-cloud.txt": cloud,
                   "gs_routine home": gs_routine.TEMPLATES["home"], "gs_routine cloud": gs_routine.TEMPLATES["cloud"]}
         for name, fname in (("BOT_ROUTINE_HOME", "routine-home.txt"), ("BOT_ROUTINE", "routine-cloud.txt")):
-            body = js.split("const %s = `" % name, 1)[1].split("`;", 1)[0]
+            body = js.split("const %s = String.raw`" % name, 1)[1].split("`;", 1)[0]
             self.assertEqual(body, open(os.path.join(admin, fname), encoding="utf-8").read().rstrip("\n"), name)
             copies["app.js " + name] = body
         for label, text in copies.items():
@@ -500,11 +500,11 @@ class InstructionTemplates(unittest.TestCase):
             self.assertIn("--voice", pic, label)
             self.assertEqual(pic.count('"$HOME/.local/share/grok-station/avatar-<slug>.png"'), 2, label)
             self.assertLess(len(text), 12000, label)
-            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.15."), label)
+            self.assertTrue(text.startswith("Grok Station instructions, release 0.13.16."), label)
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
         self.assertEqual(docs.count(_VOICE_SENTENCE), 2)
-        self.assertEqual(docs.count("Grok Station instructions, release 0.13.15."), 2)
+        self.assertEqual(docs.count("Grok Station instructions, release 0.13.16."), 2)
         self.assertIn("never replaced by a report", docs)  # 0.13.0: the add-bot picker stays; a report only seeds
 
 

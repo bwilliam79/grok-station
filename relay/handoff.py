@@ -8,10 +8,10 @@ HANDOFF_PER_BOT_DAY / HANDOFF_GLOBAL_DAY / HANDOFF_GAP_S, all off by default; wh
 bound pending file, single use, expiry; the answer is spoken only while the session still waits). Logs carry request_id,
 agent, length and verdict only. There is no guest mode on this path.
 """
-import json, math, os, re, secrets, time, unicodedata, urllib.parse
+import base64, binascii, json, math, os, re, secrets, time, unicodedata, urllib.parse
 import safe_io
 
-REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$", re.ASCII)
 Q_MAX, REPLY_MAX = 500, 400
 TIER_ACTIONS = {0: ("answer",), 1: ("answer", "note"), 2: ("answer", "note", "queue_approval")}
 MAX_TIER = 0                                   # pilot: every bot answers only; a reply above T0 is dropped
@@ -447,6 +447,78 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
            "tier_max": 0, "test": bool(test), "reply_by": str(reply_by or "")}
     if kind in ("bot_list", "update_helper", "update_bot"):
         doc["kind"] = kind
+    safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc), "pending", mode=0o644)
+
+
+# 0.13.16: typed setup_relay (design rev3 §1). Parameters only, every value public, no free text.
+# Every check is re.fullmatch(pattern, value, re.ASCII) on a str; a trailing newline or a non-ASCII
+# character fails. The relay builds the values from its own state and refuses (no outbound call) on any miss.
+SETUP_RELAY_TTL_S = 900
+SETUP_RELAY_KEYS = ("v", "kind", "request_id", "persona", "reply_by", "target", "station", "pin_sha256",
+                    "station_pub", "mode", "release")
+SETUP_FIELD_RE = {
+    "kind": (r"setup_relay", 11),
+    "request_id": (r"vs_[A-Za-z0-9_-]{22}", 25),
+    "persona": (r"[a-z][a-z0-9-]{1,23}", 24),
+    "reply_by": (r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", 20),
+    "target": (r"[a-z][a-z0-9-]{1,23}", 24),
+    "station": (r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/?", 300),
+    "pin_sha256": (r"[0-9a-f]{64}", 64),
+    "station_pub": (r"[A-Za-z0-9+/]{43}=", 44),
+    "mode": (r"home|cloud", 5),
+    "release": (r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", 11),
+}
+SETUP_ACK_STATUS = ("relayed", "failed")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+
+
+def setup_field_ok(name, value):
+    """One setup_relay field: str, within its cap, whole value matches (fullmatch, re.ASCII)."""
+    rule = SETUP_FIELD_RE.get(name)
+    if rule is None or not isinstance(value, str) or len(value) > rule[1]:
+        return False
+    if re.fullmatch(rule[0], value, re.ASCII) is None:
+        return False
+    if name == "station_pub":
+        try:
+            return len(base64.b64decode(value, validate=True)) == 32
+        except (ValueError, binascii.Error):
+            return False
+    return True
+
+
+def pin_hex(fingerprint):
+    """AB:CD:... (the System page form) or 64 hex -> 64 lower-case hex, or "" if it is neither."""
+    if not isinstance(fingerprint, str):
+        return ""
+    if re.fullmatch(r"(?:[0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}", fingerprint, re.ASCII):
+        return fingerprint.replace(":", "").lower()
+    if re.fullmatch(r"[0-9A-Fa-f]{64}", fingerprint, re.ASCII):
+        return fingerprint.lower()
+    return ""
+
+
+def setup_relay_payload(rid, persona, reply_by, target, station, pin_sha256, station_pub, mode, release):
+    """The exact setup_relay webhook body, or ValueError naming no value. Nothing else is ever on it."""
+    body = {"v": 1, "kind": "setup_relay", "request_id": rid, "persona": persona, "reply_by": reply_by,
+            "target": target, "station": station, "pin_sha256": pin_sha256, "station_pub": station_pub,
+            "mode": mode, "release": release}
+    for name in SETUP_RELAY_KEYS[1:]:
+        if not setup_field_ok(name, body[name]):
+            raise ValueError("setup_relay field")
+    if persona == "grok" or target in ("grok", persona):
+        raise ValueError("setup_relay field")
+    return body
+
+
+def write_setup_pending(pdir, rid, persona, nonce, expires_ms, target):
+    """Pending record for one setup_relay ask. Exactly these fields (design §3, §1a): no token, URL or text."""
+    if not (setup_field_ok("request_id", rid) and setup_field_ok("persona", persona)
+            and setup_field_ok("target", target) and isinstance(nonce, str) and type(expires_ms) is int):
+        raise ValueError("setup pending")
+    os.makedirs(pdir, exist_ok=True)
+    doc = {"request_id": rid, "persona": persona, "nonce": nonce, "expires_ms": expires_ms,
+           "kind": "setup_relay", "target": target}
     safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc), "pending", mode=0o644)
 
 

@@ -3079,7 +3079,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.15"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.16"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -3774,9 +3774,32 @@ def _setup_row(doc, slug):
     return row
 
 
-def setup_public(doc, now):
-    """Browser view. The setup message is omitted. stuck is Sent for SETUP_STUCK_S seconds with no OK card."""
+_SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired")
+_SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown")
+
+
+def setup_relay_view(raw):
+    """The relay's per-target display state (0.13.16): {slug: {state, at, reason?}}. Anything else is dropped."""
+    out = {}
+    targets = raw.get("targets") if isinstance(raw, dict) else None
+    for slug, row in (targets or {}).items() if isinstance(targets, dict) else ():
+        if not slug_ok(slug) or not isinstance(row, dict) or row.get("state") not in _SETUP_RELAY_VIEW:
+            continue
+        at = row.get("at")
+        if type(at) is not int:
+            continue
+        ent = {"state": row["state"], "at": at}
+        if row["state"] == "failed" and row.get("reason") in _SETUP_RELAY_REASONS:
+            ent["reason"] = row["reason"]
+        out[slug] = ent
+    return out
+
+
+def setup_public(doc, now, relay=None):
+    """Browser view. The setup message is omitted. stuck is Sent for SETUP_STUCK_S seconds with no OK card.
+    relay (setup_relay_view) adds the typed relay's display state to a Sent row: relayed, failed or expired."""
     now = time.time() if now is None else now
+    relay = relay if isinstance(relay, dict) else {}
     rows = {}
     src = doc.get("rows") if isinstance(doc, dict) else None
     for slug, row in (src or {}).items():
@@ -3795,6 +3818,12 @@ def setup_public(doc, now):
             "stuck": bool(status == "sent" and sent > 0 and (now - sent) >= SETUP_STUCK_S),
             "unknown": row.get("unknown") is True and status not in ("sent", "connected"),
         }
+        rel = relay.get(slug)
+        if status == "sent" and isinstance(rel, dict) and rel.get("state") in ("relayed", "failed", "expired") \
+                and rel.get("at", 0) >= sent - 5:
+            rows[slug]["relay"] = rel["state"]
+            if rel["state"] == "failed" and rel.get("reason"):
+                rows[slug]["relay_reason"] = rel["reason"]
     hint = doc.get("hint") if isinstance(doc, dict) else None
     if not (isinstance(hint, dict) and hint.get("name")):
         hint_out = None
@@ -3892,17 +3921,12 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
             row["wake"] = cwake
         if not row.get("computer") and chost:
             row["computer"] = chost
-        msg = row.get("message") or ""
-        if not msg:
-            msg = setup_message(row["name"], row["wake"], row.get("computer") or "")
-            if len(msg) > SETUP_MSG_MAX:
-                return 400, {"error": "bad request"}
-            row["message"] = msg
+        # 0.13.16: the relay sends typed parameters built from station state; no free text is sent or frozen.
+        row["message"] = ""
         _SETUP_INFLIGHT.add(slug)
-        message = msg
     ok = False
     try:
-        ok = callable(poster) and poster(message) is True
+        ok = callable(poster) and poster(slug) is True
     except Exception:
         ok = False
     finally:
@@ -4014,7 +4038,9 @@ def setup_computer_suggestions(own, main):
 
 
 def bots_setup_field():
-    return setup_public(setup_load(), time.time())
+    got = relay_call("GET", "/admin/bots/setup-relay")
+    relay = setup_relay_view(got[1]) if got and got[0] == 200 else {}
+    return setup_public(setup_load(), time.time(), relay)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -4965,9 +4991,10 @@ class Handler(BaseHTTPRequestHandler):
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
         imported = safe_imported(data.get("imported"))
         src = data.get("list_source") if slug_ok(data.get("list_source")) else ""
-        known, names, hosts, configured = set(), {}, {}, set()
+        known, names, hosts, configured, modes = set(), {}, {}, set(), {}
         for b in bots:
             known.add(b["slug"])
+            modes[b["slug"]] = "home" if b.get("key_mode") == "home" else "cloud"
             names[b["slug"]] = b["name"]
             hosts[b["slug"]] = b.get("reply_host") or ""
             if (b.get("webhook") or {}).get("configured"):
@@ -4993,7 +5020,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             print("admin: setup finish check failed", flush=True)
         return {"known": known, "main": src, "main_name": names.get(src) or "", "outdated": outdated,
-                "names": names, "hosts": hosts, "configured": configured}
+                "names": names, "hosts": hosts, "configured": configured, "modes": modes}
 
     def bots_setup_send(self, j):
         if setup_check_body(j, ("slug",)):
@@ -5015,12 +5042,13 @@ class Handler(BaseHTTPRequestHandler):
             suggestions = setup_computer_suggestions(ctx["hosts"].get(slug), ctx["hosts"].get(ctx["main"]))
             computer = suggestions[0] if suggestions else ""
 
-        def poster(message):
+        def poster(target):
             main = ctx["main"]
             if not main:
                 return False
+            mode = "home" if ctx.get("modes", {}).get(target) == "home" else "cloud"
             got = relay_call("POST", "/admin/bots/setup-relay",
-                             {"actor": RELAY_ACTOR, "slug": main, "message": message}, timeout=15)
+                             {"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode}, timeout=15)
             return bool(got and got[0] in (200, 202))
 
         code, body = setup_send(

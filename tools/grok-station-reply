@@ -7,10 +7,12 @@
   post  sealed JSON on stdin; validates it and POSTs it. No key, no PyNaCl (stdlib only).
   post --avatar  a sealed picture, to /voice/avatar. Larger than a reply.
   send  seal | post on one machine.
+  seal-setup-ack --request-id <rid> --status relayed|failed [--reason <enum>]  status only, no stdin;
+        same outer JSON, inner kind setup_relay_ack (0.13.16).
 
 The seed is never taken from an argument or a file. This does not import the station relay.
 """
-import argparse, base64, hashlib, http.client, json, os, re, secrets, ssl, sys, time, unicodedata
+import argparse, base64, hashlib, http.client, json, os, re, secrets, select, ssl, sys, time, unicodedata
 from urllib.parse import urlsplit
 
 MAX_BODY = 8192
@@ -18,7 +20,7 @@ AVATAR_IMAGE_MAX = 2 << 20
 AVATAR_OUTER_MAX = 4 << 20
 _REFUSED = ("--key", "--seed", "--bot-key", "--private-key", "--secret")
 _LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
-_RID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+_RID = re.compile(r"vs_[A-Za-z0-9_-]{22}", re.ASCII)  # always fullmatch
 _VOICE_ID = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 _LIST_MAX = 24
 
@@ -112,6 +114,52 @@ def build_outer(bot, request_id, text, seed_b64, station_pub_b64, interim=False)
     sealed = SealedBox(PublicKey(pub)).encrypt(signed)
     outer = {"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()}
     return json.dumps(outer, separators=(",", ":")).encode()
+
+
+
+SETUP_ACK_STATUS = ("relayed", "failed")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+
+
+def canonical_setup_ack(request_id, status, reason=None):
+    """Closed schema: rid (fullmatch, ASCII), status enum, reason enum only with failed. No text."""
+    if not isinstance(request_id, str) or _RID.fullmatch(request_id) is None:
+        raise ValueError("request")
+    if status not in SETUP_ACK_STATUS:
+        raise ValueError("status")
+    body = {"action_class": "answer", "kind": "setup_relay_ack", "request_id": request_id, "status": status,
+            "tier": 0}
+    if status == "failed":
+        if reason not in SETUP_ACK_REASONS:
+            raise ValueError("reason")
+        body["reason"] = reason
+    elif reason is not None:
+        raise ValueError("reason")
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def build_setup_ack_outer(bot, request_id, status, reason, seed_b64, station_pub_b64):
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    inner = canonical_setup_ack(request_id, status, reason)
+    seed = base64.b64decode("".join(str(seed_b64).split()), validate=True)
+    pub = base64.b64decode("".join(str(station_pub_b64).split()), validate=True)
+    if len(seed) != 32 or len(pub) != 32:
+        raise ValueError("key")
+    sealed = SealedBox(PublicKey(pub)).encrypt(SigningKey(seed).sign(inner))
+    return json.dumps({"v": 1, "bot": bot, "sealed": base64.b64encode(sealed).decode()},
+                      separators=(",", ":")).encode()
+
+
+def _stdin_has_text():
+    """True when text is waiting on stdin. A setup ack takes none; it never waits for stdin to close."""
+    try:
+        if sys.stdin is None or sys.stdin.closed or sys.stdin.isatty():
+            return False
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(ready) and bool(sys.stdin.buffer.read(1))
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def keygen_lines():
@@ -467,6 +515,12 @@ def main(argv=None):
     seal_avatar.add_argument("--bot", required=True)
     seal_avatar.add_argument("--station-pub", required=True)
     seal_avatar.add_argument("--voice", default=None)
+    setup_ack = sub.add_parser("seal-setup-ack")
+    setup_ack.add_argument("--bot", required=True)
+    setup_ack.add_argument("--station-pub", required=True)
+    setup_ack.add_argument("--request-id", required=True)
+    setup_ack.add_argument("--status", required=True)
+    setup_ack.add_argument("--reason", default=None)
     show = sub.add_parser("show")
     show.add_argument("--bot", required=True)
     show.add_argument("--station-pub", required=True)
@@ -485,6 +539,26 @@ def main(argv=None):
         body, rc = _seal_body(args)
         if body is None:
             return rc
+        print(body.decode())
+        return 0
+    if args.cmd == "seal-setup-ack":  # cloud computer: a status-only ack; the home machine posts it with post
+        if _stdin_has_text():
+            print("400 bad request")
+            return 1
+        seed = os.environ.get("GROK_STATION_BOT_KEY", "")
+        try:
+            canonical_setup_ack(args.request_id, args.status, args.reason)
+        except ValueError:
+            print("400 bad request")
+            return 1
+        if not seed.strip():
+            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            return 2
+        try:
+            body = build_setup_ack_outer(args.bot, args.request_id, args.status, args.reason, seed, args.station_pub)
+        except Exception:
+            print("400 bad request")
+            return 1
         print(body.decode())
         return 0
     if args.cmd == "seal-list":

@@ -376,7 +376,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("If you can't", add)
         self.assertNotIn("<webhook URL>", add)
         self.assertNotIn("<webhook key>", add)
-        self.assertIn("stays on all the time", js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0])  # 0.12.17: in the template
+        self.assertIn("stays on all the time", js.split("const BOT_ROUTINE_HOME = String.raw`", 1)[1].split("`;", 1)[0])  # 0.12.17: in the template
         for word in ("mailbox", "Mailbox"):
             self.assertNotIn(word, fn)
         host = js.split('<input class="inp" id="ahost"', 1)[1].split(">", 1)[0]
@@ -403,8 +403,8 @@ class AdminUI(unittest.TestCase):
         docs = _read(os.path.join("docs", "bots.md"))
         fences = [part.split("\n```", 1)[0] for part in docs.split("```text\n")[1:]]
         js = self.js
-        cloud = js.split("const BOT_ROUTINE = `", 1)[1].split("`;", 1)[0]
-        home = js.split("const BOT_ROUTINE_HOME = `", 1)[1].split("`;", 1)[0]
+        cloud = js.split("const BOT_ROUTINE = String.raw`", 1)[1].split("`;", 1)[0]
+        home = js.split("const BOT_ROUTINE_HOME = String.raw`", 1)[1].split("`;", 1)[0]
         self.assertIn(cloud, fences)
         self.assertIn(home, fences)
         self.assertIn("const HOME_MODE = true;", js)
@@ -740,13 +740,13 @@ class Release092UI(unittest.TestCase):
         cls.js = _read(os.path.join("admin", "web", "app.js"))
 
     def test_setup_prompt_teaches_display_cards(self):
-        for routine in ("BOT_ROUTINE = `", "BOT_ROUTINE_HOME = `"):
+        for routine in ("BOT_ROUTINE = String.raw`", "BOT_ROUTINE_HOME = String.raw`"):
             start = self.js.index(routine)
             body = self.js[start:self.js.index("`;", start)]
             for needle in ("Display cards", '"type":"recipe"', '"type":"sports"', '"type":"calendar"', '"type":"home"',
                            '"op":"clear"', "a.espncdn.com"):
                 self.assertIn(needle, body, (routine, needle))
-        cloud = self.js[self.js.index("BOT_ROUTINE = `"):self.js.index("BOT_ROUTINE_HOME")]
+        cloud = self.js[self.js.index("BOT_ROUTINE = String.raw`"):self.js.index("BOT_ROUTINE_HOME")]
         self.assertIn("seal-show --bot <slug>", cloud)
         self.assertIn("post --show", cloud)
 
@@ -958,7 +958,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1089,7 +1089,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1544,7 +1544,7 @@ class FinishUpdateUI(unittest.TestCase):
 
     def test_js_templates_are_the_station_templates(self):
         for name, f in (("BOT_ROUTINE", "routine-cloud.txt"), ("BOT_ROUTINE_HOME", "routine-home.txt")):
-            body = self.js.split("const %s = `" % name, 1)[1].split("`;", 1)[0]
+            body = self.js.split("const %s = String.raw`" % name, 1)[1].split("`;", 1)[0]
             self.assertEqual(body, _read(os.path.join("admin", f)).rstrip("\n"), name)
             self.assertNotIn("update_helper", body)
             self.assertIn("kind is update_bot", body)

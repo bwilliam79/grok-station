@@ -3,6 +3,8 @@
 
   gs-seal-reply reply --persona <slug> --request-id <rid> [--kind answer|bot_list] [--interim]
   gs-seal-reply avatar --persona <slug> [--voice <id>]
+  gs-seal-reply seal-setup-ack --persona <slug> --request-id <rid> --status relayed|failed [--reason <enum>]
+  gs-seal-reply setup-check --persona <slug> --station <url> --pin-sha256 <hex> --station-pub <b64>
 
 Reply text is stdin only. A profile picture is the image file on stdin. The station address
 and certificate pin come from the config file written by gs-seal-setup. One pinned HTTPS POST
@@ -803,6 +805,128 @@ def cmd_show(slug):
         del seed
 
 
+# 0.13.16 typed setup_relay (design rev3 §1, §5). Closed schema, enums only, no stdin text, fullmatch + ASCII.
+SETUP_ACK_STATUS = ("relayed", "failed")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+_SETUP_STATION = re.compile(r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/?", re.ASCII)
+_SETUP_PIN = re.compile(r"[0-9a-f]{64}", re.ASCII)
+_SETUP_PUB = re.compile(r"[A-Za-z0-9+/]{43}=", re.ASCII)
+
+
+def canonical_setup_ack(request_id, status, reason=None):
+    if not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None:
+        raise Refused()
+    if status not in SETUP_ACK_STATUS:
+        raise Refused()
+    body = {"action_class": "answer", "kind": "setup_relay_ack", "request_id": request_id, "status": status,
+            "tier": 0}
+    if status == "failed":
+        if reason not in SETUP_ACK_REASONS:
+            raise Refused()
+        body["reason"] = reason
+    elif reason is not None:
+        raise Refused()
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+
+
+def seal_setup_ack(slug, request_id, status, reason, seed, station_pub):
+    msg = canonical_setup_ack(request_id, status, reason)
+    load_nacl()
+    from nacl.public import PublicKey, SealedBox
+    from nacl.signing import SigningKey
+    material = bytearray(seed)
+    if isinstance(seed, bytearray):
+        _wipe(seed)
+    sk = None
+    try:
+        sk = SigningKey(bytes(material))
+        sealed = SealedBox(PublicKey(station_pub)).encrypt(sk.sign(msg))
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        return json.dumps(outer, separators=(",", ":")).encode("ascii")
+    finally:
+        _wipe(material)
+        del sk
+        del material
+
+
+def _stdin_has_text():
+    """A setup ack takes no stdin. True when text is waiting; never waits for stdin to close."""
+    try:
+        if sys.stdin is None or sys.stdin.closed or sys.stdin.isatty():
+            return False
+        import select
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        return bool(ready) and bool(sys.stdin.buffer.read(1))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _setup_paths(slug):
+    _check_tree()
+    root = root_dir()
+    _require_dir(root, 0o700)
+    _require_dir(keys_dir(), 0o700)
+    _require_file(key_path(slug), 0o600)
+    _require_file(config_path(slug), 0o600)
+    for path in (sent_path(), log_path()):
+        if os.path.lexists(path):
+            _require_file(path, 0o600)
+    return root
+
+
+def cmd_setup_ack(slug, request_id, status, reason=None):
+    """Seal one setup_relay_ack and post it once to /voice/reply. Status only (§1)."""
+    if not slug_ok(slug):
+        raise Refused()
+    canonical_setup_ack(request_id, status, reason)
+    if _stdin_has_text():
+        raise Refused()
+    root = _setup_paths(slug)
+    refuse_unsafe_location(root)
+    require_time_machine_exclusion(root)
+    require_same_host()
+    seed = read_key(slug)
+    try:
+        endpoint, pin, station_pub = read_config(slug)
+        try:
+            body = seal_setup_ack(slug, request_id, status, reason, seed, station_pub)
+        except Refused:
+            raise
+        except Exception:
+            raise Refused()
+        claim_rid(request_id)
+        t0 = time.monotonic()
+        status_code, got = 0, {}
+        try:
+            status_code = post_once(endpoint, body, pin, out=got)
+        except Exception:
+            status_code = 0
+        append_log(request_id, slug, status_code, int((time.monotonic() - t0) * 1000))
+        if status_code != 200:
+            raise Refused("unreachable" if status_code == 0 else got.get("reason"))
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
+def cmd_setup_check(slug, station, pin_sha256, station_pub):
+    """Home routine §5 step 1: print "match" only when the three relayed values are exactly this persona's
+    own station values (the config gs-seal-setup wrote). Any other result is "declined". Reads no key."""
+    if not slug_ok(slug):
+        raise Refused()
+    for rx, val in ((_SETUP_STATION, station), (_SETUP_PIN, pin_sha256), (_SETUP_PUB, station_pub)):
+        if not isinstance(val, str) or rx.fullmatch(val) is None:
+            sys.stdout.write("declined\n")
+            return 1
+    _setup_paths(slug)
+    endpoint, pin, pub = read_config(slug)
+    same = (endpoint.rstrip("/") == station.rstrip("/") and pin == pin_sha256
+            and base64.b64encode(pub).decode("ascii") == station_pub)
+    sys.stdout.write("match\n" if same else "declined\n")
+    return 0 if same else 1
+
+
 def _parser():
     p = QuietParser(prog="gs-seal-reply")
     sub = p.add_subparsers(dest="cmd", required=True, parser_class=QuietParser)
@@ -816,6 +940,16 @@ def _parser():
     avatar.add_argument("--voice", default=None)
     show = sub.add_parser("show")
     show.add_argument("--persona", required=True)
+    ack = sub.add_parser("seal-setup-ack")
+    ack.add_argument("--persona", required=True)
+    ack.add_argument("--request-id", required=True, dest="request_id")
+    ack.add_argument("--status", required=True)
+    ack.add_argument("--reason", default=None)
+    check = sub.add_parser("setup-check")
+    check.add_argument("--persona", required=True)
+    check.add_argument("--station", required=True)
+    check.add_argument("--pin-sha256", required=True, dest="pin_sha256")
+    check.add_argument("--station-pub", required=True, dest="station_pub")
     sub.add_parser("version")
     return p
 
@@ -832,6 +966,10 @@ def main(argv=None):
             return cmd_avatar(args.persona, args.voice)
         if args.cmd == "show":
             return cmd_show(args.persona)
+        if args.cmd == "seal-setup-ack":
+            return cmd_setup_ack(args.persona, args.request_id, args.status, args.reason)
+        if args.cmd == "setup-check":
+            return cmd_setup_check(args.persona, args.station, args.pin_sha256, args.station_pub)
         if args.cmd == "version":
             sys.stdout.write(HELPER_VERSION + "\n")
             return 0

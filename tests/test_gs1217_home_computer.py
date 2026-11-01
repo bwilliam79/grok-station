@@ -36,10 +36,12 @@ def setup_output(mode):
     """Run routineForBot from app.js in node, as the Bots page does when pairing."""
     js = read("admin", "web", "app.js")
     const = "BOT_ROUTINE_HOME" if mode == "home" else "BOT_ROUTINE"
-    tmpl = js.split("const %s = `" % const, 1)[1].split("`;", 1)[0]
+    tmpl = js.split("const %s = String.raw`" % const, 1)[1].split("`;", 1)[0]
     fn = js[js.index("function routineForBot("):]
     fn = fn[:fn.index("\nfunction ", 10)]
-    prog = ("const BOT_ROUTINE = `x`, BOT_ROUTINE_HOME = `x`;\n"
+    params = js.split("const SETUP_PARAMS = String.raw`", 1)[1].split("`;", 1)[0]  # 0.13.16: Copy instructions end
+    prog = ("const SETUP_PARAMS = " + json.dumps(params) + ";\n"
+            "const BOT_ROUTINE = `x`, BOT_ROUTINE_HOME = `x`;\n"
             "function deployScript(){return 'SCRIPT';}\nfunction stationAddress(){return %s;}\n"
             "function fillUpdateCommand(b){return b;}\n" % json.dumps(ST))
     prog = prog.replace(const + " = `x`", const + " = " + json.dumps(tmpl)) + fn

@@ -6,8 +6,8 @@ No secrets are logged here.
 import argparse, base64, hashlib, hmac, json, os, re, stat, subprocess, sys
 from urllib.parse import urlsplit
 
-SLUG = re.compile(r"^[a-z][a-z0-9-]{1,23}$")
-REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$")
+SLUG = re.compile(r"^[a-z][a-z0-9-]{1,23}$", re.ASCII)
+REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$", re.ASCII)
 _UUID = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$")
 _IO_UUID = re.compile(r'"IOPlatformUUID"\s*=\s*"([0-9A-Fa-f-]{36})"')
 
@@ -61,7 +61,7 @@ class QuietParser(argparse.ArgumentParser):
 
 # The home helper's release. Sent as the X-GS-Helper header on each post (not signed; older stations
 # ignore it). The station shows "Helper out of date" when this is behind its own helper release.
-HELPER_VERSION = "0.13.15"
+HELPER_VERSION = "0.13.16"
 
 def root_dir():
     return os.path.join(os.path.expanduser("~"), ".config", "grok-station")

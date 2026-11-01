@@ -6255,6 +6255,16 @@ async def voice_reply(req):
                 _BLOCKED.pop(next(iter(_BLOCKED)))
         return _reply_error(rej.status, reason)
     rid, bot = reply["request_id"], reply["bot"]
+    if reply.get("kind") == "setup_relay_ack":
+        # Display-only (§4a): one pending removed, the rid marked seen, one row's label. No other change.
+        _reply_seen.add(rid)
+        handoff.remove_pending(PENDING_DIR, rid)
+        try:
+            setup_note_ack(rid, reply["target"], reply["status"], reply.get("reason"))
+        except OSError:
+            pass
+        audit_reply(bot, rid, "ok", len(raw))
+        return web.json_response({"ok": True})
     pend = _pending_doc(rid) or {}
     answer = (pend.get("kind") not in ("update_bot", "update_helper", "bot_list") and reply.get("kind") != "bot_list"
               and not pend.get("test") and isinstance(reply.get("text"), str))
@@ -6474,37 +6484,187 @@ async def voice_show(req):
     return web.json_response({"ok": True})
 
 
-async def admin_setup_relay(req):
-    """Post one bot's setup text to the main bot's saved webhook. The main bot relays it.
+# 0.13.16: typed setup_relay (design rev3). The relay builds every field from its own state: its station key,
+# the TLS fingerprint and host files, its VERSION file. Nothing from the admin body except slug, target and mode.
+TLS_DIR = E("RELAY_TLS_DIR", os.path.join(STATE_DIR, "tls"))
+VERSION_FILE = E("RELAY_VERSION_FILE", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION"))
+SETUP_STATE_FILE = E("RELAY_SETUP_STATE", os.path.join(STATE_DIR, "voice", "setup-relay.json"))
+_SETUP_STATES = ("sent", "relayed", "failed")
+_SETUP_STATE_LOCK = threading.Lock()
 
-    Same signed webhook call as an update ask: Bearer token, handoff.payload, no redirect, 10s.
-    Does not create a persona, a pending reply, or a second bot record, and does not wait for an answer.
-    The question is not logged. Only the configured main bot's slug is accepted; any other slug is
-    refused before an outbound call.
+
+def _read_small(path_):
+    try:
+        with open(path_, encoding="utf-8") as fh:
+            return fh.read(400).strip()
+    except OSError:
+        return ""
+
+
+def setup_station_values():
+    """(station, pin_sha256, station_pub) from this station's own state, or None when any is missing."""
+    station = (E("ADMIN_STATION_ADDRESS", "") or "").strip()
+    if not handoff.setup_field_ok("station", station):
+        host = _read_small(os.path.join(TLS_DIR, "host"))
+        station = "https://" + host + ".local" if host else ""
+    pin = handoff.pin_hex(_read_small(os.path.join(TLS_DIR, "fingerprint")))
+    try:
+        pub = botreply.station_pub_b64(botreply.load_or_create_station(SECRETS_DIR))
+    except (botreply.StationKeyError, OSError):
+        pub = ""
+    if not (handoff.setup_field_ok("station", station) and handoff.setup_field_ok("pin_sha256", pin)
+            and handoff.setup_field_ok("station_pub", pub)):
+        return None
+    return station, pin, pub
+
+
+def station_release():
+    rel = _read_small(VERSION_FILE)
+    return rel if handoff.setup_field_ok("release", rel) else ""
+
+
+def _imported_ids():
+    """Bot ids of imported names that are not set up yet (same id rule as the admin's bot_id_from_name)."""
+    out = set()
+    try:
+        rows = imported_public().get("rows") or []
+    except Exception:
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("state") != "new":
+            continue
+        sid = re.sub(r"-{2,}", "-", "".join(
+            ch.lower() if "A" <= ch <= "Z" else ch if ("a" <= ch <= "z" or "0" <= ch <= "9") else "-"
+            for ch in str(row.get("name") or ""))).strip("-")[:24].rstrip("-")
+        if handoff.setup_field_ok("target", sid):
+            out.add(sid)
+    return out
+
+
+def setup_state_load():
+    """{target: {"state", "rid", "at", "expires_ms", "reason"?}}. Status only; no token, URL or text."""
+    try:
+        doc = safe_io.read_json(SETUP_STATE_FILE, safe_io.SMALL_JSON, "setup-relay")
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for target, row in (doc.get("targets") or {}).items() if isinstance(doc, dict) else ():
+        if not handoff.setup_field_ok("target", target) or not isinstance(row, dict):
+            continue
+        st, rid, at, exp = row.get("state"), row.get("rid"), row.get("at"), row.get("expires_ms")
+        if st not in _SETUP_STATES or not handoff.setup_field_ok("request_id", rid) or type(at) is not int \
+                or type(exp) is not int:
+            continue
+        ent = {"state": st, "rid": rid, "at": at, "expires_ms": exp}
+        if st == "failed" and row.get("reason") in handoff.SETUP_ACK_REASONS:
+            ent["reason"] = row["reason"]
+        out[target] = ent
+    return out
+
+
+def setup_state_save(doc):
+    os.makedirs(os.path.dirname(SETUP_STATE_FILE), exist_ok=True)
+    atomic_write(SETUP_STATE_FILE, json.dumps({"targets": doc}).encode())
+
+
+def setup_state_public(now_ms=None):
+    """Display state per target for the admin page. sent past its TTL with no ack shows expired."""
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    out = {}
+    for target, row in setup_state_load().items():
+        st = row["state"]
+        if st == "sent" and row["expires_ms"] < now_ms:
+            st = "expired"
+        ent = {"state": st, "at": row["at"]}
+        if "reason" in row:
+            ent["reason"] = row["reason"]
+        out[target] = ent
+    return out
+
+
+def setup_note_ack(rid, target, status, reason=None):
+    """The one side effect of an ack (§4a): this target's display state. Only when rid is its open request."""
+    with _SETUP_STATE_LOCK:
+        doc = setup_state_load()
+        row = doc.get(target)
+        if not isinstance(row, dict) or row.get("rid") != rid:
+            return False
+        row = {"state": status, "rid": rid, "at": int(time.time()), "expires_ms": row["expires_ms"]}
+        if status == "failed" and reason in handoff.SETUP_ACK_REASONS:
+            row["reason"] = reason
+        doc[target] = row
+        setup_state_save(doc)
+    return True
+
+
+def _retire_setup_pending(target, keep=""):
+    """At most one open setup_relay request per target (§3): drop older ones for this target."""
+    try:
+        names = os.listdir(PENDING_DIR)
+    except OSError:
+        return
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        rid = name[:-5]
+        if rid == keep:
+            continue
+        doc = _pending_doc(rid)
+        if isinstance(doc, dict) and doc.get("kind") == "setup_relay" and doc.get("target") == target:
+            handoff.remove_pending(PENDING_DIR, rid)
+
+
+async def admin_setup_relay_state(req):
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    return web.json_response({"targets": setup_state_public()})
+
+
+async def admin_setup_relay(req):
+    """Post one typed setup_relay to the main bot's saved webhook (design rev3). Parameters only.
+
+    Same transport as an update ask: Bearer token, no redirect, 10 s. Body {actor, slug, target, mode}:
+    slug must be the main bot, target a known non-main, non-Grok bot. Every field is built here from the
+    station's own state and checked (fullmatch, re.ASCII) before any outbound call; any miss is 400 with no
+    call. The pending record is written before the POST and removed if the POST fails.
     """
     bad = await admin_gate(req)
     if _is_response(bad):
         return bad
     body = await admin_json(req)
-    if not isinstance(body, dict) or set(body) - {"actor", "slug", "message"} or not actor_ok(body.get("actor")):
+    if (not isinstance(body, dict) or set(body) != {"actor", "slug", "target", "mode"}
+            or not actor_ok(body.get("actor"))):
         return web.json_response({"error": "bad request"}, status=400)
-    slug = body.get("slug")
+    slug, target, mode = body.get("slug"), body.get("target"), body.get("mode")
     main = list_source_slug()
     if not _known(slug) or slug != main:
         return web.json_response({"error": "not found"}, status=404)
-    message = body.get("message")
-    if not isinstance(message, str) or not (1 <= len(message) <= 4000) or "\x00" in message:
+    if (not handoff.setup_field_ok("target", target) or target in ("grok", main)
+            or not (_known(target) or target in _imported_ids())):
+        return web.json_response({"error": "not found"}, status=404)
+    if not handoff.setup_field_ok("mode", mode):
         return web.json_response({"error": "bad request"}, status=400)
     ent = current_webhooks().get(main)
     if not ent:
         return web.json_response({"error": "not configured"}, status=400)
+    vals = setup_station_values()
+    release = station_release()
     now = time.time()
     rid = handoff.new_request_id()
     reply_by = datetime.datetime.fromtimestamp(
-        now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # clean() drops newline controls, which would glue "yes." to "2." A space keeps each numbered step.
-    question = message.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
-    posted = dict(handoff.payload(rid, slug, question, reply_by, cap=4000))
+        now + handoff.SETUP_RELAY_TTL_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        if vals is None or not release:
+            raise ValueError("station state")
+        posted = handoff.setup_relay_payload(rid, main, reply_by, target, vals[0], vals[1], vals[2], mode, release)
+    except ValueError:
+        return web.json_response({"error": "bad request"}, status=400)
+    expires_ms = int((now + handoff.SETUP_RELAY_TTL_S) * 1000)
+    try:
+        handoff.write_setup_pending(PENDING_DIR, rid, main, secrets.token_urlsafe(24), expires_ms, target)
+    except (OSError, ValueError):
+        return web.json_response({"error": "unavailable"}, status=500)
     try:
         async with ClientSession(timeout=ClientTimeout(total=10)) as http:
             async with http.post(ent["url"], json=posted, allow_redirects=False,
@@ -6513,8 +6673,17 @@ async def admin_setup_relay(req):
     except Exception:
         ok = False
     if not ok:
+        handoff.remove_pending(PENDING_DIR, rid)
         audit(body.get("actor"), slug, "setup-fail", "-")
         return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+    _retire_setup_pending(target, keep=rid)
+    try:
+        with _SETUP_STATE_LOCK:
+            doc = setup_state_load()
+            doc[target] = {"state": "sent", "rid": rid, "at": int(now), "expires_ms": expires_ms}
+            setup_state_save(doc)
+    except OSError:
+        pass
     audit(body.get("actor"), slug, "setup-ask", "-")
     return web.json_response({"ok": True}, status=202)
 
@@ -6548,6 +6717,7 @@ ADMIN_ROUTES = [
     web.get("/admin/bots", admin_bots_get), web.post("/admin/bots", admin_bots_post),
     web.post("/admin/bots/revoke-all", admin_revoke_all),
     web.post("/admin/bots/setup-relay", admin_setup_relay),
+    web.get("/admin/bots/setup-relay", admin_setup_relay_state),
     web.get("/admin/bots/imported", admin_imported_get),
     web.post("/admin/bots/import", admin_import_post),
     web.delete("/admin/bots/imported/{key}", admin_imported_delete),

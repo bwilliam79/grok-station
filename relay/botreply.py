@@ -21,6 +21,7 @@ _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
 _REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class", "kind"))
 _ANSWER_KEYS = frozenset(("request_id", "text", "tier", "action_class"))  # 0.6.0 answers omit kind
 _LIST_KEYS = frozenset(("request_id", "kind", "tier", "action_class", "bots"))
+_SETUP_ACK_KEYS = frozenset(("request_id", "kind", "status", "tier", "action_class"))  # + "reason" on failed
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
 LIST_MAX = 24
 _NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
@@ -370,7 +371,7 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
     pending, bad = _pending_open(pending_for, rid, bot, now_ms)
     if bad is not None:
         raise bad
-    if pending.get("kind") == "bot_list":
+    if pending.get("kind") in ("bot_list", "setup_relay"):
         raise Reject(403, "request", bot, rid)
     pii = pending.get("pii_mode")
     if not isinstance(pii, bool):
@@ -594,6 +595,47 @@ def _seen_hit(seen, bot, nonce, now_ms):
         return (bot, nonce) in seen
     return bool(seen.contains(bot, nonce, now_ms))
 
+def _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source):
+    """setup_relay_ack (0.13.16, design §1, §2, §4). Exact keys, enums only, no text. Order: schema,
+    duplicate, pending (rid + persona + not expired), pending kind, list source. Display-only (§4a)."""
+    if not isinstance(doc, dict):
+        raise Reject(400, "schema", bot)
+    rid = doc.get("request_id")
+    if not isinstance(rid, str) or not handoff.REQUEST_ID.fullmatch(rid):
+        raise Reject(400, "schema", bot)
+    keys = set(doc)
+    status = doc.get("status")
+    if status == "failed":
+        want = _SETUP_ACK_KEYS | {"reason"}
+        reason_ok = doc.get("reason") in handoff.SETUP_ACK_REASONS
+    else:
+        want = _SETUP_ACK_KEYS
+        reason_ok = True
+    if (keys != want or not reason_ok or doc.get("kind") != "setup_relay_ack"
+            or status not in handoff.SETUP_ACK_STATUS or type(doc.get("tier")) is not int or doc.get("tier") != 0
+            or doc.get("action_class") != "answer"):
+        raise Reject(400, "schema", bot, rid)
+    if isinstance(seen, set) and rid in seen:
+        raise Reject(409, "duplicate", bot, rid)
+    pending, bad = _pending_open(pending_for, rid, bot, now_ms)
+    if bad is not None:
+        raise bad
+    if pending.get("kind") != "setup_relay":
+        raise Reject(403, "request", bot, rid)
+    target = pending.get("target")
+    if not handoff.setup_field_ok("target", target):
+        raise Reject(403, "request", bot, rid)
+    src = source() if callable(source) else source
+    if not isinstance(src, str) or src != bot:
+        raise Reject(403, "source", bot, rid)
+    nonce = pending.get("nonce")
+    out = {"request_id": rid, "kind": "setup_relay_ack", "status": status, "bot": bot, "target": target,
+           "nonce": nonce if isinstance(nonce, str) else ""}
+    if status == "failed":
+        out["reason"] = doc["reason"]
+    return out
+
+
 
 def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
            rate_now=None, source=None):
@@ -613,6 +655,8 @@ def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(
         raise Reject(400, "schema", bot)
     if isinstance(doc, dict) and doc.get("kind") == "bot_list":
         return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source)
+    if isinstance(doc, dict) and doc.get("kind") == "setup_relay_ack":
+        return _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source)
     if isinstance(doc, dict) and "kind" in doc and doc.get("kind") != "reply":
         rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
         raise Reject(400, "schema", bot, rid)
