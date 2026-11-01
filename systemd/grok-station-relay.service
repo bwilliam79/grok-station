@@ -23,6 +23,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# 0.13.15 (Nix Info): relay + display only; wake and admin are unchanged.
+LockPersonality=yes
+RestrictRealtime=yes
+ProtectKernelLogs=yes
 ReadWritePaths=/var/lib/grok-station
 MemoryMax=300M
 Restart=always

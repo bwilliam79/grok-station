@@ -26,6 +26,15 @@ ReadWritePaths=/var/cache/grok-station /run/grok-station
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
+# 0.13.15 (Nix Info): relay + display only; wake and admin are unchanged. AF_NETLINK is not needed here.
+# ProtectKernelTunables makes /sys read-only: a panel with a /sys/class/backlight uses the software dim overlay.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RestrictRealtime=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
 
 [Install]
 WantedBy=multi-user.target
