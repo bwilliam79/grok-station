@@ -94,11 +94,11 @@ class BotsRowSwitch(unittest.TestCase):
         self.assertEqual(line["attrs"]["id"], "updrule-otto")
         self.assertEqual(line["attrs"]["role"], "status")
         self.assertEqual(line["attrs"]["aria-live"], "polite")
-        self.assertEqual(line["text"], "All updates")
+        self.assertEqual(line["text"], "")  # 0.13.15 rev3: empty at rest
 
     def test_off_copy(self):
         got = _switch({"slug": "hank", "name": "Hank", "feed_updates": {"on": False}})
-        self.assertEqual(got["kids"][1]["text"], "Updates off")
+        self.assertEqual(got["kids"][1]["text"], "")  # 0.13.15 rev3: no "Updates off" caption
         self.assertEqual(got["kids"][0]["kids"][0]["cls"], "tog")
         self.assertNotIn("Off: nothing shows on the station", JS)
 
@@ -149,7 +149,7 @@ release(); p.then(() => process.stdout.write(JSON.stringify({during: seen, calls
 
     def test_slot_on_every_connected_row(self):
         row = _fn("paintBots")
-        self.assertIn('${su ? "" : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}', row)
+        self.assertIn('<div class="updcol">${su ? su.action : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}</div>', row)
         self.assertNotIn("${feed ?", row)
         fill = _fn("fillUpdateSwitches")
         self.assertIn("b.webhook && b.webhook.configured", fill)  # no webhook: empty slot, same size

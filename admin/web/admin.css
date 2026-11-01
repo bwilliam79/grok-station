@@ -893,7 +893,7 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   .setdetails .dv{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-help)}
   .setdetails .tlnk[data-edit]{min-height:44px;min-width:44px;margin:0}
   #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 ww" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}
-  #blist .botrow>.avwrap{grid-area:av}
+  #blist .botrow>:first-child{grid-area:av}
   #blist .botrow>div:nth-child(2){display:contents}
   #blist .botrow .lbl{grid-area:nm;display:flex;flex-wrap:wrap;align-items:center;column-gap:6px;height:auto;line-height:24px;white-space:normal;overflow:visible;min-width:0}
   #blist .botrow .lbl .nm{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -939,4 +939,57 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   .updsw{grid-template-rows:44px 20px}
   .updbtn{min-height:44px;padding:0 12px 0 4px}
   #blist .botrow .updsw .updrule{white-space:nowrap}
+}
+/* 0.13.15 Bots row (Noor bots-row-fix SPEC rev3): one fixed grid on the row class, no Updates caption,
+   Configure last at the same x. Phone (<=767) follows rev2 §4: name, switches row, Configure on its own line. */
+@media (min-width:768px){
+  #blist .botrow{display:grid;grid-template-columns:[bot] minmax(240px,1fr) [wake] 200px [upd] 144px [act] 120px;grid-template-areas:none;column-gap:16px;row-gap:0;align-items:center;min-height:76px;height:auto;flex-wrap:nowrap}
+  #blist .botrow>:first-child{grid-column:bot;grid-row:1;justify-self:start;align-self:center}
+  #blist .botrow>div:nth-child(2){grid-column:bot;grid-row:1;padding-left:60px;min-width:0;display:block}
+  #blist .botrow>.rowupd{grid-column:bot;grid-row:1;justify-self:end;display:flex;align-items:center}
+  #blist .botrow>.ww{grid-column:wake;grid-row:1;min-width:0;max-width:100%;overflow:hidden}
+  #blist .botrow>.ww.none{display:flex}
+  #blist .botrow>.updcol{grid-column:upd;grid-row:1;min-width:0}
+  #blist .botrow>.cfg{grid-column:act;grid-row:1;justify-self:end;display:flex;align-items:center;justify-content:flex-end;gap:8px;order:0}
+  #blist .botrow>.cfg .chev{display:none}
+  #blist .botrow.sentrow>.ww{display:none!important}
+  #blist .botrow:not(.sentrow){min-height:81px}
+  #blist .botrow.sentrow>.updcol{grid-column:wake/act;justify-self:end;display:flex;justify-content:flex-end}
+  #blist .botrow.sentrow>div:nth-child(2) .l2{height:auto}
+}
+#blist .botrow .ww .phrase{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#blist .botrow .ww .tog{flex:none}
+.updcol .updslot{display:block;width:auto}
+.updcol .updslot:empty{height:48px}
+.updcol .updsw{display:grid;grid-template-rows:32px 16px}
+.updcol .updsw .updrule{height:16px;line-height:16px;font-size:var(--fs-caps)}
+.updcol .updsw .updrule:empty{visibility:hidden}
+#blist .botrow .l2 .shelp,.shelp{color:var(--gs-muted);line-height:18px;margin-top:2px;white-space:normal;overflow:visible;text-overflow:clip}
+#blist .botrow .l2 .sthrottle{white-space:normal;overflow:visible}
+#blist .botrow.sentrow .l2{height:auto}
+.sthrottle{color:var(--gs-text);line-height:18px;margin-top:2px}
+.rowupd:empty{display:none}
+@media (max-width:767px){
+  #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 l2" "ww ww us" "ru ru ru" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}
+  #blist .botrow>:first-child{grid-area:av}
+  #blist .botrow>div:nth-child(2){display:contents}
+  #blist .botrow .lbl{grid-area:nm}
+  #blist .botrow .l2{grid-area:l2;height:auto}
+  #blist .botrow>.rowupd{grid-area:ru}
+  #blist .botrow>.ww{grid-area:ww;min-height:44px;align-items:center;flex-wrap:nowrap;overflow:hidden;min-width:0}
+  #blist .botrow>.ww>.phrase{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #blist .botrow>.ww.none:empty{display:none}
+  #blist .botrow>.updcol{grid-area:us;justify-self:end}
+  #blist .botrow>.updcol:empty{display:none}
+  #blist .botrow>.cfg{grid-area:cf;display:flex;justify-content:flex-start;align-items:center;min-height:44px;gap:8px}
+  #blist .botrow>.cfg .btn{display:inline-flex;min-height:44px;height:44px}
+  #blist .botrow>.cfg .chev{display:none}
+  #blist .botrow[data-fixed]>.cfg{display:none}
+  #blist .botrow.sentrow>.ww{display:none!important}
+  #blist .botrow:not(.sentrow){min-height:81px}
+  #blist .botrow.sentrow>.updcol{grid-column:1/-1;grid-row:3;justify-self:stretch}
+  #blist .botrow.sentrow .setacts.sent{display:flex;flex-wrap:wrap;gap:8px;width:100%}
+  #blist .botrow.sentrow .setacts.sent .btn,#blist .botrow.sentrow>.cfg .btn{flex:1 1 140px;min-height:44px;height:auto;white-space:normal}
+  #blist .botrow>.cfg.sent3{display:flex}
+  .updcol .updsw{grid-template-rows:44px 16px}
 }

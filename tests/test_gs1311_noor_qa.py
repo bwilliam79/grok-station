@@ -30,12 +30,12 @@ class SentRowButtons(unittest.TestCase):
     def test_order_and_same_kind(self):
         a = _run(SETUP, "setupRowActionHTML(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
         btns = re.findall(r'<button class="([^"]*)"[^>]*>([^<]*)</button>', a)
-        self.assertEqual([t for _, t in btns], ["Paste values", "Resend"])
+        self.assertEqual([t for _, t in btns], ["Send request again", "Enter details myself"])  # 0.13.15 bots-row-sent rev1
         self.assertEqual({c for c, _ in btns}, {"btn sm sec"})
         self.assertNotIn("tlnk", a)
 
     def test_remove_follows_and_matches_size(self):
-        self.assertIn('${su ? su.action : ""}\n        <button class="btn g sm${su && /setacts sent/.test(su.action) ? " sec" : ""}" type="button" data-remove=', JS)
+        self.assertIn('<div class="updcol">${su ? su.action : ""}</div>\n      <div class="cfg${sentRow ? " sent3" : ""}"><button class="btn g sm${sentRow ? " sec" : ""}" type="button" data-remove=', JS)
         self.assertIn(".botrow .cfg .btn.sec{min-width:112px;height:38px", CSS)
 
 

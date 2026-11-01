@@ -13,13 +13,13 @@ from test_gs1311_noor_qa import _media  # noqa: E402
 class SentRowGrid(unittest.TestCase):
     def test_sent_row_is_three_equal_columns_at_phone_width(self):
         phone = _media(599)  # covers the 390 px frame
-        self.assertIn("#blist .botrow .cfg.sent3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}", phone)
-        self.assertIn("#blist .botrow .cfg.sent3 .setacts{display:contents}", phone)
-        self.assertIn("#blist .botrow .cfg.sent3 .btn{width:100%;min-width:0;min-height:44px;", phone)
-        self.assertNotIn("sent3", CSS.replace(phone, ""))  # desktop layout unchanged
+        # 0.13.15 (bots-row-sent rev1 §390): the buttons get their own row, wrap 2 + 1, each at least 44 px
+        self.assertIn("#blist .botrow.sentrow .setacts.sent{display:flex;flex-wrap:wrap;gap:8px;width:100%}", CSS)
+        self.assertIn("#blist .botrow.sentrow .setacts.sent .btn,#blist .botrow.sentrow>.cfg .btn{flex:1 1 140px;min-height:44px;", CSS)
 
     def test_only_a_sent_row_gets_the_grid(self):
-        self.assertIn('<div class="cfg${su && /setacts sent/.test(su.action) ? " sent3" : ""}">', JS)
+        self.assertIn('<div class="cfg${sentRow ? " sent3" : ""}">', JS)
+        self.assertIn("const sentRow = !!(su && su.sent);", JS)
 
 
 class FocusPin(unittest.TestCase):

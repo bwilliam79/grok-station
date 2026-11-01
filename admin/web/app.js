@@ -1467,7 +1467,7 @@ function wakeControlHTML(bot, word, st, list, flags) {
     }
     const label = wordLabel(word);
     const on = !!word.enabled;
-    return `<div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase${on ? "" : " muted"}">“${esc(label)}”</span><button class="tog${on ? " on" : ""}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-wtog="${esc(word.name)}" data-wlabel="${esc(label)}"></button></div>`;
+    return `<div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase${on ? "" : " muted"}" title="“${esc(label)}”">“${esc(label)}”</span><button class="tog${on ? " on" : ""}" type="button" role="switch" aria-checked="${on ? "true" : "false"}" aria-label="${esc(label)}" data-wtog="${esc(word.name)}" data-wlabel="${esc(label)}"></button></div>`;
   }
   // Configure already prints the phrase in .wwphrase. This is only the switch.
   if (!word || !word.has_model) {
@@ -3224,14 +3224,36 @@ function setupRowNeeds(m) {
 function setupRowStatus(row, opts) {
   const m = setupRowModel(row, opts);
   const bot = (row && row.name) || "this bot";
-  if (m.status === "sent" && !(row && row.unknown)) return {icon: "clock", colour: "lav", text: "Setup sent \u00b7 waiting for " + bot + " to reply"};
+  if (m.status === "sent" && !(row && row.unknown)) return {icon: "clock", colour: "lav", text: "Setup request sent to " + bot + " \u00b7 waiting for its reply", helper: setupSentHelper(row, opts)};
   if (m.status === "connected" || m.status === "already") return {icon: "ok", colour: "teal", text: "Connected"};
   return {icon: "dash", colour: "mut", text: "Not connected"};
 }
+// Noor bots-row-sent rev1: helper line under the status, and the resend wait shown before the click (Q2: the
+// client knows the window, SETUP_STUCK_S after sent_at). A 409 still shows inline via setupThrottleLine.
+function setupResendWaitMin(row, opts) {
+  if (!row || row.status !== "sent" || row.unknown) return 0;
+  const sent = Number(row.sent_at) || 0;
+  if (!sent) return 0;
+  const now = opts && opts.now != null ? opts.now : Date.now() / 1000;
+  const left = SETUP_STUCK_S - (now - sent);
+  return left > 0 ? Math.max(1, Math.ceil(left / 60)) : 0;
+}
+function setupSentHelper(row, opts) {
+  const bot = (row && row.name) || "this bot";
+  const wait = setupResendWaitMin(row, opts);
+  return bot + " replies with its webhook details, and they fill in here on their own. If it's taking a while, send the request again or enter the details yourself." +
+    (wait ? " You can send it again in " + wait + " min." : "");
+}
+function setupThrottleLine(bot, mins) {
+  return "\u26a0 Still waiting for " + (bot || "this bot") + ". You can send the request again in " + Math.max(1, mins | 0) + " min.";
+}
 function setupRowStatusHTML(row, opts) {
   const s = setupRowStatus(row, opts);
+  const thr = row && row.status === "sent" && opts && opts.throttle && opts.throttle[row.slug];
   return '<div class="sline" role="status" aria-live="polite"><span class="schip ' + s.colour + '">' + setupIcon(s.icon) +
-    "<span>" + esc(s.text) + "</span></span></div>";
+    "<span>" + esc(s.text) + "</span></span></div>" +
+    (s.helper ? '<div class="shelp help">' + esc(s.helper) + "</div>" : "") +
+    (thr ? '<div class="sthrottle help" role="status">' + esc(thr) + "</div>" : "");
 }
 // The row's own action: Set up (filled teal, rev1.1) while the bot still needs setup, Resend after a send.
 function setupRowActionHTML(row, opts) {
@@ -3246,10 +3268,14 @@ function setupRowActionHTML(row, opts) {
       (open ? "\u25b4" : "\u25be") + "</button></span>";
   }
   if (m.status === "sent") {
-    // Noor 0.13.11 QA 3: same-size secondary buttons, in the order Paste values, Resend, then the row's Remove.
-    return '<span class="setacts sent"><button class="btn sm sec" type="button" data-act="paste" data-slug="' + slug + '">Paste values</button>' +
-      '<button class="btn sm sec" type="button" data-act="again" data-slug="' + slug + '"' +
-      (m.sendBlocked ? ' aria-disabled="true"' : "") + '>Resend</button></span>';
+    // Noor bots-row-sent rev1: Send request again, Enter details myself, then the row's Remove. All secondary.
+    const bot = esc(row.name || "this bot");
+    const wait = setupResendWaitMin(row, opts) > 0;
+    return '<span class="setacts sent"><button class="btn sm sec" type="button" data-act="again" data-slug="' + slug + '"' +
+      ' aria-label="Send the setup request to ' + bot + ' again"' +
+      (m.sendBlocked || wait ? ' aria-disabled="true"' : "") + '>Send request again</button>' +
+      '<button class="btn sm sec" type="button" data-act="paste" data-slug="' + slug + '" aria-label="Enter ' + bot +
+      '\'s webhook details myself">Enter details myself</button></span>';
   }
   return "";
 }
@@ -3294,7 +3320,8 @@ function setupRowsBySlug(el) {
 }
 function setupPaintOpts(el) {
   const main = (((el && el._bots) || []).filter(b => b && b.main)[0]);
-  return {mainName: (main && main.name) || "your main bot", sendBlocked: !!(main && finishNeedsUpdate(main)), now: Date.now() / 1000};
+  return {mainName: (main && main.name) || "your main bot", sendBlocked: !!(main && finishNeedsUpdate(main)), now: Date.now() / 1000,
+          throttle: (el && el._setupThrottle) || {}};
 }
 function fillSetupDetails(list, rows) {
   list.querySelectorAll("[data-detfor]").forEach(slot => {
@@ -3354,7 +3381,7 @@ function updatesSwitchEl(b, failed) {
   rule.setAttribute("id", "updrule-" + slug);
   rule.setAttribute("role", "status");
   rule.setAttribute("aria-live", "polite");
-  rule.textContent = failed ? UPD_FAIL : updatesRuleLine(fu);
+  rule.textContent = failed ? UPD_FAIL : "";  // rev3: no caption at rest; only Saving… or the error
   wrap.appendChild(sw);
   wrap.appendChild(rule);
   return wrap;
@@ -3515,8 +3542,13 @@ async function setupSend(row, el, btn) {
   else if (r.data && r.data.setup) setupAdopt(el, r.data.setup);
   if (r.ok && el && el._setupOpen === row.slug) el._setupOpen = null;  // Sent: the panel closes
   const outcome = setupSendResult(r, row.name);
-  if (outcome.toast) toast(outcome.toast, "bad");
+  if (outcome.toast && !(r.status === 409 && row.status === "sent")) toast(outcome.toast, "bad");
   if (r.status === 409) refreshFinishChrome();
+  if (r.status === 409 && el && row.status === "sent") {  // bots-row-sent rev1 fallback: inline, no toast
+    const wl = Number(r.data && (r.data.wait_left || r.data.retry_after_s)) || SETUP_STUCK_S;
+    el._setupThrottle = el._setupThrottle || {};
+    el._setupThrottle[row.slug] = setupThrottleLine(row.name, Math.ceil(wl / 60));
+  } else if (el && el._setupThrottle) delete el._setupThrottle[row.slug];
   if (outcome.row === "again" && el) {
     el._setup = el._setup || {};
     el._setup.rows = el._setup.rows || {};
@@ -3985,7 +4017,8 @@ function paintBots(el, bots) {
     if (!m || m.status === "connected" || m.status === "already") return null;
     const open = el._setupOpen === row.slug;
     const o = Object.assign({}, setupOpts, {expanded: open});
-    return {line: setupRowStatusHTML(row, o), action: setupRowActionHTML(row, o), panel: open ? setupRowPanelHTML(row, o) : ""};
+    return {line: setupRowStatusHTML(row, o), action: setupRowActionHTML(row, o), panel: open ? setupRowPanelHTML(row, o) : "",
+            sent: m.status === "sent" && !row.unknown};
   };
   const list = $("#blist", el);
   if (!list) return;
@@ -3993,6 +4026,7 @@ function paintBots(el, bots) {
   const hey = `<div class="botrow" data-fixed="1">${avatar("grok", "Grok")}
     <div><div class="lbl">Grok</div>${botRowL2HTML("Built in, always on", "", "", false, "", "grok")}</div>
     <div class="ww">${ICO_WAVE.replace('class="ico"', 'class="ico teal"')}<span class="phrase">“Hey Grok”</span></div>
+    <div class="updcol"></div>
     <div class="cfg"><span class="lock" aria-hidden="true">${ICO_LOCK}</span></div></div>`;
   const rowsHTML = hey + bots.map(b => {
     const word = botWord(b, el._words);
@@ -4011,18 +4045,22 @@ function paintBots(el, bots) {
     const heard = botMessageAnnounce(el._msgSaid, b.slug, note);
     el._msgSaid = heard.said;
     const su = b.main ? null : setupBits(setupRows[b.slug]);
-    return `<div class="botrow${note ? " hasmsg" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
+    const sentRow = !!(su && su.sent);
+    const upd = updateRowBtnHTML(b);
+    return `<div class="botrow${note ? " hasmsg" : ""}${sentRow ? " sentrow" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}<span class="nm">${esc(b.name)}</span>${pill}</div>
         ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug)}</div>
-      ${wakeControlHTML(b, word, st, true, el._botTrain)}
-      <div class="cfg">${updateRowBtnHTML(b)}${su ? su.action : ""}<button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button>${su ? "" : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}<span class="chev" aria-hidden="true">${ICO_CHEV}</span></div></div>${su ? su.panel : ""}`;
+      ${upd ? `<div class="rowupd">${upd}</div>` : ""}${wakeControlHTML(b, word, st, true, el._botTrain)}
+      <div class="updcol">${su ? su.action : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}</div>
+      <div class="cfg"><span class="chev" aria-hidden="true">${ICO_CHEV}</span><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div></div>${su ? su.panel : ""}`;
   }).join("") + pending.map(row => {
     const su = setupBits(setupRows[botIdFromName(row.name)]);
-    return `<div class="botrow" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
+    const sentRow = !!(su && su.sent);
+    return `<div class="botrow${sentRow ? " sentrow" : ""}" data-pending="${esc(row.key)}">${avatar(botIdFromName(row.name) || "bot", row.name)}
       <div><div class="lbl">${esc(row.name)}</div>${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML("Not set up", "", "", false, "", row.key)}</div>
       <div class="ww none"></div>
-      <div class="cfg${su && /setacts sent/.test(su.action) ? " sent3" : ""}">${su ? su.action : ""}
-        <button class="btn g sm${su && /setacts sent/.test(su.action) ? " sec" : ""}" type="button" data-remove="${esc(row.key)}">Remove</button></div></div>${su ? su.panel : ""}`;
+      <div class="updcol">${su ? su.action : ""}</div>
+      <div class="cfg${sentRow ? " sent3" : ""}"><button class="btn g sm${sentRow ? " sec" : ""}" type="button" data-remove="${esc(row.key)}"${sentRow ? ` aria-label="Remove ${esc(row.name)}"` : ""}>Remove</button></div></div>${su ? su.panel : ""}`;
   }).join("");
   keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
   bindSetupRows(list, el, setupRows);
