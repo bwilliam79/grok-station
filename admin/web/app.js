@@ -3132,6 +3132,7 @@ function setupIcon(kind) {
   if (kind === "ok") return ICO_OK;
   if (kind === "err") return ICO_ERR;
   if (kind === "slash") return ICO_SLASH;
+  if (kind === "none") return "";  // failed/expired: status text already starts with ⚠
   return ICO_DASH;
 }
 function setupRowModel(row, opts) {
@@ -3228,8 +3229,8 @@ function setupRowStatus(row, opts) {
     // 0.13.16 typed setup_relay (design §6): the main bot's ack and the relay's TTL move the sent row on.
     const main = (opts && opts.mainName) || "your main bot";
     if (row.relay === "relayed") return {icon: "clock", colour: "lav", text: main + " passed it to " + bot + " \u00b7 waiting for " + bot + "\u2019s details", helper: setupSentHelper(row, opts)};
-    if (row.relay === "failed") return {icon: "dash", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on.", helper: "Send the request again, or enter the details yourself."};
-    if (row.relay === "expired") return {icon: "dash", colour: "mut", text: "\u26a0 No reply from " + main + ".", helper: "Send the request again, or enter the details yourself."};
+    if (row.relay === "failed") return {icon: "none", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on.", helper: "Send the request again, or enter the details yourself."};
+    if (row.relay === "expired") return {icon: "none", colour: "mut", text: "\u26a0 No reply from " + main + ".", helper: "Send the request again, or enter the details yourself."};
     // Waiting for the main bot's status ack (design §6 {main}), not the target's details yet.
     return {icon: "clock", colour: "lav", text: "Setup request sent to " + main + " \u00b7 waiting for its reply", helper: setupSentHelper(row, opts)};
   }

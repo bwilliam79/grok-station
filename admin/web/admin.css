@@ -993,10 +993,10 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow>.cfg.sent3{display:flex}
   .updcol .updsw{grid-template-rows:44px 16px}
 }
-/* 0.13.15 Noor QA: sent rows share one fixed height (name, status, one helper line); helper is one line */
+/* 0.13.16 Noor: sent rows stay 100 px; helper wraps to 2 lines so the bot name is not ellipsized at 1280 */
 @media (min-width:768px){
   #blist .botrow.sentrow{height:100px;min-height:100px;max-height:100px;overflow:hidden}
-  #blist .botrow.sentrow .l2 .shelp{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #blist .botrow.sentrow .l2 .shelp{white-space:normal;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-height:16px}
 }
 @media (max-width:767px){
   #blist .botrow.sentrow>.cfg .btn{flex:0 0 auto;width:auto}

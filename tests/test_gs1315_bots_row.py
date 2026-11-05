@@ -49,6 +49,9 @@ class SentCopy(unittest.TestCase):
 
     def test_fixed_sent_height_and_compact_phone_configure(self):
         self.assertIn("#blist .botrow.sentrow{height:100px;min-height:100px;max-height:100px;overflow:hidden}", CSS)
+        # 0.13.16 Noor: helper wraps to 2 lines at desktop so the bot name is not ellipsized
+        self.assertIn("#blist .botrow.sentrow .l2 .shelp{white-space:normal;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-height:16px}", CSS)
+        self.assertNotIn("#blist .botrow.sentrow .l2 .shelp{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}", CSS)
         self.assertIn("#blist .botrow.sentrow>.cfg .btn{flex:0 0 auto;width:auto}", CSS)
 
 

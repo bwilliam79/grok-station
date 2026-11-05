@@ -788,11 +788,13 @@ class RowStates(unittest.TestCase):
         self.assertEqual(s["text"], "Rhea passed it to Otto \u00b7 waiting for Otto\u2019s details")
         s, a = self._status(dict(row, relay="failed"))
         self.assertEqual(s["text"], "\u26a0 Rhea couldn\u2019t pass it on.")
+        self.assertEqual(s.get("icon"), "none")
         self.assertEqual(s.get("helper"), "Send the request again, or enter the details yourself.")
         self.assertIn(">Send request again<", a)
         self.assertNotIn("aria-disabled", a.split("data-act=\"paste\"")[0])
         s, a = self._status(dict(row, relay="expired"))
         self.assertEqual(s["text"], "\u26a0 No reply from Rhea.")
+        self.assertEqual(s.get("icon"), "none")
         self.assertEqual(s.get("helper"), "Send the request again, or enter the details yourself.")
         self.assertIn(">Send request again<", a)
         s, a = self._status(row)
@@ -801,6 +803,27 @@ class RowStates(unittest.TestCase):
         self.assertIn(">Send again in 4 min<", a)
         s_rel, _ = self._status(dict(row, relay="relayed"))
         self.assertEqual(s_rel.get("helper"), "Otto\u2019s webhook details fill in here when it replies.")
+
+    def test_failed_expired_status_has_no_pending_glyph(self):
+        # Noor polish: failed/expired start with ⚠ only; the dashed-circle reads as loading.
+        from test_gs1311_bots_merge import SETUP, _run
+        names = SETUP + ("setupThrottleLine", "setupRowStatusHTML")
+        row = {"slug": "otto", "name": "Otto", "status": "sent", "sent_at": 1000, "fails": 0}
+        for relay in ("failed", "expired"):
+            html = _run(names, "setupRowStatusHTML(%s, {mainName: 'Rhea', now: 2000})"
+                        % __import__("json").dumps(dict(row, relay=relay)))
+            self.assertNotIn("stroke-dasharray", html)
+            self.assertIn("⚠", html)
+            self.assertIn("Send the request again, or enter the details yourself.", html)
+        # Pending sent / relayed keep their clock glyph (not the dashed circle).
+        for relay in ("", "relayed"):
+            r = dict(row)
+            if relay:
+                r["relay"] = relay
+            html = _run(names, "setupRowStatusHTML(%s, {mainName: 'Rhea', now: 1100})"
+                        % __import__("json").dumps(r))
+            self.assertNotIn("stroke-dasharray", html)  # clock, not dash
+            self.assertIn("<svg", html)
 
     def test_panel_describes_typed_relay_not_free_text(self):
         # Must-fix: the expand panel used to show free-text steps and "this exact message", but
