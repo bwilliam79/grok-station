@@ -4377,6 +4377,7 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
     now = int(time.time() * 1000) if now_ms is None else now_ms
 
     raw_texts = []
+    signed_update = {}
 
     def parse(doc):
         if isinstance(doc, dict) and doc.get("op") in mod.UPDATE_OPS:
@@ -4385,7 +4386,9 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
             for key in ("line", "feed_rule"):
                 if isinstance(body.get(key), str):
                     raw_texts.append(unicodedata.normalize("NFKC", body[key]))
-            return mod.validate_update(doc)  # 0.13.10 bot updates feed: same envelope, same checks
+            normalized = mod.validate_update(doc)
+            signed_update.update(doc)  # preserve signed wire types for station revalidation
+            return normalized
         return mod.validate_show(doc, cap)
 
     try:
@@ -4414,7 +4417,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
             return _reject_show(botreply.Reject(409, "duplicate", show.get("bot", "-")))
         reserved = True
     try:
-        code = int(post(show))
+        wire = dict(signed_update, bot=show["bot"]) if is_update else show
+        code = int(post(wire))
     except Exception:
         code = 503
     if code != 200:
@@ -4423,6 +4427,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
                 seen.release(show["bot"], show["nonce"], now)
             except OSError:
                 pass
+        if 400 <= code < 500:
+            return 400, {"error": "schema"}, botreply.Reject(400, "schema", show.get("bot", "-"))
         return 503, {"error": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
     if isinstance(seen, set):
         seen.add((show["bot"], show["nonce"]))

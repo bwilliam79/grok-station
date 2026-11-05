@@ -1975,7 +1975,7 @@ def render_bot_routine(bot, station, fingerprint, pub, pins=None):
     text = gs_routine.render(template, mode, bot.get("slug", ""), pins.get("commit", ""),
                              pins.get("files", {}).get("scripts/gs-update.sh", ""),
                              station if mode == "cloud" else "", fp if mode == "cloud" else "",
-                             pub if mode == "cloud" else "")
+                             pub if mode == "cloud" else "", owner=setup_owner_name())
     rel = gs_routine.check(text, mode)
     if rel != version():
         raise gs_routine.Bad("release")

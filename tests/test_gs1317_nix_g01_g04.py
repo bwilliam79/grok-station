@@ -1,4 +1,4 @@
-"""Nix G01–G04 regressions for 0.13.17 (fail before / pass after)."""
+"""Nix G01–G04 regressions for 0.13.18 (fail before / pass after)."""
 import json
 import os
 import re
@@ -124,7 +124,7 @@ class G04PanelPinsFromSetupParams(unittest.TestCase):
             "mainName": "Juniper",
             "stationAddress": "https://station-demo.local",
             "fingerprint": "ab" * 32,
-            "release": "0.13.17",
+            "release": "0.13.18",
             "deployPins": {"commit": "0" * 40,
                            "files": {"scripts/install-home.sh": "1" * 64}},
         }

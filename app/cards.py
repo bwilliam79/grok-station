@@ -1412,7 +1412,7 @@ class Deck:
 import datetime as _dt  # noqa: E402
 import unicodedata  # noqa: E402
 
-UPDATE_TYPES = ("needs_you", "heads_up", "working_on", "done")
+UPDATE_TYPES = ("update", "needs_you", "heads_up", "working_on", "done")
 LINE_MAX = 80
 UPD_RAW_MAX = 320  # raw NFKC line length accepted before clip_line
 RULE_MAX = 60
@@ -1424,7 +1424,7 @@ UPD_PER_BOT = 8
 UPD_SLOTS = 3
 UPDATE_KEYS = frozenset(("v", "op", "id", "update", "kind", "nonce", "exp_ms"))
 UPD_CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
-UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule"))
+UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule", "kind", "detail"))
 UPD_BODY_REQ = frozenset(("type", "line", "time"))
 UPDATE_OPS = ("update", "update_clear")
 
@@ -1476,6 +1476,12 @@ def validate_update(doc):
     if not isinstance(body.get("line"), str) or len(unicodedata.normalize("NFKC", body["line"])) > UPD_RAW_MAX:
         raise CardError("schema")  # Nix L2: an over-long raw line is refused, not silently clipped
     out = {"type": body["type"], "line": clip_line(body.get("line")), "time": _upd_iso(body.get("time"))}
+    if body["type"] == "update" or "kind" in body or "detail" in body:
+        for field, cap in (("kind", 18), ("line", 60), ("detail", 90)):
+            value = body.get(field, "")
+            if not isinstance(value, str) or len(value) > cap or (field in ("kind", "line") and not value):
+                raise CardError("schema")
+            out[field] = escape_text(value, cap) if value else ""
     if "expires_at" in body and body["type"] != "needs_you":   # ignored for Needs you (SPEC)
         out["expires_at"] = _upd_iso(body.get("expires_at"))
     if "feed_rule" in body:
@@ -1506,6 +1512,11 @@ class UpdateFeed:
             self.rules[bot] = update["feed_rule"]
         if update["type"] == "working_on":     # one Working on per bot: the next update replaces it
             for key in [k for k, v in self.items.items() if k[0] == bot and v["type"] == "working_on"]:
+                del self.items[key]
+        if update["type"] in ("update", "needs_you"):
+            for key in [k for k, v in self.items.items() if k[0] == bot
+                        and v["type"] == update["type"]
+                        and (update["type"] == "needs_you" or v.get("kind") == update.get("kind"))]:
                 del self.items[key]
         self.seq += 1
         row = {"bot": bot, "id": uid, "seq": self.seq,
@@ -1539,7 +1550,9 @@ class UpdateFeed:
             t = r["type"]
             if t == "needs_you":
                 continue
-            if t == "heads_up" and "expires_at" in r:
+            if t == "update":
+                gone = now - r["time"] >= 86400
+            elif t == "heads_up" and "expires_at" in r:
                 gone = now >= r["expires_at"]
             else:
                 gone = now - r["time"] >= DROP_S

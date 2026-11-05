@@ -47,13 +47,13 @@ class Templates(unittest.TestCase):
         gs = load("gs_routine_1315", "admin/gs_routine.py")
         for mode in ("home", "cloud"):
             t = gs.TEMPLATES[mode]
-            self.assertIn("\nStation updates (optional).", t)
+            self.assertIn("\nStation updates.", t)
             self.assertIn('"op":"update_clear"', t)
-            self.assertLess(t.index("\nStation updates (optional)."), t.index("\nStation update. When"))
+            self.assertLess(t.index("\nStation updates."), t.index("\nStation update. When"))
             with open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode)) as f:
                 self.assertEqual(f.read(), t)
         sh = open(os.path.join(ROOT, "scripts", "gs-update.sh")).read()
-        self.assertEqual(sh.count("\nStation updates (optional)."), 2)
+        self.assertEqual(sh.count("\nStation updates."), 2)
 
 
 if __name__ == "__main__":

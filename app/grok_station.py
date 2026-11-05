@@ -3421,6 +3421,11 @@ def update_tile_height(L):
     return L(24) + head + L(16) + 2 * font("body", L(40)).get_height() + L(4) + L(24)
 
 
+def update_meta(row):
+    bot = row["bot"].capitalize()
+    return ("⚠ Needs you · " + bot) if row["type"] == "needs_you" else (bot + " · " + row.get("kind", UPDATE_PILL.get(row["type"], "Update")))
+
+
 def _paint_update_tile(surf, L, rect, row, now):
     """One update tile (Noor u-04): avatar initial, bot name, pill word (never colour alone) and age,
     then the line in 2 lines max. Draws only."""
@@ -3438,24 +3443,19 @@ def _paint_update_tile(surf, L, rect, row, now):
     ini = font("body", L(36)).render((row["bot"][:1] or "?").upper(), True, TEXT)
     surf.blit(ini, ini.get_rect(center=(x + d // 2, y + d // 2)))
     tx = x + d + L(20)
-    name = _line(surf, "body", L(40), row["bot"].capitalize(), TEXT, rect.right - tx - L(28))
-    surf.blit(name, (tx, y - L(4)))
-    pill_f = font("display" if needs else "body", L(28))
-    word = pill_f.render(("! " if needs else "") + UPDATE_PILL[t], True, AMBER_INK if needs else color)
-    pill = pygame.Rect(tx, y - L(4) + name.get_height() + L(4), word.get_width() + L(24), word.get_height() + L(6))
-    if needs:
-        pygame.draw.rect(surf, AMBER, pill, border_radius=L(8))
-    else:
-        pygame.draw.rect(surf, color, pill, width=max(1, L(2)), border_radius=L(8))
-    surf.blit(word, (pill.left + L(12), pill.top + L(3)))
-    age = font("body", L(28)).render(update_age(now - row["time"]), True, MUTED)
-    surf.blit(age, (pill.right + L(14), pill.top + L(3)))
+    meta = update_meta(row)
+    name = _line(surf, "body", L(30), meta, AMBER if needs else MUTED, rect.right - tx - L(28))
+    surf.blit(name, (tx, y))
+    pill = pygame.Rect(tx, y, name.get_width(), name.get_height())
     f = font("display" if needs else "body", L(40))
     ly = max(y + d, pill.bottom) + L(16)
     for text in update_title_lines(L, row["line"], rect.w - L(56)):
         img = f.render(text, True, MUTED if aged else TEXT)
         surf.blit(img, (rect.left + L(28), ly))
         ly += img.get_height() + L(4)
+    if row.get("detail"):
+        detail = _line(surf, "body", L(28), row["detail"], MUTED, rect.w - L(56))
+        surf.blit(detail, (rect.left + L(28), ly))
 
 
 def updates_paused(now, talking=False):

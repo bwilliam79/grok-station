@@ -44,7 +44,7 @@ PIN = "ab" * 32
 GOOD = {"v": 1, "kind": "setup_relay", "request_id": "vs_" + "A" * 22, "persona": "rhea",
         "reply_by": "2026-11-01T20:15:00Z", "target": "otto", "station": "https://grok-station.local",
         "pin_sha256": PIN, "station_pub": base64.b64encode(b"\x01" * 32).decode(), "mode": "cloud",
-        "release": "0.13.17"}
+        "release": "0.13.18"}
 
 
 def _payload(**kw):
@@ -115,8 +115,8 @@ class Station:
         with open(os.path.join(r.TLS_DIR, "host"), "w") as f:
             f.write("grok-station\n")
         with open(r.VERSION_FILE, "w") as f:
-            f.write("0.13.17\n")
-        # 0.13.17 first-time path reads install pins from admin/setup-params.txt next to VERSION.
+            f.write("0.13.18\n")
+        # 0.13.18 first-time path reads install pins from admin/setup-params.txt next to VERSION.
         params_dir = os.path.join(self.tmp, "admin")
         os.makedirs(params_dir)
         with open(os.path.join(params_dir, "setup-params.txt"), "w", encoding="utf-8") as f:
@@ -198,13 +198,13 @@ class RelaySend(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 202)
         self.assertEqual(len(self.st.calls), 1)
         posted = self.st.calls[0]["json"]
-        # Default path=first includes install pins (0.13.17 no-paste).
+        # Default path=first includes install pins (0.13.18 no-paste).
         self.assertEqual(set(posted), set(handoff.SETUP_RELAY_KEYS) | set(handoff.SETUP_RELAY_PIN_KEYS))
         self.assertNotIn("question", posted)
         self.assertNotIn("steps", posted)
         self.assertEqual(posted["kind"], "setup_relay")
         self.assertEqual((posted["persona"], posted["target"], posted["mode"], posted["release"]),
-                         ("rhea", "otto", "cloud", "0.13.17"))
+                         ("rhea", "otto", "cloud", "0.13.18"))
         self.assertEqual(posted["station"], "https://grok-station.local")
         self.assertEqual(posted["pin_sha256"], PIN)
         self.assertEqual(posted["template_commit"], "a" * 40)
@@ -554,7 +554,7 @@ class Routines(unittest.TestCase):
             t = gs_routine.render(gs_routine.TEMPLATES[mode], mode, "a" * 24, "a" * 40, "b" * 64,
                                   "https://grok-station.local" if mode == "cloud" else "",
                                   FP if mode == "cloud" else "", "A" * 43 + "=" if mode == "cloud" else "")
-            self.assertEqual(gs_routine.check(t, mode), "0.13.17")
+            self.assertEqual(gs_routine.check(t, mode), "0.13.18")
             self.assertLess(len(t), 14000)
 
 
@@ -867,7 +867,7 @@ class RowStates(unittest.TestCase):
             self.assertIn("<svg", html)
 
     def test_panel_describes_typed_relay_not_free_text(self):
-        # 0.13.17 Confirm and send panel (no-paste). Still no free-text steps.
+        # 0.13.18 Confirm and send panel (no-paste). Still no free-text steps.
         from test_gs1311_bots_merge import SETUP, _run
         html = _run(SETUP, "setupRowPanelHTML({slug:'otto',name:'Otto',status:'not_set_up'}, {mainName:'Rhea'})")
         self.assertIn("Set up Otto through Rhea", html)

@@ -122,3 +122,8 @@ Other notes in `docs/` cover the design, handoff between bots, and longer plans.
 Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/show`) through cloudflared, a tunnel, or a router port forward.
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
+
+### 0.13.18 (in development)
+Updates mirror email: the email name is the kind (18 characters), its lead sentence is the headline (60), and optional detail is at most 90 characters. Updates replace the same bot/kind and expire after 24 hours. Needs you is one pinned item per bot until explicitly cleared. No progress updates.
+
+The `{owner}` token is filled from the station’s local sign-in name when rendering bot instructions; absent or unsafe names become “your owner”. Names are not stored in the shipped templates. Update payloads preserve signed ISO timestamps across the relay/station boundary; station 4xx responses are reported as schema errors.

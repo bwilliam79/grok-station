@@ -28,7 +28,7 @@ def upd(uid="u1", type_="done", line="Booked the table", t=T0, **extra):
 class Schema(unittest.TestCase):
     def test_four_types_and_unknown_fields(self):
         for t in cards.UPDATE_TYPES:
-            self.assertEqual(cards.validate_update(upd(type_=t))["update"]["type"], t)
+            self.assertEqual(cards.validate_update(upd(type_=t, **({"kind": "Release"} if t == "update" else {})))["update"]["type"], t)
         for bad in (upd(type_="urgent"), dict(upd(), extra=1), upd(line="   ")):
             with self.assertRaises(cards.CardError):
                 cards.validate_update(bad)

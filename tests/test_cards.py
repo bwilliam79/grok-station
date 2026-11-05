@@ -623,7 +623,7 @@ class SignedShow(unittest.TestCase):
             return 400
 
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(12, 60), down, ttl_max=3600)
-        self.assertEqual(status, 503)
+        self.assertEqual(status, 400)  # downstream schema refusal, not outage
         self.assertEqual(len(posts), 1)
 
     def test_replay_of_the_same_blob_is_409(self):
@@ -664,7 +664,7 @@ class SignedShow(unittest.TestCase):
 
         lim = botreply.Limiter(12, 60)
         status, _, _ = relay.accept_show(raw, self.station, self.keys, self.known, lim, post, ttl_max=3600, seen=seen)
-        self.assertEqual(status, 503)
+        self.assertEqual(status, 400)  # downstream schema refusal, not outage
         status, _, _ = relay.accept_show(raw, self.station, self.keys, self.known, lim, post, ttl_max=3600, seen=seen)
         self.assertEqual(status, 200)
         status, _, info = relay.accept_show(raw, self.station, self.keys, self.known, lim, post, ttl_max=3600, seen=seen)

@@ -1,6 +1,6 @@
 import os
 #!/usr/bin/env python3
-"""0.13.17 no-paste Set up (DESIGN-rev3 §7, bq-0047).
+"""0.13.18 no-paste Set up (DESIGN-rev3 §7, bq-0047).
 
 Covers Confirm freeze (N02), first-time yes bind (N08), 2b held pins (N03), sender-must-be-main,
 allowlist text, N05 never-reconstruct, N07 unknown policy sender, needs_details ack, and panel copy.
@@ -31,7 +31,7 @@ HASH = "b" * 64
 def _payload(path="held", **kw):
     d = {"request_id": RID, "persona": "rhea", "reply_by": "2026-11-05T20:15:00Z", "target": "otto",
          "station": "https://station-demo.local", "pin_sha256": PIN, "station_pub": PUB, "mode": "cloud",
-         "release": "0.13.17"}
+         "release": "0.13.18"}
     d.update(kw)
     pins = {}
     if path == "first":
@@ -60,7 +60,7 @@ class PayloadKeys(unittest.TestCase):
     def test_one_pin_field_refused(self):
         with self.assertRaises(ValueError):
             handoff.setup_relay_payload(RID, "rhea", "2026-11-05T20:15:00Z", "otto",
-                                        "https://station-demo.local", PIN, PUB, "cloud", "0.13.17",
+                                        "https://station-demo.local", PIN, PUB, "cloud", "0.13.18",
                                         COMMIT, None)
 
     def test_trailing_newline_refused(self):
@@ -126,7 +126,7 @@ class TemplateRules(unittest.TestCase):
         self.assertIn("do not ask for a second yes", self.PARAMS)
 
     def test_release(self):
-        self.assertIn("release is not 0.13.17", self.PARAMS)
+        self.assertIn("release is not 0.13.18", self.PARAMS)
 
 
 class FirstTimeYesBind(unittest.TestCase):
@@ -148,7 +148,7 @@ class FirstTimeYesBind(unittest.TestCase):
             "mainName": "Juniper",
             "stationAddress": "https://station-demo.local",
             "fingerprint": "ab" * 32,
-            "release": "0.13.17",
+            "release": "0.13.18",
             "deployPins": {"commit": "0" * 40,
                            "files": {"scripts/install-home.sh": "1" * 64}},
         }
@@ -261,7 +261,7 @@ class N05Fixture(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_version_file(self):
-        self.assertEqual(_read("VERSION").strip(), "0.13.17")
+        self.assertEqual(_read("VERSION").strip(), "0.13.18")
 
 
 if __name__ == "__main__":
@@ -269,7 +269,7 @@ if __name__ == "__main__":
 
 
 class PanelNoorQaR2(unittest.TestCase):
-    """0.13.17 Noor QA panel fixes (fail before / pass after)."""
+    """0.13.18 Noor QA panel fixes (fail before / pass after)."""
 
     def _panel(self, opts=None, row=None):
         from test_gs1311_bots_merge import SETUP, _run
@@ -280,7 +280,7 @@ class PanelNoorQaR2(unittest.TestCase):
             "mainName": "Juniper",
             "stationAddress": "https://station-demo.local",
             "fingerprint": "ab" * 32,
-            "release": "0.13.17",
+            "release": "0.13.18",
             "deployPins": {"commit": "a1b2c3d4e5f60718293a4b5c6d7e8f901234abcd",
                            "files": {"scripts/install-home.sh": "e" * 64}},
         }
@@ -290,7 +290,7 @@ class PanelNoorQaR2(unittest.TestCase):
 
     def test_release_row_shows_version_never_dash(self):
         html = self._panel()
-        self.assertIn("0.13.17", html)
+        self.assertIn("0.13.18", html)
         self.assertIn(">Release</span>", html)
         self.assertNotIn("\u2014", html)  # bare em-dash must never appear
 
@@ -338,7 +338,7 @@ class PanelNoorQaR2(unittest.TestCase):
 
     def test_details_visible_at_desktop(self):
         css = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
-        # Must not hide Details by default (0.13.17: show at 1280 and 390).
+        # Must not hide Details by default (0.13.18: show at 1280 and 390).
         self.assertRegex(css, r"(?m)^\.setdetails\{display:block")
         self.assertNotRegex(css, r"(?m)^\.setdetails\{display:none")
 
