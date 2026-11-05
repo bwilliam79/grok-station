@@ -649,7 +649,7 @@ Change note (2026-10-30): patch release; installs over 0.13.11. A card sent righ
 
 ## 0.13.21
 
-Change note (2026-11-05): patch release; installs over 0.13.20. The updates band top follows the real date: 56 px, then the marker, then 24 px, and never above y820. When that plus the 560 px tiles would pass y1380 or the timer strip, the band hides. Leaving the night clock restarts both queues at position 1. A change of tiles cross-fades in place over eight steps (about 0.2 s), or at once when reduce-motion is on. The Needs you pill draws its exclamation mark as its own icon. The bot templates name release 0.13.21, so the update manifest and deploy pins are regenerated at release; press Update on each bot. Tests: `tests/test_gs1320_updates_band.py`.
+Change note (2026-11-05): patch release; installs over 0.13.20. The updates band top is the date bottom plus 104 px (40 px, the 48 px marker, then 16 px). A 702 px date puts the 560 px tiles at y806, ending at 1366. If that would pass y1380, the tiles shrink so the bottom is 1376, down to 520, and avatar and type scale by height/560 only below 540. The band hides only when 520 px still does not fit. Leaving the night clock restarts both queues at position 1. A change of tiles cross-fades in place over eight steps (about 0.2 s), or at once when reduce-motion is on. The Needs you pill draws its exclamation mark as its own icon. The bot templates name release 0.13.21, so the update manifest and deploy pins are regenerated at release; press Update on each bot. Tests: `tests/test_gs1320_updates_band.py`.
 
 ## 0.13.20
 

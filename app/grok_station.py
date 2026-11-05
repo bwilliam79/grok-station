@@ -3320,19 +3320,23 @@ def _trend(surf, x, y, size, trend):
     return None
 
 
-# Rev6: 56 px after the date line box, then the 48 px marker, then 24 px, then the band.
-# That is date_bottom + 128. Preferred top stays y820; the band only moves down.
-BAND_AFTER_DATE = 56
+# Rev7: 40 px after the date line box, the 48 px marker, then 16 px. Band top is that sum (104 px).
+BAND_AFTER_DATE = 40
 BAND_MARKER_H = 48
-BAND_BEFORE_BAND = 24
+BAND_BEFORE_BAND = 16
+BAND_FULL_H = 560
+BAND_LIMIT = 1380
+BAND_SHRINK_BOTTOM = 1376
+BAND_MIN_H = 520
+BAND_SCALE_BELOW = 540
 
 
 def updates_band_layout(L, date_bottom=None, weather_bottom=None):
-    """Two 1136x560 slots. Top is max(820, date_bottom+128, weather_bottom+128) at 2560x1706.
+    """Two 1136 px slots under the date. Top is date bottom + 104 px at 2560x1706.
 
-    The 128 px is the 56 px gap under the date, the 48 px marker, and 24 px before the tiles.
-    The bottom must stay at or above min(1380, the timer strip's content limit, the hint row
-    minus 24 px). When 560 px will not fit, the band hides.
+    A 702 px date puts the tiles at y806, 560 tall, ending at 1366. If the full height would
+    pass y1380, the tiles shrink so the bottom is 1376, down to 520. Avatar and type scale by
+    height/560 only below 540. The band hides only when 520 px still does not fit.
     """
     if date_bottom is None:
         date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
@@ -3340,43 +3344,58 @@ def updates_band_layout(L, date_bottom=None, weather_bottom=None):
         marks = [r.bottom for r in (LAST_WEATHER_RECT, LAST_OFFLINE_RECT) if r]
         weather_bottom = max(marks) if marks else 0
     x = zpx(L, 128)
-    gap, tile_w, height = zpx(L, 32), zpx(L, 1136), zpx(L, 560)
+    gap, tile_w = zpx(L, 32), zpx(L, 1136)
+    full = zpx(L, BAND_FULL_H)
     clearance = zpx(L, BAND_AFTER_DATE) + zpx(L, BAND_MARKER_H) + zpx(L, BAND_BEFORE_BAND)
-    y = max(zpx(L, 820), int(date_bottom) + clearance, int(weather_bottom) + clearance)
-    hint_top = zpx(L, 1494)
-    cap = min(zpx(L, 1380), content_limit(L), hint_top - zpx(L, 24))
-    if y + height > cap or x + 2 * tile_w + gap > L.w:
+    y = max(int(date_bottom), int(weather_bottom)) + clearance
+    limit = min(zpx(L, BAND_LIMIT), content_limit(L))
+    height = full
+    if y + height > limit:
+        land = min(zpx(L, BAND_SHRINK_BOTTOM), limit)
+        height = land - y
+        if height < zpx(L, BAND_MIN_H) or x + 2 * tile_w + gap > L.w:
+            return None
+    elif x + 2 * tile_w + gap > L.w:
         return None
+    scale = (height / float(full)) if height < zpx(L, BAND_SCALE_BELOW) else 1.0
     rects = (pygame.Rect(x, y, tile_w, height), pygame.Rect(x + tile_w + gap, y, tile_w, height))
     marker_h = zpx(L, BAND_MARKER_H)
     marker = pygame.Rect(x, y - zpx(L, BAND_BEFORE_BAND) - marker_h, tile_w * 2 + gap, marker_h)
-    return {"rects": rects, "marker": marker}
+    return {"rects": rects, "marker": marker, "scale": scale}
 
 
-def _paint_home_tile(surf, L, rect, row):
+def _band_px(L, spec, scale):
+    """A rev6 size, multiplied by the rev7 shrink scale. Scale 1 keeps the integer L() size."""
+    base = L(spec)
+    if scale == 1:
+        return base
+    return max(1, int(round(base * scale)))
+
+
+def _paint_home_tile(surf, L, rect, row, scale=1.0):
     """One home card in one band slot. No avatar. Titles, labels and values use the rev6 sizes."""
-    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(30))
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=_band_px(L, 30, scale))
     card = row["card"]
-    inset = L(30)
+    inset = _band_px(L, 30, scale)
     y = rect.top + inset
-    title = _line(surf, "display", L(36), card["title"].upper(), MUTED, rect.w - 2 * inset)
+    title = _line(surf, "display", _band_px(L, 36, scale), card["title"].upper(), MUTED, rect.w - 2 * inset)
     surf.blit(title, (rect.left + inset, y))
-    y += title.get_height() + L(18)
+    y += title.get_height() + _band_px(L, 18, scale)
     for item in card["items"]:
         trend = item.get("trend")
         color = GREEN if trend == "up" else RED if trend == "down" else TEXT
-        arrow = L(22)
-        label = _line(surf, "body", L(36), item["label"], MUTED, max(40, rect.w // 2 - inset))
-        value = _line(surf, "display", L(57), item["value"], color, max(40, rect.w // 2 - arrow - inset))
+        arrow = _band_px(L, 22, scale)
+        label = _line(surf, "body", _band_px(L, 36, scale), item["label"], MUTED, max(40, rect.w // 2 - inset))
+        value = _line(surf, "display", _band_px(L, 57, scale), item["value"], color, max(40, rect.w // 2 - arrow - inset))
         row_h = max(label.get_height(), value.get_height())
-        if y + row_h > rect.bottom - inset:
+        if y + row_h > rect.bottom - _band_px(L, 8, scale):
             break
         surf.blit(label, (rect.left + inset, y + max(0, (value.get_height() - label.get_height()) // 2)))
         vx = rect.right - inset - value.get_width()
         if trend in ("up", "down"):
-            _trend(surf, vx - arrow - L(8), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
+            _trend(surf, vx - arrow - _band_px(L, 8, scale), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
         surf.blit(value, (vx, y))
-        y += row_h + L(18)
+        y += row_h + _band_px(L, 18, scale)
 
 
 UPDATE_PILL = {"needs_you": "NEEDS YOU", "heads_up": "Heads-up", "working_on": "Working on", "done": "Done"}
@@ -3457,9 +3476,9 @@ def display_clip(text, limit):
     return (cut or text[:1]) + "\u2026"
 
 
-def update_title_lines(L, text, width, kind="body"):
+def update_title_lines(L, text, width, kind="body", px=None):
     """The headline in at most 2 lines at 76 px. A longer one ends with an ellipsis on line 2."""
-    f = font(kind, L(57))
+    f = font(kind, L(57) if px is None else px)
     lines = wrap(f, display_clip(text, 60), width)
     if len(lines) <= 2:
         return lines
@@ -3522,9 +3541,9 @@ def _update_avatar(name, d, letter_px):
     return photo, True, initial
 
 
-def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=False):
+def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=False, font_px=None):
     """Word plus icon. Filled, outlined, or dashed. Returns the pill rect."""
-    px = L(30)
+    px = L(30) if font_px is None else font_px
     f = font("display", px)
     label = f.render(word, True, ink)
     icon_px = max(12, int(px * 0.72))
@@ -3554,20 +3573,23 @@ def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=Fa
     return rect
 
 
-def _paint_update_tile(surf, L, rect, row, now):
-    """One update tile (rev6): 160 px portrait, name and age, a word-and-icon pill, then the line."""
+def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
+    """One update tile (rev6): 160 px portrait, name and age, a word-and-icon pill, then the line.
+
+    `scale` is height/560 when a rev7 shrink drops the tile below 540 px, and 1 otherwise.
+    """
     global LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS
     t = row["type"]
     needs = t == "needs_you"
     aged = bool(row.get("aged"))
-    pygame.draw.rect(surf, BG if aged else SURFACE, rect, border_radius=L(30))
+    pygame.draw.rect(surf, BG if aged else SURFACE, rect, border_radius=_band_px(L, 30, scale))
     edge = AMBER if needs else RULE2
-    pygame.draw.rect(surf, edge, rect, width=max(1, L(6) if needs else L(3)), border_radius=L(30))
-    inset = L(30)
-    d = L(120)
-    ring_w = zpx(L, 6) if needs else zpx(L, 4)
+    pygame.draw.rect(surf, edge, rect, width=max(1, _band_px(L, 6 if needs else 3, scale)), border_radius=_band_px(L, 30, scale))
+    inset = _band_px(L, 30, scale)
+    d = _band_px(L, 120, scale)
+    ring_w = max(1, int(round((zpx(L, 6) if needs else zpx(L, 4)) * scale)))
     photo_d = max(8, d - 2 * ring_w)
-    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, zpx(L, 72))
+    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(round(zpx(L, 72) * scale))))
     if aged:
         avatar.set_alpha(153)
     ax, ay = rect.left + inset, rect.top + inset
@@ -3577,15 +3599,16 @@ def _paint_update_tile(surf, L, rect, row, now):
     pygame.draw.circle(surf, ring, (cx, cy), max(1, d // 2 - ring_w // 2), max(1, ring_w))
     LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
                                 "rect": pygame.Rect(ax, ay, d, d)})
-    tx = ax + d + L(21)
+    tx = ax + d + _band_px(L, 21, scale)
     text_w = max(40, rect.right - inset - tx)
     name = (row.get("bot") or "?").capitalize()
     age = update_age(now - row["time"]) if isinstance(row.get("time"), (int, float)) else ""
-    name_img = font("display", L(36)).render(name, True, MUTED if aged else TEXT)
-    age_img = font("body", L(36)).render((" \u00b7 " + age) if age else "", True, MUTED)
+    name_px, age_px = _band_px(L, 36, scale), _band_px(L, 36, scale)
+    name_img = font("display", name_px).render(name, True, MUTED if aged else TEXT)
+    age_img = font("body", age_px).render((" \u00b7 " + age) if age else "", True, MUTED)
     if name_img.get_width() + age_img.get_width() > text_w:
-        name_img = font("display", L(36)).render(
-            ellipsize(font("display", L(36)), name, max(8, text_w - age_img.get_width())), True, MUTED if aged else TEXT)
+        name_img = font("display", name_px).render(
+            ellipsize(font("display", name_px), name, max(8, text_w - age_img.get_width())), True, MUTED if aged else TEXT)
     if needs:
         pill_fill, pill_ink, pill_edge, dashed = AMBER, AMBER_INK, None, False
         word, icon = "NEEDS YOU", _bang_icon
@@ -3599,35 +3622,37 @@ def _paint_update_tile(surf, L, rect, row, now):
         ink = MUTED if aged else LISTENING
         pill_fill, pill_ink, pill_edge, dashed = None, ink, ink, False
         word, icon = UPDATE_PILL.get(t, "Update"), _check_icon
-    # Centre the name and pill in the 160 px header. Pill height matches _update_pill.
-    pill_h = zpx(L, 10) * 2 + max(font("display", L(30)).get_height(), max(12, int(L(30) * 0.72)))
-    block_h = name_img.get_height() + zpx(L, 8) + pill_h
+    # Centre the name and pill in the avatar header. Pill height matches _update_pill.
+    pill_px = _band_px(L, 30, scale)
+    pill_h = _band_px(L, 10, scale) * 2 + max(font("display", pill_px).get_height(), max(12, int(pill_px * 0.72)))
+    block_h = name_img.get_height() + _band_px(L, 8, scale) + pill_h
     block_y = ay + max(0, (d - block_h) // 2)
     surf.blit(name_img, (tx, block_y))
     surf.blit(age_img, (tx + name_img.get_width(), block_y + name_img.get_height() - age_img.get_height()))
-    _update_pill(surf, L, word, icon, tx, block_y + name_img.get_height() + zpx(L, 8), text_w,
-                 pill_fill, pill_ink, pill_edge, dashed)
-    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None})
+    _update_pill(surf, L, word, icon, tx, block_y + name_img.get_height() + _band_px(L, 8, scale), text_w,
+                 pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
+    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": scale})
     kind = "display" if needs else "body"
     color = MUTED if aged else TEXT
-    headline_y = ay + d + L(18)
-    line_h = font(kind, L(57)).get_height()
+    head_px = _band_px(L, 57, scale)
+    headline_y = ay + d + _band_px(L, 18, scale)
+    line_h = font(kind, head_px).get_height()
     ly = headline_y
-    for text in update_title_lines(L, row.get("line") or "", rect.w - 2 * inset, kind):
-        img = font(kind, L(57)).render(text, True, color)
+    for text in update_title_lines(L, row.get("line") or "", rect.w - 2 * inset, kind, px=head_px):
+        img = font(kind, head_px).render(text, True, color)
         if ly + img.get_height() <= rect.bottom - inset:
             surf.blit(img, (rect.left + inset, ly))
         ly += line_h
     detail = " ".join(str(row.get("detail") or "").split())
     if detail:
-        df = font("body", L(30))
-        dy = headline_y + max(zpx(L, 168), 2 * line_h) + L(12)
+        df = font("body", _band_px(L, 30, scale))
+        dy = headline_y + max(_band_px(L, 126, scale), 2 * line_h) + _band_px(L, 12, scale)
         lines = wrap(df, display_clip(detail, 90), rect.w - 2 * inset)
         if len(lines) > 2:
             lines = [lines[0], ellipsize(df, " ".join(lines[1:]), rect.w - 2 * inset)]
         for text in lines:
             img = df.render(text, True, MUTED)
-            if dy + img.get_height() > rect.bottom - L(8):
+            if dy + img.get_height() > rect.bottom - _band_px(L, 8, scale):
                 break
             surf.blit(img, (rect.left + inset, dy))
             dy += img.get_height()
@@ -3685,9 +3710,9 @@ def _render_band_layer(surf, L, rows, now, layout):
     canvas.fill(BG)
     for row, rect in zip(rows, tiles):
         if row.get("kind") == "update":
-            _paint_update_tile(canvas, L, rect, row, now)
+            _paint_update_tile(canvas, L, rect, row, now, layout.get("scale", 1.0))
         else:
-            _paint_home_tile(canvas, L, rect, row)
+            _paint_home_tile(canvas, L, rect, row, layout.get("scale", 1.0))
     mark = (LAST_UPDATE_BAND or {}).get("marker")
     if mark:
         m = _line(canvas, "body", L(30), mark, MUTED, marker.w)

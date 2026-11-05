@@ -165,8 +165,10 @@ class AvatarAndBounds(unittest.TestCase):
         self.assertGreaterEqual(gs.LAST_TIMER_RECT.top, 1380)
         self.assertGreaterEqual(gs.content_limit(L), 1380)
         self.assertEqual(gs.LAST_DATE_RECT.bottom, 702)
-        # 702 + 56 + 48 + 24 = 830, and 830 + 560 = 1390, past 1380, so the band hides.
-        self.assertIsNone(gs.updates_band_layout(L))
+        layout = gs.updates_band_layout(L)
+        self.assertEqual(layout["rects"][0].y, 806)
+        self.assertEqual(layout["rects"][0].h, 560)
+        self.assertEqual(layout["rects"][0].bottom, 1366)
 
 
 class BandClearance(unittest.TestCase):
@@ -177,20 +179,48 @@ class BandClearance(unittest.TestCase):
     def tearDown(self):
         gs.TIMER_CHIPS[:] = self.timers
 
-    def test_date_667_keeps_the_preferred_top(self):
-        layout = gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=667, weather_bottom=0)
-        self.assertEqual(layout["rects"][0].y, 820)
+    def _layout(self, date_bottom):
+        return gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=date_bottom, weather_bottom=0)
+
+    def test_date_667_uses_the_104_px_gap(self):
+        layout = self._layout(667)
+        self.assertEqual(gs.BAND_AFTER_DATE + gs.BAND_MARKER_H + gs.BAND_BEFORE_BAND, 104)
+        self.assertEqual(layout["rects"][0].y, 771)
         self.assertEqual(layout["rects"][0].h, 560)
-        self.assertEqual(layout["rects"][0].bottom, 1380)
-        self.assertEqual(layout["rects"][1].x, 1296)
-        self.assertGreaterEqual(layout["marker"].top - 667, 56)
-        self.assertEqual(gs.BAND_AFTER_DATE + gs.BAND_MARKER_H + gs.BAND_BEFORE_BAND, 128)
+        self.assertEqual(layout["rects"][0].bottom, 1331)
+        self.assertEqual(layout["marker"].top - 667, 40)
+        self.assertEqual(layout["scale"], 1.0)
 
-    def test_date_702_hides_the_band(self):
-        self.assertIsNone(gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=702, weather_bottom=0))
+    def test_date_702_is_full_height_under_the_limit(self):
+        layout = self._layout(702)
+        tile = layout["rects"][0]
+        self.assertEqual((tile.y, tile.bottom, tile.h), (806, 1366, 560))
+        self.assertEqual(layout["marker"].top - 702, 40)
+        self.assertEqual(layout["scale"], 1.0)
 
-    def test_too_tall_hides_the_band(self):
-        self.assertIsNone(gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=1000, weather_bottom=0))
+    def test_shrinks_between_520_and_540_and_scales_type(self):
+        # 742 + 104 = 846; 1376 - 846 = 530, which is below 540 so type scales.
+        layout = self._layout(742)
+        tile = layout["rects"][0]
+        self.assertEqual((tile.y, tile.h, tile.bottom), (846, 530, 1376))
+        self.assertGreaterEqual(tile.h, 520)
+        self.assertLess(tile.h, 540)
+        self.assertAlmostEqual(layout["scale"], 530 / 560.0)
+
+    def test_scaled_range_starts_below_540(self):
+        # 722 + 104 = 826; 1376 - 826 = 550, still at or above 540, so type stays full size.
+        full = self._layout(722)
+        self.assertEqual(full["rects"][0].h, 550)
+        self.assertEqual(full["rects"][0].bottom, 1376)
+        self.assertEqual(full["scale"], 1.0)
+        scaled = self._layout(743)  # top 847, height 529
+        self.assertLess(scaled["rects"][0].h, 540)
+        self.assertGreaterEqual(scaled["rects"][0].h, 520)
+        self.assertAlmostEqual(scaled["scale"], scaled["rects"][0].h / 560.0)
+
+    def test_hides_when_520_does_not_fit(self):
+        # 760 + 104 = 864; 1376 - 864 = 512, under the 520 minimum.
+        self.assertIsNone(self._layout(760))
 
 
 class NightReset(unittest.TestCase):
