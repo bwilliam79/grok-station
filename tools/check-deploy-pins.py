@@ -7,7 +7,9 @@ itself). That is safe only when every pinned file is byte-identical at HEAD.
   1. each pin == sha256 of `git show <pinned commit>:<path>` (hard failure)
   2. `git show HEAD:<path>` has the same bytes (a pending re-pin note when it does not)
   3. every path in FILES is present in the pin file (a pending note when a new file is not pinned yet)
-  4. with --remote: each file downloaded from GitHub at the pinned commit matches (hard failure)
+  4. every pinned commit (deploy-pins commit/update_commit, manifest update, install-home COMMIT) is an
+     ancestor of --rev (hard failure); with --remote, also an ancestor of --main-ref
+  5. with --remote: each file downloaded from GitHub at the pinned commit matches (hard failure)
 
 A release that changes a pinned file cannot update the pins in the same commit.
 0.11.0 is that case: deploy-pins.js stays on the previous commit, and this
@@ -159,6 +161,9 @@ def check(remote=False, rev="HEAD", pins_path=PINS):
                 problems.append(f"{path}: GitHub bytes do not match the pin")
     problems += manifest_templates(pins_path)
     problems += manifest_commit_mismatch(pins_path)
+    # Every pin must be reachable from rev (HEAD). Catches pre-rebase / dangling COMMITs (G01 class).
+    # --remote additionally checks ancestry against --main-ref (origin/main after the ff push).
+    problems += ancestry(rev, pins_path, rev)
     return commit, files, problems, notes
 
 

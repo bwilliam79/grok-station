@@ -146,6 +146,18 @@ class AncestryRejectsUnreachable(unittest.TestCase):
             problems = cdp.ancestry("HEAD", pins_path=pins, rev="HEAD")
             self.assertTrue(any(bad[:12] in p for p in problems), problems)
 
+    def test_check_includes_ancestry_against_rev(self):
+        cdp = self._cdp()
+        self.assertEqual(cdp.ancestry("HEAD"), [])
+        with tempfile.TemporaryDirectory() as d:
+            pins = os.path.join(d, "deploy-pins.js")
+            text = open(PINS).read()
+            cur = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M).group(1)
+            bad = "a6ccb819b9bd03934579f472783efdf5605f68a6"
+            open(pins, "w").write(text.replace('commit: "%s"' % cur, 'commit: "%s"' % bad, 1))
+            _, _, problems, _ = cdp.check(remote=False, rev="HEAD", pins_path=pins)
+            self.assertTrue(any(bad[:12] in p for p in problems), problems)
+
 
 if __name__ == "__main__":
     unittest.main()
