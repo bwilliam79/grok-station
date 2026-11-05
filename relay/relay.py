@@ -4427,7 +4427,7 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
                 seen.release(show["bot"], show["nonce"], now)
             except OSError:
                 pass
-        if 400 <= code < 500:
+        if code in (400, 413):
             return 400, {"error": "schema"}, botreply.Reject(400, "schema", show.get("bot", "-"))
         return 503, {"error": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
     if isinstance(seen, set):

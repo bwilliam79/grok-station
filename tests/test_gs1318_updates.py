@@ -127,6 +127,21 @@ class EmailUpdates(unittest.TestCase):
 sys.path.insert(0, str(ROOT / "tests"))
 import test_gs1310_updates_feed as previous
 class SignedRoundTrip(previous.RelayGate):
+    def test_station_faults_are_not_schema_errors(self):
+        import json
+        self.relay.write_updates("jules", True)
+        for code in (401, 403, 404, 400, 413):
+            with self.subTest(station_status=code):
+                raw = previous.tc._seal(self.station, self.signer, json.dumps(previous.upd()))
+                status, result, audit = self.relay.accept_show(
+                    raw, self.station, self.keys, self.known, previous.botreply.Limiter(50, 60),
+                    lambda doc: code, ttl_max=3600)
+                if code in (400, 413):
+                    self.assertEqual((status, result["error"]), (400, "schema"))
+                else:
+                    self.assertEqual(status, 503)
+                    self.assertEqual(audit.verdict, "error")
+
     def test_real_signed_update_clear_and_rule(self):
         import http.server, threading, json
         from unittest.mock import patch
