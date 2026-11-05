@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.20 (in development)
+The clock screen's updates row is two larger tiles. Each one shows the bot's picture, or the bot's initial when it has no picture, plus the update. A Needs you stays in the first tile and rotates there when several are waiting; the second tile keeps rotating the other updates and home cards. On Display, under Screens, Update rotation replaces Card rotation (10, 15, 20, 30, 45 or 60 seconds, default 20) and uses the same Save. A saved time that is not one of those becomes the nearest one.
+
 ### 0.13.19 (in development)
 Bot instruction templates are pure ASCII again (straight quotes; "your owner" written out instead of the `{owner}` token) so bots still on 0.13.17 can update. The template check is printable ASCII only.
 

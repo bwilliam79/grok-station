@@ -554,7 +554,7 @@ class Routines(unittest.TestCase):
             t = gs_routine.render(gs_routine.TEMPLATES[mode], mode, "a" * 24, "a" * 40, "b" * 64,
                                   "https://grok-station.local" if mode == "cloud" else "",
                                   FP if mode == "cloud" else "", "A" * 43 + "=" if mode == "cloud" else "")
-            self.assertEqual(gs_routine.check(t, mode), "0.13.19")
+            self.assertEqual(gs_routine.check(t, mode), "0.13.20")
             self.assertLess(len(t), 14000)
 
 

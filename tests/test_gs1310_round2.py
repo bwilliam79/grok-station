@@ -163,24 +163,21 @@ class UpdatesPause(unittest.TestCase):
 
 
 class BandRev2(unittest.TestCase):
-    def test_counter_never_names_a_type(self):
+    def test_counter_names_the_two_slots(self):
         needs = [{"id": "n"}]
-        others = [{"id": "o%d" % i} for i in range(3)]
-        # Noor band rev2 fix: the range spans the tiles on screen (3 shown of 4 -> 1-3).
-        self.assertEqual(cards.update_marker(needs, others, 0), "Updates \u00b7 1\u20133 of 4")
-        for step in range(6):
-            shown = len(cards.update_slots(needs, others, step))
-            text = cards.update_marker(needs, others, step).split(" \u00b7 ")[-1]
-            lo, hi = map(int, text.split(" of ")[0].split("\u2013"))
-            self.assertEqual(hi - lo + 1, shown, text)
-        self.assertEqual(cards.update_marker([], others + [{"id": "x"}], 0), "Updates \u00b7 1\u20133 of 4")
-        self.assertEqual(cards.update_marker(needs, others, 0, paused=True), "Paused \u00b7 Updates \u00b7 1\u20133 of 4")
-        self.assertEqual(cards.update_marker([], others, 0), "")
+        others = [{"id": "o%d" % i} for i in range(6)]
+        self.assertEqual(cards.update_marker(needs, others, 2), "Needs you \u00b7 others 3 of 6")
+        many = [{"id": "n%d" % i} for i in range(3)]
+        self.assertEqual(cards.update_marker(many, others[:4], 1), "Needs you 2 of 3 \u00b7 others 2 of 4")
+        self.assertEqual(cards.update_marker([], others, 1), "3\u20134 of 6")
+        self.assertEqual(cards.update_marker(many, [], 0), "Needs you 1\u20132 of 3")
+        self.assertEqual(cards.update_marker([], others[:1], 0), "")
+        self.assertEqual(cards.update_marker(needs, [], 0), "Needs you")
+        self.assertEqual(cards.update_marker(needs, others, 2, paused=True), "Paused \u00b7 Needs you \u00b7 others 3 of 6")
 
-    def test_cards_are_header_plus_two_lines_all_the_same_height(self):
+    def test_cards_are_the_rev6_band_height(self):
         L = gs.Layout(2560, 1706)
-        h = gs.update_tile_height(L)
-        self.assertLess(h, L(280))
+        self.assertEqual(gs.update_tile_height(L), 560)
         lines = gs.update_title_lines(L, "word " * 40, 700)
         self.assertEqual(len(lines), 2)
         self.assertTrue(lines[-1].endswith("\u2026"))
@@ -207,7 +204,7 @@ class TalkingKeepsTheRowPaused(unittest.TestCase):
         gs.draw_zone(surf, gs.Layout(2560, 1706), time.localtime(), gs.WX if hasattr(gs, "WX") else _Wx(), zone=zone)
         self.assertTrue(gs.LAST_UPDATE_BAND["visible"])
         self.assertTrue(gs.LAST_UPDATE_BAND["paused"])
-        self.assertTrue(gs.LAST_UPDATE_BAND["marker"].startswith("Paused \u00b7 Updates"))
+        self.assertTrue(gs.LAST_UPDATE_BAND["marker"].startswith("Paused \u00b7 "))
         self.assertEqual(gs.LAST_REPLY_LINE["who"], "Juniper")
         step = gs.UPD_ROT["step"]
         self.assertEqual(gs.update_rotation_step(now + 60, paused=True), step)
