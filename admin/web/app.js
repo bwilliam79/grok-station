@@ -3037,7 +3037,7 @@ function setupCopy(main, bot) {
   bot = bot || "this bot";
   return {
     title: "Set up bots",
-    intro: "Each bot gets its own setup. Open Set up to see what " + main + " will pass on.",
+    intro: "Each bot gets its own setup. Open Set up to see what " + main + " passes on.",
     note: "Send setup asks " + main + " to pass this station\u2019s values to " + bot + ".",
     connected: "Connected · Updates off",
     hintTitle: bot + " connected. Updates are off.",
