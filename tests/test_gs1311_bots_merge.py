@@ -110,7 +110,7 @@ class RowSetup(unittest.TestCase):
         self.assertIn('id="setp-otto"', p)
         self.assertIn("Set up Otto through Juniper", p)  # 0.13.16 typed setup_relay
         self.assertIn("certificate pin and public key", p)
-        self.assertIn("Nothing is sent until you press Send setup. Name, wake word and computer stay on this page only.", p)
+        self.assertIn("Nothing is sent until you press Send setup. The name, wake word and computer you pick aren\u2019t part of the request.", p)
         self.assertNotIn("What Juniper sends Otto", p)
         self.assertNotIn("You see this exact message before it goes", p)
         self.assertIn('data-act="send"', p)

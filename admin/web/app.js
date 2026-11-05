@@ -3037,7 +3037,7 @@ function setupCopy(main, bot) {
   bot = bot || "this bot";
   return {
     title: "Set up bots",
-    intro: "Each bot gets its own setup. Open Set up to see what " + main + " passes on.",
+    intro: "Each bot gets its own setup. Choose Set up to see exactly what " + main + " passes on.",
     note: "Send setup asks " + main + " to pass this station\u2019s values to " + bot + ".",
     connected: "Connected · Updates off",
     hintTitle: bot + " connected. Updates are off.",
@@ -3228,8 +3228,8 @@ function setupRowStatus(row, opts) {
     // 0.13.16 typed setup_relay (design §6): the main bot's ack and the relay's TTL move the sent row on.
     const main = (opts && opts.mainName) || "your main bot";
     if (row.relay === "relayed") return {icon: "clock", colour: "lav", text: main + " passed it to " + bot + " \u00b7 waiting for " + bot + "\u2019s details", helper: setupSentHelper(row, opts)};
-    if (row.relay === "failed") return {icon: "dash", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on."};
-    if (row.relay === "expired") return {icon: "dash", colour: "mut", text: "\u26a0 No reply from " + main + "."};
+    if (row.relay === "failed") return {icon: "dash", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on.", helper: "Send the request again, or enter the details yourself."};
+    if (row.relay === "expired") return {icon: "dash", colour: "mut", text: "\u26a0 No reply from " + main + ".", helper: "Send the request again, or enter the details yourself."};
     // Waiting for the main bot's status ack (design §6 {main}), not the target's details yet.
     return {icon: "clock", colour: "lav", text: "Setup request sent to " + main + " \u00b7 waiting for its reply", helper: setupSentHelper(row, opts)};
   }
@@ -3256,7 +3256,7 @@ function setupSentHelper(row, opts) {
   if (row && row.relay === "relayed") {
     return bot + "\u2019s webhook details fill in here when it replies.";
   }
-  return main + " checks this station\u2019s values and passes them to " + bot + ".";
+  return main + " checks this station\u2019s details and passes them to " + bot + ".";
 }
 function setupThrottleLine(bot, mins) {
   return "\u26a0 Still waiting for " + (bot || "this bot") + ". Try again in " + Math.max(1, mins | 0) + " min.";
@@ -3308,9 +3308,9 @@ function setupRowPanelHTML(row, opts) {
   const failed = m.status === "failed" || !!row.unknown;
   const blocked = !!opts.sendBlocked;
   // 0.13.16: typed setup_relay sends station values only. Free-text steps are gone; this panel explains
-  // what happens. Name / wake / computer stay on this page (Details) and are not relayed.
+  // what happens. Name / wake / computer stay on this page (Details) and are not part of the request.
   const parts = [
-    esc(main) + " gets this station\u2019s address, certificate pin and public key (filled in here, not typed by you).",
+    esc(main) + " gets this station\u2019s address, certificate pin and public key. They\u2019re filled in for you.",
     esc(main) + " checks them against its own copy, then passes them to " + esc(bot) + ".",
     esc(bot) + " shows you a confirm card in its chat before it installs anything."
   ];
@@ -3323,7 +3323,7 @@ function setupRowPanelHTML(row, opts) {
     '" data-slug="' + slug + '">' + err + '<h3 class="lbl">Set up ' + esc(bot) + " through " + esc(main) + "</h3>" +
     '<ol class="steps">' + parts.map(p => "<li>" + p + "</li>").join("") + "</ol>" +
     '<div class="setdetslot" data-detfor="' + slug + '"' + (m.editDisabled ? ' data-off="1"' : "") + "></div>" +
-    '<p class="help">Nothing is sent until you press Send setup. Name, wake word and computer stay on this page only.</p>' + hint +
+    '<p class="help">Nothing is sent until you press Send setup. The name, wake word and computer you pick aren\u2019t part of the request.</p>' + hint +
     '<div class="acts"><button class="btn p sm" type="button" data-act="' + act + '" data-slug="' + slug + '"' +
     (blocked ? ' aria-disabled="true" aria-describedby="' + esc(hintId) + '"' : "") + ">" + (failed ? "Try again" : "Send setup") + "</button>" +
     '<button class="btn g sm" type="button" data-setcancel="' + slug + '">Cancel</button></div></div>';

@@ -29,7 +29,7 @@ class ThrottleButton(unittest.TestCase):
         self.assertNotIn("aria-disabled", a)
         s = go("setupRowStatusHTML", 1300, {"otto": 1240})
         self.assertNotIn("Still waiting", s)
-        self.assertIn("checks this station\u2019s values and passes them to Otto.", s)  # sent helper (not yet relayed)
+        self.assertIn("checks this station\u2019s details and passes them to Otto.", s)  # sent helper (not yet relayed)
 
 
 if __name__ == "__main__":
