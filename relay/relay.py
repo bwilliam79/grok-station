@@ -4307,9 +4307,9 @@ def lint_show(show, hosts=(), names=(), pii=True):
     A clear has no text. None means the card may be posted. A reason means 422. Fail closed.
     """
     if isinstance(show, dict) and show.get("op") == "update":
-        # Updates: the line and the feed rule get the secret lint and, with pii_mode, the reply PII lint.
+        # All displayed update text and the feed rule get secret lint and optional reply PII lint.
         body = show.get("update") if isinstance(show.get("update"), dict) else {}
-        texts = [t for t in (body.get("line"), body.get("feed_rule")) if isinstance(t, str)]
+        texts = [t for t in (body.get("line"), body.get("feed_rule"), body.get("kind"), body.get("detail")) if isinstance(t, str)]
         try:
             for text in texts:
                 why = _lint_field(text, hosts, names, False) or (
@@ -4383,7 +4383,7 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
         if isinstance(doc, dict) and doc.get("op") in mod.UPDATE_OPS:
             body = doc.get("update") if isinstance(doc.get("update"), dict) else {}
             # Nix L2: lint the raw NFKC text, before clip_line can cut a secret in half.
-            for key in ("line", "feed_rule"):
+            for key in ("line", "feed_rule", "kind", "detail"):
                 if isinstance(body.get(key), str):
                     raw_texts.append(unicodedata.normalize("NFKC", body[key]))
             normalized = mod.validate_update(doc)

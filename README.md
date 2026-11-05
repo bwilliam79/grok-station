@@ -126,4 +126,4 @@ Locked out of the admin page (for example, your computer is on a different subne
 ### 0.13.18 (in development)
 Updates mirror email: the email name is the kind (18 characters), its lead sentence is the headline (60), and optional detail is at most 90 characters. Updates replace the same bot/kind and expire after 24 hours. Needs you is one pinned item per bot until explicitly cleared. No progress updates.
 
-The `{owner}` token is filled from the station’s local sign-in name when rendering bot instructions; absent or unsafe names become “your owner”. Names are not stored in the shipped templates. Update payloads preserve signed ISO timestamps across the relay/station boundary; station 4xx responses are reported as schema errors.
+The `{owner}` token is filled from the station’s local sign-in name when rendering bot instructions; absent or unsafe names become “your owner”. Names are not stored in the shipped templates. Update payloads preserve signed ISO timestamps across the relay/station boundary; only station 400 and 413 responses map to schema errors; station 401, 403 and 404 remain 503 (unavailable).

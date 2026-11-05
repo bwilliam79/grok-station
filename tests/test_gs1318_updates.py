@@ -127,6 +127,51 @@ class EmailUpdates(unittest.TestCase):
 sys.path.insert(0, str(ROOT / "tests"))
 import test_gs1310_updates_feed as previous
 class SignedRoundTrip(previous.RelayGate):
+    def test_new_fields_lint_before_post_and_spend_nonce(self):
+        import json
+        from unittest.mock import patch
+        self.relay.write_updates("jules", True)
+        for field in ("kind", "detail"):
+            for text, pii in (("password=x", False), ("secret.example", True)):
+                # Test raw and normalized gates independently, not just their union.
+                for gate in ("raw", "normalized", "both"):
+                    with self.subTest(field=field, pii=pii, gate=gate):
+                        doc = previous.upd(type_="update", kind="Release", detail="Ready")
+                        doc["update"][field] = text
+                        raw = previous.tc._seal(self.station, self.signer, json.dumps(doc))
+                        posts, seen = [], set()
+                        def send():
+                            return self.relay.accept_show(raw, self.station, self.keys, self.known,
+                                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or 200,
+                                ttl_max=3600, seen=seen, pii=pii, hosts=("secret.example",))
+                        if gate == "raw":
+                            with patch.object(self.relay, "lint_show", return_value=None): result = send()
+                        elif gate == "normalized":
+                            with patch.object(self.relay, "lint_update_texts", return_value=None): result = send()
+                        else:
+                            result = send()
+                        self.assertEqual(result[0], 422)
+                        self.assertEqual(posts, [])
+                        self.assertEqual(send()[0], 409, "lint refusal must spend nonce (L5)")
+                        self.assertEqual(posts, [])
+
+    def test_new_field_privacy_mode_and_fail_closed(self):
+        import json
+        from unittest.mock import patch
+        self.relay.write_updates("jules", True)
+        for field in ("kind", "detail"):
+            doc = previous.upd(type_="update", kind="Release", detail="Ready")
+            doc["update"][field] = "secret.example"
+            raw = previous.tc._seal(self.station, self.signer, json.dumps(doc))
+            posts = []
+            status, _, _ = self.relay.accept_show(raw, self.station, self.keys, self.known,
+                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or 200,
+                ttl_max=3600, pii=False, hosts=("secret.example",))
+            self.assertEqual(status, 200)  # PII opt-out remains intact; secrets still blocked above.
+            with patch.object(self.relay, "_lint_field", side_effect=RuntimeError("test")):
+                self.assertEqual(self.relay.lint_show(dict(doc, bot="jules")), "error")
+                self.assertEqual(self.relay.lint_update_texts([doc["update"][field]]), "error")
+
     def test_station_faults_are_not_schema_errors(self):
         import json
         self.relay.write_updates("jules", True)
