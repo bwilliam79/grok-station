@@ -49,7 +49,7 @@ The station takes at most 6 pictures an hour.
 
 Station updates. When you email {owner}, also post a short version here: your email’s name as the kind, then its lead sentence (60 characters max). When you need {owner} to decide or do something, post it as Needs you and clear it once it’s handled. Don’t post progress or “working on” updates. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
 {"v":1,"op":"update","id":"<a-z0-9_- id>","update":{"type":"update|needs_you","kind":(18),"line":(60),"detail":(90),"time":"<ISO 8601 time with zone>"}}
-Optional fields inside update: "expires_at":"<ISO 8601 time with zone>" (not for needs_you) and "feed_rule":(60), the rule the owner set for you by voice. Reuse the same id to change a line. To remove it: {"v":1,"op":"update_clear","id":"<same id>"}. No secrets and no personal info. Unknown fields are rejected. At most 8 lines at a time.
+For type update, kind is the email name (18 characters max), line is its lead sentence (60 max), and detail is optional (90 max). The same bot and kind replaces the previous update; updates expire after 24 hours. Needs you is one pinned item per bot until cleared. Optional feed_rule:(60) keeps the rule set by voice. To clear: {"v":1,"op":"update_clear","id":"<same id>"}. Unknown fields are rejected.
 Send it with:
 printf '%s' "$UPDATE_JSON" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" show --persona <slug>
 If it prints refused, the switch is off or the line was not accepted: stop, and do not retry or reword it.

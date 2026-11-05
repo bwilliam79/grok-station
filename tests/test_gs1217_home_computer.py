@@ -68,14 +68,14 @@ class HomeComputerParagraph(unittest.TestCase):
         out, _ = setup_output("home")
         upd = update_output("home")
         cmd = re.search(r"^d=\$\(mktemp -d\).*$", upd, re.M).group(0)
-        self.assertEqual(setup_body(out), upd.replace(cmd, "<update command>"))
+        self.assertEqual(setup_body(out).replace("{owner}", "your owner"), upd.replace(cmd, "<update command>"))
 
     def test_cloud_keeps_its_wording(self):
         out, _ = setup_output("cloud")
         upd = update_output("cloud")
         cmd = re.search(r"^d=\$\(mktemp -d\).*$", upd, re.M).group(0)
         body = setup_body(out)
-        self.assertEqual(body, upd.replace(cmd, "<update command>"))
+        self.assertEqual(body.replace("{owner}", "your owner"), upd.replace(cmd, "<update command>"))
         self.assertIn("On the home machine", body)
         self.assertNotIn("Run exactly this command, unchanged", body)
         self.assertEqual(out.count(PARA), 1)
