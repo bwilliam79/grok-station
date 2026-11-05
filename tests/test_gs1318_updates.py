@@ -35,7 +35,7 @@ class EmailUpdates(unittest.TestCase):
         templates = "\n".join("const " + name + " = " + json.dumps(js.split("const " + name + " = String.raw`", 1)[1].split("`;", 1)[0]) + ";" for name in ("BOT_ROUTINE", "BOT_ROUTINE_HOME", "SETUP_PARAMS"))
         for owner in ("Sample Owner", "", "bad'name"):
             for name in ("routineForBot", "routineUpdate"):
-                prog = templates + "\nfunction stationAddress(){return 'https://station.example';}\nfunction deployScript(){return 'SCRIPT';}\nfunction fillUpdateCommand(b){return b;}\n" + fn(name)
+                prog = templates + "\nconst STATION_OWNER = {v:" + json.dumps(owner) + "};\n" + fn("stationOwnerName") + "\nfunction stationAddress(){return 'https://station.example';}\nfunction deployScript(){return 'SCRIPT';}\nfunction fillUpdateCommand(b){return b;}\n" + fn(name)
                 prog += "\nprocess.stdout.write(" + name + "('otto','','','home'," + json.dumps(owner) + "));"
                 result = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
