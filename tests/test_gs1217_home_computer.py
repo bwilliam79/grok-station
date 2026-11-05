@@ -40,7 +40,8 @@ def setup_output(mode):
     fn = js[js.index("function routineForBot("):]
     fn = fn[:fn.index("\nfunction ", 10)]
     params = js.split("const SETUP_PARAMS = String.raw`", 1)[1].split("`;", 1)[0]  # 0.13.16: Copy instructions end
-    prog = ("const SETUP_PARAMS = " + json.dumps(params) + ";\n"
+    owner_fn = js.split("function stationOwnerName()", 1)[1].split("\n}", 1)[0]
+    prog = ("function stationOwnerName()" + owner_fn + "\n}\n" + "const SETUP_PARAMS = " + json.dumps(params) + ";\n"
             "const BOT_ROUTINE = `x`, BOT_ROUTINE_HOME = `x`;\n"
             "function deployScript(){return 'SCRIPT';}\nfunction stationAddress(){return %s;}\n"
             "function fillUpdateCommand(b){return b;}\n" % json.dumps(ST))

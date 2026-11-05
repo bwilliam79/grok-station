@@ -2286,6 +2286,7 @@ function applyBotMeta(el, data) {
   el._stationPub = typeof data.station_pub === "string" ? data.station_pub : "";
   el._fingerprint = typeof data.fingerprint === "string" ? data.fingerprint : "";
   if (typeof data.station_address === "string" && /^https:\/\/[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$/.test(data.station_address)) STATION_ADDR.v = data.station_address;
+  STATION_OWNER.v = data.setup && typeof data.setup.owner === "string" ? data.setup.owner : "";
   el._killed = data.killed === true;
   el._stats = data.stats || {avg_rtt_ms: null, timeouts: 0};
   const killed = $("#bkilled", el);
@@ -5294,7 +5295,7 @@ On macOS, the same command with shasum -a 256 -c - in place of sha256sum -c -.
 /* The one command a home bot runs for kind update_helper: the pinned installer, hash-checked, in update mode.
    Built from DEPLOY_PINS here; nothing in the webhook changes it. "" when the pins or the slug are not usable. */
 // Same text as admin/gs_routine.py update_command (a test renders both and compares).
-function stationUpdateCommand(pins, mode, slug, station, fp, pub) {
+function stationUpdateCommand(pins, mode, slug, station, fp, pub, owner) {
   const sum = pins && pins.files ? pins.files["scripts/gs-update.sh"] : "";
   if (!pins || !/^[0-9a-f]{40}$/.test(pins.commit || "") || !/^[0-9a-f]{64}$/.test(sum || "")) return "";
   if (typeof slug !== "string" || slug === "grok" || !/^[a-z][a-z0-9-]{1,23}$/.test(slug)) return "";
@@ -5304,6 +5305,8 @@ function stationUpdateCommand(pins, mode, slug, station, fp, pub) {
       || !/^[A-Za-z0-9+/]{43}=$/.test(pub || "")) return "";
     tail = " --station '" + station + "' --pin-sha256 '" + fp + "' --station-pub '" + pub + "'";
   } else if (mode !== "home") return "";
+  const who = (typeof owner === "string" && /^[A-Za-z][A-Za-z -]{0,59}$/.test(owner.trim()) ? owner.trim() : "your owner");
+  if (owner != null) tail += " --owner '" + who + "'";
   const url = "https://raw.githubusercontent.com/bwilliam79/grok-station/" + pins.commit + "/scripts/gs-update.sh";
   return "d=$(mktemp -d) && ( cd \"$d\" && curl --proto '=https' --tlsv1.2 -fsS -o gs-update.sh '" + url + "'"
     + " && { command -v sha256sum >/dev/null && s=$(sha256sum gs-update.sh) || s=$(shasum -a 256 gs-update.sh); }"
@@ -5312,19 +5315,27 @@ function stationUpdateCommand(pins, mode, slug, station, fp, pub) {
 }
 function fillUpdateCommand(body, mode, slug, fp, pub) {
   const pins = typeof DEPLOY_PINS === "undefined" ? null : DEPLOY_PINS;
-  const cmd = stationUpdateCommand(pins, mode, slug, stationAddress(), String(fp || "").toUpperCase(), pub);
+  const owner = stationOwnerName();
+  const cmd = stationUpdateCommand(pins, mode, slug, stationAddress(), String(fp || "").toUpperCase(), pub, owner);
   return body.split("<update command>").join(cmd || "(not available yet: use Update on the Bots page)");
 }
 // The station's own address (ADMIN_STATION_ADDRESS or its .local name), from the Bots data: the same source as
 // Finish update, so pasted instructions match. Never the browser's address bar.
 const STATION_ADDR = {v: ""};
+const STATION_OWNER = {v: ""};
+function stationOwnerName() {
+  // Same allowlist and fallback as gs_routine.owner_name(); config is data, never code.
+  const raw = typeof STATION_OWNER !== "undefined" ? STATION_OWNER.v : "";
+  const value = typeof raw === "string" ? raw.trim() : "";
+  return /^[A-Za-z][A-Za-z -]{0,59}$/.test(value) ? value : "your owner";
+}
 function stationAddress() {
   return STATION_ADDR.v || "<station address>";
 }
 // The routine text alone, for a bot that is already paired and set up (no deploy step, no new key).
 function routineUpdate(slug, pub, fp, mode) {
   const fill = (text, token, value) => text.split(token).join(value || token);
-  let body = mode === "home" ? BOT_ROUTINE_HOME : BOT_ROUTINE;
+  let body = (mode === "home" ? BOT_ROUTINE_HOME : BOT_ROUTINE).split("{owner}").join(stationOwnerName());
   body = fill(body, "<slug>", slug);
   body = fill(body, "<station public key>", pub);
   body = fill(body, "<station address>", stationAddress());
@@ -5415,7 +5426,7 @@ function openChangeComputer(box, bot, el) {
 function routineForBot(slug, pub, fp, mode) {
   const fill = (text, token, value) => text.split(token).join(value || token);
   const home = mode === "home";
-  let body = home ? BOT_ROUTINE_HOME : BOT_ROUTINE;
+  let body = (home ? BOT_ROUTINE_HOME : BOT_ROUTINE).split("{owner}").join(stationOwnerName());
   body = fill(body, "<slug>", slug);
   body = fill(body, "<station public key>", pub);
   body = fill(body, "<station address>", stationAddress());

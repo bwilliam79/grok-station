@@ -26,6 +26,22 @@ class EmailUpdates(unittest.TestCase):
         self.assertEqual(gs.update_meta({"bot": "otto", "type": "update", "kind": "Release"}), "Otto · Release")
         self.assertEqual(gs.update_meta({"bot": "otto", "type": "needs_you"}), "⚠ Needs you · Otto")
 
+    def test_browser_copy_substitutes_owner(self):
+        import json, subprocess
+        js = (ROOT / "admin/web/app.js").read_text()
+        def fn(name):
+            start = js.index("function " + name + "(")
+            return js[start:js.index("\nfunction ", start + 1)]
+        templates = "\n".join("const " + name + " = " + json.dumps(js.split("const " + name + " = String.raw`", 1)[1].split("`;", 1)[0]) + ";" for name in ("BOT_ROUTINE", "BOT_ROUTINE_HOME", "SETUP_PARAMS"))
+        for owner in ("Sample Owner", "", "bad'name"):
+            for name in ("routineForBot", "routineUpdate"):
+                prog = templates + "\nfunction stationAddress(){return 'https://station.example';}\nfunction deployScript(){return 'SCRIPT';}\nfunction fillUpdateCommand(b){return b;}\n" + fn(name)
+                prog += "\nprocess.stdout.write(" + name + "('otto','','','home'," + json.dumps(owner) + "));"
+                result = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("{owner}", result.stdout)
+                self.assertIn(INSTRUCTION.format(owner="Sample Owner" if owner == "Sample Owner" else "your owner"), result.stdout)
+
     def test_owner_substitution_matches_exact_policy(self):
         sys.path.insert(0, str(ROOT / "admin"))
         import gs_routine
@@ -34,6 +50,58 @@ class EmailUpdates(unittest.TestCase):
             self.assertIn(INSTRUCTION.format(owner=owner or "your owner"), body)
             self.assertNotIn("{owner}", body)
             self.assertEqual(gs_routine.check(body, "home"), "0.13.18")
+
+    def test_browser_copy_owner_matches_server(self):
+        import json, re, subprocess, tempfile
+        sys.path.insert(0, str(ROOT / "admin"))
+        import gs_routine
+        js = (ROOT / "admin/web/app.js").read_text(encoding="utf-8")
+        self.assertTrue(re.search(r"(?m)^function stationOwnerName\(", js), "browser Copy owner substitution missing")
+        self.assertIn("STATION_OWNER.v =", js)
+        self.assertIn("data.setup.owner", js)
+        def tmpl(name):
+            return js.split("const %s = String.raw`" % name, 1)[1].split("`;", 1)[0]
+        def extract(name):
+            m = re.search(r"\n(?:async )?function " + name + r"\(", js)
+            start = m.start() + 1
+            end = js.index("\n}", start) + 2
+            return js[start:end] + "\n"
+        fp = ":".join(["AB"] * 32)
+        pub = "A" * 43 + "="
+        station = "https://station-demo.local"
+        pins = {"commit": "a" * 40, "files": {"scripts/gs-update.sh": "b" * 64}}
+        for value in ("Sample Owner", "", "bad'name", None):
+            for mode in ("home", "cloud"):
+                expected = gs_routine.owner_name(value)
+                prog = (
+                    "const BOT_ROUTINE = " + json.dumps(tmpl("BOT_ROUTINE")) + ";\n"
+                    "const BOT_ROUTINE_HOME = " + json.dumps(tmpl("BOT_ROUTINE_HOME")) + ";\n"
+                    "const SETUP_PARAMS = " + json.dumps(tmpl("SETUP_PARAMS")) + ";\n"
+                    "const STATION_OWNER = {v: " + json.dumps(value) + "};\n"
+                    "const DEPLOY_PINS = " + json.dumps(pins) + ";\n"
+                    "function stationAddress(){ return " + json.dumps(station) + "; }\n"
+                    "function deployScript(){ return 'SCRIPT'; }\n"
+                    + extract("stationOwnerName")
+                    + extract("stationUpdateCommand")
+                    + extract("fillUpdateCommand")
+                    + extract("routineUpdate")
+                    + extract("routineForBot")
+                    + "const out = [routineUpdate('otto'," + json.dumps(pub) + "," + json.dumps(fp) + "," + json.dumps(mode) + "),"
+                    + "routineForBot('otto'," + json.dumps(pub) + "," + json.dumps(fp) + "," + json.dumps(mode) + ")];\n"
+                    + "process.stdout.write(JSON.stringify(out));\n"
+                )
+                with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+                    fh.write(prog)
+                    path = fh.name
+                try:
+                    run = subprocess.run(["node", path], capture_output=True, text=True)
+                finally:
+                    os.unlink(path)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                for copied in json.loads(run.stdout):
+                    self.assertNotIn("{owner}", copied)
+                    self.assertIn(INSTRUCTION.format(owner=expected), copied)
+                    self.assertIn("--owner '" + expected + "'", copied)
 
     def test_kind_replacement_and_24_hour_expiry(self):
         f = cards.UpdateFeed()
