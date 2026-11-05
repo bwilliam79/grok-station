@@ -114,5 +114,38 @@ class GeneratorCannotPinTheWrongCommit(unittest.TestCase):
             self.assertEqual(len(cdp.manifest_commit_mismatch(bad)), 1)
 
 
+class AncestryRejectsUnreachable(unittest.TestCase):
+    """Pinned commits must be ancestors of HEAD. Fail-closed on pre-rebase / dangling SHAs (G01 class)."""
+
+    def _cdp(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cdp", os.path.join(ROOT, "tools", "check-deploy-pins.py"))
+        cdp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cdp)
+        return cdp
+
+    def test_ancestry_flags_an_unreachable_install_home_commit(self):
+        cdp = self._cdp()
+        # a6ccb81 exists as an object (pre-rebase) but is not an ancestor of HEAD.
+        bad = "a6ccb819b9bd03934579f472783efdf5605f68a6"
+        self.assertEqual(subprocess.run(["git", "-C", ROOT, "cat-file", "-e", bad + "^{commit}"],
+                                        capture_output=True).returncode, 0)
+        self.assertNotEqual(subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", bad, "HEAD"],
+                                           capture_output=True).returncode, 0)
+        with tempfile.TemporaryDirectory() as d:
+            pins = os.path.join(d, "deploy-pins.js")
+            # Minimal pins file: deploy-pins commit stays reachable; we only need pinned_commits to
+            # read install-home at rev. Point a temp install-home via a fake rev by patching the
+            # install-home blob path: write a pins file and a side install-home is hard. Instead call
+            # ancestry after swapping HEAD's install-home COMMIT through a worktree file is messy.
+            # Directly: ancestry reports any pinned_commits value not on main_ref.
+            open(pins, "w").write(open(PINS).read())
+            # Inject unreachable SHA as deploy-pins commit.
+            text = open(PINS).read()
+            cur = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M).group(1)
+            open(pins, "w").write(text.replace('commit: "%s"' % cur, 'commit: "%s"' % bad, 1))
+            problems = cdp.ancestry("HEAD", pins_path=pins, rev="HEAD")
+            self.assertTrue(any(bad[:12] in p for p in problems), problems)
+
+
 if __name__ == "__main__":
     unittest.main()

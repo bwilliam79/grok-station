@@ -62,6 +62,10 @@ def releases(manifest_text, ref="HEAD"):
             continue
         if not got or not {"admin/routine-home.txt", "admin/routine-cloud.txt"} <= got[3]:
             continue  # before 0.11.9 a manifest listed no templates
+        # Skip update commits not reachable from ref (rebase left dangling SHAs in old manifests).
+        if subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", got[1], ref],
+                          capture_output=True).returncode != 0:
+            continue
         try:
             line = fp_line(got[0], got[1], got[2], c or ref)
         except (subprocess.CalledProcessError, SystemExit):
