@@ -1301,7 +1301,7 @@ const ICO_ERR = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="current
 const ICO_KEY = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5.5" cy="10.5" r="3"/><path d="M7.7 8.3L13.5 2.5M11.5 4.5l1.5 1.5"/></svg>';
 const ICO_DOTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>';
 const ICO_DASH = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5" stroke-dasharray="3 2.4"/></svg>';
-const ICO_CLOCK = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.4 1.6"/></svg>';
+const ICO_CLOCK = '<svg class="ic setclock" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5V8l2.4 1.6"/></svg>';
 const ICO_PULSE = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><circle cx="8" cy="8" r="2" fill="currentColor" stroke="none"/></svg>';
 const ICO_SLASH = '<svg class="ic" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M4.2 11.8l7.6-7.6"/></svg>';
 function wordLabel(w) { return (w && w.label) || WORD(w && w.name); }
@@ -3575,7 +3575,7 @@ function setupMainComputer(el) {
 // 0.13.16: the typed setup_relay's display state for a Sent row (relayed, failed, expired), else "".
 function setupRelayState(draft) {
   const v = draft && draft.relay;
-  return v === "relayed" || v === "failed" || v === "expired" ? v : "";
+  return ["relayed", "failed", "expired", "awaiting_confirm", "needs_details"].includes(v) ? v : "";
 }
 function setupListRows(el) {
   const bots = (el && el._bots) || [];
@@ -3599,7 +3599,7 @@ function setupListRows(el) {
       ownComputer: ownComputer, mainComputer: mainComputer,
       status: (configured && !inflow) ? "already" : st,
       sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner,
-      unknown: !!draft.unknown, relay: setupRelayState(draft),
+      unknown: !!draft.unknown, relay: setupRelayState(draft), relay_path: draft.relay_path || "", relay_reason: draft.relay_reason || "",
       holds_setup: draft.holds_setup === true
     });
   });
@@ -3615,7 +3615,7 @@ function setupListRows(el) {
       computer: draft.computer || pendingSuggestions[0] || "",
       ownComputer: "", mainComputer: mainComputer,
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
-      configured: false, pending: true, owner: owner, unknown: !!draft.unknown, relay: setupRelayState(draft)
+      configured: false, pending: true, owner: owner, unknown: !!draft.unknown, relay: setupRelayState(draft), relay_path: draft.relay_path || "", relay_reason: draft.relay_reason || ""
     });
   });
   return out;

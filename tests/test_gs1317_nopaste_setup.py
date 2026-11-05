@@ -296,6 +296,18 @@ class PanelNoorQaR2(unittest.TestCase):
         self.assertIn("<circle", html)  # clock SVG from setupIcon("clock")
         self.assertIn("First time", html)
 
+    def test_clock_size_and_ack_states_survive_normalization(self):
+        from test_gs1311_bots_merge import _run
+        html = self._panel()
+        self.assertRegex(html, r'<svg class="ic setclock" width="14" height="14"')
+        for state in ("awaiting_confirm", "needs_details"):
+            self.assertEqual(_run(("setupRelayState",),
+                                 "setupRelayState({relay:%s})" % json.dumps(state)), state)
+        js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        rows = js.split("function setupListRows(", 1)[1].split("function ", 1)[0]
+        self.assertIn('relay_path: draft.relay_path', rows)
+        self.assertIn('relay_reason: draft.relay_reason', rows)
+
     def test_values_are_one_row_each_not_2up(self):
         # Structure: each .setval wraps its own .setval-k + .setval-v (CSS makes each a row).
         html = self._panel()
