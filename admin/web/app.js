@@ -3279,7 +3279,7 @@ function setupRowStatus(row, opts) {
     }
     if (row.relay === "failed" && row.relay_reason === "standing_absent") {
       return {icon: "none", colour: "mut", text: "\u26a0 " + bot + " isn\u2019t ready for first-time setup",
-              helper: "Update the team standing rule, then send the request again."};
+              helper: bot + " doesn\u2019t have the station setup steps yet. Ask " + main + " in chat to send them to " + bot + ", then send the request again."};
     }
     if (row.relay === "failed") return {icon: "none", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on.", helper: "Send the request again, or enter the details yourself."};
     if (row.relay === "expired") return {icon: "none", colour: "mut", text: "\u26a0 No reply from " + main + ".", helper: "Send the request again, or enter the details yourself."};
@@ -3308,7 +3308,7 @@ function setupSentHelper(row, opts) {
     const sealed = !!(row && row.pubkey_sealed);
     return sealed
       ? ("Public key is already here. Paste the webhook URL and key from " + bot + "\u2019s routine panel.")
-      : ("Open Enter details myself and paste the webhook URL and key from " + bot + "\u2019s routine panel.");
+      : ("Choose Enter details myself, then paste the webhook URL and key from " + bot + "\u2019s routine panel.");
   }
   if (row && row.relay === "awaiting_confirm") {
     return bot + " will ask in its chat whether the station address and fingerprint match your Settings page.";

@@ -206,6 +206,16 @@ class RowStates(unittest.TestCase):
         self.assertLess(html.index("Enter details myself"), html.index("Send request again"))
         self.assertIn('class="btn sm p"', html)
 
+    def test_noor_exact_helper_copy(self):
+        from test_gs1311_bots_merge import SETUP, _run
+        row = {"slug": "otto", "name": "Otto", "status": "sent", "relay": "needs_details"}
+        helper = _run(SETUP, "setupSentHelper(%s, {mainName:'Juniper'})" % json.dumps(row))
+        self.assertEqual(helper, "Choose Enter details myself, then paste the webhook URL and key from Otto’s routine panel.")
+        row.update(relay="failed", relay_reason="standing_absent")
+        status = _run(SETUP, "setupRowStatus(%s, {mainName:'Juniper'})" % json.dumps(row))
+        self.assertEqual(status["text"], "⚠ Otto isn’t ready for first-time setup")
+        self.assertEqual(status["helper"], "Otto doesn’t have the station setup steps yet. Ask Juniper in chat to send them to Otto, then send the request again.")
+
     def test_declined_standing(self):
         from test_gs1311_bots_merge import SETUP, _run
         row = {"slug": "otto", "name": "Otto", "status": "sent", "sent_at": 1000,
