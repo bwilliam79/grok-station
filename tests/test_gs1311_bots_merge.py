@@ -59,8 +59,9 @@ def _run(names, expr, dom=False):
 
 
 SETUP = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
-         "setupSteps", "setupIcon", "setupRowModel", "setupPanelId", "setupRowNeeds", "setupRowActionHTML", "setupRowPanelHTML", "setupRowStatus",
-         "setupResendWaitMin", "setupSentHelper")
+         "setupSteps", "setupIcon", "setupShortCommit", "setupShortHash", "setupShortPin", "setupPanelValues",
+         "setupRowModel", "setupPanelId", "setupRowNeeds", "setupRowActionHTML", "setupRowPanelHTML", "setupRowStatus",
+         "setupResendWaitMin", "setupSentHelper", "setupRowStatusHTML", "setupThrottleLine")
 OTTO = {"slug": "otto", "name": "Otto", "wake": "Hey Otto", "computer": "Office computer",
         "status": "not_set_up", "sent_at": 0, "fails": 0, "owner": "Sam"}
 OPTS = {"mainName": "Juniper", "now": 1000}
@@ -108,14 +109,13 @@ class RowSetup(unittest.TestCase):
         self.assertIn('role="region"', p)
         self.assertIn('aria-label="Set up Otto"', p)
         self.assertIn('id="setp-otto"', p)
-        self.assertIn("Set up Otto through Juniper", p)  # 0.13.16 typed setup_relay
+        self.assertIn("Set up Otto through Juniper", p)  # 0.13.17 Confirm and send
         self.assertIn("certificate pin and public key", p)
-        self.assertIn("Nothing is sent until you press Send setup. The name, wake word and computer you pick aren\u2019t part of the request.", p)
+        self.assertIn("Nothing goes out until you press Confirm and send. Juniper then asks Otto to set itself up.", p)
         self.assertNotIn("What Juniper sends Otto", p)
         self.assertNotIn("You see this exact message before it goes", p)
         self.assertIn('data-act="send"', p)
-        self.assertIn(">Send setup<", p)
-        self.assertIn(">Cancel<", p)
+        self.assertIn(">Confirm and send<", p)
 
     def test_error_panel(self):
         p = _run(SETUP, "setupRowPanelHTML(%s, %s)" % (json.dumps(_row(status="failed", fails=1)), json.dumps(OPTS)))

@@ -33,7 +33,7 @@ class SentCopy(unittest.TestCase):
     def test_labels(self):
         self.assertIn('"Setup request sent to " + main', JS)
         self.assertIn('" \\u00b7 waiting for its reply"', JS)
-        self.assertIn('bot + "\\u2019s webhook details fill in here when it replies."', JS)
+        self.assertIn('bot + " is installing from the setup it already holds."', JS)
         self.assertNotIn("send the request again or enter the details yourself", JS)
         self.assertIn(">Enter details myself</button>", JS)
         self.assertNotIn(">Resend</button>", JS)

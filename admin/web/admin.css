@@ -874,6 +874,12 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .setpanel .seterr{margin:0 0 10px;color:var(--gs-text)}
 .setpanel .seterr .gl{color:var(--gs-amber);margin-right:6px}
 .setpanel .acts{display:flex;gap:8px;margin-top:10px}
+.setpanel .setready{margin:0 0 10px;font-size:var(--fs-help);color:var(--gs-muted)}
+.setpanel .setready.is-first{color:var(--gs-lavender,#A99CFF)}
+.setpanel .setvals{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;margin:0 0 12px;padding:10px 12px;border-radius:8px;background:var(--gs-surface,#17130F);border:1px solid var(--gs-line,#2A231D)}
+.setpanel .setval-k{color:var(--gs-muted);font-size:var(--fs-help)}
+.setpanel .setval-v{color:var(--gs-text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-help);word-break:break-all}
+@media (max-width:600px){.setpanel .setvals{grid-template-columns:1fr}}
 @media (max-width:600px){.setpanel{margin-left:0}.setpanel .acts .btn,.setacts .btn{min-height:44px;flex:1}}
 /* 0.13.11 Noor QA batch */
 .setacts.sent{gap:8px}

@@ -3,7 +3,7 @@
 
   gs-seal-reply reply --persona <slug> --request-id <rid> [--kind answer|bot_list] [--interim]
   gs-seal-reply avatar --persona <slug> [--voice <id>]
-  gs-seal-reply seal-setup-ack --persona <slug> --request-id <rid> --status relayed|failed [--reason <enum>]
+  gs-seal-reply seal-setup-ack --persona <slug> --request-id <rid> --status relayed|failed|needs_details [--reason <enum>]
   gs-seal-reply setup-check --persona <slug> --station <url> --pin-sha256 <hex> --station-pub <b64>
 
 Reply text is stdin only. A profile picture is the image file on stdin. The station address
@@ -806,8 +806,8 @@ def cmd_show(slug):
 
 
 # 0.13.16 typed setup_relay (design rev3 §1, §5). Closed schema, enums only, no stdin text, fullmatch + ASCII.
-SETUP_ACK_STATUS = ("relayed", "failed")
-SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+SETUP_ACK_STATUS = ("relayed", "failed", "needs_details")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
 _SETUP_STATION = re.compile(r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/?", re.ASCII)
 _SETUP_PIN = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _SETUP_PUB = re.compile(r"[A-Za-z0-9+/]{43}=", re.ASCII)

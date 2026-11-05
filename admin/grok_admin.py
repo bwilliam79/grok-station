@@ -3774,12 +3774,12 @@ def _setup_row(doc, slug):
     return row
 
 
-_SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired")
-_SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown")
+_SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired", "awaiting_confirm", "needs_details")
+_SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
 
 
 def setup_relay_view(raw):
-    """The relay's per-target display state (0.13.16): {slug: {state, at, reason?}}. Anything else is dropped."""
+    """The relay's per-target display state (0.13.17): {slug: {state, at, reason?, path?}}. Anything else is dropped."""
     out = {}
     targets = raw.get("targets") if isinstance(raw, dict) else None
     for slug, row in (targets or {}).items() if isinstance(targets, dict) else ():
@@ -3791,6 +3791,8 @@ def setup_relay_view(raw):
         ent = {"state": row["state"], "at": at}
         if row["state"] == "failed" and row.get("reason") in _SETUP_RELAY_REASONS:
             ent["reason"] = row["reason"]
+        if row.get("path") in ("first", "held"):
+            ent["path"] = row["path"]
         out[slug] = ent
     return out
 
@@ -3819,11 +3821,14 @@ def setup_public(doc, now, relay=None):
             "unknown": row.get("unknown") is True and status not in ("sent", "connected"),
         }
         rel = relay.get(slug)
-        if status == "sent" and isinstance(rel, dict) and rel.get("state") in ("relayed", "failed", "expired") \
+        if status == "sent" and isinstance(rel, dict) and rel.get("state") in (
+                "relayed", "failed", "expired", "awaiting_confirm", "needs_details") \
                 and rel.get("at", 0) >= sent - 5:
             rows[slug]["relay"] = rel["state"]
             if rel["state"] == "failed" and rel.get("reason"):
                 rows[slug]["relay_reason"] = rel["reason"]
+            if rel.get("path") in ("first", "held"):
+                rows[slug]["relay_path"] = rel["path"]
     hint = doc.get("hint") if isinstance(doc, dict) else None
     if not (isinstance(hint, dict) and hint.get("name")):
         hint_out = None
@@ -5047,8 +5052,11 @@ class Handler(BaseHTTPRequestHandler):
             if not main:
                 return False
             mode = "home" if ctx.get("modes", {}).get(target) == "home" else "cloud"
+            # Not set up → first-time path (2a) with install pins. held (2b) when row.holds_setup is set.
+            path = "held" if row.get("holds_setup") is True else "first"
             got = relay_call("POST", "/admin/bots/setup-relay",
-                             {"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode}, timeout=15)
+                             {"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode, "path": path},
+                             timeout=15)
             return bool(got and got[0] in (200, 202))
 
         code, body = setup_send(

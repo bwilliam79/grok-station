@@ -646,6 +646,16 @@ Change note (2026-11-01): patch release; installs over 0.13.14. Bots row (Noor b
 
 Change note (2026-10-30): patch release; installs over 0.13.11. A card sent right after a spoken answer reaches the station (bq-0018: the FOLLOWUP_S park is marked followup and never holds a card). Recorded wake words that sound alike pass when the listener tells them apart (bq-0019, Nix C1-C6: two-way leave-one-out detector race, 0.05 margin floor on 80% of recordings, fail closed, Hey Grok check unchanged). Sent-row buttons in one 3-column row on phones (bq-0025) and the restored `.btn:focus-visible` pin. The bot templates name release 0.13.12 (no other instruction change), so the update manifest and deploy pins are regenerated at release; press Update on each bot so its release matches. Tests: `tests/test_handoff.py`, `tests/test_gs1312_wake_pairs.py`, `tests/test_gs1312_noor.py`.
 
+
+## 0.13.17
+
+Change note (2026-11-05): patch release; installs over 0.13.16. No-paste Bots-page Set up (bq-0047, DESIGN-rev3, Nix zero-open design GO; Noor SPEC rev2).
+
+- **Confirm and send.** The Set up panel freezes station values (and first-time install pins) into the pending record, then POSTs only those bytes to the main bot. Help line: nothing goes out until Confirm and send; the main bot then asks the target to set itself up.
+- **Paths.** First-time (2a) includes `template_commit` / `template_sha256` with through-main pin-bind; steady-state (2b) omits them and uses held Station setup only. Target template forbids reconstructing pins from knowledge; setup-parameters only from the designated main.
+- **Rows.** awaiting-confirm (inferred: relayed + path=first), relayed, needs_details (ack), failed (incl. standing_absent), expired. Ack remains display-only.
+- **Tests:** `tests/test_gs1317_nopaste_setup.py` (design §7), plus updated row/panel checks.
+
 ## 0.13.16
 
 Change note (2026-11-01): patch release; installs over 0.13.15. Typed `setup_relay` (bq-0040, design rev3, Nix zero-open GO).

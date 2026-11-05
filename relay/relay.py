@@ -6489,7 +6489,7 @@ async def voice_show(req):
 TLS_DIR = E("RELAY_TLS_DIR", os.path.join(STATE_DIR, "tls"))
 VERSION_FILE = E("RELAY_VERSION_FILE", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION"))
 SETUP_STATE_FILE = E("RELAY_SETUP_STATE", os.path.join(STATE_DIR, "voice", "setup-relay.json"))
-_SETUP_STATES = ("sent", "relayed", "failed")
+_SETUP_STATES = ("sent", "relayed", "failed", "needs_details", "awaiting_confirm")
 _SETUP_STATE_LOCK = threading.Lock()
 
 
@@ -6523,6 +6523,24 @@ def station_release():
     return rel if handoff.setup_field_ok("release", rel) else ""
 
 
+
+def setup_install_pins():
+    """(template_commit, template_sha256) from admin/web/deploy-pins.js install-home.sh, or (None, None)."""
+    pins_path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "web", "deploy-pins.js")
+    try:
+        raw = open(pins_path, encoding="utf-8").read(8000)
+    except OSError:
+        return None, None
+    # Prefer the install-home.sh blob pin; COMMIT for curl is the deploy-pins commit (ancestor on main).
+    m_commit = re.search(r'^\s*commit:\s*"([0-9a-f]{40})",\s*$', raw, re.M)
+    m_hash = re.search(r'"scripts/install-home\.sh":\s*"([0-9a-f]{64})"', raw)
+    if not m_commit or not m_hash:
+        return None, None
+    c, h = m_commit.group(1), m_hash.group(1)
+    if not (handoff.setup_field_ok("template_commit", c) and handoff.setup_field_ok("template_sha256", h)):
+        return None, None
+    return c, h
+
 def _imported_ids():
     """Bot ids of imported names that are not set up yet (same id rule as the admin's bot_id_from_name)."""
     out = set()
@@ -6542,7 +6560,7 @@ def _imported_ids():
 
 
 def setup_state_load():
-    """{target: {"state", "rid", "at", "expires_ms", "reason"?}}. Status only; no token, URL or text."""
+    """{target: {"state", "rid", "at", "expires_ms", "reason"?, "path"?}}. Status only; no token, URL or text."""
     try:
         doc = safe_io.read_json(SETUP_STATE_FILE, safe_io.SMALL_JSON, "setup-relay")
     except (OSError, ValueError):
@@ -6558,6 +6576,8 @@ def setup_state_load():
         ent = {"state": st, "rid": rid, "at": at, "expires_ms": exp}
         if st == "failed" and row.get("reason") in handoff.SETUP_ACK_REASONS:
             ent["reason"] = row["reason"]
+        if row.get("path") in handoff.SETUP_PATHS:
+            ent["path"] = row["path"]
         out[target] = ent
     return out
 
@@ -6568,16 +6588,23 @@ def setup_state_save(doc):
 
 
 def setup_state_public(now_ms=None):
-    """Display state per target for the admin page. sent past its TTL with no ack shows expired."""
+    """Display state per target for the admin page. sent past its TTL with no ack shows expired.
+    relayed + path=first is shown as awaiting_confirm (no-paste design; inferred, not a new ack)."""
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     out = {}
     for target, row in setup_state_load().items():
         st = row["state"]
         if st == "sent" and row["expires_ms"] < now_ms:
             st = "expired"
+        elif st in ("sent", "relayed", "awaiting_confirm") and row["expires_ms"] < now_ms:
+            st = "expired"
+        elif st == "relayed" and row.get("path") == "first":
+            st = "awaiting_confirm"
         ent = {"state": st, "at": row["at"]}
         if "reason" in row:
             ent["reason"] = row["reason"]
+        if row.get("path") in handoff.SETUP_PATHS:
+            ent["path"] = row["path"]
         out[target] = ent
     return out
 
@@ -6589,7 +6616,11 @@ def setup_note_ack(rid, target, status, reason=None):
         row = doc.get(target)
         if not isinstance(row, dict) or row.get("rid") != rid:
             return False
+        # Preserve path so relayed+first can display as awaiting_confirm.
+        path = row.get("path") if row.get("path") in handoff.SETUP_PATHS else None
         row = {"state": status, "rid": rid, "at": int(time.time()), "expires_ms": row["expires_ms"]}
+        if path:
+            row["path"] = path
         if status == "failed" and reason in handoff.SETUP_ACK_REASONS:
             row["reason"] = reason
         doc[target] = row
@@ -6622,21 +6653,25 @@ async def admin_setup_relay_state(req):
 
 
 async def admin_setup_relay(req):
-    """Post one typed setup_relay to the main bot's saved webhook (design rev3). Parameters only.
+    """Post one typed setup_relay to the main bot's saved webhook (no-paste design rev3). Parameters only.
 
-    Same transport as an update ask: Bearer token, no redirect, 10 s. Body {actor, slug, target, mode}:
-    slug must be the main bot, target a known non-main, non-Grok bot. Every field is built here from the
-    station's own state and checked (fullmatch, re.ASCII) before any outbound call; any miss is 400 with no
-    call. The pending record is written before the POST and removed if the POST fails.
+    Same transport as an update ask: Bearer token, no redirect, 10 s. Body {actor, slug, target, mode}
+    plus optional path ("first"|"held", default "first"): slug must be the main bot, target a known
+    non-main, non-Grok bot. Values are built from station state, frozen into pending (N02), then POSTed
+    as those exact bytes - no re-derive after freeze. path=first includes template_commit/template_sha256.
     """
     bad = await admin_gate(req)
     if _is_response(bad):
         return bad
     body = await admin_json(req)
-    if (not isinstance(body, dict) or set(body) != {"actor", "slug", "target", "mode"}
-            or not actor_ok(body.get("actor"))):
+    if (not isinstance(body, dict) or not actor_ok(body.get("actor"))
+            or not {"actor", "slug", "target", "mode"}.issubset(set(body))
+            or set(body) - {"actor", "slug", "target", "mode", "path"}):
         return web.json_response({"error": "bad request"}, status=400)
     slug, target, mode = body.get("slug"), body.get("target"), body.get("mode")
+    path = body.get("path", "first")
+    if path not in handoff.SETUP_PATHS:
+        return web.json_response({"error": "bad request"}, status=400)
     main = list_source_slug()
     if not _known(slug) or slug != main:
         return web.json_response({"error": "not found"}, status=404)
@@ -6650,6 +6685,9 @@ async def admin_setup_relay(req):
         return web.json_response({"error": "not configured"}, status=400)
     vals = setup_station_values()
     release = station_release()
+    pin_c = pin_h = None
+    if path == "first":
+        pin_c, pin_h = setup_install_pins()
     now = time.time()
     rid = handoff.new_request_id()
     reply_by = datetime.datetime.fromtimestamp(
@@ -6657,14 +6695,21 @@ async def admin_setup_relay(req):
     try:
         if vals is None or not release:
             raise ValueError("station state")
-        posted = handoff.setup_relay_payload(rid, main, reply_by, target, vals[0], vals[1], vals[2], mode, release)
+        if path == "first" and (not pin_c or not pin_h):
+            raise ValueError("station state")
+        frozen = handoff.setup_relay_payload(
+            rid, main, reply_by, target, vals[0], vals[1], vals[2], mode, release,
+            pin_c if path == "first" else None, pin_h if path == "first" else None)
     except ValueError:
         return web.json_response({"error": "bad request"}, status=400)
     expires_ms = int((now + handoff.SETUP_RELAY_TTL_S) * 1000)
     try:
-        handoff.write_setup_pending(PENDING_DIR, rid, main, secrets.token_urlsafe(24), expires_ms, target)
+        # N02: freeze first; POST only the frozen bytes (no re-read of VERSION/TLS after this).
+        handoff.write_setup_pending(PENDING_DIR, rid, main, secrets.token_urlsafe(24), expires_ms, target,
+                                    frozen=frozen, path=path)
     except (OSError, ValueError):
         return web.json_response({"error": "unavailable"}, status=500)
+    posted = frozen  # exact pending bytes; never rebuild
     try:
         async with ClientSession(timeout=ClientTimeout(total=10)) as http:
             async with http.post(ent["url"], json=posted, allow_redirects=False,
@@ -6680,7 +6725,7 @@ async def admin_setup_relay(req):
     try:
         with _SETUP_STATE_LOCK:
             doc = setup_state_load()
-            doc[target] = {"state": "sent", "rid": rid, "at": int(now), "expires_ms": expires_ms}
+            doc[target] = {"state": "sent", "rid": rid, "at": int(now), "expires_ms": expires_ms, "path": path}
             setup_state_save(doc)
     except OSError:
         pass

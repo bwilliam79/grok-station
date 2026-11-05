@@ -162,7 +162,7 @@ class SetupSend(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(self.messages, ["otto", "otto"])
         relay_fn = RELAY[RELAY.index("async def admin_setup_relay(req)"):RELAY.index("async def admin_cards_get")]
-        self.assertIn('set(body) != {"actor", "slug", "target", "mode"}', relay_fn)
+        self.assertIn('set(body) - {"actor", "slug", "target", "mode", "path"}', relay_fn)
         self.assertIn("handoff.setup_relay_payload(", relay_fn)
         self.assertNotIn("question", relay_fn)
         self.assertEqual(self.added, [])

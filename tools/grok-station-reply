@@ -7,7 +7,7 @@
   post  sealed JSON on stdin; validates it and POSTs it. No key, no PyNaCl (stdlib only).
   post --avatar  a sealed picture, to /voice/avatar. Larger than a reply.
   send  seal | post on one machine.
-  seal-setup-ack --request-id <rid> --status relayed|failed [--reason <enum>]  status only, no stdin;
+  seal-setup-ack --request-id <rid> --status relayed|failed|needs_details [--reason <enum>]  status only, no stdin;
         same outer JSON, inner kind setup_relay_ack (0.13.16).
 
 The seed is never taken from an argument or a file. This does not import the station relay.
@@ -117,8 +117,8 @@ def build_outer(bot, request_id, text, seed_b64, station_pub_b64, interim=False)
 
 
 
-SETUP_ACK_STATUS = ("relayed", "failed")
-SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+SETUP_ACK_STATUS = ("relayed", "failed", "needs_details")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
 
 
 def canonical_setup_ack(request_id, status, reason=None):

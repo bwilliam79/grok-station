@@ -44,7 +44,7 @@ PIN = "ab" * 32
 GOOD = {"v": 1, "kind": "setup_relay", "request_id": "vs_" + "A" * 22, "persona": "rhea",
         "reply_by": "2026-11-01T20:15:00Z", "target": "otto", "station": "https://grok-station.local",
         "pin_sha256": PIN, "station_pub": base64.b64encode(b"\x01" * 32).decode(), "mode": "cloud",
-        "release": "0.13.16"}
+        "release": "0.13.17"}
 
 
 def _payload(**kw):
@@ -115,7 +115,14 @@ class Station:
         with open(os.path.join(r.TLS_DIR, "host"), "w") as f:
             f.write("grok-station\n")
         with open(r.VERSION_FILE, "w") as f:
-            f.write("0.13.16\n")
+            f.write("0.13.17\n")
+        # 0.13.17 first-time path reads install pins from admin/web/deploy-pins.js next to VERSION.
+        pins_dir = os.path.join(self.tmp, "admin", "web")
+        os.makedirs(pins_dir)
+        with open(os.path.join(pins_dir, "deploy-pins.js"), "w", encoding="utf-8") as f:
+            f.write('var DEPLOY_PINS = {\n  commit: "%s",\n  update_commit: "%s",\n  files: {\n'
+                    '    "scripts/install-home.sh": "%s"\n  }\n};\n'
+                    % ("a" * 40, "b" * 40, "c" * 64))
         r.VOICES.clear()
         r.VOICES.update({"ara"})
         r._personas["mtime"] = None
@@ -192,24 +199,38 @@ class RelaySend(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 202)
         self.assertEqual(len(self.st.calls), 1)
         posted = self.st.calls[0]["json"]
-        self.assertEqual(set(posted), set(handoff.SETUP_RELAY_KEYS))
+        # Default path=first includes install pins (0.13.17 no-paste).
+        self.assertEqual(set(posted), set(handoff.SETUP_RELAY_KEYS) | set(handoff.SETUP_RELAY_PIN_KEYS))
         self.assertNotIn("question", posted)
         self.assertNotIn("steps", posted)
         self.assertEqual(posted["kind"], "setup_relay")
         self.assertEqual((posted["persona"], posted["target"], posted["mode"], posted["release"]),
-                         ("rhea", "otto", "cloud", "0.13.16"))
+                         ("rhea", "otto", "cloud", "0.13.17"))
         self.assertEqual(posted["station"], "https://grok-station.local")
         self.assertEqual(posted["pin_sha256"], PIN)
+        self.assertEqual(posted["template_commit"], "a" * 40)
+        self.assertEqual(posted["template_sha256"], "c" * 64)
         self.assertEqual(posted["station_pub"],
                          botreply.station_pub_b64(botreply.load_or_create_station(self.st.r.SECRETS_DIR)))
         pend = self.st.pendings()
         self.assertEqual(len(pend), 1)
-        self.assertEqual(set(pend[0]), {"request_id", "persona", "nonce", "expires_ms", "kind", "target"})
+        self.assertEqual(set(pend[0]), {"request_id", "persona", "nonce", "expires_ms", "kind", "target",
+                                          "frozen", "path"})
+        self.assertEqual(pend[0]["frozen"], posted)
+        self.assertEqual(pend[0]["path"], "first")
         self.assertEqual((pend[0]["kind"], pend[0]["target"], pend[0]["persona"], pend[0]["request_id"]),
                          ("setup_relay", "otto", "rhea", posted["request_id"]))
         left = pend[0]["expires_ms"] / 1000 - time.time()
         self.assertTrue(895 <= left <= 901, left)
         self.assertEqual(handoff.SETUP_RELAY_TTL_S, 900)
+
+    async def test_held_path_omits_pins(self):
+        status, _ = await self.st.send(dict(BODY, path="held"))
+        self.assertEqual(status, 202)
+        posted = self.st.calls[0]["json"]
+        self.assertEqual(set(posted), set(handoff.SETUP_RELAY_KEYS))
+        self.assertNotIn("template_commit", posted)
+        self.assertEqual(self.st.pendings()[0]["path"], "held")
 
     async def test_t2_post_failure_leaves_no_pending(self):
         status, _ = await self.st.send(dict(BODY), status=500)
@@ -303,7 +324,8 @@ class Acks(unittest.IsolatedAsyncioTestCase):
         return resp.status, json.loads(resp.body.decode())
 
     async def _open(self, target="otto"):
-        status, _ = await self.st.send(dict(BODY, target=target))
+        # held: relayed ack stays "relayed" (first path would show awaiting_confirm).
+        status, _ = await self.st.send(dict(BODY, target=target, path="held"))
         self.assertEqual(status, 202)
         return self.st.calls[-1]["json"]["request_id"]
 
@@ -323,8 +345,10 @@ class Acks(unittest.IsolatedAsyncioTestCase):
     async def test_t4_failed_ack_shows_failed_with_reason(self):
         rid = await self._open()
         self.assertEqual((await self._post(self._seal("rhea", rid, "failed", "target_unreachable")))[0], 200)
-        self.assertEqual(self.st.r.setup_state_public()["otto"], {"state": "failed", "at": mock.ANY,
-                                                                   "reason": "target_unreachable"})
+        got = self.st.r.setup_state_public()["otto"]
+        self.assertEqual(got["state"], "failed")
+        self.assertEqual(got["reason"], "target_unreachable")
+        self.assertEqual(got.get("path"), "held")
 
     async def test_t5_other_key_and_changed_main(self):
         rid = await self._open()
@@ -496,9 +520,10 @@ class Routines(unittest.TestCase):
                   "Then check that station, pin_sha256 and station_pub are exactly the station address, fingerprint "
                   "and station public key in these Grok Station instructions (yours, not the webhook's).",
                   "Never use a bot list or name from the webhook.",
-                  "exactly one message with only these eight fields, each on its own line as name: value, under the "
+                  "exactly one message with only these fields, each on its own line as name: value, under the "
                   "heading \"Grok Station setup parameters\": target, station, pin_sha256, station_pub, mode, release, "
-                  "request_id, reply_by. Add no other words, steps or commands.",
+                  "request_id, reply_by, and when present template_commit and template_sha256. Add no other "
+                  "words, steps or commands.",
                   "grok-station-reply seal-setup-ack --bot <slug> --station-pub '<station public key>' --request-id "
                   "\"$REQUEST_ID\" --status relayed",
                   "Never include a URL, token, key or any text of your own in the reply.")
@@ -530,8 +555,8 @@ class Routines(unittest.TestCase):
             t = gs_routine.render(gs_routine.TEMPLATES[mode], mode, "a" * 24, "a" * 40, "b" * 64,
                                   "https://grok-station.local" if mode == "cloud" else "",
                                   FP if mode == "cloud" else "", "A" * 43 + "=" if mode == "cloud" else "")
-            self.assertEqual(gs_routine.check(t, mode), "0.13.16")
-            self.assertLess(len(t), 12000)
+            self.assertEqual(gs_routine.check(t, mode), "0.13.17")
+            self.assertLess(len(t), 14000)
 
 
 class Pasted(unittest.TestCase):
@@ -559,7 +584,8 @@ class Pasted(unittest.TestCase):
         self.assertEqual(doc["rows"]["otto"]["message"], "")
         src = _read("admin", "grok_admin.py")
         fn = src[src.index("    def bots_setup_send(self, j):"):src.index("    def bots_setup_unknown")]
-        self.assertIn('{"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode}', fn)
+        self.assertIn('"path": path', fn)
+        self.assertIn('"mode": mode', fn)
         self.assertNotIn('"message"', fn)
 
     def test_relay_view_drops_junk(self):
@@ -673,17 +699,18 @@ def _commands():
 class TargetTemplate(unittest.TestCase):
     def test_t17_confirm_card(self):
         step3 = PARAMS[PARAMS.index("\n3. "):PARAMS.index("\n4. ")]
-        self.assertIn("all six values (target, station, pin_sha256, station_pub, mode, release)", step3)
-        self.assertIn("the exact command from step 4 with those values filled in, verbatim", step3)
+        self.assertIn("confirm card in this chat with Station, Fingerprint", step3)
         self.assertIn('Ask: "Do the station address and fingerprint match the ones on your own station\'s Settings page?"', step3)
-        self.assertIn("Only an explicit yes goes ahead.", step3)
-        self.assertIn("run exactly the command shown on the card, byte for byte", PARAMS)
+        self.assertIn("Only an explicit yes with no edits goes ahead.", step3)
+        self.assertIn("freeze station, pin_sha256, station_pub, mode, release, template_commit, template_sha256", step3)
+        self.assertIn("Run exactly the install command from held literals", PARAMS)
 
     def test_t18_eight_lines_fresh_and_single_use(self):
-        self.assertIn("Read exactly eight lines: target, station, pin_sha256, station_pub, mode, release, request_id, reply_by.", PARAMS)
+        self.assertIn("Read the lines: target, station, pin_sha256, station_pub, mode, release, request_id, reply_by", PARAMS)
         self.assertIn("or reply_by has passed", PARAMS)
-        self.assertIn("or you have already acted on (or declined) this request_id, do nothing", PARAMS)
-        self.assertLess(PARAMS.index("2. Record request_id as used now, before asking"), PARAMS.index("3. Show the user"))
+        self.assertIn("or you have already acted on (or declined) this request_id", PARAMS)
+        self.assertLess(PARAMS.index("2. Record request_id as used now, before presenting any card"),
+                        PARAMS.index("\n3. Steady state"))
 
     def test_t19_command_shape_and_sh_n(self):
         linux, mac = _commands()
@@ -780,7 +807,8 @@ class RowStates(unittest.TestCase):
         from test_gs1311_bots_merge import _run
         return _run(("setupRowModel", "setupStuck", "setupCopy", "setupOwnerLabel", "setupDomId", "setupIcon",
                      "setupMark", "setupRowStatus", "setupSentHelper", "setupResendWaitMin", "setupRowActionHTML",
-                     "setupRowNeeds", "clockTime", "joinBotNames", "setupSteps"),
+                     "setupRowNeeds", "clockTime", "joinBotNames", "setupSteps",
+                     "setupShortCommit", "setupShortHash", "setupShortPin", "setupPanelValues"),
                     "[setupRowStatus(%s, {mainName: 'Rhea', now: %d}), setupRowActionHTML(%s, {mainName: 'Rhea', now: %d})]"
                     % (json.dumps(row), now, json.dumps(row), now))
 
@@ -799,7 +827,7 @@ class RowStates(unittest.TestCase):
     def test_states(self):
         row = {"slug": "otto", "name": "Otto", "status": "sent", "sent_at": 1000, "fails": 0}
         s, a = self._status(dict(row, relay="relayed"))
-        self.assertEqual(s["text"], "Rhea passed it to Otto \u00b7 waiting for Otto\u2019s details")
+        self.assertEqual(s["text"], "Rhea passed it to Otto \u00b7 waiting for Otto to finish")
         s, a = self._status(dict(row, relay="failed"))
         self.assertEqual(s["text"], "\u26a0 Rhea couldn\u2019t pass it on.")
         self.assertEqual(s.get("icon"), "none")
@@ -816,7 +844,7 @@ class RowStates(unittest.TestCase):
         self.assertEqual(s.get("helper"), "Rhea checks this station\u2019s details and passes them to Otto.")
         self.assertIn(">Send again in 4 min<", a)
         s_rel, _ = self._status(dict(row, relay="relayed"))
-        self.assertEqual(s_rel.get("helper"), "Otto\u2019s webhook details fill in here when it replies.")
+        self.assertEqual(s_rel.get("helper"), "Otto is installing from the setup it already holds.")
 
     def test_failed_expired_status_has_no_pending_glyph(self):
         # Noor polish: failed/expired start with ⚠ only; the dashed-circle reads as loading.
@@ -840,14 +868,15 @@ class RowStates(unittest.TestCase):
             self.assertIn("<svg", html)
 
     def test_panel_describes_typed_relay_not_free_text(self):
-        # Must-fix: the expand panel used to show free-text steps and "this exact message", but
-        # 0.13.16 sends station values only. Before this fix the panel still lied.
+        # 0.13.17 Confirm and send panel (no-paste). Still no free-text steps.
         from test_gs1311_bots_merge import SETUP, _run
         html = _run(SETUP, "setupRowPanelHTML({slug:'otto',name:'Otto',status:'not_set_up'}, {mainName:'Rhea'})")
         self.assertIn("Set up Otto through Rhea", html)
         self.assertIn("certificate pin and public key. They\u2019re filled in for you", html)
-        self.assertIn("confirm card in its chat", html)
-        self.assertIn("The name, wake word and computer you pick aren\u2019t part of the request", html)
+        self.assertIn("Confirm and send", html)
+        self.assertIn("Nothing goes out until you press Confirm and send", html)
+        self.assertIn("Rhea then asks Otto to set itself up", html)
+        self.assertIn("First time", html)
         self.assertNotIn("You see this exact message before it goes", html)
         self.assertNotIn("What Rhea sends Otto", html)
         self.assertNotIn("Show the station owner a confirm card in this chat", html)

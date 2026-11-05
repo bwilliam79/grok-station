@@ -450,12 +450,14 @@ def write_pending(pdir, rid, bot, nonce, expires_ms, question="", pii_mode=True,
     safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc), "pending", mode=0o644)
 
 
-# 0.13.16: typed setup_relay (design rev3 §1). Parameters only, every value public, no free text.
+# 0.13.17: typed setup_relay (no-paste design rev3). Parameters only, every value public, no free text.
 # Every check is re.fullmatch(pattern, value, re.ASCII) on a str; a trailing newline or a non-ASCII
-# character fails. The relay builds the values from its own state and refuses (no outbound call) on any miss.
+# character fails. Confirm freezes station-built values into pending; the POST body is only those bytes.
 SETUP_RELAY_TTL_S = 900
 SETUP_RELAY_KEYS = ("v", "kind", "request_id", "persona", "reply_by", "target", "station", "pin_sha256",
                     "station_pub", "mode", "release")
+# Optional on first-time (2a) only; absent on steady-state (2b). Same fullmatch rules as pin_sha256 / request pins.
+SETUP_RELAY_PIN_KEYS = ("template_commit", "template_sha256")
 SETUP_FIELD_RE = {
     "kind": (r"setup_relay", 11),
     "request_id": (r"vs_[A-Za-z0-9_-]{22}", 25),
@@ -467,9 +469,12 @@ SETUP_FIELD_RE = {
     "station_pub": (r"[A-Za-z0-9+/]{43}=", 44),
     "mode": (r"home|cloud", 5),
     "release": (r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", 11),
+    "template_commit": (r"[0-9a-f]{40}", 40),
+    "template_sha256": (r"[0-9a-f]{64}", 64),
 }
-SETUP_ACK_STATUS = ("relayed", "failed")
-SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown")
+SETUP_ACK_STATUS = ("relayed", "failed", "needs_details")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
+SETUP_PATHS = ("first", "held")
 
 
 def setup_field_ok(name, value):
@@ -498,28 +503,56 @@ def pin_hex(fingerprint):
     return ""
 
 
-def setup_relay_payload(rid, persona, reply_by, target, station, pin_sha256, station_pub, mode, release):
-    """The exact setup_relay webhook body, or ValueError naming no value. Nothing else is ever on it."""
+def setup_relay_payload(rid, persona, reply_by, target, station, pin_sha256, station_pub, mode, release,
+                        template_commit=None, template_sha256=None):
+    """The exact setup_relay webhook body, or ValueError. Optional 2a pin fields must both be set or both absent."""
     body = {"v": 1, "kind": "setup_relay", "request_id": rid, "persona": persona, "reply_by": reply_by,
             "target": target, "station": station, "pin_sha256": pin_sha256, "station_pub": station_pub,
             "mode": mode, "release": release}
-    for name in SETUP_RELAY_KEYS[1:]:
+    pins = (template_commit is not None, template_sha256 is not None)
+    if pins[0] != pins[1]:
+        raise ValueError("setup_relay field")
+    if pins[0]:
+        body["template_commit"] = template_commit
+        body["template_sha256"] = template_sha256
+    for name in body:
+        if name == "v":
+            if body["v"] != 1:
+                raise ValueError("setup_relay field")
+            continue
         if not setup_field_ok(name, body[name]):
             raise ValueError("setup_relay field")
+    if set(body) - {"v"} != set(SETUP_RELAY_KEYS[1:]) and set(body) - {"v"} != set(SETUP_RELAY_KEYS[1:]) | set(SETUP_RELAY_PIN_KEYS):
+        raise ValueError("setup_relay field")
     if persona == "grok" or target in ("grok", persona):
         raise ValueError("setup_relay field")
     return body
 
 
-def write_setup_pending(pdir, rid, persona, nonce, expires_ms, target):
-    """Pending record for one setup_relay ask. Exactly these fields (design §3, §1a): no token, URL or text."""
+def write_setup_pending(pdir, rid, persona, nonce, expires_ms, target, frozen=None, path=None):
+    """Pending record for one setup_relay ask. frozen is the exact POST body (N02); no token/URL/text."""
     if not (setup_field_ok("request_id", rid) and setup_field_ok("persona", persona)
             and setup_field_ok("target", target) and isinstance(nonce, str) and type(expires_ms) is int):
         raise ValueError("setup pending")
+    if path is not None and path not in SETUP_PATHS:
+        raise ValueError("setup pending")
+    if frozen is not None:
+        if not isinstance(frozen, dict) or frozen.get("request_id") != rid or frozen.get("target") != target:
+            raise ValueError("setup pending")
+        # Re-validate so the pending bytes are always a legal payload.
+        setup_relay_payload(
+            frozen["request_id"], frozen["persona"], frozen["reply_by"], frozen["target"],
+            frozen["station"], frozen["pin_sha256"], frozen["station_pub"], frozen["mode"], frozen["release"],
+            frozen.get("template_commit"), frozen.get("template_sha256"))
     os.makedirs(pdir, exist_ok=True)
     doc = {"request_id": rid, "persona": persona, "nonce": nonce, "expires_ms": expires_ms,
            "kind": "setup_relay", "target": target}
-    safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc), "pending", mode=0o644)
+    if frozen is not None:
+        doc["frozen"] = frozen
+    if path is not None:
+        doc["path"] = path
+    safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc, separators=(",", ":"), sort_keys=True),
+                         "pending", mode=0o644)
 
 
 def remove_pending(pdir, rid):

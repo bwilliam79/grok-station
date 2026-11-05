@@ -608,9 +608,12 @@ def _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source):
     if status == "failed":
         want = _SETUP_ACK_KEYS | {"reason"}
         reason_ok = doc.get("reason") in handoff.SETUP_ACK_REASONS
-    else:
+    elif status in ("relayed", "needs_details"):
         want = _SETUP_ACK_KEYS
         reason_ok = True
+    else:
+        want = _SETUP_ACK_KEYS
+        reason_ok = False
     if (keys != want or not reason_ok or doc.get("kind") != "setup_relay_ack"
             or status not in handoff.SETUP_ACK_STATUS or type(doc.get("tier")) is not int or doc.get("tier") != 0
             or doc.get("action_class") != "answer"):
