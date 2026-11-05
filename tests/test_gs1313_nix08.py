@@ -168,3 +168,35 @@ class DisplayWrites(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WakeForgetLogSink(unittest.TestCase):
+    """safe_io._log is shared. Relay (and suite order) often redirects it away from stdout.
+    forget_word must still print write refused PermissionError on its own stdout line."""
+
+    @NOT_ROOT
+    def test_forget_reports_eacces_when_log_sink_redirected(self):
+        import grok_wake as gw
+        import safe_io
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: (os.chmod(os.path.join(d, "enr"), 0o755), shutil.rmtree(d, True)))
+        inbox, enr = os.path.join(d, "in"), os.path.join(d, "enr")
+        os.makedirs(inbox)
+        os.makedirs(enr)
+        json.dump({"words": [{"name": "hey_dene"}]}, open(os.path.join(enr, "wakewords.enrolled.json"), "w"))
+        os.chmod(enr, 0o555)
+        old_dirs = gw.ENROLL_DIR, gw.ENROLLED_DIR
+        old_log = safe_io._log[0]
+        safe_io.set_log(lambda m: None)  # sink stolen (relay import / later test)
+        gw.ENROLL_DIR, gw.ENROLLED_DIR = inbox, enr
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                ok, err = gw.forget_word("hey_dene")
+        finally:
+            gw.ENROLL_DIR, gw.ENROLLED_DIR = old_dirs
+            safe_io.set_log(old_log)
+        self.assertEqual((ok, err), (False, "write failed"))
+        out = buf.getvalue()
+        self.assertIn("wakeword forget failed", out)
+        self.assertIn("write refused PermissionError", out)

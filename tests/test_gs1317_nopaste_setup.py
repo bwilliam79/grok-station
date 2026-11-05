@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """0.13.17 no-paste Set up (DESIGN-rev3 §7, bq-0047).
 
@@ -227,3 +228,71 @@ class Version(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PanelNoorQaR2(unittest.TestCase):
+    """0.13.17 Noor QA panel fixes (fail before / pass after)."""
+
+    def _panel(self, opts=None, row=None):
+        from test_gs1311_bots_merge import SETUP, _run
+        import json as _json
+        row = row or {"slug": "otto", "name": "Otto", "status": "not_set_up",
+                      "computer": "Office computer", "wake": "Hey Otto"}
+        base = {
+            "mainName": "Juniper",
+            "stationAddress": "https://station-demo.local",
+            "fingerprint": "ab" * 32,
+            "release": "0.13.17",
+            "deployPins": {"commit": "a1b2c3d4e5f60718293a4b5c6d7e8f901234abcd",
+                           "files": {"scripts/install-home.sh": "e" * 64}},
+        }
+        if opts:
+            base.update(opts)
+        return _run(SETUP, "setupRowPanelHTML(%s, %s)" % (_json.dumps(row), _json.dumps(base)))
+
+    def test_release_row_shows_version_never_dash(self):
+        html = self._panel()
+        self.assertIn("0.13.17", html)
+        self.assertIn(">Release</span>", html)
+        self.assertNotIn("\u2014", html)  # bare em-dash must never appear
+
+    def test_unknown_release_hides_row(self):
+        html = self._panel({"release": ""})
+        self.assertNotIn(">Release</span>", html)
+        self.assertNotIn("\u2014", html)
+
+    def test_ready_chip_has_clock_icon(self):
+        html = self._panel()
+        self.assertIn("setready-chip", html)
+        self.assertIn("setready is-first", html)
+        self.assertIn("<circle", html)  # clock SVG from setupIcon("clock")
+        self.assertIn("First time", html)
+
+    def test_values_are_one_row_each_not_2up(self):
+        # Structure: each .setval wraps its own .setval-k + .setval-v (CSS makes each a row).
+        html = self._panel()
+        self.assertIn('class="setval is-station"', html)
+        self.assertGreaterEqual(html.count('class="setval'), 4)
+        css = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
+        self.assertIn(".setpanel .setvals{display:flex;flex-direction:column", css)
+        self.assertIn("grid-template-columns:112px minmax(0,1fr)", css)
+        self.assertNotIn(".setpanel .setvals{display:grid;grid-template-columns:120px 1fr", css)
+
+    def test_steps_have_no_dark_box(self):
+        css = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
+        self.assertIn(".setpanel .steps{", css)
+        # Panel steps clear the global .steps near-black box.
+        block = css.split(".setpanel .steps{")[1].split("}", 1)[0]
+        self.assertIn("background:transparent", block)
+        self.assertIn("border:0", block)
+
+    def test_details_visible_at_desktop(self):
+        css = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
+        # Must not hide Details by default (0.13.17: show at 1280 and 390).
+        self.assertRegex(css, r"(?m)^\.setdetails\{display:block")
+        self.assertNotRegex(css, r"(?m)^\.setdetails\{display:none")
+
+    def test_release_reads_s_state_not_state(self):
+        js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        self.assertIn("S.state && S.state.version", js)
+        self.assertNotIn("STATE && STATE.version", js)

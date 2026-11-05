@@ -3058,7 +3058,7 @@ function setupPanelValues(opts) {
     station: opts.stationAddress || ((typeof STATION_ADDR !== "undefined" && STATION_ADDR && STATION_ADDR.v) || ""),
     fingerprint: setupShortPin(opts.fingerprint || ""),
     mode: modeLabel,
-    release: opts.release || (typeof STATE !== "undefined" && STATE && STATE.version) || "",
+    release: opts.release || (typeof S !== "undefined" && S.state && S.state.version) || "",
     commit: setupShortCommit(pins.commit || ""),
     hash: setupShortHash(files["scripts/install-home.sh"] || ""),
     path: opts.setupPath === "held" ? "held" : "first"
@@ -3374,6 +3374,10 @@ function setupRowPanelHTML(row, opts) {
   const ready = first
     ? ("First time \u00b7 " + bot + " will confirm station details in its chat")
     : ("Ready \u00b7 " + bot + " already holds this release\u2019s setup");
+  const readyCls = first ? "setready is-first" : "setready is-held";
+  // Rev2 chip: pill + clock icon (lavender wash when first-time).
+  const readyHtml = '<p class="' + readyCls + '"><span class="setready-chip">' + setupIcon("clock") +
+    "<span>" + esc(ready) + "</span></span></p>";
   const bullet3 = first
     ? (esc(bot) + " shows a card in its chat with these values. You reply yes only if the station address and fingerprint match your Settings page. No paste.")
     : (esc(bot) + " uses the setup it already holds and installs on its always-on computer. No chat paste.");
@@ -3382,17 +3386,19 @@ function setupRowPanelHTML(row, opts) {
     esc(main) + " checks them against its own copy, then passes them to " + esc(bot) + ".",
     bullet3
   ];
+  // One row per value (rev2). Skip empty Release (never show a bare dash). Other empties omitted too.
   const rows = [
-    ["Station", v.station],
-    ["Fingerprint", v.fingerprint],
-    ["Mode", v.mode],
-    ["Release", v.release],
-    ["Commit", v.commit],
-    ["Install hash", v.hash]
-  ];
+    ["Station", v.station, "is-station"],
+    ["Fingerprint", v.fingerprint, ""],
+    ["Mode", v.mode, ""],
+    ["Release", v.release, ""],
+    ["Commit", v.commit, ""],
+    ["Install hash", v.hash, ""]
+  ].filter(function (r) { return !!r[1]; });
   const table = '<div class="setvals" role="group" aria-label="Values ' + esc(main) + ' will check">' +
     rows.map(function (r) {
-      return '<div class="setval"><span class="setval-k">' + esc(r[0]) + '</span><span class="setval-v">' + esc(r[1] || "\u2014") + "</span></div>";
+      return '<div class="setval' + (r[2] ? (" " + r[2]) : "") + '"><span class="setval-k">' + esc(r[0]) +
+        '</span><span class="setval-v">' + esc(r[1]) + "</span></div>";
     }).join("") + "</div>";
   const err = failed ? '<p class="seterr" role="alert"><span class="gl" aria-hidden="true">\u26a0\ufe0e</span><b>Couldn\'t send.</b> ' +
     esc(main) + " didn't answer. Check " + esc(main) + " is online, then try again.</p>" : "";
@@ -3405,7 +3411,7 @@ function setupRowPanelHTML(row, opts) {
   const help = "Nothing goes out until you press Confirm and send. " + main + " then asks " + bot + " to set itself up.";
   return '<div class="setpanel' + (failed ? " is-err" : "") + '" role="region" aria-label="Set up ' + esc(bot) + '" id="' + esc(id) +
     '" data-slug="' + slug + '">' + err + '<h3 class="lbl">Set up ' + esc(bot) + " through " + esc(main) + "</h3>" +
-    '<p class="setready ' + (first ? "is-first" : "is-held") + '">' + esc(ready) + "</p>" +
+    readyHtml +
     table +
     '<ol class="steps">' + parts.map(function (p) { return "<li>" + p + "</li>"; }).join("") + "</ol>" +
     '<div class="setdetslot" data-detfor="' + slug + '"' + (m.editDisabled ? ' data-off="1"' : "") + "></div>" +
@@ -3435,7 +3441,7 @@ function setupPaintOpts(el) {
           stationAddress: (typeof STATION_ADDR !== "undefined" && STATION_ADDR && STATION_ADDR.v) || "",
           fingerprint: (el && el._fingerprint) || "",
           stationPub: (el && el._stationPub) || "",
-          release: (typeof STATE !== "undefined" && STATE && STATE.version) || "",
+          release: (typeof S !== "undefined" && S.state && S.state.version) || "",
           deployPins: (typeof DEPLOY_PINS !== "undefined") ? DEPLOY_PINS : null};
 }
 function fillSetupDetails(list, rows) {

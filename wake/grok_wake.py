@@ -2334,7 +2334,11 @@ def forget_word(name):
         if len(words) != len(old):
             safe_io.replace_file(cfgp, json.dumps({"words": words}, indent=1), "enrolled", mode=0o644)
     except OSError as e:
-        print(f"wakeword forget failed {type(e).__name__} {target}", flush=True)
+        # Refused (safe_io) already logged via _log, which relay tests often redirect away from
+        # stdout. Prefer strerror so the admin line still carries "write refused PermissionError"
+        # when the sink is not print (NIX-1313-08 / order-dependent suite flake).
+        detail = e.strerror if (isinstance(e, safe_io.Refused) and e.strerror) else type(e).__name__
+        print(f"wakeword forget failed {detail} {target}", flush=True)
         RELOAD.set()
         return False, "write failed"
     RELOAD.set()

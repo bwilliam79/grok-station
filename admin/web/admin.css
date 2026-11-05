@@ -870,33 +870,47 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .setpanel{margin:0 0 12px 58px;padding:14px 16px;border-radius:10px;background:var(--gs-surface-2);border-left:3px solid var(--gs-teal)}
 .setpanel.is-err{border-left-color:var(--gs-amber)}
 .setpanel h3.lbl{margin:0 0 8px;font-size:var(--fs-help)}
-.setpanel .steps{margin:0 0 8px;padding-left:20px}
+.setpanel .steps{margin:0 0 10px;padding:0 0 0 20px;background:transparent;border:0;border-radius:0;font-size:var(--fs-help);line-height:1.55;color:var(--gs-text)}
+.setpanel .steps li{margin:4px 0}
 .setpanel .seterr{margin:0 0 10px;color:var(--gs-text)}
 .setpanel .seterr .gl{color:var(--gs-amber);margin-right:6px}
 .setpanel .acts{display:flex;gap:8px;margin-top:10px}
-.setpanel .setready{margin:0 0 10px;font-size:var(--fs-help);color:var(--gs-muted)}
-.setpanel .setready.is-first{color:var(--gs-lavender,#A99CFF)}
-.setpanel .setvals{display:grid;grid-template-columns:120px 1fr;gap:6px 12px;margin:0 0 12px;padding:10px 12px;border-radius:8px;background:var(--gs-surface,#17130F);border:1px solid var(--gs-line,#2A231D)}
+/* Rev2 ready chip: pill + clock. First-time uses lavender wash. */
+.setpanel .setready{margin:0 0 12px;font-size:var(--fs-help);color:var(--gs-muted)}
+.setpanel .setready-chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;padding:4px 10px 4px 6px;border-radius:99px;background:var(--gs-teal-bg,#12302A);border:1px solid #1A4A40;color:var(--gs-muted)}
+.setpanel .setready-chip .ic{flex:none;color:var(--gs-teal)}
+.setpanel .setready.is-first .setready-chip{background:var(--gs-lavender-bg,#221E3A);border-color:#3A3458;color:var(--gs-muted)}
+.setpanel .setready.is-first .setready-chip .ic{color:var(--gs-lavender,#A99CFF)}
+/* Rev2 values: one label+value row each (not a 2-up grid of pairs). Label ~112px muted, value mono. */
+.setpanel .setvals{display:flex;flex-direction:column;gap:0;margin:0 0 12px;padding:0;border-radius:8px;background:var(--gs-surface,#17130F);border:1px solid var(--gs-line,#2A231D);overflow:hidden}
+.setpanel .setval{display:grid;grid-template-columns:112px minmax(0,1fr);gap:8px 12px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--gs-line,#2A231D);min-width:0}
+.setpanel .setval:last-child{border-bottom:0}
 .setpanel .setval-k{color:var(--gs-muted);font-size:var(--fs-help)}
-.setpanel .setval-v{color:var(--gs-text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-help);word-break:break-all}
-@media (max-width:600px){.setpanel .setvals{grid-template-columns:1fr}}
+.setpanel .setval-v{color:var(--gs-text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:var(--fs-help);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.setpanel .setval.is-station .setval-v{white-space:nowrap}
+@media (max-width:600px){
+  .setpanel .setval{grid-template-columns:1fr;gap:2px;padding:8px 12px}
+  .setpanel .setval-k{padding:0}
+  .setpanel .setval-v{padding:0;white-space:nowrap}
+}
 @media (max-width:600px){.setpanel{margin-left:0}.setpanel .acts .btn,.setacts .btn{min-height:44px;flex:1}}
-/* 0.13.11 Noor QA batch */
+/* 0.13.11 Noor QA batch + 0.13.17: Details rows at every width (above the help line). */
 .setacts.sent{gap:8px}
 .botrow .cfg .btn.sec{min-width:112px;height:38px;padding:0 12px}
 .chipedit{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
 .tlnk[data-edit]{display:inline-flex;align-items:center;justify-content:center;min-width:24px;min-height:24px;padding:5px 4px;margin:-5px 0;vertical-align:middle}
 .tog:not(.on){border-color:var(--gs-field-edge)}  /* Noor QA: off track edge vs row 3.84:1 (#5A4E43 measured 2.29:1, short of 3:1) */
-.setdetails{display:none}
+.setdetails{display:block;margin:4px 0 10px}
+.setdetails h4{margin:0 0 4px;font-size:var(--fs-help)}
+.setdetails ul{list-style:none;margin:0;padding:0}
+.setdetails li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;border-top:1px solid var(--gs-rule)}
+.setdetails li:first-child{border-top:0}
+.setdetails .dv{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-help)}
+.setdetails .tlnk[data-edit]{min-height:32px;min-width:44px;margin:0}
 @media (max-width:599px){
   .steps .chipedit .tlnk{display:none}
   .steps mark{background:none;border:0;color:inherit;padding:0}
-  .setdetails{display:block;margin:4px 0 8px}
-  .setdetails h4{margin:0 0 4px;font-size:var(--fs-help)}
-  .setdetails ul{list-style:none;margin:0;padding:0}
-  .setdetails li{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;border-top:1px solid var(--gs-rule)}
-  .setdetails li:first-child{border-top:0}
-  .setdetails .dv{min-width:0;overflow-wrap:anywhere;font-size:var(--fs-help)}
+  .setdetails li{min-height:44px}
   .setdetails .tlnk[data-edit]{min-height:44px;min-width:44px;margin:0}
   #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 ww" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}
   #blist .botrow>:first-child{grid-area:av}
