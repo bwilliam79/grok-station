@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 import cards
 
-INSTRUCTION = "When you email {owner}, also post a short version here: your email’s name as the kind, then its lead sentence (60 characters max). When you need {owner} to decide or do something, post it as Needs you and clear it once it’s handled. Don’t post progress or “working on” updates."
+INSTRUCTION = "When you email your owner, also post a short version here: your email's name as the kind, then its lead sentence (60 characters max). When you need your owner to decide or do something, post it as Needs you and clear it once it's handled. Don't post progress or \"working on\" updates."
 
 class EmailUpdates(unittest.TestCase):
     def test_template_is_required_not_optional(self):
@@ -49,7 +49,7 @@ class EmailUpdates(unittest.TestCase):
             body = gs_routine.render(gs_routine.TEMPLATES["home"], "home", "otto", "a" * 40, "b" * 64, owner=owner)
             self.assertIn(INSTRUCTION.format(owner=owner or "your owner"), body)
             self.assertNotIn("{owner}", body)
-            self.assertEqual(gs_routine.check(body, "home"), "0.13.18")
+            self.assertEqual(gs_routine.check(body, "home"), "0.13.19")
 
     def test_browser_copy_owner_matches_server(self):
         import json, re, subprocess, tempfile

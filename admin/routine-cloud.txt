@@ -1,4 +1,4 @@
-Grok Station instructions, release 0.13.18.
+Grok Station instructions, release 0.13.19.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -53,7 +53,7 @@ Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_PICTURE' | python3 ~/bin/grok-station-reply post --avatar --station <station address> --insecure --pin-sha256 '<fingerprint>'
 The station takes at most 6 pictures an hour.
 
-Station updates. When you email {owner}, also post a short version here: your email’s name as the kind, then its lead sentence (60 characters max). When you need {owner} to decide or do something, post it as Needs you and clear it once it’s handled. Don’t post progress or “working on” updates. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
+Station updates. When you email your owner, also post a short version here: your email's name as the kind, then its lead sentence (60 characters max). When you need your owner to decide or do something, post it as Needs you and clear it once it's handled. Don't post progress or "working on" updates. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
 {"v":1,"op":"update","id":"<a-z0-9_- id>","update":{"type":"update|needs_you","kind":(18),"line":(60),"detail":(90),"time":"<ISO 8601 time with zone>"}}
 For type update, kind is the email name (18 characters max), line is its lead sentence (60 max), and detail is optional (90 max). The same bot and kind replaces the previous update; updates expire after 24 hours. Needs you is one pinned item per bot until cleared. Optional feed_rule:(60) keeps the rule set by voice. To clear: {"v":1,"op":"update_clear","id":"<same id>"}. Unknown fields are rejected.
 Send it the same way as a card. On the cloud computer:

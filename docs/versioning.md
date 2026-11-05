@@ -647,6 +647,10 @@ Change note (2026-11-01): patch release; installs over 0.13.14. Bots row (Noor b
 Change note (2026-10-30): patch release; installs over 0.13.11. A card sent right after a spoken answer reaches the station (bq-0018: the FOLLOWUP_S park is marked followup and never holds a card). Recorded wake words that sound alike pass when the listener tells them apart (bq-0019, Nix C1-C6: two-way leave-one-out detector race, 0.05 margin floor on 80% of recordings, fail closed, Hey Grok check unchanged). Sent-row buttons in one 3-column row on phones (bq-0025) and the restored `.btn:focus-visible` pin. The bot templates name release 0.13.12 (no other instruction change), so the update manifest and deploy pins are regenerated at release; press Update on each bot so its release matches. Tests: `tests/test_handoff.py`, `tests/test_gs1312_wake_pairs.py`, `tests/test_gs1312_noor.py`.
 
 
+## 0.13.19
+
+Change note (2026-11-05): patch release; installs over 0.13.18. Bots still on 0.13.17 run a pinned `gs-update.sh` that opens the new `admin/routine-*.txt` with `encoding="ascii"`, so the curly quotes in the 0.13.18 Station updates line made `update_bot` fail closed (byte 7337). The Station updates line now uses straight quotes only, and it says "your owner" literally instead of the `{owner}` token (the 0.13.17 updater does not fill it). The template and instruction checks are pure printable ASCII again; the render open stays `encoding="utf-8"` as a forward defense. The bot templates name release 0.13.19, so the update manifest and deploy pins are regenerated at release; press Update on each bot. Tests: `tests/test_gs1319_ascii_templates.py`.
+
 ## 0.13.18
 
 Email-based Updates and pinned Needs you; repair signed update round-trip validation.
