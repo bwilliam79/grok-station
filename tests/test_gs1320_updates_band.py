@@ -164,12 +164,109 @@ class AvatarAndBounds(unittest.TestCase):
         self.assertLess(gs.LAST_STATUS_RECT.bottom, 100)
         self.assertGreaterEqual(gs.LAST_TIMER_RECT.top, 1380)
         self.assertGreaterEqual(gs.content_limit(L), 1380)
-        layout = gs.updates_band_layout(L)
-        self.assertEqual(
-            [(r.x, r.y, r.w, r.h) for r in layout["rects"]],
-            [(128, 820, 1136, 560), (1296, 820, 1136, 560)],
-        )
-        self.assertEqual((layout["marker"].x, layout["marker"].y, layout["marker"].w), (128, 748, 2304))
+        self.assertEqual(gs.LAST_DATE_RECT.bottom, 702)
+        # 702 + 56 + 48 + 24 = 830, and 830 + 560 = 1390, past 1380, so the band hides.
+        self.assertIsNone(gs.updates_band_layout(L))
+
+
+class BandClearance(unittest.TestCase):
+    def setUp(self):
+        self.timers = list(gs.TIMER_CHIPS)
+        gs.TIMER_CHIPS[:] = []
+
+    def tearDown(self):
+        gs.TIMER_CHIPS[:] = self.timers
+
+    def test_date_667_keeps_the_preferred_top(self):
+        layout = gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=667, weather_bottom=0)
+        self.assertEqual(layout["rects"][0].y, 820)
+        self.assertEqual(layout["rects"][0].h, 560)
+        self.assertEqual(layout["rects"][0].bottom, 1380)
+        self.assertEqual(layout["rects"][1].x, 1296)
+        self.assertGreaterEqual(layout["marker"].top - 667, 56)
+        self.assertEqual(gs.BAND_AFTER_DATE + gs.BAND_MARKER_H + gs.BAND_BEFORE_BAND, 128)
+
+    def test_date_702_hides_the_band(self):
+        self.assertIsNone(gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=702, weather_bottom=0))
+
+    def test_too_tall_hides_the_band(self):
+        self.assertIsNone(gs.updates_band_layout(gs.Layout(2560, 1706), date_bottom=1000, weather_bottom=0))
+
+
+class NightReset(unittest.TestCase):
+    def test_night_end_restarts_at_position_1(self):
+        gs.UPD_ROT.update(step=4, at=1, night=False)
+        self.assertFalse(gs.updates_night_edge(True))
+        self.assertEqual(gs.UPD_ROT["step"], 4)
+        self.assertTrue(gs.updates_night_edge(False))
+        self.assertEqual(gs.UPD_ROT["step"], 0)
+        self.assertIsNone(gs.UPD_ROT["at"])
+        needs = [{"id": "n1"}, {"id": "n2"}]
+        others = [{"id": "o1"}, {"id": "o2"}, {"id": "o3"}]
+        shown = [t["id"] for t in cards.update_slots(needs, others, gs.UPD_ROT["step"])]
+        self.assertEqual(shown, ["n1", "o1"])
+
+
+class BandFade(unittest.TestCase):
+    def setUp(self):
+        self.motion = os.environ.get("GROK_STATION_REDUCE_MOTION")
+        os.environ.pop("GROK_STATION_REDUCE_MOTION", None)
+        self.dates = gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT, gs.LAST_OFFLINE_RECT
+        gs.LAST_DATE_RECT = gs.LAST_WEATHER_RECT = gs.LAST_OFFLINE_RECT = None
+        self.timers = list(gs.TIMER_CHIPS)
+        gs.TIMER_CHIPS[:] = []
+        gs._BAND_PREV = None
+
+    def tearDown(self):
+        gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT, gs.LAST_OFFLINE_RECT = self.dates
+        gs.TIMER_CHIPS[:] = self.timers
+        gs._BAND_PREV = None
+        if self.motion is None:
+            os.environ.pop("GROK_STATION_REDUCE_MOTION", None)
+        else:
+            os.environ["GROK_STATION_REDUCE_MOTION"] = self.motion
+
+    def _rows(self, uid):
+        return [{"kind": "update", "id": uid, "bot": "aster", "type": "done", "line": uid, "time": 1.0}]
+
+    def test_eight_steps_in_place_and_instant_when_reduced(self):
+        self.assertEqual(len(gs.band_fade_alphas(reduced=False)), 8)
+        self.assertEqual(gs.band_fade_alphas(reduced=False)[-1], 255)
+        self.assertLess(gs.band_fade_alphas(reduced=False)[0], 128)
+        self.assertEqual(gs.band_fade_alphas(reduced=True), (255,))
+        old, new = pygame.Surface((4, 4)), pygame.Surface((4, 4))
+        old.fill((0, 0, 0))
+        new.fill((255, 255, 255))
+        mid = gs.blend_band_frame(old, new, 128)
+        pix = mid.get_at((0, 0))
+        self.assertGreater(pix.r, 40)
+        self.assertLess(pix.r, 220)
+        L = gs.Layout(2560, 1706)
+        surf = pygame.Surface((2560, 1706))
+        surf.fill(gs.BG)
+        gs.LAST_UPDATE_BAND = {"marker": "1 of 2"}
+        gs._draw_updates_band(surf, L, self._rows("a"), 10.0)
+        self.assertEqual(gs.LAST_BAND_FADE["steps"], 1)
+        gs.LAST_UPDATE_BAND = {"marker": "2 of 2"}
+        gs._draw_updates_band(surf, L, self._rows("b"), 10.0)
+        self.assertEqual(gs.LAST_BAND_FADE["steps"], 8)
+        self.assertEqual(gs.LAST_BAND_FADE["alphas"][-1], 255)
+        os.environ["GROK_STATION_REDUCE_MOTION"] = "1"
+        gs.LAST_UPDATE_BAND = {"marker": "1 of 2"}
+        gs._draw_updates_band(surf, L, self._rows("c"), 10.0)
+        self.assertEqual(gs.LAST_BAND_FADE["alphas"], [255])
+
+
+class NeedsYouPill(unittest.TestCase):
+    def test_bang_is_its_own_icon(self):
+        surf = pygame.Surface((1136, 560))
+        surf.fill(gs.BG)
+        gs.LAST_UPDATE_PILLS = []
+        gs._paint_update_tile(surf, gs.Layout(2560, 1706), surf.get_rect(),
+                              {"bot": "aster", "type": "needs_you", "line": "Ready?", "time": 100.0}, 100.0)
+        self.assertEqual(gs.LAST_UPDATE_PILLS[0]["word"], "NEEDS YOU")
+        self.assertTrue(gs.LAST_UPDATE_PILLS[0]["icon"])
+        self.assertNotIn("!", gs.LAST_UPDATE_PILLS[0]["word"])
 
 
 if __name__ == "__main__":

@@ -1055,6 +1055,22 @@ class Release0113UI(unittest.TestCase):
         self.assertIn('id="urot"', screens)
         self.assertIn(">Update rotation<", screens)
         self.assertNotIn('id="crot"', screens)
+        self.assertIn("[10, 15, 20, 30, 45, 60]", panel)
+        self.assertIn('GROK_STATION_CARD_ROTATE || "20"', panel)
+        snippet = panel[panel.index("const ROT_CHOICES"):panel.index("const [nf, nt]")]
+        script = "const v = {};\n" + snippet + "\nprocess.stdout.write(rot + '\\n' + rotOpts);"
+        try:
+            out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            out = None
+        if out is not None and out.returncode == 0:
+            chosen, opts = out.stdout.split("\n", 1)
+            self.assertEqual(chosen, "20")
+            for seconds in (10, 15, 20, 30, 45, 60):
+                self.assertIn('<option value="%d"' % seconds, opts)
+                self.assertIn('>%d s</option>' % seconds, opts)
+            self.assertIn('value="20" selected', opts)
+            self.assertEqual(opts.count("<option"), 6)
         bright = panel.split(">Brightness<", 1)[1].split(">Units<", 1)[0]
         self.assertIn('id="dday"', bright)
         self.assertIn('id="dnight"', bright)
