@@ -222,7 +222,7 @@ class RowStates(unittest.TestCase):
                "relay": "failed", "relay_reason": "standing_absent"}
         html = _run(SETUP, "setupRowStatusHTML(%s, {mainName:'Juniper', now: 1100})" % json.dumps(row))
         self.assertIn("isn\u2019t ready for first-time setup", html)
-        self.assertIn("standing rule", html)
+        self.assertIn("Otto doesn’t have the station setup steps yet. Ask Juniper in chat to send them to Otto, then send the request again.", html)
 
 
 class RelayViewPath(unittest.TestCase):
