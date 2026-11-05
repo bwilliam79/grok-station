@@ -61,11 +61,12 @@ class DetailsList(unittest.TestCase):
         self.assertIn("fillSetupDetails(list, rows);", _fn("bindSetupRows"))
 
     def test_phone_only_and_44px(self):
+        # 0.13.17 Noor: Details visible at desktop and phone (base display:block; not phone-only).
         ph = _media(599)
-        self.assertIn(".setdetails{display:block", ph)
+        self.assertIn(".setdetails{display:block", CSS)
+        self.assertNotIn(".setdetails{display:none}", CSS)
         self.assertIn("min-height:44px", ph[ph.index(".setdetails li{"):])
         self.assertIn(".steps .chipedit .tlnk{display:none}", ph)
-        self.assertIn(".setdetails{display:none}", CSS)
 
 
 class ChipEditUnit(unittest.TestCase):

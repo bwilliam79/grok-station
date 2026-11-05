@@ -6,9 +6,10 @@ import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+import test_admin  # noqa: F401 — sets ADMIN_* sandbox before grok_admin import
 sys.path.insert(0, os.path.join(ROOT, "admin"))
 sys.path.insert(0, os.path.join(ROOT, "relay"))
-sys.path.insert(0, os.path.join(ROOT, "tests"))
 import gs_routine
 import grok_admin as ga
 import relay as ry

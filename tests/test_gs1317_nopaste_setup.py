@@ -133,20 +133,48 @@ class FirstTimeYesBind(unittest.TestCase):
     """§7.6 N08 logic helpers mirrored in template + short-form UI."""
 
     def test_panel_shows_commit_and_hash_rows(self):
-        from test_gs1311_bots_merge import SETUP, _run
+        # G04: Commit/Install-hash short forms come from SETUP_PARAMS, not DEPLOY_PINS.
+        from test_gs1311_bots_merge import SETUP, _fn, _icons
+        import subprocess
+        import tempfile
+        c = "a1b2c3d4e5f60718293a4b5c6d7e8f901234abcd"
+        h = "e" * 64
+        params = (
+            "Grok Station setup parameters.\n4. "
+            f"curl 'https://raw.githubusercontent.com/bwilliam79/grok-station/{c}/scripts/install-home.sh' "
+            f"&& printf '%s  %s\n' '{h}' \"$T\" | sha256sum -c -\n"
+        )
         opts = {
             "mainName": "Juniper",
             "stationAddress": "https://station-demo.local",
             "fingerprint": "ab" * 32,
             "release": "0.13.17",
-            "deployPins": {"commit": "a1b2c3d4e5f60718293a4b5c6d7e8f901234abcd",
-                           "files": {"scripts/install-home.sh": "e" * 64}},
+            "deployPins": {"commit": "0" * 40,
+                           "files": {"scripts/install-home.sh": "1" * 64}},
         }
-        html = _run(SETUP, "setupRowPanelHTML({slug:'otto',name:'Otto',status:'not_set_up'}, %s)"
-                    % json.dumps(opts))
+        prog = (
+            "const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')"
+            ".replace(/>/g,'&gt;').replace(/\"/g,'&quot;');\n"
+            + _icons() + "\n"
+            + "const SETUP_PARAMS = " + json.dumps(params) + ";\n"
+            + "\n".join(_fn(n) for n in SETUP) + "\n"
+            + "const html = setupRowPanelHTML({slug:'otto',name:'Otto',status:'not_set_up'}, "
+            + json.dumps(opts) + ");\n"
+            + "process.stdout.write(JSON.stringify(html));\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(prog)
+            path = fh.name
+        try:
+            out = subprocess.run(["node", path], capture_output=True, text=True)
+        finally:
+            os.unlink(path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        html = json.loads(out.stdout)
         self.assertIn("Confirm and send", html)
-        self.assertIn("a1b2c3d", html)  # short commit
-        self.assertIn("eeeeeeee", html)  # short hash prefix
+        self.assertIn("a1b2c3d", html)  # short commit from SETUP_PARAMS
+        self.assertIn("eeeeeeee", html)  # short hash prefix from SETUP_PARAMS
+        self.assertNotIn("0000000", html)  # DEPLOY_PINS must not win
         self.assertIn("Values Juniper will check", html)
         self.assertIn("First time", html)
         self.assertIn("Nothing goes out until you press Confirm and send. Juniper then asks Otto to set itself up.",
