@@ -116,13 +116,12 @@ class Station:
             f.write("grok-station\n")
         with open(r.VERSION_FILE, "w") as f:
             f.write("0.13.17\n")
-        # 0.13.17 first-time path reads install pins from admin/web/deploy-pins.js next to VERSION.
-        pins_dir = os.path.join(self.tmp, "admin", "web")
-        os.makedirs(pins_dir)
-        with open(os.path.join(pins_dir, "deploy-pins.js"), "w", encoding="utf-8") as f:
-            f.write('var DEPLOY_PINS = {\n  commit: "%s",\n  update_commit: "%s",\n  files: {\n'
-                    '    "scripts/install-home.sh": "%s"\n  }\n};\n'
-                    % ("a" * 40, "b" * 40, "c" * 64))
+        # 0.13.17 first-time path reads install pins from admin/setup-params.txt next to VERSION.
+        params_dir = os.path.join(self.tmp, "admin")
+        os.makedirs(params_dir)
+        with open(os.path.join(params_dir, "setup-params.txt"), "w", encoding="utf-8") as f:
+            f.write("x https://raw.githubusercontent.com/bwilliam79/grok-station/%s/scripts/install-home.sh'"
+                    " && printf '%%s  %%s\\n' '%s'\n" % ("a" * 40, "c" * 64))
         r.VOICES.clear()
         r.VOICES.update({"ara"})
         r._personas["mtime"] = None

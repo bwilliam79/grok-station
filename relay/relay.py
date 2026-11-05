@@ -6525,18 +6525,20 @@ def station_release():
 
 
 def setup_install_pins():
-    """(template_commit, template_sha256) from admin/web/deploy-pins.js install-home.sh, or (None, None)."""
-    pins_path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "web", "deploy-pins.js")
+    """(template_commit, template_sha256) from admin/setup-params.txt (same literals gen-setup-params writes)."""
+    params_path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "setup-params.txt")
     try:
-        raw = open(pins_path, encoding="utf-8").read(8000)
+        raw = open(params_path, encoding="utf-8").read(12000)
     except OSError:
         return None, None
-    # Prefer the install-home.sh blob pin; COMMIT for curl is the deploy-pins commit (ancestor on main).
-    m_commit = re.search(r'^\s*commit:\s*"([0-9a-f]{40})",\s*$', raw, re.M)
-    m_hash = re.search(r'"scripts/install-home\.sh":\s*"([0-9a-f]{64})"', raw)
-    if not m_commit or not m_hash:
+    m = re.search(
+        r"https://raw\.githubusercontent\.com/[^/]+/grok-station/([0-9a-f]{40})/scripts/install-home\.sh"
+        r"' && printf '%s  %s\\n' '([0-9a-f]{64})'",
+        raw,
+    )
+    if not m:
         return None, None
-    c, h = m_commit.group(1), m_hash.group(1)
+    c, h = m.group(1), m.group(2)
     if not (handoff.setup_field_ok("template_commit", c) and handoff.setup_field_ok("template_sha256", h)):
         return None, None
     return c, h
