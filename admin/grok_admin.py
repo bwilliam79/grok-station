@@ -3797,7 +3797,32 @@ def setup_relay_view(raw):
     return out
 
 
-def setup_public(doc, now, relay=None):
+
+def bot_holds_current_setup(bot, station="", fingerprint="", pub="", pins=None):
+    """True when the bot's signed update status matches this release's instructions (G03 / DESIGN 2b).
+
+    Paired bots that reported instr for the current station release equal to what we would render
+    already hold Station setup (including install pins after Update). Fail closed on any gap.
+    """
+    if not isinstance(bot, dict) or bot.get("paired") is not True:
+        return False
+    try:
+        rel = open(VERSION_FILE, encoding="utf-8").read().strip()
+    except OSError:
+        return False
+    if not rel:
+        return False
+    u = update_view(bot.get("update"))
+    if not u or u.get("release") != rel or not u.get("instr"):
+        return False
+    try:
+        body = render_bot_routine(bot, station or "", fingerprint or "", pub or "", pins)
+        return gs_routine.instr_hash(body) == u["instr"]
+    except Exception:
+        return False
+
+
+def setup_public(doc, now, relay=None, holds=None):
     """Browser view. The setup message is omitted. stuck is Sent for SETUP_STUCK_S seconds with no OK card.
     relay (setup_relay_view) adds the typed relay's display state to a Sent row: relayed, failed or expired."""
     now = time.time() if now is None else now
@@ -3820,6 +3845,8 @@ def setup_public(doc, now, relay=None):
             "stuck": bool(status == "sent" and sent > 0 and (now - sent) >= SETUP_STUCK_S),
             "unknown": row.get("unknown") is True and status not in ("sent", "connected"),
         }
+        if isinstance(holds, dict) and holds.get(slug) is True:
+            rows[slug]["holds_setup"] = True
         rel = relay.get(slug)
         if status == "sent" and isinstance(rel, dict) and rel.get("state") in (
                 "relayed", "failed", "expired", "awaiting_confirm", "needs_details") \
@@ -4045,7 +4072,20 @@ def setup_computer_suggestions(own, main):
 def bots_setup_field():
     got = relay_call("GET", "/admin/bots/setup-relay")
     relay = setup_relay_view(got[1]) if got and got[0] == 200 else {}
-    return setup_public(setup_load(), time.time(), relay)
+    holds = {}
+    try:
+        raw = relay_call("GET", "/admin/bots")
+        if raw and raw[0] == 200 and isinstance(raw[1], dict):
+            pub = raw[1].get("station_pub")
+            pub = "".join(pub.split()) if box_pub_ok(pub) else ""
+            station = station_base()
+            fp = tls_info()["fingerprint"]
+            for b in (safe_bot(x) for x in (raw[1].get("bots") or [])):
+                if b and bot_holds_current_setup(b, station, fp, pub):
+                    holds[b["slug"]] = True
+    except Exception:
+        holds = {}
+    return setup_public(setup_load(), time.time(), relay, holds=holds)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5052,8 +5092,22 @@ class Handler(BaseHTTPRequestHandler):
             if not main:
                 return False
             mode = "home" if ctx.get("modes", {}).get(target) == "home" else "cloud"
-            # Not set up → first-time path (2a) with install pins. held (2b) when row.holds_setup is set.
-            path = "held" if row.get("holds_setup") is True else "first"
+            # G03: path=held when the live bot already holds this release's instructions.
+            holds = False
+            try:
+                raw = relay_call("GET", "/admin/bots")
+                if raw and raw[0] == 200 and isinstance(raw[1], dict):
+                    pub = raw[1].get("station_pub")
+                    pub = "".join(pub.split()) if box_pub_ok(pub) else ""
+                    station = station_base()
+                    fp = tls_info()["fingerprint"]
+                    for b in (safe_bot(x) for x in (raw[1].get("bots") or [])):
+                        if b and b.get("slug") == target:
+                            holds = bot_holds_current_setup(b, station, fp, pub)
+                            break
+            except Exception:
+                holds = False
+            path = "held" if holds else "first"
             got = relay_call("POST", "/admin/bots/setup-relay",
                              {"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode, "path": path},
                              timeout=15)

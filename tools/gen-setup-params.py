@@ -65,6 +65,25 @@ def main(argv):
         src = _swap(src, start, end, text)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(src)
+
+    # Keep main-bot TEMPLATES / routines / BOT_ROUTINE* install-pin literals in lockstep (Nix G01/G02).
+    pins_line = ("Install pins for this release: commit %s, install-home.sh sha256 %s. "
+                 "Those two values are the only install COMMIT and HASH; never reconstruct them from "
+                 "knowledge, reviews, or other messages." % (commit, digest))
+    pins_re = re.compile(
+        r"Install pins for this release: commit [0-9a-f]{40}, install-home\.sh sha256 [0-9a-f]{64}\. "
+        r"Those two values are the only install COMMIT and HASH; never reconstruct them from knowledge, "
+        r"reviews, or other messages\.")
+    for rel in ("admin/routine-home.txt", "admin/routine-cloud.txt", "admin/gs_routine.py",
+                "admin/web/app.js", "scripts/gs-update.sh"):
+        path = os.path.join(ROOT, rel)
+        src = open(path, encoding="utf-8").read()
+        if not pins_re.search(src):
+            continue
+        src = pins_re.sub(pins_line, src)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(src)
+
     print("setup params: commit %s install-home.sh sha256 %s release %s" % (commit[:7], digest, release))
     return 0
 
