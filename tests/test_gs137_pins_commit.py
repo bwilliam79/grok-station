@@ -115,7 +115,7 @@ class GeneratorCannotPinTheWrongCommit(unittest.TestCase):
 
 
 class AncestryRejectsUnreachable(unittest.TestCase):
-    """Pinned commits must be ancestors of HEAD. Fail-closed on pre-rebase / dangling SHAs (G01 class)."""
+    """Pinned commits must be ancestors of HEAD. Fail-closed on dangling or never-existed SHAs."""
 
     def _cdp(self):
         import importlib.util
@@ -123,40 +123,56 @@ class AncestryRejectsUnreachable(unittest.TestCase):
         cdp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cdp)
         return cdp
 
-    def test_ancestry_flags_an_unreachable_install_home_commit(self):
+    def _pins_with_commit(self, text, bad_sha, path):
+        cur = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M).group(1)
+        open(path, "w").write(text.replace('commit: "%s"' % cur, 'commit: "%s"' % bad_sha, 1))
+
+    def _unreachable_commit(self, clone):
+        """A real commit object that is not an ancestor of HEAD (Nix G06)."""
+        tree = subprocess.check_output(["git", "-C", clone, "rev-parse", "HEAD^{tree}"], text=True).strip()
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+               "GIT_AUTHOR_DATE": "1970-01-01T00:00:00+00:00",
+               "GIT_COMMITTER_DATE": "1970-01-01T00:00:00+00:00"}
+        return subprocess.check_output(["git", "-C", clone, "commit-tree", tree, "-m", "x"],
+                                       text=True, env=env).strip()
+
+    def test_ancestry_flags_runtime_unreachable_commit(self):
         cdp = self._cdp()
-        # a6ccb81 exists as an object (pre-rebase) but is not an ancestor of HEAD.
-        bad = "a6ccb819b9bd03934579f472783efdf5605f68a6"
-        self.assertEqual(subprocess.run(["git", "-C", ROOT, "cat-file", "-e", bad + "^{commit}"],
-                                        capture_output=True).returncode, 0)
-        self.assertNotEqual(subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", bad, "HEAD"],
-                                           capture_output=True).returncode, 0)
+        with tempfile.TemporaryDirectory() as d:
+            clone = os.path.join(d, "repo")
+            subprocess.check_call(["git", "clone", "--shared", ROOT, clone],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            bad = self._unreachable_commit(clone)
+            self.assertEqual(len(bad), 40)
+            self.assertNotEqual(subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", bad, "HEAD"],
+                                               capture_output=True).returncode, 0)
+            pins = os.path.join(d, "deploy-pins.js")
+            self._pins_with_commit(open(os.path.join(clone, "admin/web/deploy-pins.js")).read(), bad, pins)
+            old = cdp.ROOT
+            try:
+                cdp.ROOT = clone
+                problems = cdp.ancestry("HEAD", pins_path=pins, rev="HEAD")
+                self.assertTrue(any(bad[:12] in p for p in problems), problems)
+                _, _, check_problems, _ = cdp.check(remote=False, rev="HEAD", pins_path=pins)
+                self.assertTrue(any(bad[:12] in p for p in check_problems), check_problems)
+            finally:
+                cdp.ROOT = old
+
+    def test_ancestry_fails_closed_on_never_existed_sha(self):
+        cdp = self._cdp()
+        bad = "0" * 40
         with tempfile.TemporaryDirectory() as d:
             pins = os.path.join(d, "deploy-pins.js")
-            # Minimal pins file: deploy-pins commit stays reachable; we only need pinned_commits to
-            # read install-home at rev. Point a temp install-home via a fake rev by patching the
-            # install-home blob path: write a pins file and a side install-home is hard. Instead call
-            # ancestry after swapping HEAD's install-home COMMIT through a worktree file is messy.
-            # Directly: ancestry reports any pinned_commits value not on main_ref.
-            open(pins, "w").write(open(PINS).read())
-            # Inject unreachable SHA as deploy-pins commit.
-            text = open(PINS).read()
-            cur = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M).group(1)
-            open(pins, "w").write(text.replace('commit: "%s"' % cur, 'commit: "%s"' % bad, 1))
+            self._pins_with_commit(open(PINS).read(), bad, pins)
             problems = cdp.ancestry("HEAD", pins_path=pins, rev="HEAD")
             self.assertTrue(any(bad[:12] in p for p in problems), problems)
+            _, _, check_problems, _ = cdp.check(remote=False, rev="HEAD", pins_path=pins)
+            self.assertTrue(any(bad[:12] in p for p in check_problems), check_problems)
 
-    def test_check_includes_ancestry_against_rev(self):
+    def test_live_tree_ancestry_is_clean(self):
         cdp = self._cdp()
         self.assertEqual(cdp.ancestry("HEAD"), [])
-        with tempfile.TemporaryDirectory() as d:
-            pins = os.path.join(d, "deploy-pins.js")
-            text = open(PINS).read()
-            cur = re.search(r'^  commit: "([0-9a-f]{40})",$', text, re.M).group(1)
-            bad = "a6ccb819b9bd03934579f472783efdf5605f68a6"
-            open(pins, "w").write(text.replace('commit: "%s"' % cur, 'commit: "%s"' % bad, 1))
-            _, _, problems, _ = cdp.check(remote=False, rev="HEAD", pins_path=pins)
-            self.assertTrue(any(bad[:12] in p for p in problems), problems)
 
 
 if __name__ == "__main__":
