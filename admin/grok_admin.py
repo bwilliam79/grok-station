@@ -3801,8 +3801,8 @@ def setup_relay_view(raw):
 def bot_holds_current_setup(bot, station="", fingerprint="", pub="", pins=None):
     """True when the bot's signed update status matches this release's instructions (G03 / DESIGN 2b).
 
-    Paired bots that reported instr for the current station release equal to what we would render
-    already hold Station setup (including install pins after Update). Fail closed on any gap.
+    The signed hash must attest the complete target install procedure, not just the
+    forwarding routine. Current Update-only routines lack that procedure, so fail closed.
     """
     if not isinstance(bot, dict) or bot.get("paired") is not True:
         return False
@@ -3817,6 +3817,12 @@ def bot_holds_current_setup(bot, station="", fingerprint="", pub="", pins=None):
         return False
     try:
         body = render_bot_routine(bot, station or "", fingerprint or "", pub or "", pins)
+        # An Update ack only proves adoption of body. A forwarding routine plus pins
+        # is not the target's install/confirmation procedure (Nix G03 rev1.1).
+        with open(os.path.join(os.path.dirname(__file__), "setup-params.txt"), encoding="utf-8") as fh:
+            target_setup = fh.read().strip()
+        if not target_setup or target_setup not in body:
+            return False
         return gs_routine.instr_hash(body) == u["instr"]
     except Exception:
         return False

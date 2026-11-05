@@ -61,6 +61,19 @@ class G02HomeMainPinBind(unittest.TestCase):
 
 
 class G03HoldsSetupWired(unittest.TestCase):
+    def test_update_only_never_attests_target_install_procedure(self):
+        # Actual Update render + signed status hash: only the main routine was adopted.
+        bot = {"slug": "otto", "paired": True, "key_mode": "cloud"}
+        station, fp, pub = "https://station-demo.local", "ab" * 32, "A" * 43 + "="
+        body = ga.render_bot_routine(bot, station, fp, pub)
+        bot["update"] = {"release": ga.version(), "instr": gs_routine.instr_hash(body)}
+        held = ga.bot_holds_current_setup(bot, station, fp, pub)
+        from test_gs1317_nopaste_setup import _payload
+        payload = _payload("held" if held else "first")
+        self.assertFalse(held, "Update only attests forwarding, not target install setup")
+        self.assertIn("template_commit", payload)
+        self.assertIn("template_sha256", payload)
+
     def test_setup_public_exposes_holds_setup(self):
         self.assertTrue(callable(getattr(ga, "bot_holds_current_setup", None)))
         doc = {"rows": {"otto": {"name": "Otto", "wake": "Hey Otto", "computer": "", "status": "not_set_up",
