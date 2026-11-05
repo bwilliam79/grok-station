@@ -108,9 +108,11 @@ class RowSetup(unittest.TestCase):
         self.assertIn('role="region"', p)
         self.assertIn('aria-label="Set up Otto"', p)
         self.assertIn('id="setp-otto"', p)
-        self.assertIn("What Juniper sends Otto", p)
-        self.assertIn("Reply on the station as", p)  # the real setup message, not a stand-in
-        self.assertIn("You see this exact message before it goes. Nothing is sent until you press Send setup.", p)
+        self.assertIn("Set up Otto through Juniper", p)  # 0.13.16 typed setup_relay
+        self.assertIn("certificate pin and public key", p)
+        self.assertIn("Nothing is sent until you press Send setup. Name, wake word and computer stay on this page only.", p)
+        self.assertNotIn("What Juniper sends Otto", p)
+        self.assertNotIn("You see this exact message before it goes", p)
         self.assertIn('data-act="send"', p)
         self.assertIn(">Send setup<", p)
         self.assertIn(">Cancel<", p)
@@ -124,7 +126,7 @@ class RowSetup(unittest.TestCase):
 
     def test_sent_and_connected_rows(self):
         st = _run(SETUP, "setupRowStatus(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
-        self.assertEqual(st["text"], "Setup request sent to Otto \u00b7 waiting for its reply")  # 0.13.15 Noor bots-row-sent rev1
+        self.assertEqual(st["text"], "Setup request sent to Juniper \u00b7 waiting for its reply")  # 0.13.16 design §6 {main}
         a = _run(SETUP, "setupRowActionHTML(%s, %s)" % (json.dumps(_row(status="sent", sent_at=900)), json.dumps(OPTS)))
         self.assertIn(">Send again in 4 min<", a)  # 0.13.15 Noor QA: sent 100 s ago, countdown in the button
         self.assertNotIn("btn-setup--needs", a)

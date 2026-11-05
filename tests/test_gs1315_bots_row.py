@@ -31,7 +31,7 @@ class Rev3(unittest.TestCase):
 class SentCopy(unittest.TestCase):
     """Noor 0.13.15 QA: one helper line, countdown in the disabled button, 409 replaces the helper, fixed height."""
     def test_labels(self):
-        self.assertIn('"Setup request sent to " + bot', JS)
+        self.assertIn('"Setup request sent to " + main', JS)
         self.assertIn('" \\u00b7 waiting for its reply"', JS)
         self.assertIn('bot + "\\u2019s webhook details fill in here when it replies."', JS)
         self.assertNotIn("send the request again or enter the details yourself", JS)

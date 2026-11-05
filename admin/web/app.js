@@ -3037,8 +3037,8 @@ function setupCopy(main, bot) {
   bot = bot || "this bot";
   return {
     title: "Set up bots",
-    intro: "Each bot gets its own setup. Open Setup steps to read exactly what " + main + " passes on.",
-    note: "Send setup passes these steps to " + bot + " through " + main + ". Highlighted parts are only for " + bot + ".",
+    intro: "Each bot gets its own setup. Open Set up to see what " + main + " will pass on.",
+    note: "Send setup asks " + main + " to pass this station\u2019s values to " + bot + ".",
     connected: "Connected · Updates off",
     hintTitle: bot + " connected. Updates are off.",
     hintBody: "Turn on Updates in a bot's row to see it on the station.",
@@ -3230,7 +3230,8 @@ function setupRowStatus(row, opts) {
     if (row.relay === "relayed") return {icon: "clock", colour: "lav", text: main + " passed it to " + bot + " \u00b7 waiting for " + bot + "\u2019s details", helper: setupSentHelper(row, opts)};
     if (row.relay === "failed") return {icon: "dash", colour: "mut", text: "\u26a0 " + main + " couldn\u2019t pass it on."};
     if (row.relay === "expired") return {icon: "dash", colour: "mut", text: "\u26a0 No reply from " + main + "."};
-    return {icon: "clock", colour: "lav", text: "Setup request sent to " + bot + " \u00b7 waiting for its reply", helper: setupSentHelper(row, opts)};
+    // Waiting for the main bot's status ack (design §6 {main}), not the target's details yet.
+    return {icon: "clock", colour: "lav", text: "Setup request sent to " + main + " \u00b7 waiting for its reply", helper: setupSentHelper(row, opts)};
   }
   if (m.status === "connected" || m.status === "already") return {icon: "ok", colour: "teal", text: "Connected"};
   return {icon: "dash", colour: "mut", text: "Not connected"};
@@ -3250,7 +3251,12 @@ function setupResendWaitMin(row, opts) {
 }
 function setupSentHelper(row, opts) {
   const bot = (row && row.name) || "this bot";
-  return bot + "\u2019s webhook details fill in here when it replies.";
+  const main = (opts && opts.mainName) || "your main bot";
+  // Relayed: waiting for the target's pasted details. Sent (no ack yet): waiting for the main bot.
+  if (row && row.relay === "relayed") {
+    return bot + "\u2019s webhook details fill in here when it replies.";
+  }
+  return main + " checks this station\u2019s values and passes them to " + bot + ".";
 }
 function setupThrottleLine(bot, mins) {
   return "\u26a0 Still waiting for " + (bot || "this bot") + ". Try again in " + Math.max(1, mins | 0) + " min.";
@@ -3281,8 +3287,9 @@ function setupRowActionHTML(row, opts) {
     // Noor bots-row-sent rev1: Send request again, Enter details myself, then the row's Remove. All secondary.
     const bot = esc(row.name || "this bot");
     const wait = setupResendWaitMin(row, opts);  // live minutes; the list repaints every few seconds
+    const mainEsc = esc((opts && opts.mainName) || "your main bot");
     return '<span class="setacts sent"><button class="btn sm sec" type="button" data-act="again" data-slug="' + slug + '"' +
-      ' aria-label="Send the setup request to ' + bot + (wait ? " again, available in " + wait + " minutes" : " again") + '"' +
+      ' aria-label="Send the setup request to ' + mainEsc + (wait ? " again, available in " + wait + " minutes" : " again") + '"' +
       (m.sendBlocked || wait ? ' aria-disabled="true"' : "") + ">" + (wait ? "Send again in " + wait + " min" : "Send request again") + "</button>" +
       '<button class="btn sm sec" type="button" data-act="paste" data-slug="' + slug + '" aria-label="Enter ' + bot +
       '\'s webhook details myself">Enter details myself</button></span>';
@@ -3300,17 +3307,23 @@ function setupRowPanelHTML(row, opts) {
   const slug = esc(row.slug || "");
   const failed = m.status === "failed" || !!row.unknown;
   const blocked = !!opts.sendBlocked;
-  const parts = setupSteps(Object.assign({}, row, {editDisabled: m.editDisabled}));
+  // 0.13.16: typed setup_relay sends station values only. Free-text steps are gone; this panel explains
+  // what happens. Name / wake / computer stay on this page (Details) and are not relayed.
+  const parts = [
+    esc(main) + " gets this station\u2019s address, certificate pin and public key (filled in here, not typed by you).",
+    esc(main) + " checks them against its own copy, then passes them to " + esc(bot) + ".",
+    esc(bot) + " shows you a confirm card in its chat before it installs anything."
+  ];
   const err = failed ? '<p class="seterr" role="alert"><span class="gl" aria-hidden="true">\u26a0\ufe0e</span><b>Couldn\'t send.</b> ' +
     esc(main) + " didn't answer. Check " + esc(main) + " is online, then try again.</p>" : "";
   const hintId = id + "-h";
   const hint = blocked ? '<p class="help" id="' + esc(hintId) + '">' + esc(setupCopy(main, bot).block) + "</p>" : "";
   const act = failed ? "retry" : "send";
   return '<div class="setpanel' + (failed ? " is-err" : "") + '" role="region" aria-label="Set up ' + esc(bot) + '" id="' + esc(id) +
-    '" data-slug="' + slug + '">' + err + '<h3 class="lbl">What ' + esc(main) + " sends " + esc(bot) + "</h3>" +
+    '" data-slug="' + slug + '">' + err + '<h3 class="lbl">Set up ' + esc(bot) + " through " + esc(main) + "</h3>" +
     '<ol class="steps">' + parts.map(p => "<li>" + p + "</li>").join("") + "</ol>" +
     '<div class="setdetslot" data-detfor="' + slug + '"' + (m.editDisabled ? ' data-off="1"' : "") + "></div>" +
-    '<p class="help">You see this exact message before it goes. Nothing is sent until you press Send setup.</p>' + hint +
+    '<p class="help">Nothing is sent until you press Send setup. Name, wake word and computer stay on this page only.</p>' + hint +
     '<div class="acts"><button class="btn p sm" type="button" data-act="' + act + '" data-slug="' + slug + '"' +
     (blocked ? ' aria-disabled="true" aria-describedby="' + esc(hintId) + '"' : "") + ">" + (failed ? "Try again" : "Send setup") + "</button>" +
     '<button class="btn g sm" type="button" data-setcancel="' + slug + '">Cancel</button></div></div>';

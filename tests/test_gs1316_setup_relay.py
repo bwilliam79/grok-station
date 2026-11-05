@@ -794,8 +794,25 @@ class RowStates(unittest.TestCase):
         self.assertEqual(s["text"], "\u26a0 No reply from Rhea.")
         self.assertIn(">Send request again<", a)
         s, a = self._status(row)
-        self.assertEqual(s["text"], "Setup request sent to Otto \u00b7 waiting for its reply")
+        self.assertEqual(s["text"], "Setup request sent to Rhea \u00b7 waiting for its reply")
+        self.assertEqual(s.get("helper"), "Rhea checks this station\u2019s values and passes them to Otto.")
         self.assertIn(">Send again in 4 min<", a)
+        s_rel, _ = self._status(dict(row, relay="relayed"))
+        self.assertEqual(s_rel.get("helper"), "Otto\u2019s webhook details fill in here when it replies.")
+
+    def test_panel_describes_typed_relay_not_free_text(self):
+        # Must-fix: the expand panel used to show free-text steps and "this exact message", but
+        # 0.13.16 sends station values only. Before this fix the panel still lied.
+        from test_gs1311_bots_merge import SETUP, _run
+        html = _run(SETUP, "setupRowPanelHTML({slug:'otto',name:'Otto',status:'not_set_up'}, {mainName:'Rhea'})")
+        self.assertIn("Set up Otto through Rhea", html)
+        self.assertIn("certificate pin and public key", html)
+        self.assertIn("confirm card in its chat", html)
+        self.assertIn("Name, wake word and computer stay on this page only", html)
+        self.assertNotIn("You see this exact message before it goes", html)
+        self.assertNotIn("What Rhea sends Otto", html)
+        self.assertNotIn("Show the station owner a confirm card in this chat", html)
+
 
 
 if __name__ == "__main__":
