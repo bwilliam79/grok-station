@@ -62,6 +62,8 @@ class DisplayRev1(unittest.TestCase):
         self.assertIn('id="sun"', self.panel)
         self.assertIn("Fallback times", self.panel)
         self.assertIn("no reading", self.panel)
+        self.assertIn("Used when the sensor has no reading.", self.panel)
+        self.assertNotIn("Fallback times. Used when", self.panel)
         self.assertIn("Schedule window. Not the Night clock hours.", self.panel)
         gate = self.panel.split("const applyMode", 1)[1].split("const putDisp", 1)[0]
         self.assertIn("auto-sensor", gate)

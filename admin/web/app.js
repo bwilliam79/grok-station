@@ -2074,7 +2074,7 @@ async function displayPanel(el) {
     $("#dtimes", el).hidden = m !== "schedule" && m !== "auto-sensor";
     $("#dtimeslab", el).hidden = m !== "auto-sensor";
     $("#dtimesh", el).textContent = m === "auto-sensor"
-      ? "Fallback times. Used when the sensor has no reading."
+      ? "Used when the sensor has no reading."
       : "Schedule window. Not the Night clock hours.";
     $("#sun", el).hidden = m !== "sun";
     $("#nhours", el).hidden = !$("#non", el).classList.contains("on");
