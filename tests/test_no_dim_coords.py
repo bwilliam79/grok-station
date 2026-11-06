@@ -8,7 +8,8 @@ class NoDimCoords(unittest.TestCase):
         js = read("admin", "web", "app.js")
         for word in ("DIM_LAT", "DIM_LON", 'id="dlat"', 'id="dlon"', ">Latitude", ">Longitude", "Latitude <", "Longitude <"):
             self.assertNotIn(word, js)
-        self.assertIn("Set the location on Time and location first.", js)
+        self.assertIn("Set the location on ", js)
+        self.assertIn(">Time and location</a> first.", js)
 
     def test_only_retired_mentions_remain_in_code(self):
         helper = read("admin", "grok-station-helper")

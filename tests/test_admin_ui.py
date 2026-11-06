@@ -680,12 +680,12 @@ class AdminUI(unittest.TestCase):
         self.assertIn("dataset.saved", watch)
 
         # A Save that POST/PUTs and already called markSaved also marks saving, then unsaved on failure.
+        # Display is separate: its PUT lives in putDisp, and #dsave calls that after markSaving().
         for call in (
             'api("POST", "/api/network/hostname"',
             'api("PUT", "/api/updates/autocheck"',
             'api("PUT", "/api/settings/time"',
             'api("PUT", "/api/settings/audio"',
-            'api("PUT", "/api/settings/display"',
             'api("PUT", "/api/cards"',
             'api("POST", "/api/xai-key"',
             'api("PUT", "/api/privacy"',
@@ -697,6 +697,18 @@ class AdminUI(unittest.TestCase):
             self.assertGreater(i, 0, call)
             self.assertIn("markSaving()", js[max(0, i - 400):i], call)
             self.assertIn("markUnsaved()", js[i:i + 900], call)
+
+        save = js.split('$("#dsave", el).onclick = async () => {', 1)
+        self.assertEqual(len(save), 2, "display save handler")
+        handler = save[1].split("\n}", 1)[0]
+        self.assertIn("markSaving()", handler)
+        self.assertIn("putDisp(body)", handler)
+        self.assertIn("if (!displayOk || !c.ok) { markUnsaved();", handler)
+        put = js.split("const putDisp = async body => {", 1)
+        self.assertEqual(len(put), 2, "putDisp")
+        put_body = put[1].split("\n  };", 1)[0]
+        self.assertIn('api("PUT", "/api/settings/display"', put_body)
+        self.assertNotIn("markSaving()", put_body)
 
         self.assertNotIn('<p class="help">Loading…</p>', js)
         skel = js.split("function skel(", 1)[1].split("async function pageUpdates", 1)[0]

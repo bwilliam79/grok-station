@@ -5,6 +5,10 @@ Pass when HEAD~1 has no VERSION file (including the first commit that adds one,
 and a repository with only that commit). Fail when HEAD has no VERSION file,
 when it is not MAJOR.MINOR.PATCH, or when it is not newer.
 
+A release commit may keep the same VERSION. Its subject is
+"release: update manifest for X" or "release: re-pin deploy files for X", and X
+is that VERSION. reused_release still fails when a later commit changes code.
+
 The comparison matches tools/semver-order.sh and admin version_order: numeric
 MAJOR.MINOR.PATCH, and a non-semver parent counts as older than a semver HEAD.
 """
@@ -14,6 +18,7 @@ import subprocess
 import sys
 
 _SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_RELEASE_SUBJECT = re.compile(r"^release: (?:update manifest|re-pin deploy files) for (\d+\.\d+\.\d+)\b")
 
 
 def semver_tuple(value):
@@ -73,11 +78,18 @@ def problem(repo):
     if prev is None:
         return None
     if version_order(prev, head) != "newer":
+        # Manifest and re-pin commits close the release that already bumped VERSION.
+        subject = subprocess.run(
+            ["git", "-C", repo, "log", "-1", "--format=%s"],
+            capture_output=True, text=True,
+        )
+        match = _RELEASE_SUBJECT.match(subject.stdout.strip()) if subject.returncode == 0 else None
+        if match and match.group(1) == head.strip() and version_order(prev, head) == "same":
+            return None
         return f"VERSION {head.strip()} is not newer than {prev.strip()}."
     return None
 
 
-_RELEASE_SUBJECT = re.compile(r"^release: (?:update manifest|re-pin deploy files) for (\d+\.\d+\.\d+)\b")
 _NOTES_ONLY = ("docs/", "tests/", "README.md")
 
 

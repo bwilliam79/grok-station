@@ -134,6 +134,29 @@ class CheckVersion(unittest.TestCase):
             _commit(repo, "not semver")
             self.assertIn("MAJOR.MINOR.PATCH", check_version.problem(repo))
 
+    def test_release_commit_may_keep_the_version(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _git(repo, "init", "-q")
+            os.makedirs(os.path.join(repo, "docs"))
+            open(os.path.join(repo, "docs", "versioning.md"), "w").write("## 0.1.1\n")
+            open(os.path.join(repo, "VERSION"), "w").write("0.1.0\n")
+            open(os.path.join(repo, "app.js"), "w").write("a\n")
+            _commit(repo, "start")
+            open(os.path.join(repo, "VERSION"), "w").write("0.1.1\n")
+            _commit(repo, "feature")
+            _commit(repo, "release: update manifest for 0.1.1")
+            self.assertIsNone(check_version.problem(repo))
+            _commit(repo, "release: re-pin deploy files for 0.1.1")
+            self.assertIsNone(check_version.problem(repo))
+            self.assertIsNone(check_version.reused_release(repo))
+            self.assertEqual(subprocess.run(
+                [sys.executable, os.path.join(ROOT, "tools", "check-version.py"), repo],
+                capture_output=True).returncode, 0)
+            open(os.path.join(repo, "app.js"), "w").write("b\n")
+            _commit(repo, "more code")
+            self.assertIn("not newer", check_version.problem(repo))
+            self.assertIn("app.js", check_version.reused_release(repo))
+
     def test_non_semver_parent_can_move_onto_semver(self):
         with tempfile.TemporaryDirectory() as repo:
             _git(repo, "init", "-q")
