@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.27
+Display settings are grouped into Night clock, Timing, Brightness, and Units, with the old spacing back. Night clock and Fade save with the rest of the page, and the page warns if you leave with unsaved changes. In Light sensor mode the fallback dim times stay on screen. A refused station post says whether the bot has no key, is not paired, the Updates switch is off, or the station could not be reached. Press Update on each bot after installing.
+
 ### 0.13.26
 First-time Set up can send again. Install and Update now copy the setup parameters the station needs, so Confirm and send on an unpaired bot reaches the main bot instead of stopping at "bad request". If those parameters are missing, the panel says "missing install pins". If the station address, fingerprint, or key is missing, it says "station state". On the Bots page, the wake-word switch and the Updates switch stay on the right edge of their columns, including Train wake word, so a longer phrase does not shift them. Press Update on each bot after installing.
 

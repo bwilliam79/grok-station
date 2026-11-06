@@ -70,11 +70,11 @@ They check that the layout fits. Not every size has been tried on a real panel.
 
 ## Admin Display page
 
-The admin page groups the controls under four headings:
+The admin page groups the controls under four headings. Every control, including Night clock and Fade, waits for one Save.
 
-- **Clock and night clock.** The night-clock switch, and Night clock from / until.
-- **Screens.** Message hold time, card rotation, and fade between screens.
-- **Brightness.** Mode, day and night levels, and Dim the screen from / until, plus sunrise offsets and coordinates.
+- **Night clock.** The night-clock switch, and From / Until. The hours show only while the switch is on.
+- **Timing.** Message hold, Update rotation, Score card hold, and Fade between screens.
+- **Brightness.** Mode (Off, Schedule, Sunrise and sunset, Light sensor). Day level and Night level hide when Mode is Off. Dim from / until shows for Schedule, and stays visible as Fallback times in Light sensor mode, including when the sensor has a reading. Sunrise and sunset offsets show only for that mode.
 - **Units.** Temperature.
 
 **Advanced: team logo sources** is the last block. The two live previews, day and night, are the same size and shape, stacked, with a label under each.

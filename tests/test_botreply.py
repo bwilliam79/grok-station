@@ -488,7 +488,8 @@ class SealPost(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "GROK_STATION_BOT_KEY"}
         p = subprocess.run([sys.executable, "-c", code], input=body, capture_output=True, text=True, env=env, timeout=30)
         self.assertNotIn("nacl", p.stderr.lower())
-        self.assertIn("tls error", p.stderr)
+        self.assertIn("refused: station unreachable", p.stderr)
+        self.assertNotIn("tls error", p.stderr)
 
     def test_seal_avatar_then_post_avatar(self):
         seed = _b64(bytes(self.signer))

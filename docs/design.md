@@ -247,7 +247,7 @@ Brightness is a percent on `/sys/class/backlight` when that file is writable. Ot
 
 With the night-clock toggle on, schedule, sunrise, and full dark (at or below the night lux) use the night face: black, clock `#9A7752`, secondary `#5E4934`, clock 440 px @1080 (0.407 × short edge, 2026-10-22 refresh). Partial light keeps the day screen and only moves the brightness. The toggle off keeps the day screen.
 
-The Display page saves mode, levels, times, and coordinates rounded to 2 decimals. A problem on that page is an amber **Needs attention** banner, not red. That includes a light sensor that is present but not reporting a reading.
+The Display page saves mode, levels, times, Night clock, and Fade together. A problem on that page is an amber **Needs attention** banner, not red. That includes a light sensor that is present but not reporting a reading. In Light sensor mode the fallback dim times stay on the page.
 
 ## 9. Designing new features
 New features are designed **to fit these principles and tokens first**. They don't arrive with their own look.

@@ -488,6 +488,7 @@ class _Pinned(http.client.HTTPSConnection):
 
 
 # 0.13.0: one line per refusal reason. Fixed text only; the reply is never echoed.
+# 0.13.27: no key, not paired, and the Updates switch are named. Unknown text stays "refused".
 REFUSAL_LINES = {
     "pii": "refused: blocked by station PII filter (personal info in reply)",
     "secret": "refused: looks like a secret",
@@ -495,6 +496,11 @@ REFUSAL_LINES = {
     "expired": "refused: request expired",
     "duplicate": "refused: already answered",
     "schema": "refused: reply format not accepted",
+    "nokey": "refused: no key",
+    "revoked": "refused: not paired",
+    "killed": "refused: not paired",
+    "unknown": "refused: not paired",
+    "updates_off": "refused: switch off",
 }
 
 
@@ -508,8 +514,28 @@ def reason_from_body(raw):
         doc = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     except Exception:
         return None
-    reason = doc.get("reason") if isinstance(doc, dict) else None
+    if not isinstance(doc, dict):
+        return None
+    reason = doc.get("reason")
+    if reason in REFUSAL_LINES:
+        return reason
+    err = doc.get("error")
+    return err if err in REFUSAL_LINES else None
+
+
+def post_failure(status, reason):
+    """Reason code for a failed post, or None when the line stays a bare refused."""
+    if status == 0:
+        return "unreachable"
     return reason if reason in REFUSAL_LINES else None
+
+
+def _require_paired_key(slug):
+    """A missing key file is "no key". A key that is there but not 0600 stays a bare refusal."""
+    path = key_path(slug)
+    if not os.path.lexists(path):
+        raise Refused("nokey")
+    _require_file(path, 0o600)
 
 def post_once(endpoint, body, pin, path="/voice/reply", out=None):
     """Exactly one POST. path is /voice/reply, /voice/show, or /voice/avatar. Raises on a pin miss. Does not retry."""
@@ -677,7 +703,7 @@ def cmd_reply(slug, request_id, kind, interim=False):
     root = root_dir()
     _require_dir(root, 0o700)
     _require_dir(keys_dir(), 0o700)
-    _require_file(key_path(slug), 0o600)
+    _require_paired_key(slug)
     _require_file(config_path(slug), 0o600)
     for path in (sent_path(), log_path()):
         if os.path.lexists(path):
@@ -705,7 +731,7 @@ def cmd_reply(slug, request_id, kind, interim=False):
         ms = int((time.monotonic() - t0) * 1000)
         append_log(request_id, slug, status, ms)
         if status != 200:
-            raise Refused("unreachable" if status == 0 else got.get("reason"))
+            raise Refused(post_failure(status, got.get("reason")))
         return 0
     finally:
         _wipe(seed)
@@ -724,7 +750,7 @@ def cmd_avatar(slug, voice=None):
     root = root_dir()
     _require_dir(root, 0o700)
     _require_dir(keys_dir(), 0o700)
-    _require_file(key_path(slug), 0o600)
+    _require_paired_key(slug)
     _require_file(config_path(slug), 0o600)
     for path in (sent_path(), log_path()):
         if os.path.lexists(path):
@@ -742,15 +768,15 @@ def cmd_avatar(slug, voice=None):
         except Exception:
             raise Refused()
         t0 = time.monotonic()
-        status = 0
+        status, got = 0, {}
         try:
-            status = post_once(endpoint, body, pin, "/voice/avatar")
+            status = post_once(endpoint, body, pin, "/voice/avatar", out=got)
         except Exception:
             status = 0
         ms = int((time.monotonic() - t0) * 1000)
         append_avatar_log(slug, status, ms)
         if status != 200:
-            raise Refused()
+            raise Refused(post_failure(status, got.get("reason")))
         return 0
     finally:
         _wipe(seed)
@@ -775,7 +801,7 @@ def cmd_show(slug):
     root = root_dir()
     _require_dir(root, 0o700)
     _require_dir(keys_dir(), 0o700)
-    _require_file(key_path(slug), 0o600)
+    _require_paired_key(slug)
     _require_file(config_path(slug), 0o600)
     for path in (sent_path(), log_path()):
         if os.path.lexists(path):
@@ -792,13 +818,13 @@ def cmd_show(slug):
             raise
         except Exception:
             raise Refused()
-        status = 0
+        status, got = 0, {}
         try:
-            status = post_once(endpoint, body, pin, "/voice/show")
+            status = post_once(endpoint, body, pin, "/voice/show", out=got)
         except Exception:
             status = 0
         if status != 200:
-            raise Refused()
+            raise Refused(post_failure(status, got.get("reason")))
         return 0
     finally:
         _wipe(seed)
@@ -866,7 +892,7 @@ def _setup_paths(slug):
     root = root_dir()
     _require_dir(root, 0o700)
     _require_dir(keys_dir(), 0o700)
-    _require_file(key_path(slug), 0o600)
+    _require_paired_key(slug)
     _require_file(config_path(slug), 0o600)
     for path in (sent_path(), log_path()):
         if os.path.lexists(path):
@@ -903,7 +929,7 @@ def cmd_setup_ack(slug, request_id, status, reason=None):
             status_code = 0
         append_log(request_id, slug, status_code, int((time.monotonic() - t0) * 1000))
         if status_code != 200:
-            raise Refused("unreachable" if status_code == 0 else got.get("reason"))
+            raise Refused(post_failure(status_code, got.get("reason")))
         return 0
     finally:
         _wipe(seed)

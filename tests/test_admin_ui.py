@@ -318,9 +318,11 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn('$("#non", el).onclick = $("#fade", el).onclick', js)
         disp = js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
         pre, post = disp.split('$("#dsave", el).onclick', 1)
-        self.assertIn("GROK_STATION_NIGHT", pre)
-        self.assertIn("GROK_STATION_FADE", pre)
-        self.assertNotIn("GROK_STATION_FADE", post)
+        # 0.13.27: Night clock and Fade join the shared Save. Other toggles still apply on click.
+        self.assertNotIn("putDisp({GROK_STATION_NIGHT", pre)
+        self.assertNotIn("putDisp({GROK_STATION_FADE", pre)
+        self.assertIn("GROK_STATION_NIGHT", post)
+        self.assertIn("GROK_STATION_FADE", post)
         toggles = _fn(js, "bindWakeToggles")
         self.assertLess(toggles.find("setTog"), toggles.find('api("PUT"'))
         self.assertIn("/api/wakewords/", toggles)
@@ -911,25 +913,23 @@ class Release0112UI(unittest.TestCase):
 
     def test_display_groups_previews_and_keeps_both_clocks(self):
         panel = self.js.split("async function displayPanel", 1)[1].split("async function xaiKeyPanel", 1)[0]
-        # Heading text, not the earlier "Brightness is Off" help line.
-        order = [">Clock and night clock<", ">Screens<", ">Brightness<", ">Units<", "Advanced: team logo sources"]
+        order = [">Night clock<", ">Timing<", ">Brightness<", ">Units<", "Advanced: team logo sources"]
         idx = [panel.index(title) for title in order]
         self.assertEqual(idx, sorted(idx))
         self.assertGreater(panel.index("Advanced: team logo sources"), panel.index('id="dun"'))
         self.assertGreater(panel.index('id="dsave"'), panel.index("Advanced: team logo sources"))
-        self.assertIn("Night clock from", panel)
-        self.assertIn("Dim the screen from", panel)
-        self.assertIn("These hours apply only when Brightness is Off.", panel)
-        self.assertIn("They are not the Night clock hours.", panel)
-        self.assertIn("Schedule, sunrise, and a light sensor ignore these hours.", panel)
+        self.assertIn('aria-label="Night clock from"', panel)
+        self.assertIn(">Dim from <", panel)
+        self.assertIn("Used only while Brightness is Off.", panel)
+        self.assertIn("Schedule window. Not the Night clock hours.", panel)
         self.assertNotIn("A dim clock overnight.", panel)
-        self.assertIn("clearAdvFocus", panel)
-        self.assertIn(".blur()", panel)
+        self.assertNotIn("clearAdvFocus", panel)
+        self.assertNotIn(".blur()", panel)
         self.assertIn('class="prevstack"', panel)
         self.assertIn('class="prevframe"', panel)
         self.assertLess(panel.index('id="pv"'), panel.index('id="nprev"'))
         self.assertIn(">Day clock<", panel)
-        self.assertIn("Example night clock. The black layer is the night brightness.", panel)
+        self.assertIn("Example night clock. The black layer is the night level.", panel)
         frame = self.css.split(".prevstack .prevframe{", 1)[1].split("}", 1)[0]
         self.assertIn("aspect-ratio:3/2", frame)
         self.assertIn("width:100%", frame)
@@ -937,9 +937,9 @@ class Release0112UI(unittest.TestCase):
         self.assertIn("position:absolute", both)
         self.assertIn("width:100%", both)
         self.assertIn("height:100%", both)
-        focus = self.css.split(".disp-adv:focus,.disp-adv summary:focus{", 1)[1].split("}", 1)[0]
-        self.assertIn("outline:none", focus)
-        self.assertIn("outline:2px solid var(--gs-teal)", self.css.split(".disp-adv summary:focus-visible{", 1)[1].split("}", 1)[0])
+        focus = self.css.split(".disp-adv summary:focus-visible{", 1)[1].split("}", 1)[0]
+        self.assertIn("outline:2px solid var(--gs-teal)", focus)
+        self.assertIn("outline-offset:2px", focus)
 
     def test_saved_location_is_text_until_change(self):
         time = self.js.split("async function timePanel", 1)[1].split("\nfunction soundLabel", 1)[0]
@@ -958,7 +958,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1049,12 +1049,12 @@ class Release0113UI(unittest.TestCase):
         self.assertIn("dispbody", panel)
         self.assertIn('class="card dispprev"', panel)
         self.assertIn('class="prevstack"', panel)
-        screens = panel.split(">Screens<", 1)[1].split(">Brightness<", 1)[0]
-        self.assertIn('class="pair"', screens)
-        self.assertIn('id="hold"', screens)
-        self.assertIn('id="urot"', screens)
-        self.assertIn(">Update rotation<", screens)
-        self.assertNotIn('id="crot"', screens)
+        timing = panel.split(">Timing<", 1)[1].split(">Brightness<", 1)[0]
+        self.assertNotIn('class="pair"', timing)
+        self.assertIn('id="hold"', timing)
+        self.assertIn('id="urot"', timing)
+        self.assertIn(">Update rotation<", timing)
+        self.assertNotIn('id="crot"', timing)
         self.assertIn("[10, 15, 20, 30, 45, 60]", panel)
         self.assertIn('GROK_STATION_CARD_ROTATE || "20"', panel)
         snippet = panel[panel.index("const ROT_CHOICES"):panel.index("const [nf, nt]")]
@@ -1076,7 +1076,7 @@ class Release0113UI(unittest.TestCase):
         self.assertIn('id="dnight"', bright)
         # Item 17: previews get about a third of the page when wide, and go above the form when narrow.
         wide = self.css.split("@media (min-width:1200px)", 1)[1].split("@media", 1)[0]
-        self.assertIn("grid-template-columns:minmax(0,2fr) minmax(280px,1fr)", wide)
+        self.assertIn("grid-template-columns:minmax(0,2fr) minmax(300px,1fr)", wide)
         self.assertIn(".dispprev{position:sticky;top:var(--sp-2)}", wide)
         self.assertIn("@media (max-width:1199px){.dispprev{order:-1}}", self.css)
         self.assertIn(".dispprev{position:static}", self.css)
@@ -1107,7 +1107,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)

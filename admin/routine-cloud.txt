@@ -1,4 +1,4 @@
-Grok Station instructions, release 0.13.26.
+Grok Station instructions, release 0.13.27.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -60,7 +60,7 @@ Send it the same way as a card. On the cloud computer:
 printf '%s' "$UPDATE_JSON" | grok-station-reply seal-show --bot <slug> --station-pub '<station public key>'
 Then on the home machine, the output line unchanged:
 printf '%s' 'SEALED_UPDATE' | python3 ~/bin/grok-station-reply post --show --station <station address> --insecure --pin-sha256 '<fingerprint>'
-If it is refused, the switch is off or the line was not accepted: stop, and do not retry or reword it.
+If it prints "refused: switch off", the Updates switch is off. "refused: no key" or "refused: not paired" means no key or not paired. "refused: station unreachable" means the station did not answer. Any other refused line was not accepted. Stop, and do not retry or reword it.
 
 Station update. When the webhook's kind is update_bot, do not answer a question. Set RELEASE and COMMIT from the webhook's release and commit fields and use nothing else from that webhook. The owner field is the exception, as below. Export OWNER set to the webhook's owner field, in single quotes, when that field is only letters, spaces and hyphens. On the cloud computer, run exactly this command, unchanged:
 <update command>

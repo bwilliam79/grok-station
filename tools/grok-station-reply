@@ -313,6 +313,7 @@ def build_avatar(bot, image, seed_b64, station_pub_b64, voice=None):
 
 
 # 0.13.0: one line per refusal reason. Fixed text only; the reply is never echoed.
+# 0.13.27: no key, not paired, and the Updates switch are named. Unknown text stays "refused".
 REFUSAL_LINES = {
     "pii": "refused: blocked by station PII filter (personal info in reply)",
     "secret": "refused: looks like a secret",
@@ -320,6 +321,11 @@ REFUSAL_LINES = {
     "expired": "refused: request expired",
     "duplicate": "refused: already answered",
     "schema": "refused: reply format not accepted",
+    "nokey": "refused: no key",
+    "revoked": "refused: not paired",
+    "killed": "refused: not paired",
+    "unknown": "refused: not paired",
+    "updates_off": "refused: switch off",
 }
 
 
@@ -333,8 +339,13 @@ def reason_from_body(raw):
         doc = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
     except Exception:
         return None
-    reason = doc.get("reason") if isinstance(doc, dict) else None
-    return reason if reason in REFUSAL_LINES else None
+    if not isinstance(doc, dict):
+        return None
+    reason = doc.get("reason")
+    if reason in REFUSAL_LINES:
+        return reason
+    err = doc.get("error")
+    return err if err in REFUSAL_LINES else None
 
 def post_reply(origin, body, insecure=False, pin="", path="/voice/reply"):
     """POST /voice/reply, /voice/show, or /voice/avatar. Returns (status, verdict). Raises ssl.SSLError('pin') on a pin miss."""
@@ -384,7 +395,7 @@ def _seal_list_body(args):
         return None, 1
     seed = os.environ.get("GROK_STATION_BOT_KEY", "")
     if not seed.strip():
-        print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+        print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
         return None, 2
     try:
         return build_list_outer(args.bot, args.request_id, names, seed, args.station_pub), 0
@@ -401,7 +412,7 @@ def _seal_body(args):
         return None, 1
     seed = os.environ.get("GROK_STATION_BOT_KEY", "")
     if not seed.strip():
-        print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+        print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
         return None, 2
     try:
         return build_outer(args.bot, args.request_id, text, seed, args.station_pub, bool(getattr(args, "interim", False))), 0
@@ -447,7 +458,7 @@ def _seal_avatar_body(args):
         return None, 1
     seed = os.environ.get("GROK_STATION_BOT_KEY", "")
     if not seed.strip():
-        print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+        print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
         return None, 2
     try:
         return build_avatar(args.bot, image, seed, args.station_pub, getattr(args, "voice", None)), 0
@@ -478,7 +489,7 @@ def _do_post(args, body, pin, path="/voice/reply"):
         print("tls error", file=sys.stderr)
         return 1
     except Exception:
-        print("tls error", file=sys.stderr)
+        print(REFUSAL_LINES["unreachable"], file=sys.stderr)
         return 1
     print(f"{status} {verdict}")
     return 0 if status == 200 else 1
@@ -552,7 +563,7 @@ def main(argv=None):
             print("400 bad request")
             return 1
         if not seed.strip():
-            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
             return 2
         try:
             body = build_setup_ack_outer(args.bot, args.request_id, args.status, args.reason, seed, args.station_pub)
@@ -574,7 +585,7 @@ def main(argv=None):
             return 1
         seed = os.environ.get("GROK_STATION_BOT_KEY", "")
         if not seed.strip():
-            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
             return 2
         try:
             body = build_show(args.bot, doc, seed, args.station_pub)
@@ -621,7 +632,7 @@ def main(argv=None):
             return 1
         seed = os.environ.get("GROK_STATION_BOT_KEY", "")
         if not seed.strip():
-            print("missing GROK_STATION_BOT_KEY", file=sys.stderr)
+            print("refused: no key (missing GROK_STATION_BOT_KEY)", file=sys.stderr)
             return 2
         try:
             body = build_show(args.bot, doc, seed, args.station_pub)

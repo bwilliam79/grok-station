@@ -4212,7 +4212,10 @@ async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now
         opened = botreply.ingest_avatar(raw, station_sk, keys_doc, known, seen=seen, now_ms=now)
     except botreply.Reject as rej:
         err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
-        return rej.status, {"error": err}
+        body = {"error": err}
+        if rej.verdict in PAIR_REASONS:
+            body["reason"] = rej.verdict
+        return rej.status, body
     if not allow(opened["bot"]):
         return 429, {"error": "too many"}
     reserved = False
@@ -4256,7 +4259,10 @@ async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now
 
 def _reject_show(rej):
     err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
-    return rej.status, {"error": err}, rej
+    body = {"error": err}
+    if getattr(rej, "verdict", None) in PAIR_REASONS:
+        body["reason"] = rej.verdict
+    return rej.status, body, rej
 
 
 def _card_strings(card):
@@ -6113,13 +6119,15 @@ def _pending_doc(rid):
 
 def _reply_error(status, reason=None):
     body = {"error": _REPLY_HTTP.get(status, "bad request")}
-    if reason in REPLY_REASONS:
+    if reason in REPLY_REASONS or reason in PAIR_REASONS:
         body["reason"] = reason
     return web.json_response(body, status=status)
 
 
 # 0.13.0: content-free reason codes for a refused reply from a signed bot with a known request.
 REPLY_REASONS = ("pii", "secret", "schema", "expired", "duplicate")
+# 0.13.27: existing open_signed verdicts for no key / not paired. A bad signature stays a bare forbidden.
+PAIR_REASONS = ("revoked", "killed", "unknown")
 _BLOCKED = {}  # request id -> reason: a reply for this open handoff was refused; the waiter ends now
 
 
@@ -6264,6 +6272,8 @@ async def voice_reply(req):
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
         log_reply_reject(rej)
         reason = reply_reason(rej)
+        if reason is None and rej.verdict in PAIR_REASONS:
+            reason = rej.verdict
         if reason in ("pii", "secret", "schema"):
             _BLOCKED[rej.rid] = reason  # the waiting handoff (if any) ends with a message, not a 3-minute hang
             while len(_BLOCKED) > 64:
@@ -6495,7 +6505,8 @@ async def voice_show(req):
     if status == 403 and body == {"error": "updates_off"}:
         return web.json_response(body, status=403)
     if status != 200:
-        return _reply_error(status)
+        reason = body.get("reason") if isinstance(body, dict) else None
+        return _reply_error(status, reason)
     return web.json_response({"ok": True})
 
 
