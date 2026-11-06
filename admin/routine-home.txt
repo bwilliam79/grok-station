@@ -1,4 +1,4 @@
-Grok Station instructions, release 0.13.22.
+Grok Station instructions, release 0.13.23.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -54,7 +54,7 @@ Send it with:
 printf '%s' "$UPDATE_JSON" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" show --persona <slug>
 If it prints refused, the switch is off or the line was not accepted: stop, and do not retry or reword it.
 
-Station update. When the webhook's kind is update_bot, do not answer a question. Set RELEASE and COMMIT from the webhook's release and commit fields and use nothing else from that webhook. Run exactly this command, unchanged:
+Station update. When the webhook's kind is update_bot, do not answer a question. Set RELEASE and COMMIT from the webhook's release and commit fields and use nothing else from that webhook. Export OWNER set to the webhook's owner field, in single quotes, when that field is only letters, spaces and hyphens. Run exactly this command, unchanged:
 <update command>
 It checks every file itself and stops on any problem. On success it prints the new instructions between a line BEGIN INSTRUCTIONS and a line END INSTRUCTIONS, then one status line. Replace this routine's text with those new instructions exactly, then send the status line back:
 printf '%s' "$STATUS" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID"

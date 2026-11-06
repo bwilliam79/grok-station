@@ -267,7 +267,7 @@ class _Wire(dict):
 
 
 def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include_avatar=False, kind="", release="",
-            commit="", cap=None):
+            commit="", cap=None, owner=""):
     """Webhook body v1: v, request_id, persona, the cleaned question, reply_by. test only when asked.
 
     include_avatar is accepted so older callers keep working and is not serialized. pii_mode is never a field.
@@ -293,6 +293,11 @@ def payload(rid, bot, question, reply_by_iso, tier_max=None, test=False, include
                 and re.fullmatch(r"[0-9a-f]{40}", commit or "")):
             raise ValueError("update_bot needs a release and a commit")
         body.update(kind="update_bot", release=release, commit=commit)
+        # Same allowlist as gs_routine.owner_name. The updater single-quotes this into the command.
+        if owner:
+            if not isinstance(owner, str) or re.fullmatch(r"[A-Za-z][A-Za-z -]{0,59}", owner) is None:
+                raise ValueError("update_bot owner")
+            body["owner"] = owner
     return _Wire(body, MAX_TIER if tier_max is None else tier_max)
 
 

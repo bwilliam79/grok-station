@@ -2263,6 +2263,27 @@ def _setup_newer(setup, u):
         return False
 
 
+def _owner_flag(owner):
+    return " --owner '%s'" % gs_routine.owner_name(owner)
+
+
+def placeholder_owner_mismatch(text, have, owner):
+    """True when have is this text with the placeholder owner, or with no --owner flag.
+
+    A bot set up before 0.13.18 runs the updater with no --owner, so the script fills in
+    'your owner' and the adopted command keeps that. Either hash is the same instructions
+    apart from that flag. The next update sends the station owner and replaces it.
+    """
+    if not (isinstance(text, str) and isinstance(have, str) and len(have) == 16):
+        return False
+    flag = _owner_flag(owner)
+    if text.count(flag) != 1:
+        return False
+    yours = text.replace(flag, _owner_flag("your owner"), 1)
+    bare = text.replace(flag, "", 1)
+    return have in (gs_routine.instr_hash(yours), gs_routine.instr_hash(bare))
+
+
 def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None):
     """The Finish update dialog: computers, each with its bots, the exact text, and each row's state.
 
@@ -2313,7 +2334,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         elif not u and not finish["copied"].get(b["slug"]) and not finish["sent"].get(b["slug"]):
             state = "copy"  # set up before 0.11.8: its instructions don't know update_bot yet
         elif u.get("release") == rel and u.get("instr") != want:
-            state = "different"
+            # Placeholder owner only: still updatable. The next update_bot sends the real name.
+            state = "needs" if placeholder_owner_mismatch(text, u.get("instr"), setup_owner_name()) else "different"
         else:
             state = "needs"
         if home and state == "done" and (b.get("helper") or {}).get("out_of_date"):
@@ -5547,7 +5569,8 @@ class Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"[0-9a-f]{40}", view["commit"] or ""):
             return self.send(500, {"error": "This release has no update commit pinned."})
         r = relay_call("POST", "/admin/bots/" + slug + "/update",
-                       {"actor": RELAY_ACTOR, "release": view["release"], "commit": view["commit"]})
+                       {"actor": RELAY_ACTOR, "release": view["release"], "commit": view["commit"],
+                        "owner": gs_routine.owner_name(setup_owner_name())})
         if r is None:
             return self.bots_unconfigured()
         status, data = r

@@ -5871,9 +5871,10 @@ def note_update(bot, text):
 async def admin_bot_update(req):
     """Ask one paired bot to update itself to this release. A webhook of kind update_bot.
 
-    The webhook carries only a release and a commit (checked formats), no text, command or link. The bot runs the
-    pinned update script from its own instructions; that script does every check. One ask per bot per
-    HELPER_ASK_GAP_S; a failed send frees the slot. Every send and reply is audited.
+    The webhook carries a release, a commit, and, when given, the station owner (the same letters, spaces and
+    hyphens gs_routine.owner_name allows). No command or link. The bot runs the pinned update script from its
+    own instructions; that script does every check. One ask per bot per HELPER_ASK_GAP_S; a failed send frees
+    the slot. Every send and reply is audited.
     """
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -5888,6 +5889,10 @@ async def admin_bot_update(req):
     if not (isinstance(release, str) and HELPER_V.match(release) and isinstance(commit, str)
             and re.fullmatch(r"[0-9a-f]{40}", commit)):
         return web.json_response({"error": "bad request"}, status=400)
+    owner = body.get("owner", "")
+    if owner != "":
+        if not isinstance(owner, str) or re.fullmatch(r"[A-Za-z][A-Za-z -]{0,59}", owner) is None:
+            return web.json_response({"error": "bad request"}, status=400)
     ent = current_webhooks().get(slug)
     if not ent:
         return web.json_response({"error": "not configured"}, status=400)
@@ -5904,7 +5909,8 @@ async def admin_bot_update(req):
     except OSError:
         _update_asked.pop(slug, None)
         return web.json_response({"error": "unavailable"}, status=500)
-    posted = dict(handoff.payload(rid, slug, UPDATE_ASK, reply_by, kind="update_bot", release=release, commit=commit))
+    posted = dict(handoff.payload(rid, slug, UPDATE_ASK, reply_by, kind="update_bot", release=release,
+                                  commit=commit, owner=owner))
     try:
         async with ClientSession(timeout=ClientTimeout(total=10)) as http:
             async with http.post(ent["url"], json=posted, allow_redirects=False,
