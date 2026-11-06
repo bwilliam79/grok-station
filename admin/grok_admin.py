@@ -2274,7 +2274,7 @@ def placeholder_owner_mismatch(text, have, owner):
     'your owner' and the adopted command keeps that. Either hash is the same instructions
     apart from that flag. The next update sends the station owner and replaces it.
     """
-    if not (isinstance(text, str) and isinstance(have, str) and len(have) == 16):
+    if not (isinstance(text, str) and isinstance(have, str) and len(have) == gs_routine.INSTR_HASH_LEN):
         return False
     flag = _owner_flag(owner)
     if text.count(flag) != 1:

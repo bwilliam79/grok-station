@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,6 +154,118 @@ class LegacyOwnerUpdate(unittest.TestCase):
         adopted = ran.stdout.split("BEGIN INSTRUCTIONS\n", 1)[1].split("\nEND INSTRUCTIONS", 1)[0]
         self.assertIn(" --owner 'your owner'", adopted)
         self.assertNotIn(bad, adopted)
+
+
+class OwnerPattern(unittest.TestCase):
+    """The allowlist is one constant. A hash that is not a full instr hash is not a placeholder match."""
+
+    def test_pattern_is_not_copied(self):
+        needle = "[A-Za-z][A-Za-z -]{0,59}"
+        gs = open(os.path.join(ROOT, "admin", "gs_routine.py"), encoding="utf-8").read()
+        self.assertEqual(gs.count(needle), 1)
+        sh = open(os.path.join(ROOT, "scripts", "gs-update.sh"), encoding="utf-8").read()
+        self.assertEqual(sh.count(needle), 1)
+        for rel in ("relay/relay.py", "relay/handoff.py"):
+            self.assertNotIn(needle, open(os.path.join(ROOT, rel), encoding="utf-8").read(), rel)
+
+    def test_short_hash_is_not_a_placeholder_match(self):
+        ga = _ga()
+        self.assertEqual(fin.gs_routine.INSTR_HASH_LEN, len(fin.gs_routine.instr_hash("x")))
+        self.assertFalse(ga.placeholder_owner_mismatch("text", "abc", OWNER))
+
+
+def _handoff():
+    sys.path.insert(0, os.path.join(ROOT, "relay"))
+    import handoff
+    return handoff
+
+
+class HandoffOwner(unittest.TestCase):
+    def _body(self, owner=None):
+        kw = {} if owner is None else {"owner": owner}
+        return _handoff().payload("vs_" + "a" * 22, "jules", "update", "2026-11-06T00:00:00Z",
+                                  kind="update_bot", release="0.13.23", commit="a" * 40, **kw)
+
+    def test_unsafe_owner_raises(self):
+        with self.assertRaises(ValueError):
+            self._body("Owner'; echo x")
+
+    def test_safe_owner_is_on_the_wire_and_trimmed(self):
+        wire = json.loads(json.dumps(self._body("  Owner Name  ")))
+        self.assertEqual(wire["owner"], OWNER)
+
+    def test_missing_owner_is_omitted(self):
+        self.assertNotIn("owner", json.loads(json.dumps(self._body())))
+        self.assertNotIn("owner", json.loads(json.dumps(self._body(""))))
+
+
+class RelayOwner(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "relay"))
+        from aiohttp import web
+        from aiohttp.test_utils import TestClient, TestServer
+        import relay
+        self.relay = relay
+        self.tmp = tempfile.mkdtemp()
+        r = relay
+        self.snap = (r.PERSONAS_FILE, r.WEBHOOKS_FILE, r.PENDING_DIR, r.ADMIN_TOKEN,
+                     dict(r._personas), dict(r._update_asked))
+        r.PERSONAS_FILE = os.path.join(self.tmp, "personas.json")
+        r.WEBHOOKS_FILE = os.path.join(self.tmp, "webhooks.json")
+        r.PENDING_DIR = os.path.join(self.tmp, "pending")
+        r.ADMIN_TOKEN = b"admin-secret"
+        r._personas["mtime"] = None
+        r._update_asked.clear()
+        with open(r.PERSONAS_FILE, "w", encoding="utf-8") as fh:
+            json.dump({"personas": [{"slug": "jules", "name": "Bot", "prompt": "Answer questions.",
+                                     "voice": "ara"}]}, fh)
+        self.seen = []
+
+        async def hook(req):
+            self.seen.append(await req.json())
+            return web.json_response({"ok": True})
+
+        hooks = web.Application()
+        hooks.router.add_post("/hook", hook)
+        self.hook = TestServer(hooks)
+        await self.hook.start_server()
+        self.assertTrue(r.write_webhooks({"jules": {"url": str(self.hook.make_url("/hook")),
+                                                    "token": "hook-token-ffff", "saved_at": 1}}))
+        app = web.Application()
+        app.router.add_post("/admin/bots/{slug}/update", r.admin_bot_update)
+        self.client = TestClient(TestServer(app))
+        await self.client.start_server()
+
+    async def asyncTearDown(self):
+        r = self.relay
+        if getattr(self, "client", None) is not None:
+            await self.client.close()
+        if getattr(self, "hook", None) is not None:
+            await self.hook.close()
+        r.PERSONAS_FILE, r.WEBHOOKS_FILE, r.PENDING_DIR, r.ADMIN_TOKEN, personas, asked = self.snap
+        r._personas.clear()
+        r._personas.update(personas)
+        r._update_asked.clear()
+        r._update_asked.update(asked)
+
+    def _headers(self):
+        return {"Authorization": "Bearer admin-secret", "Content-Type": "application/json"}
+
+    async def _ask(self, body):
+        return await self.client.post("/admin/bots/jules/update", headers=self._headers(), json=body)
+
+    async def test_unsafe_owner_is_400_and_safe_or_missing_reach_the_webhook(self):
+        base = {"actor": "admin", "release": "0.13.23", "commit": "b" * 40}
+        bad = await self._ask(dict(base, owner="Owner'; echo x"))
+        self.assertEqual(bad.status, 400)
+        self.assertEqual(self.seen, [])
+        missing = await self._ask(dict(base))
+        self.assertEqual(missing.status, 202, await missing.text())
+        self.assertNotIn("owner", self.seen[-1])
+        self.relay._update_asked.clear()
+        padded = await self._ask(dict(base, owner="  Owner Name  "))
+        self.assertEqual(padded.status, 202, await padded.text())
+        self.assertEqual(self.seen[-1]["owner"], OWNER)
 
 
 if __name__ == "__main__":

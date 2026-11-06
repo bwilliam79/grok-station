@@ -5889,9 +5889,12 @@ async def admin_bot_update(req):
     if not (isinstance(release, str) and HELPER_V.match(release) and isinstance(commit, str)
             and re.fullmatch(r"[0-9a-f]{40}", commit)):
         return web.json_response({"error": "bad request"}, status=400)
-    owner = body.get("owner", "")
-    if owner != "":
-        if not isinstance(owner, str) or re.fullmatch(r"[A-Za-z][A-Za-z -]{0,59}", owner) is None:
+    raw_owner = body.get("owner", "")
+    if raw_owner in ("", None):
+        owner = ""
+    else:
+        owner = handoff.checked_owner(raw_owner)
+        if not owner:
             return web.json_response({"error": "bad request"}, status=400)
     ent = current_webhooks().get(slug)
     if not ent:
