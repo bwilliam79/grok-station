@@ -7,7 +7,7 @@ L2  Voice home control is its own switch, off by default, password to turn on; s
     on; when off, a voice command is answered with one fixed line and no light is touched.
 L3  every voice light command writes one content-free audit line.
 I1  adding a light needs the admin password or an open grace window; PATCH cannot change a host.
-I3  the cloud helper prints "refused: station unreachable" on a certificate pin miss, and does not retry.
+I3  the cloud helper prints a bare "refused" on a certificate pin miss (not "station unreachable"), and does not retry.
 (I2, the mDNS source checks, is in test_gs130_no_listen.MdnsBrowse.)
 """
 import asyncio, contextlib, importlib.machinery, importlib.util, io, json, os, ssl, sys, unittest, urllib.request
@@ -199,7 +199,7 @@ class VoiceOffFlow(unittest.IsolatedAsyncioTestCase):
 
 
 class CloudHelperPinMiss(unittest.TestCase):
-    def test_pin_miss_prints_station_unreachable(self):
+    def test_pin_miss_stays_a_bare_refusal(self):
         path = os.path.join(ROOT, "tools", "grok-station-reply")
         loader = importlib.machinery.SourceFileLoader("gsr_nix", path)
         spec = importlib.util.spec_from_loader("gsr_nix", loader)
@@ -218,7 +218,8 @@ class CloudHelperPinMiss(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = mod._do_post(Args(), b"{}", "ab" * 32)
         self.assertEqual(rc, 1)
-        self.assertEqual(err.getvalue(), "refused: station unreachable\n")
+        self.assertEqual(err.getvalue(), "refused\n")
+        self.assertNotIn("unreachable", err.getvalue())
         self.assertEqual(out.getvalue(), "")
         self.assertEqual(len(tries), 1)  # no unpinned retry
 

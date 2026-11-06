@@ -74,6 +74,36 @@ class HelperPhrases(unittest.TestCase):
         self.assertIsNone(home.post_failure(500, None))
         self.assertIsNone(home.post_failure(400, "not-a-code"))
 
+    def test_pin_miss_and_client_refusal_are_not_unreachable(self):
+        import io
+        import ssl
+        from contextlib import redirect_stderr, redirect_stdout
+        pin = ssl.SSLError("pin")
+        for mod in (self.home, self.cloud):
+            self.assertIsNone(mod.post_error(pin))
+            self.assertEqual(mod.refusal_line(mod.post_error(pin)), "refused")
+            self.assertNotIn("unreachable", mod.refusal_line(mod.post_error(pin)))
+            self.assertEqual(mod.post_error(ConnectionRefusedError(111, "connect")), "unreachable")
+        self.assertIsNone(self.home.post_error(self.home.Refused()))
+        self.assertEqual(self.home.refusal_line(self.home.post_error(self.home.Refused())), "refused")
+        # A client ValueError from post_reply (bad URL) is not a connection failure.
+        self.assertIsNone(self.cloud.post_error(ValueError("https")))
+
+        class Args:
+            station, insecure = "https://station.example:8443", True
+
+        def boom(*_a, **_k):
+            raise ssl.SSLError("pin")
+
+        self.cloud.post_reply = boom
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = self.cloud._do_post(Args(), b"{}", "ab" * 32)
+        self.assertEqual(rc, 1)
+        self.assertEqual(err.getvalue(), "refused\n")
+        self.assertNotIn("unreachable", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
 
 class StationGates(unittest.TestCase):
     @classmethod

@@ -524,10 +524,43 @@ def reason_from_body(raw):
 
 
 def post_failure(status, reason):
-    """Reason code for a failed post, or None when the line stays a bare refused."""
+    """Reason code for a failed post, or None when the line stays a bare refused.
+
+    status 0 is a real connection failure. A pin miss is not status 0; post_error
+    maps that exception to None so it stays a bare "refused".
+    """
     if status == 0:
         return "unreachable"
     return reason if reason in REFUSAL_LINES else None
+
+
+def post_error(exc):
+    """Reason code for an exception from post_once, or None for a bare "refused".
+
+    Only a connection failure (OSError that is not a certificate pin miss) is
+    "unreachable". A pin miss and a client-side Refused stay None.
+    """
+    if isinstance(exc, Refused):
+        return exc.reason if exc.reason in REFUSAL_LINES else None
+    if isinstance(exc, ssl.SSLError) and "pin" in str(exc):
+        return None
+    if isinstance(exc, OSError):
+        return "unreachable"
+    return None
+
+
+def _run_post(endpoint, body, pin, path):
+    """(http status, reason code or None). Does not turn a pin miss into unreachable."""
+    got = {}
+    try:
+        status = post_once(endpoint, body, pin, path, out=got)
+    except Refused:
+        raise
+    except Exception as exc:
+        return 0, post_error(exc)
+    if status == 200:
+        return 200, None
+    return status, post_failure(status, got.get("reason"))
 
 
 def _require_paired_key(slug):
@@ -723,15 +756,10 @@ def cmd_reply(slug, request_id, kind, interim=False):
             raise Refused()
         claim_rid(request_id, interim)
         t0 = time.monotonic()
-        status, got = 0, {}
-        try:
-            status = post_once(endpoint, body, pin, out=got)
-        except Exception:
-            status = 0
-        ms = int((time.monotonic() - t0) * 1000)
-        append_log(request_id, slug, status, ms)
+        status, why = _run_post(endpoint, body, pin, "/voice/reply")
+        append_log(request_id, slug, status, int((time.monotonic() - t0) * 1000))
         if status != 200:
-            raise Refused(post_failure(status, got.get("reason")))
+            raise Refused(why)
         return 0
     finally:
         _wipe(seed)
@@ -768,15 +796,10 @@ def cmd_avatar(slug, voice=None):
         except Exception:
             raise Refused()
         t0 = time.monotonic()
-        status, got = 0, {}
-        try:
-            status = post_once(endpoint, body, pin, "/voice/avatar", out=got)
-        except Exception:
-            status = 0
-        ms = int((time.monotonic() - t0) * 1000)
-        append_avatar_log(slug, status, ms)
+        status, why = _run_post(endpoint, body, pin, "/voice/avatar")
+        append_avatar_log(slug, status, int((time.monotonic() - t0) * 1000))
         if status != 200:
-            raise Refused(post_failure(status, got.get("reason")))
+            raise Refused(why)
         return 0
     finally:
         _wipe(seed)
@@ -818,13 +841,9 @@ def cmd_show(slug):
             raise
         except Exception:
             raise Refused()
-        status, got = 0, {}
-        try:
-            status = post_once(endpoint, body, pin, "/voice/show", out=got)
-        except Exception:
-            status = 0
+        status, why = _run_post(endpoint, body, pin, "/voice/show")
         if status != 200:
-            raise Refused(post_failure(status, got.get("reason")))
+            raise Refused(why)
         return 0
     finally:
         _wipe(seed)
@@ -922,14 +941,10 @@ def cmd_setup_ack(slug, request_id, status, reason=None):
             raise Refused()
         claim_rid(request_id)
         t0 = time.monotonic()
-        status_code, got = 0, {}
-        try:
-            status_code = post_once(endpoint, body, pin, out=got)
-        except Exception:
-            status_code = 0
+        status_code, why = _run_post(endpoint, body, pin, "/voice/reply")
         append_log(request_id, slug, status_code, int((time.monotonic() - t0) * 1000))
         if status_code != 200:
-            raise Refused(post_failure(status_code, got.get("reason")))
+            raise Refused(why)
         return 0
     finally:
         _wipe(seed)

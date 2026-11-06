@@ -903,7 +903,7 @@ class SealReply(unittest.TestCase):
     def test_wrong_pin_sends_no_request_and_does_not_retry(self):
         seed = self.provision(pin="ab" * 32)
         (rc, out, err), tls = self.reply(ANSWER)
-        self.assertEqual((rc, out, err), (1, "", "refused: station unreachable\n"))
+        self.assertEqual((rc, out, err), (1, "", "refused\n"))
         self.assertEqual(len(tls.connects), 1)
         self.assertEqual(tls.posts, [])
         (rc2, _, err2), tls2 = self.reply(ANSWER)

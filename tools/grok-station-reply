@@ -333,6 +333,21 @@ def refusal_line(reason):
     return REFUSAL_LINES.get(reason, "refused") if isinstance(reason, str) else "refused"
 
 
+def post_error(exc):
+    """Reason code for a post exception, or None for a bare "refused".
+
+    A certificate pin miss is None. A connection failure (OSError that is not a
+    pin miss) is "unreachable". Any other TLS error is "tls", printed as "tls error".
+    """
+    if isinstance(exc, ssl.SSLError) and "pin" in str(exc):
+        return None
+    if isinstance(exc, ssl.SSLError):
+        return "tls"
+    if isinstance(exc, OSError):
+        return "unreachable"
+    return None
+
+
 def reason_from_body(raw):
     """The station's reason code from a refused reply's JSON body, or None. Only known codes."""
     try:
@@ -481,15 +496,15 @@ def _read_show():
 def _do_post(args, body, pin, path="/voice/reply"):
     try:
         status, verdict = post_reply(args.station, body, insecure=args.insecure, pin=pin, path=path)
-    except ssl.SSLError as e:
-        if "pin" in str(e):
-            # 0.13.0 (Nix I3): same line as the home helper. No retry without the pin.
+    except Exception as exc:
+        kind = post_error(exc)
+        if kind == "unreachable":
             print(REFUSAL_LINES["unreachable"], file=sys.stderr)
-            return 1
-        print("tls error", file=sys.stderr)
-        return 1
-    except Exception:
-        print(REFUSAL_LINES["unreachable"], file=sys.stderr)
+        elif kind == "tls":
+            print("tls error", file=sys.stderr)
+        else:
+            # Pin miss and other client failures. No retry without the pin.
+            print("refused", file=sys.stderr)
         return 1
     print(f"{status} {verdict}")
     return 0 if status == 200 else 1
