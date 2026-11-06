@@ -14,7 +14,7 @@ Before shipping, run:
 python3 tools/check-version.py
 ```
 
-It fails unless `HEAD`'s `VERSION` is strictly newer than `HEAD~1`'s. The first commit that adds `VERSION` passes. A release commit (`release: update manifest for X` or `release: re-pin deploy files for X`) may keep X. The updater also refuses to install `origin/main` when that version is equal to or lower than the one already on the station (equal means up to date). A station whose installed version is still a short commit id can move onto the first semantic version.
+It fails unless `HEAD`'s `VERSION` is strictly newer than `HEAD~1`'s. The first commit that adds `VERSION` passes. A release commit may keep X only when the subject is exactly `release: update manifest for X` or `release: re-pin deploy files for X` (nothing after X) and every file in that commit belongs to the ritual. A manifest commit may change `VERSION`, `README.md`, `docs/versioning.md`, `scripts/update-manifest.txt`, and `admin/bot-releases.txt`. A re-pin commit may change `admin/web/deploy-pins.js`. A suffix such as `0.13.27-fix`, a different X, or any other file still fails. The updater also refuses to install `origin/main` when that version is equal to or lower than the one already on the station (equal means up to date). A station whose installed version is still a short commit id can move onto the first semantic version.
 
 The installed copy is `/opt/grok-station/VERSION`, written by the installer from this file. The Updates page compares it with `origin/main`'s `VERSION` after a fetch. A short commit id may be shown beside the version as a detail. The installer log stays on the station; the page shows one line if an update fails.
 

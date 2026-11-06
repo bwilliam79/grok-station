@@ -107,6 +107,31 @@ def _commit(repo, message):
     _git(repo, "commit", "--allow-empty", "-m", message)
 
 
+def _write(repo, *parts, text):
+    path = os.path.join(repo, *parts)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _feature_repo(repo):
+    """0.1.1 with one notes entry, stopped on the feature commit before the ritual."""
+    _git(repo, "init", "-q")
+    _write(repo, "docs", "versioning.md", text="## 0.1.1\n")
+    _write(repo, "VERSION", text="0.1.0\n")
+    _write(repo, "app.js", text="a\n")
+    _commit(repo, "start")
+    _write(repo, "VERSION", text="0.1.1\n")
+    _commit(repo, "feature")
+
+
+def _released_repo(repo):
+    """Feature repo closed by an empty manifest commit and an empty re-pin commit."""
+    _feature_repo(repo)
+    _commit(repo, "release: update manifest for 0.1.1")
+    _commit(repo, "release: re-pin deploy files for 0.1.1")
+
+
 class CheckVersion(unittest.TestCase):
     def test_first_version_passes_then_only_newer(self):
         with tempfile.TemporaryDirectory() as repo:
@@ -136,14 +161,7 @@ class CheckVersion(unittest.TestCase):
 
     def test_release_commit_may_keep_the_version(self):
         with tempfile.TemporaryDirectory() as repo:
-            _git(repo, "init", "-q")
-            os.makedirs(os.path.join(repo, "docs"))
-            open(os.path.join(repo, "docs", "versioning.md"), "w").write("## 0.1.1\n")
-            open(os.path.join(repo, "VERSION"), "w").write("0.1.0\n")
-            open(os.path.join(repo, "app.js"), "w").write("a\n")
-            _commit(repo, "start")
-            open(os.path.join(repo, "VERSION"), "w").write("0.1.1\n")
-            _commit(repo, "feature")
+            _feature_repo(repo)
             _commit(repo, "release: update manifest for 0.1.1")
             self.assertIsNone(check_version.problem(repo))
             _commit(repo, "release: re-pin deploy files for 0.1.1")
@@ -152,10 +170,37 @@ class CheckVersion(unittest.TestCase):
             self.assertEqual(subprocess.run(
                 [sys.executable, os.path.join(ROOT, "tools", "check-version.py"), repo],
                 capture_output=True).returncode, 0)
-            open(os.path.join(repo, "app.js"), "w").write("b\n")
+            _write(repo, "app.js", text="b\n")
             _commit(repo, "more code")
             self.assertIn("not newer", check_version.problem(repo))
             self.assertIn("app.js", check_version.reused_release(repo))
+
+    def test_suffix_subject_is_not_a_release_boundary(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _released_repo(repo)
+            _write(repo, "app.js", text="suffix\n")
+            _commit(repo, "release: re-pin deploy files for 0.1.1-fix")
+            self.assertIn("not newer", check_version.problem(repo))
+            self.assertIn("app.js", check_version.reused_release(repo))
+
+    def test_wrong_version_in_subject_is_not_a_release(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _released_repo(repo)
+            _write(repo, "app.js", text="wrong\n")
+            _commit(repo, "release: update manifest for 0.9.9")
+            self.assertIn("not newer", check_version.problem(repo))
+            self.assertIn("app.js", check_version.reused_release(repo))
+
+    def test_ritual_subject_with_a_product_file_fails_both_gates(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _released_repo(repo)
+            _write(repo, "app.js", text="hidden\n")
+            _commit(repo, "release: re-pin deploy files for 0.1.1")
+            problem = check_version.problem(repo)
+            reused = check_version.reused_release(repo)
+            self.assertIn("not newer", problem)
+            self.assertIn("app.js", problem)
+            self.assertIn("app.js", reused)
 
     def test_non_semver_parent_can_move_onto_semver(self):
         with tempfile.TemporaryDirectory() as repo:
