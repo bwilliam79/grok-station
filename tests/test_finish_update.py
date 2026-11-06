@@ -175,14 +175,24 @@ class Script(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("can't confirm", r.stderr)
 
-    def test_b_no_downgrade_or_repeat(self):
+    def test_b_no_downgrade(self):
         f = Fake("home")
-        for have in (REL, "99.0.0"):
-            open(os.path.join(f.state, "release-jules"), "w").write(have + "\n")
-            r = f.run()
-            self.assertNotEqual(r.returncode, 0)
-            self.assertIn("not newer", r.stderr)
-            self.assertFalse(os.path.exists(os.path.join(f.home, "install-args")))
+        open(os.path.join(f.state, "release-jules"), "w").write("99.0.0\n")
+        r = f.run()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not newer", r.stderr)
+        self.assertNotIn("BEGIN INSTRUCTIONS", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(f.home, "install-args")))
+
+    def test_b_same_release_prints_status(self):
+        f = Fake("home")
+        open(os.path.join(f.state, "release-jules"), "w").write(REL + "\n")
+        r = f.run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("BEGIN INSTRUCTIONS\nGrok Station instructions, release %s." % REL, r.stdout)
+        m = re.fullmatch(r"(\S+) instr=([0-9a-f]{16}) helper=(\S+) computer=([0-9a-f]{16})", status(r.stdout))
+        self.assertTrue(m, r.stdout)
+        self.assertEqual(m.group(1), REL)
 
     def test_b_malformed_release_file_is_unknown_not_a_crash(self):
         for junk in ("1..2", "x", "", "1.2", "1.2.3.4"):

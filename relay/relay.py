@@ -5911,9 +5911,9 @@ async def admin_bot_update(req):
     _update_asked[slug] = now
     rid = handoff.new_request_id()
     reply_by = datetime.datetime.fromtimestamp(
-        now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now + botreply.UPDATE_REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
+        handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + max(botreply.UPDATE_REPLY_BY_S, botreply.SKEW_S)) * 1000),
                               question=UPDATE_ASK, reply_by=reply_by, kind="update_bot")
     except OSError:
         _update_asked.pop(slug, None)

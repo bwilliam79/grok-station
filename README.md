@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.28
+A bot update is accepted for 10 minutes, matching the wait on the Bots page. If a bot is already on that same release, the updater still prints the instructions and status line so a retry can finish. Press Update on each bot after installing.
+
 ### 0.13.27
 Display settings are grouped into Night clock, Timing, Brightness, and Units, with the old spacing back. Night clock and Fade save with the rest of the page, and the page warns if you leave with unsaved changes. In Light sensor mode the fallback dim times stay on screen. A refused station post says whether the bot has no key, is not paired, the Updates switch is off, or the station could not be reached. Press Update on each bot after installing.
 

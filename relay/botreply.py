@@ -16,6 +16,7 @@ AVATAR_IMAGE_MAX = 2 << 20
 _AVATAR_TYPES = frozenset(("image/png", "image/jpeg", "image/jpg", "image/webp"))
 _AVATAR_KEYS = frozenset(("kind", "nonce", "exp_ms", "content_type", "image_b64"))
 REPLY_BY_S = 180  # 0.12.7: a home bot can take a few minutes (calendar lookups); was 60
+UPDATE_REPLY_BY_S = 600  # 0.13.28: update_bot; must stay aligned with admin FINISH_WAIT_S
 SKEW_S = 120  # accept a sealed reply this long after issue (clock skew / replay). The station stops waiting sooner.
 _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
 _REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class", "kind"))
