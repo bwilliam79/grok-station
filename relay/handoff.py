@@ -8,27 +8,14 @@ HANDOFF_PER_BOT_DAY / HANDOFF_GLOBAL_DAY / HANDOFF_GAP_S, all off by default; wh
 bound pending file, single use, expiry; the answer is spoken only while the session still waits). Logs carry request_id,
 agent, length and verdict only. There is no guest mode on this path.
 """
-import base64, binascii, importlib.util, json, math, os, re, secrets, time, unicodedata, urllib.parse
+import base64, binascii, json, math, os, re, secrets, time, unicodedata, urllib.parse
+import owner_check
 import safe_io
-
-_ROUTINE = None
-
-
-def _routine():
-    """admin/gs_routine.py, loaded by path so the relay does not put admin on sys.path."""
-    global _ROUTINE
-    if _ROUTINE is None:
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "admin", "gs_routine.py")
-        spec = importlib.util.spec_from_file_location("gs_routine_owner", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _ROUTINE = mod
-    return _ROUTINE
 
 
 def checked_owner(value):
-    """Stripped station owner when it matches gs_routine.OWNER_NAME, else None."""
-    return _routine().owner_ok(value)
+    """Stripped station owner when it matches owner_check.OWNER_NAME, else None."""
+    return owner_check.owner_ok(value)
 
 REQUEST_ID = re.compile(r"^vs_[A-Za-z0-9_-]{22}$", re.ASCII)
 Q_MAX, REPLY_MAX = 500, 400

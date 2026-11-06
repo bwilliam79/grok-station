@@ -161,12 +161,43 @@ class OwnerPattern(unittest.TestCase):
 
     def test_pattern_is_not_copied(self):
         needle = "[A-Za-z][A-Za-z -]{0,59}"
-        gs = open(os.path.join(ROOT, "admin", "gs_routine.py"), encoding="utf-8").read()
-        self.assertEqual(gs.count(needle), 1)
+        owner = open(os.path.join(ROOT, "relay", "owner_check.py"), encoding="utf-8").read()
+        self.assertEqual(owner.count(needle), 1)
         sh = open(os.path.join(ROOT, "scripts", "gs-update.sh"), encoding="utf-8").read()
+        embedded = sh.split("<<'OWNER_CHECK_PY'\n", 1)[1].split("\nOWNER_CHECK_PY\n", 1)[0] + "\n"
+        self.assertEqual(embedded, owner)
         self.assertEqual(sh.count(needle), 1)
-        for rel in ("relay/relay.py", "relay/handoff.py"):
+        for rel in ("admin/gs_routine.py", "relay/relay.py", "relay/handoff.py"):
             self.assertNotIn(needle, open(os.path.join(ROOT, rel), encoding="utf-8").read(), rel)
+            self.assertNotIn("admin/gs_routine.py", open(os.path.join(ROOT, rel), encoding="utf-8").read(), rel)
+
+    def test_relay_copy_matches_gs_routine(self):
+        sys.path.insert(0, os.path.join(ROOT, "admin"))
+        sys.path.insert(0, os.path.join(ROOT, "relay"))
+        import gs_routine
+        import owner_check
+        self.assertEqual(gs_routine.OWNER_NAME.pattern, owner_check.OWNER_NAME.pattern)
+        self.assertIs(gs_routine.owner_ok, owner_check.owner_ok)
+        self.assertIs(gs_routine.owner_name, owner_check.owner_name)
+        for value in ("Owner Name", "  Owner Name  ", "bad;", "", None, "your owner", "   "):
+            self.assertEqual(gs_routine.owner_ok(value), owner_check.owner_ok(value))
+            self.assertEqual(gs_routine.owner_name(value), owner_check.owner_name(value))
+
+    def test_installed_beside_safe_io(self):
+        """Same root-owned relay install as safe_io.py (install.sh and tools/install-files.sh)."""
+        install = open(os.path.join(ROOT, "install.sh"), encoding="utf-8").read()
+        files = open(os.path.join(ROOT, "tools", "install-files.sh"), encoding="utf-8").read()
+        self.assertIn("safe_io.py owner_check.py", install)
+        self.assertRegex(
+            files,
+            r'install -o root -g root -m644 "\$S/relay/safe_io\.py" '
+            r'/opt/grok-station/relay/safe_io\.py\.new')
+        self.assertRegex(
+            files,
+            r'install -o root -g root -m644 "\$S/relay/owner_check\.py" '
+            r'/opt/grok-station/relay/owner_check\.py\.new && '
+            r'mv /opt/grok-station/relay/owner_check\.py\.new /opt/grok-station/relay/owner_check\.py')
+        self.assertLess(files.index('"$S/relay/safe_io.py"'), files.index('"$S/relay/owner_check.py"'))
 
     def test_short_hash_is_not_a_placeholder_match(self):
         ga = _ga()

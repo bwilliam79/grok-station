@@ -50,6 +50,29 @@ T=$(mktemp -d) || die "no temp folder"
 trap 'rm -rf "$T"' EXIT INT TERM
 CURL_HOME="$T/nocurlrc"; mkdir -m 700 "$CURL_HOME"; export CURL_HOME
 
+cat > "$T/owner_check.py" <<'OWNER_CHECK_PY'
+"""Station owner name check. Stdlib only.
+
+One copy of the allowlist. The relay imports this file from its own folder, installed
+root-owned beside safe_io.py. admin/gs_routine.py loads the same file. scripts/gs-update.sh
+embeds a byte-identical copy and writes it next to gs_routine.py on the bot.
+"""
+import re
+
+OWNER_NAME = re.compile(r"[A-Za-z][A-Za-z -]{0,59}")
+
+
+def owner_ok(value):
+    """Stripped owner when it matches OWNER_NAME, else None."""
+    value = value.strip() if isinstance(value, str) else ""
+    return value if OWNER_NAME.fullmatch(value) else None
+
+
+def owner_name(value=None):
+    """Safe owner for a template. Anything else is the placeholder."""
+    return owner_ok(value) or "your owner"
+OWNER_CHECK_PY
+
 cat > "$T/gs_routine.py" <<'GS_ROUTINE_PY'
 """Render and check a bot's instructions (0.11.9). Stdlib only.
 
@@ -60,13 +83,25 @@ with each declared placeholder filled by a strictly checked value. Every line is
 plus newlines is allowed, so an added line, a changed word, a zero-width or lookalike character all fail.
 """
 import hashlib
+import os
 import re
 import sys
 
+# owner_check.py is the one allowlist. Beside this file on a bot (gs-update.sh writes both),
+# or in ../relay on the station. The relay imports that file from its own folder.
+_here = os.path.dirname(os.path.abspath(__file__))
+for _dir in (_here, os.path.normpath(os.path.join(_here, os.pardir, "relay"))):
+    if os.path.isfile(os.path.join(_dir, "owner_check.py")):
+        if _dir not in sys.path:
+            sys.path.append(_dir)
+        break
+import owner_check  # noqa: E402
+
 REPO = "https://raw.githubusercontent.com/bwilliam79/grok-station/"
 RELEASE = re.compile(r"^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$")
-# One allowlist for a station owner: letters, spaces and hyphens. The relay and the updater both use this.
-OWNER_NAME = re.compile(r"[A-Za-z][A-Za-z -]{0,59}")
+OWNER_NAME = owner_check.OWNER_NAME
+owner_ok = owner_check.owner_ok
+owner_name = owner_check.owner_name
 INSTR_HASH_LEN = 16
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA = re.compile(r"^[0-9a-f]{64}$")
@@ -237,17 +272,6 @@ def update_command(mode, slug, pin_commit, pin_sha, station="", fingerprint="", 
             "s=$(sha256sum gs-update.sh) || s=$(shasum -a 256 gs-update.sh); } && [ \"${s%% *}\" = '"
             + pin_sha + "' ] && sh gs-update.sh --release \"$RELEASE\" --commit \"$COMMIT\" --mode " + mode
             + " --persona " + slug + tail + " ); r=$?; rm -rf \"$d\"; [ \"$r\" = 0 ]")
-
-
-def owner_ok(value):
-    """Stripped owner when it matches OWNER_NAME, else None. Same strip as owner_name, no placeholder."""
-    value = value.strip() if isinstance(value, str) else ""
-    return value if OWNER_NAME.fullmatch(value) else None
-
-
-def owner_name(value=None):
-    # Local config is data; never allow shell syntax or arbitrary template text.
-    return owner_ok(value) or "your owner"
 
 
 def render(template, mode, slug, pin_commit, pin_sha, station="", fingerprint="", pub="", owner=None):
