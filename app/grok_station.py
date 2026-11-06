@@ -3460,6 +3460,27 @@ def idle_band_rows(now, night=False, paused=False):
     return tiles
 
 
+# A Needs you detail that already starts with one of these is an instruction. Do not leave "Say " in front of it.
+_NEEDS_YOU_VERBS = frozenset({
+    "tell", "ask", "let", "have", "give", "call", "text", "reply", "send",
+    "open", "check", "review", "approve", "confirm", "show", "read",
+})
+
+
+def needs_you_detail(text):
+    """Shown copy for a Needs you detail. Stored text is left alone.
+
+    'Say tell Aster yes to continue.' is 'Tell Aster yes to continue.'
+    A leading 'Say ' stays when the next word is not already a verb.
+    """
+    text = " ".join(str(text or "").split())
+    match = re.match(r"^Say\s+([A-Za-z]+)(.*)$", text)
+    if not match or match.group(1).lower() not in _NEEDS_YOU_VERBS:
+        return text
+    word, rest = match.group(1), match.group(2)
+    return word[:1].upper() + word[1:] + rest
+
+
 def display_clip(text, limit):
     """Presentation length. The stored line is left alone. Cut at a word and add an ellipsis."""
     text = " ".join(str(text or "").split())
@@ -3644,6 +3665,8 @@ def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
             surf.blit(img, (rect.left + inset, ly))
         ly += line_h
     detail = " ".join(str(row.get("detail") or "").split())
+    if needs:
+        detail = needs_you_detail(detail)
     if detail:
         df = font("body", _band_px(L, 30, scale))
         dy = headline_y + max(_band_px(L, 126, scale), 2 * line_h) + _band_px(L, 12, scale)

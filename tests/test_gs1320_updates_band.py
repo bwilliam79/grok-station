@@ -109,6 +109,12 @@ class AvatarAndBounds(unittest.TestCase):
         gs._paint_update_tile(surf, gs.Layout(2560, 1706), surf.get_rect(), body, 100.0)
         return surf, gs.LAST_UPDATE_AVATARS[0]
 
+    def test_needs_you_detail_does_not_prefix_say_onto_a_verb(self):
+        self.assertEqual(gs.needs_you_detail("Say tell Aster yes to continue."),
+                         "Tell Aster yes to continue.")
+        self.assertEqual(gs.needs_you_detail("The draft is ready."), "The draft is ready.")
+        self.assertEqual(gs.needs_you_detail("Say hello."), "Say hello.")
+
     def test_missing_portrait_draws_the_initial(self):
         gs._personas.update(mtime=None, names={})
         surf, avatar = self._tile("aster")
