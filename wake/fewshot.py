@@ -15,7 +15,8 @@ WINDOW_S = 0.76        # each embedding looks at the last 760 ms of audio
 LEAD_S = 1.0           # quiet audio fed before a clip so the first frames have context, as in the live stream
 MAX_ROWS = 18          # template length cap (1.44 s of frames)
 MIN_ROWS = 4
-MAX_TEMPLATES = 20     # CPU cap: at most 20 recordings per word are kept (the most typical ones)
+MAX_TEMPLATES = 20     # CPU cap: at most 20 recordings per word are kept
+SCORE_WINDOW = 20      # success percentage uses only this many most recent recordings
 STAY_PENALTY = 0.08    # holding on one template row costs a little more, so noise can't idle along a template
 TOPK = 2
 MARGIN = 0.03          # the weakest recording kept must clear the loudest negative by this much
@@ -105,6 +106,62 @@ class Matcher:
 def reps_needed(n):
     """Leave-one-out recordings that must be heard. 80% of whatever was kept: 4 of 5, 8 of 10."""
     return int(np.ceil(0.8 * n))
+
+
+def current_training_set(items, cleared_at="", limit=SCORE_WINDOW):
+    """Recordings that count toward the success percentage.
+
+    items is chronological (session id, anything). A session id at or before cleared_at is an
+    older training run and is dropped. Of what remains, only the last `limit` items count, so
+    a long history cannot drag the percentage down. An empty cleared_at keeps every item, then
+    the same cap. Session ids are YYYYMMDD-HHMMSS, so a string compare is chronological.
+    """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        limit = SCORE_WINDOW
+    cutoff = cleared_at if isinstance(cleared_at, str) else ""
+    kept = []
+    for item in items:
+        ses = item[0] if item else ""
+        if cutoff and not (isinstance(ses, str) and ses > cutoff):
+            continue
+        kept.append(item)
+    if len(kept) > limit:
+        kept = kept[-limit:]
+    return kept
+
+
+def training_counts(heard_flags, neg_flags):
+    """Success, false rejects and false accepts for one current set. Not for a longer history.
+
+    heard_flags: one bool per recording in the current set (True when it was heard).
+    neg_flags: one bool per negative scored with that set (True when it would have woken the word).
+    """
+    flags = [bool(x) for x in heard_flags]
+    negs = [bool(x) for x in neg_flags]
+    n = len(flags)
+    heard = sum(1 for x in flags if x)
+    fr = n - heard
+    fa = sum(1 for x in negs if x)
+    neg_n = len(negs)
+    return {
+        "count": n,
+        "heard": heard,
+        "success_pct": int(round(100.0 * heard / n)) if n else 0,
+        "false_rejects": fr,
+        "false_accepts": fa,
+        "false_reject_rate": round(fr / n, 3) if n else 0.0,
+        "false_accept_rate": round(fa / neg_n, 3) if neg_n else 0.0,
+    }
+
+
+def score_tail(counts):
+    """The sentence shown beside the heard/count line. Empty when the counts are not a current set."""
+    if not isinstance(counts, dict):
+        return ""
+    pct, fr, fa = counts.get("success_pct"), counts.get("false_rejects"), counts.get("false_accepts")
+    if type(pct) is not int or type(fr) is not int or type(fa) is not int:
+        return ""
+    return f" {pct}% of this set. False rejects {fr}. False accepts {fa}."
 
 
 def peak(matcher, frames):
@@ -208,16 +265,21 @@ def calibrate(word_frames, word_lens, negatives, others=()):
         if not pc["ok"]:
             collide.append(name)
     heard = int(sum(p >= thr for p in pos))
+    counts = training_counts([p >= thr for p in pos], [p >= thr for p in neg])
     ok = heard >= need and floor >= neg_max + MARGIN and not collide
+    tail = score_tail(counts)
     if collide:
         msg = f"Not good enough yet. It sounds too much like {', '.join(collide)}. Try a different phrase."
     elif ok:
-        msg = f"Ready. It heard {heard} of {n} recordings."
+        msg = f"Ready. It heard {heard} of {n} recordings." + tail
     else:
         msg = (f"Not good enough yet. It heard {heard} of {n} recordings. "
-               "Train more to add 5 more recordings, somewhere quiet.")
+               "Train more to add 5 more recordings, somewhere quiet.") + tail
     return {"ok": bool(ok), "threshold": round(thr, 3), "templates": [tmpl[i] for i in keep], "pos": [round(p, 3) for p in pos],
-            "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "pairs": pairs, "message": msg}
+            "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "pairs": pairs, "message": msg,
+            "success_pct": counts["success_pct"], "false_rejects": counts["false_rejects"],
+            "false_accepts": counts["false_accepts"], "false_reject_rate": counts["false_reject_rate"],
+            "false_accept_rate": counts["false_accept_rate"]}
 
 
 def save(path, templates, meta):

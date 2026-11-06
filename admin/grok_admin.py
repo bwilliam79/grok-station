@@ -1195,6 +1195,137 @@ def bot_phrase_names(slug):
     return out
 
 
+def _phrase_persona(name):
+    """Persona stored for one phrase, or "" when none is stored."""
+    ov = read_json(path("wake-overrides.json"), {})
+    row = ov.get(name) if isinstance(ov, dict) and isinstance(ov.get(name), dict) else {}
+    who = str(row.get("persona") or "")
+    if persona_ok(who) and who:
+        return who
+    try:
+        ent = enrolled_entries().get(name) or {}
+    except Exception:
+        ent = {}
+    who = str(ent.get("persona") or "") if isinstance(ent, dict) else ""
+    if persona_ok(who) and who:
+        return who
+    st = read_enroll_status().get(name)
+    who = str(st.get("persona") or "") if isinstance(st, dict) else ""
+    return who if persona_ok(who) and who else ""
+
+
+def phrases_to_clear(slug):
+    """Phrase ids Clear training may delete for this bot. Another bot's phrase is never included.
+
+    None when slug is not a bot id. hey_<slug> is included when it is this bot's or unassigned.
+    A phrase explicitly assigned to a different bot is left alone, including one named hey_<slug>.
+    """
+    if not slug_ok(slug):
+        return None
+    out = []
+    for name in bot_phrase_names(slug):
+        if name == BUILTIN_WORD or not wake_name_ok(name):
+            continue
+        who = _phrase_persona(name)
+        if who and who != slug:
+            continue
+        out.append(name)
+    hey = "hey_" + slug
+    if wake_name_ok(hey) and hey not in out:
+        who = _phrase_persona(hey)
+        if not who or who == slug:
+            out.append(hey)
+    return out
+
+
+def clear_phrase_files(name, cutoff):
+    """Delete session directories under this phrase and write cleared.json. The model is not touched.
+
+    A symlinked phrase directory is not followed. A symlinked session is unlinked, not its target.
+    Returns how many session directories were removed.
+    """
+    import shutil
+    if not wake_name_ok(name) or name == BUILTIN_WORD:
+        return 0
+    if not isinstance(cutoff, str) or not re.fullmatch(r"\d{8}-\d{6}", cutoff):
+        raise ValueError("bad cutoff")
+    inbox = ENROLL_INBOX
+    target = os.path.join(inbox, name)
+    if not os.path.lexists(target) or os.path.islink(target) or not os.path.isdir(target):
+        return 0
+    real = os.path.realpath(target)
+    if os.path.dirname(real) != os.path.realpath(inbox):
+        raise OSError("phrase directory is outside the inbox")
+    removed = 0
+    for ses in list(os.listdir(target)):
+        if not re.fullmatch(r"\d{8}-\d{6}", ses):
+            continue
+        sd = os.path.join(target, ses)
+        if os.path.islink(sd):
+            os.unlink(sd)
+            removed += 1
+            continue
+        if os.path.isdir(sd) and os.path.dirname(os.path.realpath(sd)) == real:
+            shutil.rmtree(sd)
+            removed += 1
+    marker = os.path.join(target, "cleared.json")
+    if os.path.islink(marker):
+        os.unlink(marker)
+    safe_io.replace_file(marker, json.dumps({"session": cutoff}) + "\n", "training clear", mode=0o640)
+    return removed
+
+
+def _clear_phrase_stats(name):
+    """Forget the stored success line for one phrase. The wake-word model stays."""
+    doc = read_enroll_status()
+    if isinstance(doc, dict) and doc.pop(name, None) is not None:
+        write_enroll_status(doc)
+    raw = read_json(ENROLLED, {})
+    words = raw.get("words") if isinstance(raw, dict) else None
+    if not isinstance(words, list):
+        return
+    changed = False
+    for w in words:
+        if isinstance(w, dict) and w.get("name") == name and w.get("metrics") is not None:
+            w.pop("metrics", None)
+            changed = True
+    if changed:
+        safe_io.replace_file(ENROLLED, json.dumps({"words": words}, indent=1), "enrolled", mode=0o644)
+
+
+def clear_bot_training(slug, cutoff=None):
+    """Delete this bot's wake-training recordings and stats. Other bots are not changed.
+
+    Returns (status, body). Recording in progress is 409 and deletes nothing.
+    """
+    names = phrases_to_clear(slug)
+    if names is None:
+        return 400, {"error": "bad bot"}
+    status = read_enroll_status()
+    for name in names:
+        row = status.get(name) if isinstance(status, dict) and isinstance(status.get(name), dict) else {}
+        if row.get("state") in ACTIVE_ENROLL or row.get("state") == "processing":
+            return 409, {"error": "That word is recording right now. Try again when it finishes."}
+    stamp = cutoff if isinstance(cutoff, str) and re.fullmatch(r"\d{8}-\d{6}", cutoff) else time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    removed, cleared = 0, []
+    for name in names:
+        code, _out = wake("POST", "/enroll/clear", {"name": name})
+        if code == 409:
+            return 409, {"error": "That word is recording right now. Try again when it finishes."}
+        try:
+            removed += clear_phrase_files(name, stamp)
+        except OSError:
+            if code != 200:
+                return 500, {"error": "Couldn't clear that training. It's still saved. Try again in a minute."}
+        try:
+            _clear_phrase_stats(name)
+        except OSError:
+            if code != 200:
+                return 500, {"error": "Couldn't clear that training. It's still saved. Try again in a minute."}
+        cleared.append(name)
+    return 200, {"ok": True, "phrases": cleared, "sessions": removed}
+
+
 def delete_bot_phrases(slug):
     """A deleted bot's wake words are deleted too: recordings, models, rows.
     Returns (gone, failed): the ids deleted, and [{"name", "reason"}] for any that could not be."""
@@ -1215,6 +1346,16 @@ def delete_bot_phrases(slug):
 
 
 _SPEAKER_META = frozenset({"speaker", "speakers", "guest"})
+
+def training_score_tail(metrics):
+    """Percentage, false rejects and false accepts for the current set. Empty for an older metrics blob."""
+    if not isinstance(metrics, dict):
+        return ""
+    pct, fr, fa = metrics.get("success_pct"), metrics.get("false_rejects"), metrics.get("false_accepts")
+    if type(pct) is not int or type(fr) is not int or type(fa) is not int:
+        return ""
+    return f" {pct}% of this set. False rejects {fr}. False accepts {fa}."
+
 
 def model_note(raw):
     """Training note shown for one phrase. Old speaker fields are dropped; None when nothing else is stored."""
@@ -1895,6 +2036,7 @@ def derive_enroll_status(prev, wake_status, enrolled_names, now_ts, deleted=None
             if row.get("state") in ACTIVE_ENROLL and fresh:
                 m = b.get("metrics") if isinstance(b.get("metrics"), dict) else {}
                 msg = f"Ready. It heard {m['heard']} of {m['count']} recordings." if "heard" in m and "count" in m else "Ready."
+                msg += training_score_tail(m)
                 out[name] = _status_row(name, "published", msg, now_ts, out)
     if isinstance(wake_status, dict) and not busy and not queued:
         # A saved row still says recording, but the listener answers and isn't recording (it restarted, or its
@@ -4975,6 +5117,10 @@ class Handler(BaseHTTPRequestHandler):
         hm = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/helper-update", p)
         if hm and slug_ok(hm.group(1)):
             return self.bots_helper_update(hm.group(1))
+        cm = re.fullmatch(r"/api/bots/([a-z][a-z0-9-]{1,23})/training/clear", p)
+        if cm and slug_ok(cm.group(1)):
+            code, body = clear_bot_training(cm.group(1))
+            return self.send(code, body)
         m = BOT_PATH.fullmatch(p)
         if not m:
             return self.send(404, {"error": "not found"})

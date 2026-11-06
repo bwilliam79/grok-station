@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.22
+Wake-word training: Clear training, on a bot's Wake word tab, deletes that bot's recordings and training stats after you confirm, and leaves every other bot alone. The score line counts only the current set (recordings since that clear, at most the last 20): "Last 20 tries: 80% recognized · 4 missed · 1 false wake", or "No tries yet". Clear training sits in the action row after Remove phrase. A long error in the trainer stays on three lines until Show details. Press Update on each bot after installing.
+
 ### 0.13.21
 The updates row sits 40 px below the date, then its marker, then 16 px. On the real clock that is y806, and the tiles stay 560 px tall. If a taller date would push the bottom past y1380, the tiles shrink down to 520 px instead of disappearing, and the type shrinks only once a tile is under 540 px. Coming out of the night clock starts the row again at the first item. When the tiles change they fade across in eight steps. The Needs you mark is its own icon.
 

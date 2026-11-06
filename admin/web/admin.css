@@ -695,8 +695,19 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 }
 
 /* 0.13.0 wake word dialog: the message area keeps its height so the dialog does not jump */
-.wwmsg{min-height:6.5rem}
+.wwmsg{min-height:6.5rem;min-width:0;max-width:100%}
+.wwmsg:has(.error-text){min-height:0}
 .wwmsg .warnmsg{color:var(--gs-amber)}
+.wwmsg .error-text{display:block;min-width:0;max-width:100%}
+.wwmsg .error-text-body{margin:0;min-width:0;max-width:100%;overflow:hidden;white-space:normal;overflow-wrap:anywhere;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3}
+.wwmsg .error-text[data-expanded="true"] .error-text-body{display:block;-webkit-line-clamp:unset;line-clamp:unset}
+.err-toggle{display:inline-flex;align-items:center;margin-top:4px;padding:0;border:0;background:none;color:var(--gs-teal);font:500 var(--fs-help) var(--body);cursor:pointer}
+.err-toggle[hidden]{display:none}
+.wacts .btn.sm.q{width:auto;flex:none}
+.train-score{margin:8px 0 0;color:var(--gs-muted);font-size:var(--fs-help);min-width:0;max-width:100%;overflow-wrap:anywhere}
+@media (max-width:767px){
+  .wacts .btn.sm{min-height:44px;height:44px;width:auto;flex:none}
+}
 .wwsugs{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin-top:.4rem}
 /* 0.13.7 Homebridge Voice names (Noor SPEC gs-hb-alias rev1.1): clash cards, Rename others, single-row Rename */
 .vn{scroll-padding-bottom:120px}

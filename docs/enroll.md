@@ -24,7 +24,7 @@ upload.
   (`melspectrogram.onnx` and `embedding_model.onnx`). Hey Grok's model reads that stream, and so do custom words.
   This adds no audio processing (`wake/fewshot.py`).
 - **Templates.** Each recording becomes a template: the frames that cover the spoken phrase, up to 1.44 s.
-  At most 20 recordings per word are kept, the ones most like the others.
+  The success percentage uses the current training set only: recordings since the last Clear training on that bot, and at most the 20 most recent of those. Older recordings are not in the percentage. Clear training is on the bot's Wake word tab. It deletes that bot's recordings and the stored percentage, and leaves every other bot as it was.
   Only finished sessions count: a session with its `session.json` and at least 5 clips. Train more is 5 clips too, and an older session of 10 still counts. Empty, unfinished and duplicate sessions are skipped, so the "N recordings" shown matches what you recorded.
 - **Matching.** Each new frame is compared with every template using streaming dynamic time warping with cosine
   distance, so a slower or faster delivery still lines up. The word's score is the mean of its best two template
@@ -38,7 +38,7 @@ upload.
   - your other custom words
   - Hey Grok
   The threshold sits between the loudest of those and the recordings it must hear.
-- **The quality gate.** The word is ready when it hears at least 80% of the kept recordings (4 of 5, or 8 of 10 for a word already built from 10) and the
+- **The quality gate.** The word is ready when it hears at least 80% of the current set (4 of 5, or 8 of 10, and at most the 20 most recent since the last clear) and the
   weakest of them still beats the loudest negative by 0.03. Otherwise the station shows "Not good enough yet". If
   Hey Grok fires on your recordings, or another of your words does, the phrase is refused.
 - **Files on the Pi.**

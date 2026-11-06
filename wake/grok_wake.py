@@ -1180,6 +1180,15 @@ def control_server():
             if self.path == "/reload":
                 RELOAD.set()
                 return self._r(202, {"ok": True})
+            if self.path == "/enroll/clear":
+                try:
+                    n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                except ValueError:
+                    return self._r(400, {"error": "bad json"})
+                ok, err, removed = clear_phrase_sessions(body.get("name") if isinstance(body, dict) else None)
+                code = 200 if ok else 409 if err == "busy" else 500 if err == "write failed" else 400
+                return self._r(code, {"ok": ok, "error": err, "removed": removed})
             if self.path == "/forget":
                 try:
                     n = min(int(self.headers.get("Content-Length", 0) or 0), 1024)
@@ -1489,6 +1498,48 @@ def phrase_clips(phrase):
     return clips, noise
 
 
+def clear_cutoff(phrase):
+    """Session id of the last Clear training, or "" when this phrase has never been cleared.
+
+    Sessions at or before this id are a previous training run and do not count.
+    """
+    if not wake_name_ok(phrase):
+        return ""
+    path = os.path.join(ENROLL_DIR, phrase, "cleared.json")
+    try:
+        if os.path.islink(path):
+            return ""
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    ses = doc.get("session") if isinstance(doc, dict) else ""
+    return ses if isinstance(ses, str) and re.fullmatch(r"\d{8}-\d{6}", ses) else ""
+
+
+def score_sources(phrase):
+    """Clip paths and room-noise paths for the current training set only.
+
+    Finished sessions since the last clear, then the most recent SCORE_WINDOW clips.
+    Older sessions stay on disk until Clear training deletes them, and they are not scored.
+    """
+    import fewshot as fs
+    cutoff = clear_cutoff(phrase)
+    items, noise_by = [], {}
+    for d, names, noise_path in finished_sessions(phrase):
+        ses = os.path.basename(d)
+        for fn in names:
+            items.append((ses, os.path.join(d, fn)))
+        if noise_path:
+            noise_by[ses] = noise_path
+    chosen = fs.current_training_set(items, cutoff, fs.SCORE_WINDOW)
+    sessions = []
+    for ses, _path in chosen:
+        if ses not in sessions:
+            sessions.append(ses)
+    return [path for _ses, path in chosen], [noise_by[ses] for ses in sessions if ses in noise_by]
+
+
 def _enrolled_doc():
     try:
         with open(os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")) as f:
@@ -1631,7 +1682,18 @@ def log_margins(phrase, others, pairs, path=None, now=None):
 
 def _build_fewshot(phrase, persona):
     import fewshot as fs
-    clips, noise = phrase_clips(phrase)
+    clip_paths, noise_paths = score_sources(phrase)
+    clips, noise = [], []
+    for path in clip_paths:
+        try:
+            clips.append(_read_wav(path))
+        except (OSError, EOFError, wave.Error):
+            pass
+    for path in noise_paths:
+        try:
+            noise.append(_read_wav(path))
+        except (OSError, EOFError, wave.Error):
+            pass
     room = np.concatenate(noise) if noise else None
     padded = [fs.pad_clip(c, room) for c in clips]
     frames = [_embed(x) for x in padded]
@@ -1672,7 +1734,12 @@ def _build_fewshot(phrase, persona):
     words = [w for w in _enrolled_doc()["words"] if isinstance(w, dict) and w.get("name") != phrase]
     words.append({"name": phrase, "persona": persona, "threshold": cal["threshold"], "patience": FEWSHOT_PATIENCE,
                   "kind": "fewshot", "path": path, "enrolled": True, "built_at": int(time.time()),
-                  "metrics": {"heard": cal["heard"], "count": cal["count"], "templates": len(cal["templates"])}})
+                  "metrics": {"heard": cal["heard"], "count": cal["count"], "templates": len(cal["templates"]),
+                              "success_pct": cal.get("success_pct"), "false_rejects": cal.get("false_rejects"),
+                              "false_accepts": cal.get("false_accepts"),
+                              "false_reject_rate": cal.get("false_reject_rate"),
+                              "false_accept_rate": cal.get("false_accept_rate"),
+                              "window": fs.SCORE_WINDOW}})
     _write_enrolled(words)
     RELOAD.set()
     return cal
@@ -2294,6 +2361,82 @@ def load_dropped_wakewords(directory=None):
         accepted.append({"name": name, "persona": persona, "threshold": threshold, "patience": patience,
                          "path": op, "enrolled": True, "sha256": sha})
     return accepted
+
+
+def session_stamp(when=None):
+    """UTC session id, the same YYYYMMDD-HHMMSS form as an enroll directory."""
+    return time.strftime("%Y%m%d-%H%M%S", time.gmtime(None if when is None else when))
+
+
+def _strip_phrase_metrics(name):
+    """Drop stored heard/count and success stats for one phrase. The model entry stays."""
+    cfgp = os.path.join(ENROLLED_DIR, "wakewords.enrolled.json")
+    try:
+        doc = json.loads(open(cfgp).read())
+    except (OSError, ValueError):
+        return
+    words = doc.get("words") if isinstance(doc, dict) else None
+    if not isinstance(words, list):
+        return
+    changed = False
+    for w in words:
+        if isinstance(w, dict) and w.get("name") == name and w.get("metrics") is not None:
+            w.pop("metrics", None)
+            changed = True
+    if changed:
+        safe_io.replace_file(cfgp, json.dumps({"words": words}, indent=1), "enrolled", mode=0o644)
+
+
+def clear_phrase_sessions(name, cutoff=None, inbox=None):
+    """Delete one phrase's wake-training sessions and mark the clear. The trained model stays.
+
+    A phrase directory that is a symlink is not followed. A symlinked session is unlinked and
+    its target is left alone. Returns (ok, error, removed).
+    """
+    if name == BUILTIN or not wake_name_ok(name):
+        return False, "bad name", 0
+    if ENROLL_STATE["busy"] and (ENROLL_STATE.get("last") or {}).get("phrase") == name:
+        return False, "busy", 0
+    inbox = inbox or ENROLL_DIR
+    target = os.path.join(inbox, name)
+    removed = 0
+    try:
+        if os.path.lexists(target) and not os.path.islink(target) and os.path.isdir(target):
+            real = os.path.realpath(target)
+            if os.path.dirname(real) != os.path.realpath(inbox):
+                return False, "write failed", 0
+            for ses in list(os.listdir(target)):
+                if not re.fullmatch(r"\d{8}-\d{6}", ses):
+                    continue
+                sd = os.path.join(target, ses)
+                if os.path.islink(sd):
+                    os.unlink(sd)
+                    removed += 1
+                    continue
+                if os.path.isdir(sd) and os.path.dirname(os.path.realpath(sd)) == real:
+                    shutil.rmtree(sd)
+                    removed += 1
+            stamp = cutoff if isinstance(cutoff, str) and re.fullmatch(r"\d{8}-\d{6}", cutoff) else session_stamp()
+            marker = os.path.join(target, "cleared.json")
+            if os.path.islink(marker):
+                os.unlink(marker)
+            tmp = marker + ".tmp"
+            try:
+                if os.path.lexists(tmp) and not os.path.isdir(tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
+            with open(tmp, "w") as f:
+                json.dump({"session": stamp}, f)
+                f.write("\n")
+            os.replace(tmp, marker)
+        if (ENROLL_STATE.get("last") or {}).get("phrase") == name:
+            ENROLL_STATE["last"] = None
+        _strip_phrase_metrics(name)
+    except OSError as e:
+        print(f"wakeword clear failed {type(e).__name__} {target}", flush=True)
+        return False, "write failed", removed
+    return True, None, removed
 
 
 def forget_word(name):
