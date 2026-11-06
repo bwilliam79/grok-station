@@ -6543,7 +6543,8 @@ def setup_install_pins():
     """(template_commit, template_sha256) from admin/setup-params.txt (same literals gen-setup-params writes)."""
     params_path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "setup-params.txt")
     try:
-        raw = open(params_path, encoding="utf-8").read(12000)
+        with open(params_path, encoding="utf-8") as fh:
+            raw = fh.read(12000)
     except OSError:
         return None, None
     m = re.search(
@@ -6713,12 +6714,14 @@ async def admin_setup_relay(req):
         if vals is None or not release:
             raise ValueError("station state")
         if path == "first" and (not pin_c or not pin_h):
-            raise ValueError("station state")
+            raise ValueError("missing install pins")
         frozen = handoff.setup_relay_payload(
             rid, main, reply_by, target, vals[0], vals[1], vals[2], mode, release,
             pin_c if path == "first" else None, pin_h if path == "first" else None)
-    except ValueError:
-        return web.json_response({"error": "bad request"}, status=400)
+    except ValueError as err:
+        # These two are short and safe to show. Any other ValueError stays generic.
+        text = str(err) if str(err) in ("station state", "missing install pins") else "bad request"
+        return web.json_response({"error": text}, status=400)
     expires_ms = int((now + handoff.SETUP_RELAY_TTL_S) * 1000)
     try:
         # N02: freeze first; POST only the frozen bytes (no re-read of VERSION/TLS after this).

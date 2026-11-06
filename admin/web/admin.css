@@ -982,7 +982,10 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow>.rowupd{grid-column:bot;grid-row:1;justify-self:end;display:flex;align-items:center}
   #blist .botrow>.ww{grid-column:wake;grid-row:1;min-width:0;max-width:100%;overflow:hidden}
   #blist .botrow>.ww.none{display:flex}
+  /* 0.13.26: the switch stays on the column's trailing edge, whatever the label width. */
+  #blist .botrow>.ww>.tog,#blist .botrow>.ww>.wwtrain{margin-left:auto;flex:none}
   #blist .botrow>.updcol{grid-column:upd;grid-row:1;min-width:0}
+  #blist .botrow>.updcol .updbtn{flex-direction:row-reverse;width:100%;padding-right:0;margin-left:0;margin-right:0}
   #blist .botrow>.cfg{grid-column:act;grid-row:1;justify-self:end;display:flex;align-items:center;justify-content:flex-end;gap:8px;order:0}
   #blist .botrow>.cfg .chev{display:none}
   #blist .botrow.sentrow>.ww{display:none!important}
