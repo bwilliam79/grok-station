@@ -4082,6 +4082,31 @@ def setup_merge(doc, slug):
         setup_store(disk)
 
 
+_SETUP_BROWSER_STATUS = (400, 401, 403, 404, 409, 422, 429)
+
+
+def setup_browser_failure(who, outcome):
+    """(status, error) when the setup poster did not return True.
+
+    502, 503 and 504 make the page say the station is offline. A relay refusal or a main-bot webhook
+    failure is not that, so those statuses are not returned. A safe relay error is kept (not found,
+    not configured, bad request, timeout, webhook rejected, and the rest).
+    """
+    fallback = "Couldn't reach %s" % (who if isinstance(who, str) and who else "the main bot")
+    if not (isinstance(outcome, tuple) and len(outcome) >= 2):
+        return 422, fallback
+    status, data = outcome[0], outcome[1]
+    err = data.get("error") if isinstance(data, dict) else (data if isinstance(data, str) else None)
+    text = public_error(err) if isinstance(err, str) else ""
+    if text == "The voice service refused that.":
+        text = ""
+    if not text:
+        text = RELAY_DOWN if status == 503 else fallback
+    if status in _SETUP_BROWSER_STATUS:
+        return status, text
+    return 422, text
+
+
 def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, poster,
                name, wake, computer, add_bot=None, save=None):
     """Send one bot's setup through the main bot's webhook. Safe to repeat.
@@ -4126,11 +4151,15 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
         # 0.13.16: the relay sends typed parameters built from station state; no free text is sent or frozen.
         row["message"] = ""
         _SETUP_INFLIGHT.add(slug)
+    outcome = None
     ok = False
     try:
-        ok = callable(poster) and poster(slug) is True
+        if callable(poster):
+            outcome = poster(slug)
+            ok = outcome is True
     except Exception:
         ok = False
+        outcome = None
     finally:
         with _SETUP_LOCK:
             _SETUP_INFLIGHT.discard(slug)
@@ -4149,7 +4178,8 @@ def setup_send(doc, slug, *, known, main_slug, main_name, main_outdated, now, po
     view = setup_public(doc, now)
     if ok:
         return 200, {"ok": True, "setup": view}
-    return 502, {"error": "Couldn't reach %s" % who, "setup": view}
+    code, err = setup_browser_failure(who, outcome)
+    return code, {"error": err, "setup": view}
 
 
 def setup_mark_unknown(doc, slug, *, known, now, name=None):
@@ -5264,7 +5294,7 @@ class Handler(BaseHTTPRequestHandler):
         def poster(target):
             main = ctx["main"]
             if not main:
-                return False
+                return (400, {"error": "not configured"})
             mode = "home" if ctx.get("modes", {}).get(target) == "home" else "cloud"
             # G03: path=held when the live bot already holds this release's instructions.
             holds = False
@@ -5285,13 +5315,16 @@ class Handler(BaseHTTPRequestHandler):
             got = relay_call("POST", "/admin/bots/setup-relay",
                              {"actor": RELAY_ACTOR, "slug": main, "target": target, "mode": mode, "path": path},
                              timeout=15)
-            return bool(got and got[0] in (200, 202))
+            if got and got[0] in (200, 202):
+                return True
+            # None is no relay admin config. Any other result keeps its status and error.
+            return got if got else (422, {"error": "not configured"})
 
         code, body = setup_send(
             doc, slug, known=ctx["known"], main_slug=ctx["main"], main_name=ctx["main_name"],
             main_outdated=ctx["outdated"], now=time.time(), poster=poster, name=name, wake=wake,
             computer=computer, add_bot=None, save=(lambda d: setup_merge(d, slug)))
-        if code in (200, 502) and not (isinstance(body, dict) and body.get("inflight")):
+        if isinstance(body, dict) and body.get("setup") and not body.get("inflight"):
             audit(slug, "setup-send" if code == 200 else "setup-fail")
         return self.send(code, body)
 

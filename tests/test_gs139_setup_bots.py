@@ -227,10 +227,11 @@ class SetupSend(unittest.TestCase):
             return n["i"] >= 3
 
         code, body = self._send(doc, poster, now=5000)
-        self.assertEqual((code, doc["rows"]["otto"]["status"], doc["rows"]["otto"]["fails"]), (502, "failed", 1))
+        self.assertEqual((code, doc["rows"]["otto"]["status"], doc["rows"]["otto"]["fails"]), (422, "failed", 1))
         self.assertIn("Couldn't reach Juniper", body["error"])
+        self.assertNotIn(code, (502, 503, 504))
         code, _ = self._send(doc, poster, now=5001)
-        self.assertEqual((code, doc["rows"]["otto"]["fails"]), (502, 2))
+        self.assertEqual((code, doc["rows"]["otto"]["fails"]), (422, 2))
         code, _ = self._send(doc, poster, now=5002)
         self.assertEqual(code, 200)
         self.assertEqual(doc["rows"]["otto"]["status"], "sent")

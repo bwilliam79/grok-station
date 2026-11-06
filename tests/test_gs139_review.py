@@ -134,7 +134,8 @@ class N2FailedSurvivesRefresh(unittest.TestCase):
         doc = {"rows": {}, "hint": None}
         ga.setup_mark_unknown(doc, "otto", known=base.KNOWN, now=1000, name="Otto")
         code, body = self._send(doc, False)
-        self.assertEqual(code, 502)
+        self.assertEqual(code, 422)
+        self.assertNotIn(code, (502, 503, 504))
         self.assertIs(body["setup"]["rows"]["otto"]["unknown"], False)
 
     def test_sent_or_connected_wins_and_bad_input_is_refused(self):

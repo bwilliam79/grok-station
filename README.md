@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.25
+Confirm and send on a bot's Set up panel now says why the send failed, including when you press Try again. A failure while asking the main bot to pass setup on no longer looks like the station itself is offline. Press Update on each bot after installing.
+
 ### 0.13.24
 Pressing Update works again for bots still on the 0.13.22 updater. That updater requires one safety line unchanged, and 0.13.23 had edited it, so the update stopped and applied nothing. The line is restored. The owner name is still sent with the update; that exception is the next sentence. Press Update on each bot after installing.
 

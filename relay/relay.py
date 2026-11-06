@@ -6727,17 +6727,28 @@ async def admin_setup_relay(req):
     except (OSError, ValueError):
         return web.json_response({"error": "unavailable"}, status=500)
     posted = frozen  # exact pending bytes; never rebuild
+    webhook_status = None
+    fail = None
     try:
         async with ClientSession(timeout=ClientTimeout(total=10)) as http:
             async with http.post(ent["url"], json=posted, allow_redirects=False,
                                  headers={"Authorization": "Bearer " + ent["token"]}) as resp:
+                webhook_status = resp.status
                 ok = 200 <= resp.status < 300
+    except asyncio.TimeoutError:
+        ok = False
+        fail = "timeout"
     except Exception:
         ok = False
+        fail = "Couldn't reach the bot."
     if not ok:
         handoff.remove_pending(PENDING_DIR, rid)
         audit(body.get("actor"), slug, "setup-fail", "-")
-        return web.json_response({"error": "Couldn't reach the bot."}, status=502)
+        if fail is None:
+            fail = "webhook rejected" if webhook_status is not None else "Couldn't reach the bot."
+        # 502 here is the relay's answer to the station, not the browser. The admin maps it off the
+        # station-offline statuses and keeps this error text.
+        return web.json_response({"error": fail}, status=502)
     _retire_setup_pending(target, keep=rid)
     try:
         with _SETUP_STATE_LOCK:
