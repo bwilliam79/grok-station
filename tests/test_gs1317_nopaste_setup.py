@@ -126,7 +126,7 @@ class TemplateRules(unittest.TestCase):
         self.assertIn("do not ask for a second yes", self.PARAMS)
 
     def test_release(self):
-        self.assertIn("release is not 0.13.19", self.PARAMS)
+        self.assertIn("release is not 0.13.21", self.PARAMS)
 
 
 class FirstTimeYesBind(unittest.TestCase):
@@ -261,7 +261,7 @@ class N05Fixture(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_version_file(self):
-        self.assertEqual(_read("VERSION").strip(), "0.13.19")
+        self.assertEqual(_read("VERSION").strip(), "0.13.21")
 
 
 if __name__ == "__main__":

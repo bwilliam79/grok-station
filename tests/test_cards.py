@@ -229,7 +229,7 @@ class Schema(unittest.TestCase):
         self.assertEqual(cards.ttl_cap("30"), cards.TTL_HARD)
         self.assertEqual(cards.ttl_cap("120"), 120)
         self.assertEqual(cards.rotate_s(""), 20)
-        self.assertEqual(cards.rotate_s("4"), 20)
+        self.assertEqual(cards.rotate_s("4"), 10)  # nearest band choice; 4 is closer to 10 than to 15
         self.assertEqual(cards.rotate_s("15"), 15)
 
 

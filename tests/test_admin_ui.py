@@ -958,7 +958,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1052,7 +1052,25 @@ class Release0113UI(unittest.TestCase):
         screens = panel.split(">Screens<", 1)[1].split(">Brightness<", 1)[0]
         self.assertIn('class="pair"', screens)
         self.assertIn('id="hold"', screens)
-        self.assertIn('id="crot"', screens)
+        self.assertIn('id="urot"', screens)
+        self.assertIn(">Update rotation<", screens)
+        self.assertNotIn('id="crot"', screens)
+        self.assertIn("[10, 15, 20, 30, 45, 60]", panel)
+        self.assertIn('GROK_STATION_CARD_ROTATE || "20"', panel)
+        snippet = panel[panel.index("const ROT_CHOICES"):panel.index("const [nf, nt]")]
+        script = "const v = {};\n" + snippet + "\nprocess.stdout.write(rot + '\\n' + rotOpts);"
+        try:
+            out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            out = None
+        if out is not None and out.returncode == 0:
+            chosen, opts = out.stdout.split("\n", 1)
+            self.assertEqual(chosen, "20")
+            for seconds in (10, 15, 20, 30, 45, 60):
+                self.assertIn('<option value="%d"' % seconds, opts)
+                self.assertIn('>%d s</option>' % seconds, opts)
+            self.assertIn('value="20" selected', opts)
+            self.assertEqual(opts.count("<option"), 6)
         bright = panel.split(">Brightness<", 1)[1].split(">Units<", 1)[0]
         self.assertIn('id="dday"', bright)
         self.assertIn('id="dnight"', bright)
@@ -1089,7 +1107,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)

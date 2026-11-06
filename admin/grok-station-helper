@@ -26,7 +26,7 @@ SETTINGS = {  # section -> {key: (env file, validator)}
                 "GROK_STATION_DIM_TO": ("display", r"^(([01]\d|2[0-3]):[0-5]\d)?$"),
                 "GROK_STATION_DIM_SUNRISE": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$"),
                 "GROK_STATION_DIM_SUNSET": ("display", r"^-?(?:180|1[0-7]\d|[1-9]?\d)$"),
-                "GROK_STATION_CARD_ROTATE": ("display", r"^([5-9]|[1-9][0-9]|1[01][0-9]|120)$"),
+                "GROK_STATION_CARD_ROTATE": ("display", r"^(10|15|20|30|45|60)$"),
                 "GROK_STATION_SCORE_HOLD": ("display", r"^([1-9]|[1-9][0-9]|1[01][0-9]|120)$"),
                 "GROK_STATION_LOGO_HOSTS": ("display", r"^$|^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(,([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}){0,7}$")},
     "time": {"GROK_STATION_LAT": ("display", r"^-?\d{1,2}(\.\d{1,4})?$"), "GROK_STATION_LON": ("display", r"^-?\d{1,3}(\.\d{1,4})?$"),
@@ -211,7 +211,34 @@ def settings_get(sec):
             eff = gmod.effective_gains(device, vals.get("WAKE_GAIN"), vals.get("VOICE_GAIN"))
             body["defaults"] = {"WAKE_GAIN": eff["WAKE_GAIN"], "VOICE_GAIN": eff["VOICE_GAIN"]}
             body["gain_by_device"] = gmod.gain_by_device()
+    if sec == "display":
+        _migrate_update_rotation(vals)
     out(body)
+
+
+def _migrate_update_rotation(vals):
+    """A saved card-rotation value outside 10/15/20/30/45/60 is rewritten to the nearest choice.
+
+    Ties take the higher choice. The snap is logged once per process. A missing value stays missing.
+    """
+    raw = vals.get("GROK_STATION_CARD_ROTATE")
+    if not isinstance(raw, str) or raw == "":
+        return
+    try:
+        app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app")
+        if app not in sys.path:
+            sys.path.insert(0, app)
+        import cards
+        snapped = str(cards.upd_rotate_s(raw))
+    except Exception:
+        return
+    if snapped == raw:
+        return
+    vals["GROK_STATION_CARD_ROTATE"] = snapped
+    try:
+        env_write("display", {"GROK_STATION_CARD_ROTATE": snapped})
+    except Exception:
+        pass
 
 
 def settings_set(sec):

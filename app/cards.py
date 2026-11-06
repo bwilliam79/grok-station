@@ -4,7 +4,7 @@ Bots send data. Nothing here runs a command, fetches a URL that is not on the
 logo allowlist, or treats card text as markup. Text is stripped, then drawn as
 pixels by the station.
 """
-import base64, hashlib, http.client, ipaddress, json, os, re, socket, ssl, tempfile, threading, time, unicodedata
+import base64, hashlib, http.client, ipaddress, json, os, re, socket, ssl, sys, tempfile, threading, time, unicodedata
 from urllib.parse import urlsplit
 
 CARD_MAX = 4096
@@ -73,17 +73,50 @@ def ttl_cap(raw):
     return TTL_HARD if v > TTL_HARD else v
 
 
-def rotate_s(raw):
-    """Seconds between cards. Default 20. A whole number from 5 to 120 is kept; anything else is 20."""
-    if raw is None or raw == "":
+UPD_ROTATE_CHOICES = (10, 15, 20, 30, 45, 60)
+_ROTATE_SNAP_LOGGED = set()
+
+
+def snap_upd_rotate(value):
+    """Nearest allowed seconds. An equal distance takes the higher choice."""
+    best, best_dist = None, None
+    for choice in UPD_ROTATE_CHOICES:
+        dist = abs(choice - value)
+        if best is None or dist < best_dist or (dist == best_dist and choice > best):
+            best, best_dist = choice, dist
+    return best
+
+
+def upd_rotate_s(raw=None, env=None):
+    """Seconds before the whole updates band advances, home cards included.
+
+    Reads GROK_STATION_CARD_ROTATE. Missing or unparseable is 20. A saved number
+    that is not 10, 15, 20, 30, 45 or 60 snaps to the nearest choice (ties go up)
+    and is logged once per process.
+    """
+    if raw is None:
+        src = os.environ if env is None else env
+        raw = src.get("GROK_STATION_CARD_ROTATE", "")
+    if raw is None or raw == "" or (isinstance(raw, str) and not str(raw).strip()):
+        return ROTATE_DEFAULT
+    if type(raw) is bool:
         return ROTATE_DEFAULT
     try:
-        v = int(str(raw).strip())
+        value = int(str(raw).strip())
     except (TypeError, ValueError):
         return ROTATE_DEFAULT
-    if type(raw) is bool or v < 5 or v > 120:
-        return ROTATE_DEFAULT
-    return v
+    if value in UPD_ROTATE_CHOICES:
+        return value
+    choice = snap_upd_rotate(value)
+    if value not in _ROTATE_SNAP_LOGGED:
+        _ROTATE_SNAP_LOGGED.add(value)
+        print(f"update rotation {value}s snapped to {choice}s", file=sys.stderr, flush=True)
+    return choice
+
+
+def rotate_s(raw):
+    """The shared band interval. Same clock as upd_rotate_s."""
+    return upd_rotate_s(raw)
 
 
 def escape_text(value, cap):
@@ -1322,12 +1355,15 @@ class Deck:
         with self._lock:
             return self._current(now)
 
-    def home_row(self, now, n=3):
-        """Up to n home cards. If the card in the rotation slot is a home card, it is first."""
+    def home_row(self, now, n=3, stable=False):
+        """Up to n home cards. If the card in the rotation slot is a home card, it is first.
+
+        stable=True keeps priority order. The updates band uses that so its own step is the only rotation.
+        """
         with self._lock:
             cur = self._current(now)
             homes = [it for it in self._ordered() if it["card"]["type"] == "home"]
-            if cur and cur["card"]["type"] == "home":
+            if not stable and cur and cur["card"]["type"] == "home":
                 key = (cur["bot"], cur["id"])
                 keys = [(it["bot"], it["id"]) for it in homes]
                 if key in keys:
@@ -1416,12 +1452,12 @@ UPDATE_TYPES = ("update", "needs_you", "heads_up", "working_on", "done")
 LINE_MAX = 80
 UPD_RAW_MAX = 320  # raw NFKC line length accepted before clip_line
 RULE_MAX = 60
-UPD_ROTATE_S = ROTATE_DEFAULT        # 20 s, confirmed by the owner
+UPD_ROTATE_S = ROTATE_DEFAULT        # 20 s; the live interval is upd_rotate_s()
 DONE_FADE_S = 30 * 60                  # Done fades (aged look) at 30 min
 DROP_S = 2 * 3600                      # Done gone, Working on / Heads-up without expires_at dropped at 2 h
 FEED_MAX = 48                          # whole feed; oldest non-Needs-you dropped first
 UPD_PER_BOT = 8
-UPD_SLOTS = 3
+UPD_SLOTS = 2
 UPDATE_KEYS = frozenset(("v", "op", "id", "update", "kind", "nonce", "exp_ms"))
 UPD_CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule", "kind", "detail"))
@@ -1571,51 +1607,96 @@ class UpdateFeed:
         return needs, rest
 
 
-def update_slots(needs, others, step, slots=UPD_SLOTS):
-    """What the 3-tile band shows at rotation step `step` (one step per 20 s).
+def _band_window(seq, n, step, advance):
+    """Up to n items, starting at step * advance. Never repeats an item in one window."""
+    if not seq or n <= 0:
+        return []
+    n = min(int(n), len(seq))
+    start = (max(0, int(step)) * int(advance)) % len(seq)
+    out = []
+    for i in range(len(seq)):
+        item = seq[(start + i) % len(seq)]
+        if item in out:
+            break
+        out.append(item)
+        if len(out) == n:
+            break
+    return out
 
-    0 Needs you: all slots rotate. 1: it pins slot 1, others rotate in 2-3.
-    2: they pin slots 1-2, others rotate in slot 3. 3+: Needs you rotate two per step in slots 1-2,
-    slot 3 rotates the others. `others` is updates then home cards; there is no cap and no "+N more".
+
+def _band_positions(seq, n, step, advance):
+    """1-based indexes of the items _band_window would show, in that order."""
+    if not seq or n <= 0:
+        return []
+    n = min(int(n), len(seq))
+    start = (max(0, int(step)) * int(advance)) % len(seq)
+    positions, seen = [], set()
+    for i in range(len(seq)):
+        index = (start + i) % len(seq)
+        if index in seen:
+            break
+        seen.add(index)
+        positions.append(index + 1)
+        if len(positions) == n:
+            break
+    return positions
+
+
+def update_slots(needs, others, step, slots=UPD_SLOTS):
+    """Two slots (rev6). Needs you stays in slot 1 and rotates there when several are waiting.
+
+    No Needs you: both slots advance two ordinary items per step. One Needs you: it stays in
+    slot 1 and slot 2 advances one. Two or more, with other items: each slot advances one.
+    Only Needs you: both slots take the priority deck, two per step. Nothing is duplicated,
+    and a short deck does not repeat a tile to fill a slot.
     """
     step = max(0, int(step))
-
-    def window(seq, n, k):
-        if not seq or n <= 0:
-            return []
-        if len(seq) <= n:
-            return list(seq)
-        start = (k * n) % len(seq)
-        return [seq[(start + i) % len(seq)] for i in range(n)]
-
+    needs, others = list(needs), list(others)
     if not needs:
-        pinned = []
-    elif len(needs) <= 2:
-        pinned = list(needs)
-    else:
-        pinned = window(needs, 2, step)
-    rest = window(others, slots - len(pinned), step)
-    return (pinned + rest)[:slots]
+        return _band_window(others, slots, step, 2)
+    if len(needs) == 1:
+        second = _band_window(others, 1, step, 1)
+        return [needs[0]] + second
+    if not others:
+        return _band_window(needs, slots, step, 2)
+    return _band_window(needs, 1, step, 1) + _band_window(others, 1, step, 1)
+
+
+def _marker_range(positions, total):
+    if len(positions) == 1:
+        return f"{positions[0]} of {total}"
+    return f"{positions[0]}\u2013{positions[-1]} of {total}"
 
 
 def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
-    """'Updates · 1–3 of 4': the range always spans the tiles on screen (Noor band rev2 fix).
+    """Where the two slots are in each queue (rev6).
 
-    Never names a type. '' when everything fits. Pinned Needs you count as the first positions.
+    One Needs you: "Needs you · others 3 of 6". Several: "Needs you 1 of 3 · others 2 of 4".
+    No Needs you: "3–4 of 6". Only Needs you: "Needs you 1–2 of 3". One ordinary item, or an
+    empty secondary queue, has no counter. "Paused · " is prefixed while rotation is held.
     """
-    total = len(needs) + len(others)
-    if total <= slots:
-        return ""
-    shown = len(update_slots(needs, others, step, slots))
-    pinned = min(len(needs), 2)
-    free = slots - pinned
-    if len(needs) > 2 or free <= 0 or not others:
-        hi = shown
-    else:
-        start = (step * free) % len(others)
-        hi = min(total, pinned + start + free)
-    lo = max(1, hi - shown + 1)
-    text = f"Updates \u00b7 {lo}\u2013{hi} of {total}" if hi > lo else f"Updates \u00b7 {lo} of {total}"
+    step = max(0, int(step))
+    needs, others = list(needs), list(others)
+    text = ""
+    if len(needs) == 1:
+        text = "Needs you"
+        if others:
+            pos = _band_positions(others, 1, step, 1)
+            text += " \u00b7 others " + _marker_range(pos, len(others))
+    elif len(needs) > 1 and not others:
+        pos = _band_positions(needs, slots, step, 2)
+        if len(needs) > 1 and pos:
+            text = "Needs you " + _marker_range(pos, len(needs))
+    elif len(needs) > 1:
+        npos = _band_positions(needs, 1, step, 1)
+        text = "Needs you " + _marker_range(npos, len(needs))
+        opos = _band_positions(others, 1, step, 1)
+        text += " \u00b7 others " + _marker_range(opos, len(others))
+    elif len(others) > slots:
+        pos = _band_positions(others, slots, step, 2)
+        text = _marker_range(pos, len(others))
+    if not text:
+        return "Paused" if paused else ""
     return ("Paused \u00b7 " + text) if paused else text
 
 
@@ -1634,9 +1715,10 @@ def update_band_state(feed, now, step, *, night=False, bot_talking=False, timer_
             "marker": update_marker(needs, rest, step, paused=hold)}
 
 
-def update_next_step(step, elapsed_s, paused):
-    """Advance one step per UPD_ROTATE_S of unpaused time."""
-    if paused or elapsed_s < UPD_ROTATE_S:
+def update_next_step(step, elapsed_s, paused, interval=None):
+    """Advance one step per interval of unpaused time. The interval is the shared band clock."""
+    wait = upd_rotate_s() if interval is None else interval
+    if paused or elapsed_s < wait:
         return step
     return step + 1
 
