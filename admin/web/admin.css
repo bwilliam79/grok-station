@@ -499,6 +499,8 @@ p#emptybot{margin:10px 2px 0}
 .dispcard .row{padding:3px 0;gap:8px}
 .dispcard .help,.dispcard .note,.dispprev .note{font-size:var(--fs-help);line-height:1.25;margin-top:2px}
 .dispcard select.sel,.dispcard input.inp{height:30px;min-height:30px;font-size:var(--fs-help)}
+.dispcard select#urot{height:44px;min-height:44px;font-size:var(--fs-body)}
+.dispcard select#urot:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;box-shadow:none}
 .dispcard .pair{display:grid;grid-template-columns:1fr 1fr;gap:2px 14px;align-items:end}
 .dispcard .pair .field{margin-top:3px}
 .dispprev{padding:8px 10px}

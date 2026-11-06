@@ -68,18 +68,20 @@ class FeedRules(unittest.TestCase):
         self.assertEqual(rest, [])
         self.assertEqual([r["id"] for r in needs], ["d"])  # Needs you stays until handled
 
-    def test_two_needs_you_take_slots_1_and_2_and_slot_3_rotates(self):
-        needs = [{"id": "n2"}, {"id": "n1"}]
+    def test_needs_you_rotates_in_slot_1_and_slot_2_keeps_the_rest(self):
+        needs = [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}]
         others = [{"id": "o%d" % i} for i in range(4)]
-        for step in range(4):
-            tiles = cards.update_slots(needs, others, step)
-            self.assertEqual([t["id"] for t in tiles[:2]], ["n2", "n1"])
-            self.assertEqual(tiles[2]["id"], "o%d" % step)
+        self.assertEqual([t["id"] for t in cards.update_slots(needs, others, 0)], ["n1", "o0"])
+        self.assertEqual([t["id"] for t in cards.update_slots(needs, others, 1)], ["n2", "o1"])
+        self.assertEqual([t["id"] for t in cards.update_slots(needs, others, 2)], ["n3", "o2"])
+        self.assertEqual([t["id"] for t in cards.update_slots(needs[:1], others, 1)], ["n1", "o1"])
+        self.assertEqual([t["id"] for t in cards.update_slots([], others, 1)], ["o2", "o3"])
 
-    def test_one_needs_you_pins_slot_1_and_none_rotates_all(self):
-        others = [{"id": "o%d" % i} for i in range(6)]
-        self.assertEqual([t["id"] for t in cards.update_slots([{"id": "n"}], others, 1)], ["n", "o2", "o3"])
-        self.assertEqual([t["id"] for t in cards.update_slots([], others, 1)], ["o3", "o4", "o5"])
+    def test_only_needs_you_uses_both_slots_without_duplicating(self):
+        needs = [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}]
+        self.assertEqual([t["id"] for t in cards.update_slots(needs, [], 0)], ["n1", "n2"])
+        self.assertEqual([t["id"] for t in cards.update_slots(needs, [], 1)], ["n3", "n1"])
+        self.assertEqual([t["id"] for t in cards.update_slots(needs[:1], [], 2)], ["n1"])
 
     def test_night_hides_everything_including_needs_you(self):
         self.put("otto", "n", "needs_you", T0)

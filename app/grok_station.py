@@ -734,7 +734,7 @@ def deck():
     """The station's card deck. Tests replace DECK; the process env sets rotation and the ttl cap."""
     global DECK
     if DECK is None:
-        DECK = cards.Deck(rotate_s=cards.rotate_s(E("GROK_STATION_CARD_ROTATE", "")),
+        DECK = cards.Deck(rotate_s=cards.upd_rotate_s(),
                           ttl_max=cards.ttl_cap(E("GROK_STATION_CARD_TTL_MAX", "")))
     return DECK
 
@@ -851,7 +851,7 @@ def feed_identity(now=None):
     home = ",".join(f"{h['bot']}:{h['id']}" for h in homes)
     needs, rest = updates_feed().ordered(now)
     if needs or rest:  # bot updates: a new, cleared, aged or rotated tile repaints (20 s step)
-        due = UPD_ROT["at"] is not None and now - UPD_ROT["at"] >= cards.UPD_ROTATE_S
+        due = UPD_ROT["at"] is not None and now - UPD_ROT["at"] >= cards.upd_rotate_s()
         home += "|u" + ",".join(f"{r['seq']}{'a' if r['aged'] else ''}" for r in needs + rest)
         home += f":{UPD_ROT['step'] + (1 if due else 0)}"
     return full + "|" + home
@@ -3320,55 +3320,92 @@ def _trend(surf, x, y, size, trend):
     return None
 
 
-def draw_home_band(surf, L, rows):
-    """Up to three home cards under the date and weather, above the timer strip. No-op if there is no room."""
-    if not rows:
-        return
-    floor_y = content_limit(L)
-    date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
-    weather_bottom = LAST_WEATHER_RECT.bottom if LAST_WEATHER_RECT else 0
-    top = max(date_bottom, weather_bottom, int(L.h * 0.58)) + L(16)
-    if floor_y - top < L(80):
-        top = max(date_bottom, weather_bottom) + L(16)
-    if floor_y - top < L(80):
-        return
-    gap = L(16)
-    n = min(3, len(rows))
-    width = (L.w - 2 * L.m - gap * (n - 1)) // n
-    height = min(L(280), floor_y - top)
-    for i, row in enumerate(rows[:n]):
-        rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
-        _paint_home_tile(surf, L, rect, row)
+# Rev7: 40 px after the date line box, the 48 px marker, then 16 px. Band top is that sum (104 px).
+BAND_AFTER_DATE = 40
+BAND_MARKER_H = 48
+BAND_BEFORE_BAND = 16
+BAND_FULL_H = 560
+BAND_LIMIT = 1380
+BAND_SHRINK_BOTTOM = 1376
+BAND_MIN_H = 520
+BAND_SCALE_BELOW = 540
 
 
-def _paint_home_tile(surf, L, rect, row):
-    """One home card in one band slot."""
-    pygame.draw.rect(surf, SURFACE, rect, border_radius=L(20))
+def updates_band_layout(L, date_bottom=None, weather_bottom=None):
+    """Two 1136 px slots under the date. Top is date bottom + 104 px at 2560x1706.
+
+    A 702 px date puts the tiles at y806, 560 tall, ending at 1366. If the full height would
+    pass y1380, the tiles shrink so the bottom is 1376, down to 520. Avatar and type scale by
+    height/560 only below 540. The band hides only when 520 px still does not fit.
+    """
+    if date_bottom is None:
+        date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
+    if weather_bottom is None:
+        marks = [r.bottom for r in (LAST_WEATHER_RECT, LAST_OFFLINE_RECT) if r]
+        weather_bottom = max(marks) if marks else 0
+    x = zpx(L, 128)
+    gap, tile_w = zpx(L, 32), zpx(L, 1136)
+    full = zpx(L, BAND_FULL_H)
+    clearance = zpx(L, BAND_AFTER_DATE) + zpx(L, BAND_MARKER_H) + zpx(L, BAND_BEFORE_BAND)
+    y = max(int(date_bottom), int(weather_bottom)) + clearance
+    limit = min(zpx(L, BAND_LIMIT), content_limit(L))
+    height = full
+    if y + height > limit:
+        land = min(zpx(L, BAND_SHRINK_BOTTOM), limit)
+        height = land - y
+        if height < zpx(L, BAND_MIN_H) or x + 2 * tile_w + gap > L.w:
+            return None
+    elif x + 2 * tile_w + gap > L.w:
+        return None
+    scale = (height / float(full)) if height < zpx(L, BAND_SCALE_BELOW) else 1.0
+    rects = (pygame.Rect(x, y, tile_w, height), pygame.Rect(x + tile_w + gap, y, tile_w, height))
+    marker_h = zpx(L, BAND_MARKER_H)
+    marker = pygame.Rect(x, y - zpx(L, BAND_BEFORE_BAND) - marker_h, tile_w * 2 + gap, marker_h)
+    return {"rects": rects, "marker": marker, "scale": scale}
+
+
+def _band_px(L, spec, scale):
+    """A rev6 size, multiplied by the rev7 shrink scale. Scale 1 keeps the integer L() size."""
+    base = L(spec)
+    if scale == 1:
+        return base
+    return max(1, int(round(base * scale)))
+
+
+def _paint_home_tile(surf, L, rect, row, scale=1.0):
+    """One home card in one band slot. No avatar. Titles, labels and values use the rev6 sizes."""
+    pygame.draw.rect(surf, SURFACE, rect, border_radius=_band_px(L, 30, scale))
     card = row["card"]
-    y = rect.top + L(16)
-    title = _line(surf, "display", L(34), card["title"].upper(), MUTED, rect.w - L(48))
-    surf.blit(title, (rect.left + L(28), y))
-    y += title.get_height() + L(16)
+    inset = _band_px(L, 30, scale)
+    y = rect.top + inset
+    title = _line(surf, "display", _band_px(L, 36, scale), card["title"].upper(), MUTED, rect.w - 2 * inset)
+    surf.blit(title, (rect.left + inset, y))
+    y += title.get_height() + _band_px(L, 18, scale)
     for item in card["items"]:
         trend = item.get("trend")
         color = GREEN if trend == "up" else RED if trend == "down" else TEXT
-        arrow = L(22)
-        label = _line(surf, "body", L(36), item["label"], MUTED, max(40, rect.w // 2 - L(16)))
-        value = _line(surf, "display", L(48), item["value"], color, max(40, rect.w // 2 - arrow - L(24)))
+        arrow = _band_px(L, 22, scale)
+        label = _line(surf, "body", _band_px(L, 36, scale), item["label"], MUTED, max(40, rect.w // 2 - inset))
+        value = _line(surf, "display", _band_px(L, 57, scale), item["value"], color, max(40, rect.w // 2 - arrow - inset))
         row_h = max(label.get_height(), value.get_height())
-        if y + row_h > rect.bottom - L(8):
+        if y + row_h > rect.bottom - _band_px(L, 8, scale):
             break
-        surf.blit(label, (rect.left + L(28), y + max(0, (value.get_height() - label.get_height()) // 2)))
-        vx = rect.right - L(28) - value.get_width()
+        surf.blit(label, (rect.left + inset, y + max(0, (value.get_height() - label.get_height()) // 2)))
+        vx = rect.right - inset - value.get_width()
         if trend in ("up", "down"):
-            _trend(surf, vx - arrow - L(8), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
+            _trend(surf, vx - arrow - _band_px(L, 8, scale), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
         surf.blit(value, (vx, y))
-        y += row_h + L(12)
+        y += row_h + _band_px(L, 18, scale)
 
 
 UPDATE_PILL = {"needs_you": "NEEDS YOU", "heads_up": "Heads-up", "working_on": "Working on", "done": "Done"}
 UPD_ROT = {"step": 0, "at": None}   # rotation position; held while paused, resumes from the same step
 LAST_UPDATE_BAND = None             # test hook: the band state last painted
+LAST_BAND_GEOM = None               # test hook: the rev6 slot rects last considered
+LAST_UPDATE_AVATARS = []            # test hook: portrait or initial for each update tile painted
+LAST_UPDATE_PILLS = []              # test hook: pill word and whether it has its own icon
+LAST_BAND_FADE = None               # test hook: alphas used for the latest band paint
+_BAND_PREV = None                   # previous band layer, for the in-place cross-fade
 
 
 def update_age(seconds):
@@ -3376,49 +3413,102 @@ def update_age(seconds):
     return "now" if s < 60 else f"{s // 60}m" if s < 3600 else f"{s // 3600}h"
 
 
+def updates_night_edge(night):
+    """Remember a night screen. When it ends, both queues start again at position 1."""
+    night = bool(night)
+    was = bool(UPD_ROT.get("night"))
+    UPD_ROT["night"] = night
+    if was and not night:
+        UPD_ROT["step"] = 0
+        UPD_ROT["at"] = None
+        return True
+    return False
+
+
 def update_rotation_step(now, paused=False):
-    """One step per 20 s of unpaused time. Pause holds the step; resume carries on from it."""
+    """One step per the shared band interval of unpaused time. Pause holds the step."""
     if UPD_ROT["at"] is None or paused:
         UPD_ROT["at"] = now
         return UPD_ROT["step"]
-    if now - UPD_ROT["at"] >= cards.UPD_ROTATE_S:
+    if now - UPD_ROT["at"] >= cards.upd_rotate_s():
         UPD_ROT["step"] += 1
         UPD_ROT["at"] = now
     return UPD_ROT["step"]
 
 
 def idle_band_rows(now, night=False, paused=False):
-    """Home band tiles: Needs you pinned, then updates and home cards rotating. Night: nothing at all."""
+    """Two band slots. Needs you rotates in slot 1; slot 2 rotates the other updates and home cards.
+
+    Night hides the row, Needs you included. Home cards use the same step, so the two decks do not drift.
+    """
     global LAST_UPDATE_BAND
-    homes = deck().home_row(now)
+    updates_night_edge(night)
+    homes = [dict(h, kind="home") for h in deck().home_row(now, n=cards.MAX_CARDS, stable=True)]
     needs, rest = updates_feed().ordered(now)
-    if not needs and not rest:
-        LAST_UPDATE_BAND = None
-        return homes
-    if night:
+    if night and (needs or rest):
         LAST_UPDATE_BAND = {"visible": False, "tiles": [], "marker": ""}
         return []
+    if not needs and not rest and not homes:
+        LAST_UPDATE_BAND = None
+        return []
     step = update_rotation_step(now, paused)
-    others = [dict(r, kind="update") for r in rest] + [dict(h, kind="home") for h in homes]
-    tiles = cards.update_slots([dict(r, kind="update") for r in needs], others, step)
+    need_rows = [dict(r, kind="update") for r in needs]
+    others = [dict(r, kind="update") for r in rest] + homes
+    tiles = cards.update_slots(need_rows, others, step)
     LAST_UPDATE_BAND = {"visible": bool(tiles), "paused": bool(paused), "tiles": tiles,
                         "marker": cards.update_marker(needs, others, step, paused=paused)}
     return tiles
 
 
-def update_title_lines(L, text, width):
-    """The update line in at most 2 lines; a longer one ends with an ellipsis on line 2 (band rev2)."""
-    f = font("body", L(40))
-    lines = wrap(f, text, width)
+# A Needs you detail that already starts with one of these is an instruction. Do not leave "Say " in front of it.
+_NEEDS_YOU_VERBS = frozenset({
+    "tell", "ask", "let", "have", "give", "call", "text", "reply", "send",
+    "open", "check", "review", "approve", "confirm", "show", "read",
+})
+
+
+def needs_you_detail(text):
+    """Shown copy for a Needs you detail. Stored text is left alone.
+
+    'Say tell Aster yes to continue.' is 'Tell Aster yes to continue.'
+    A leading 'Say ' stays when the next word is not already a verb.
+    """
+    text = " ".join(str(text or "").split())
+    match = re.match(r"^Say\s+([A-Za-z]+)(.*)$", text)
+    if not match or match.group(1).lower() not in _NEEDS_YOU_VERBS:
+        return text
+    word, rest = match.group(1), match.group(2)
+    return word[:1].upper() + word[1:] + rest
+
+
+def display_clip(text, limit):
+    """Presentation length. The stored line is left alone. Cut at a word and add an ellipsis."""
+    text = " ".join(str(text or "").split())
+    limit = int(limit)
+    if len(text) <= limit:
+        return text
+    room = max(1, limit - 1)
+    cut = text[:room]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    cut = cut.rstrip()
+    if not cut:
+        cut = text[:room].rstrip()
+    return (cut or text[:1]) + "\u2026"
+
+
+def update_title_lines(L, text, width, kind="body", px=None):
+    """The headline in at most 2 lines at 76 px. A longer one ends with an ellipsis on line 2."""
+    f = font(kind, L(57) if px is None else px)
+    lines = wrap(f, display_clip(text, 60), width)
     if len(lines) <= 2:
         return lines
     return [lines[0], ellipsize(f, " ".join(lines[1:]), width)]
 
 
 def update_tile_height(L):
-    """Header (avatar row) plus 2 title lines. Every tile in the band uses this one height."""
-    head = max(L(72), font("body", L(40)).get_height() + font("body", L(30)).get_height() + L(8))
-    return L(24) + head + L(16) + 2 * font("body", L(40)).get_height() + L(4) + L(24)
+    """Every tile uses the rev6 band height (560 px at 2560x1706)."""
+    return zpx(L, 560)
 
 
 def update_meta(row):
@@ -3426,36 +3516,169 @@ def update_meta(row):
     return ("⚠ Needs you · " + bot) if row["type"] == "needs_you" else (bot + " · " + row.get("kind", UPDATE_PILL.get(row["type"], "Update")))
 
 
-def _paint_update_tile(surf, L, rect, row, now):
-    """One update tile (Noor u-04): avatar initial, bot name, pill word (never colour alone) and age,
-    then the line in 2 lines max. Draws only."""
+def _bang_icon(px, color):
+    """The Needs you mark, drawn apart from the pill word."""
+    box = pygame.Surface((max(4, int(px)), max(4, int(px))), pygame.SRCALPHA)
+    sw = max(2, int(px) // 6)
+    cx = box.get_width() // 2
+    pygame.draw.line(box, color, (cx, int(px * 0.08)), (cx, int(px * 0.62)), sw)
+    pygame.draw.circle(box, color, (cx, int(px * 0.82)), max(1, sw // 2))
+    return box
+
+
+def _check_icon(px, color):
+    box = pygame.Surface((px, px), pygame.SRCALPHA)
+    sw = max(2, px // 8)
+    pygame.draw.lines(box, color, False, [
+        (int(px * 0.18), int(px * 0.52)),
+        (int(px * 0.42), int(px * 0.76)),
+        (int(px * 0.84), int(px * 0.28)),
+    ], sw)
+    return box
+
+
+def _update_avatar(name, d, letter_px):
+    """Circle-cropped portrait, or the first initial in cream on shelf-2. Never a broken image."""
+    d = max(8, int(d))
+    photo = pygame.Surface((d, d), pygame.SRCALPHA)
+    path = find_portrait(name)
+    drawn = False
+    if _portrait_ok(path):
+        try:
+            drawn = _blit_cover(photo, pygame.image.load(path), d // 2)
+        except Exception:
+            drawn = False
+    initial = (str(name or "?")[:1] or "?").upper()
+    if not initial.isalnum():
+        initial = "?"
+    if drawn:
+        mask = pygame.Surface((d, d), pygame.SRCALPHA)
+        pygame.draw.circle(mask, (255, 255, 255, 255), (d // 2, d // 2), d // 2)
+        photo.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+        return photo, False, initial
+    pygame.draw.circle(photo, SURFACE2, (d // 2, d // 2), d // 2)
+    letter = font("display", max(12, min(d - 4, int(letter_px)))).render(initial, True, TEXT)
+    photo.blit(letter, letter.get_rect(center=(d // 2, d // 2)))
+    return photo, True, initial
+
+
+def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=False, font_px=None):
+    """Word plus icon. Filled, outlined, or dashed. Returns the pill rect."""
+    px = L(30) if font_px is None else font_px
+    f = font("display", px)
+    label = f.render(word, True, ink)
+    icon_px = max(12, int(px * 0.72))
+    glyph = icon(icon_px, ink) if icon else None
+    gap = zpx(L, 8) if glyph else 0
+    pad_x, pad_y = zpx(L, 20), zpx(L, 10)
+    inner = (glyph.get_width() + gap if glyph else 0) + label.get_width()
+    width = min(max_w, pad_x + inner + pad_x)
+    height = pad_y + max(label.get_height(), glyph.get_height() if glyph else 0) + pad_y
+    rect = pygame.Rect(x, y, max(height, width), height)
+    radius = rect.h // 2
+    if fill is not None:
+        pygame.draw.rect(surf, fill, rect, border_radius=radius)
+    if dashed:
+        _dashed_rect(surf, outline, rect, max(1, L(2)), zpx(L, 8), zpx(L, 6))
+    elif outline is not None and fill is None:
+        pygame.draw.rect(surf, outline, rect, width=max(1, L(2)), border_radius=radius)
+    cx = rect.left + pad_x
+    room = rect.right - pad_x - cx
+    if glyph and room > glyph.get_width():
+        surf.blit(glyph, (cx, rect.centery - glyph.get_height() // 2))
+        cx += glyph.get_width() + gap
+        room = rect.right - pad_x - cx
+    shown = label if label.get_width() <= room else font("display", px).render(
+        ellipsize(f, word, max(8, room)), True, ink)
+    surf.blit(shown, (cx, rect.centery - shown.get_height() // 2))
+    return rect
+
+
+def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
+    """One update tile (rev6): 160 px portrait, name and age, a word-and-icon pill, then the line.
+
+    `scale` is height/560 when a rev7 shrink drops the tile below 540 px, and 1 otherwise.
+    """
+    global LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS
     t = row["type"]
     needs = t == "needs_you"
-    aged = row.get("aged")
-    pygame.draw.rect(surf, SURFACE if not aged else BG, rect, border_radius=L(20))
+    aged = bool(row.get("aged"))
+    pygame.draw.rect(surf, BG if aged else SURFACE, rect, border_radius=_band_px(L, 30, scale))
     edge = AMBER if needs else RULE2
-    pygame.draw.rect(surf, edge, rect, width=max(1, L(6) if needs else L(3)), border_radius=L(20))
-    color = AMBER if t in ("needs_you", "heads_up") else LISTENING if t == "done" and not aged else MUTED
-    x, y = rect.left + L(28), rect.top + L(24)
-    d = L(72)
-    ring = AMBER if needs else (RULE2 if aged else LISTENING)
-    pygame.draw.circle(surf, ring, (x + d // 2, y + d // 2), d // 2, max(1, L(4)))
-    ini = font("body", L(36)).render((row["bot"][:1] or "?").upper(), True, TEXT)
-    surf.blit(ini, ini.get_rect(center=(x + d // 2, y + d // 2)))
-    tx = x + d + L(20)
-    meta = update_meta(row)
-    name = _line(surf, "body", L(30), meta, AMBER if needs else MUTED, rect.right - tx - L(28))
-    surf.blit(name, (tx, y))
-    pill = pygame.Rect(tx, y, name.get_width(), name.get_height())
-    f = font("display" if needs else "body", L(40))
-    ly = max(y + d, pill.bottom) + L(16)
-    for text in update_title_lines(L, row["line"], rect.w - L(56)):
-        img = f.render(text, True, MUTED if aged else TEXT)
-        surf.blit(img, (rect.left + L(28), ly))
-        ly += img.get_height() + L(4)
-    if row.get("detail"):
-        detail = _line(surf, "body", L(28), row["detail"], MUTED, rect.w - L(56))
-        surf.blit(detail, (rect.left + L(28), ly))
+    pygame.draw.rect(surf, edge, rect, width=max(1, _band_px(L, 6 if needs else 3, scale)), border_radius=_band_px(L, 30, scale))
+    inset = _band_px(L, 30, scale)
+    d = _band_px(L, 120, scale)
+    ring_w = max(1, int(round((zpx(L, 6) if needs else zpx(L, 4)) * scale)))
+    photo_d = max(8, d - 2 * ring_w)
+    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(round(zpx(L, 72) * scale))))
+    if aged:
+        avatar.set_alpha(153)
+    ax, ay = rect.left + inset, rect.top + inset
+    cx, cy = ax + d // 2, ay + d // 2
+    surf.blit(avatar, (cx - photo_d // 2, cy - photo_d // 2))
+    ring = AMBER if needs else (MUTED if aged else RULE2)
+    pygame.draw.circle(surf, ring, (cx, cy), max(1, d // 2 - ring_w // 2), max(1, ring_w))
+    LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
+                                "rect": pygame.Rect(ax, ay, d, d)})
+    tx = ax + d + _band_px(L, 21, scale)
+    text_w = max(40, rect.right - inset - tx)
+    name = (row.get("bot") or "?").capitalize()
+    age = update_age(now - row["time"]) if isinstance(row.get("time"), (int, float)) else ""
+    name_px, age_px = _band_px(L, 36, scale), _band_px(L, 36, scale)
+    name_img = font("display", name_px).render(name, True, MUTED if aged else TEXT)
+    age_img = font("body", age_px).render((" \u00b7 " + age) if age else "", True, MUTED)
+    if name_img.get_width() + age_img.get_width() > text_w:
+        name_img = font("display", name_px).render(
+            ellipsize(font("display", name_px), name, max(8, text_w - age_img.get_width())), True, MUTED if aged else TEXT)
+    if needs:
+        pill_fill, pill_ink, pill_edge, dashed = AMBER, AMBER_INK, None, False
+        word, icon = "NEEDS YOU", _bang_icon
+    elif t == "heads_up":
+        pill_fill, pill_ink, pill_edge, dashed = None, AMBER, AMBER, False
+        word, icon = UPDATE_PILL[t], _bell_icon
+    elif t == "working_on":
+        pill_fill, pill_ink, pill_edge, dashed = None, MUTED, MUTED, True
+        word, icon = UPDATE_PILL[t], _clock_icon
+    else:
+        ink = MUTED if aged else LISTENING
+        pill_fill, pill_ink, pill_edge, dashed = None, ink, ink, False
+        word, icon = UPDATE_PILL.get(t, "Update"), _check_icon
+    # Centre the name and pill in the avatar header. Pill height matches _update_pill.
+    pill_px = _band_px(L, 30, scale)
+    pill_h = _band_px(L, 10, scale) * 2 + max(font("display", pill_px).get_height(), max(12, int(pill_px * 0.72)))
+    block_h = name_img.get_height() + _band_px(L, 8, scale) + pill_h
+    block_y = ay + max(0, (d - block_h) // 2)
+    surf.blit(name_img, (tx, block_y))
+    surf.blit(age_img, (tx + name_img.get_width(), block_y + name_img.get_height() - age_img.get_height()))
+    _update_pill(surf, L, word, icon, tx, block_y + name_img.get_height() + _band_px(L, 8, scale), text_w,
+                 pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
+    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": scale})
+    kind = "display" if needs else "body"
+    color = MUTED if aged else TEXT
+    head_px = _band_px(L, 57, scale)
+    headline_y = ay + d + _band_px(L, 18, scale)
+    line_h = font(kind, head_px).get_height()
+    ly = headline_y
+    for text in update_title_lines(L, row.get("line") or "", rect.w - 2 * inset, kind, px=head_px):
+        img = font(kind, head_px).render(text, True, color)
+        if ly + img.get_height() <= rect.bottom - inset:
+            surf.blit(img, (rect.left + inset, ly))
+        ly += line_h
+    detail = " ".join(str(row.get("detail") or "").split())
+    if needs:
+        detail = needs_you_detail(detail)
+    if detail:
+        df = font("body", _band_px(L, 30, scale))
+        dy = headline_y + max(_band_px(L, 126, scale), 2 * line_h) + _band_px(L, 12, scale)
+        lines = wrap(df, display_clip(detail, 90), rect.w - 2 * inset)
+        if len(lines) > 2:
+            lines = [lines[0], ellipsize(df, " ".join(lines[1:]), rect.w - 2 * inset)]
+        for text in lines:
+            img = df.render(text, True, MUTED)
+            if dy + img.get_height() > rect.bottom - _band_px(L, 8, scale):
+                break
+            surf.blit(img, (rect.left + inset, dy))
+            dy += img.get_height()
 
 
 def updates_paused(now, talking=False):
@@ -3476,33 +3699,77 @@ def draw_next_up(surf, L, now, talking=False):
     """Home cards and bot updates in the lower band. Empty: nothing, so the idle clock stays where it is."""
     wall = time.time()
     rows = idle_band_rows(wall, paused=updates_paused(wall, talking))
-    homes = [r for r in rows if r.get("kind") != "update"]
-    draw_home_band(surf, L, homes if len(homes) == len(rows) else [])
-    if len(homes) != len(rows):
-        _draw_mixed_band(surf, L, rows, wall)
+    _draw_updates_band(surf, L, rows, wall)
 
 
-def _draw_mixed_band(surf, L, rows, now):
-    """Same rect and slots as draw_home_band (Noor SPEC rev4: x 128..2432, 3 tiles, L16 gap)."""
-    floor_y = content_limit(L)
-    date_bottom = LAST_DATE_RECT.bottom if LAST_DATE_RECT else 0
-    weather_bottom = LAST_WEATHER_RECT.bottom if LAST_WEATHER_RECT else 0
-    top = max(date_bottom, weather_bottom, int(L.h * 0.58)) + L(16)
-    if floor_y - top < L(80):
-        return
-    gap, n = L(16), min(3, len(rows))
-    width = (L.w - 2 * L.m - gap * 2) // 3
-    height = min(update_tile_height(L), floor_y - top)  # header + 2 lines; same for every tile
-    for i, row in enumerate(rows[:n]):
-        rect = pygame.Rect(L.m + i * (width + gap), top, width, height)
+def band_fade_alphas(reduced=None):
+    """Eight incoming-band weights over about 0.2 s. Reduced motion is one full step."""
+    if reduced is None:
+        reduced = reduce_motion()
+    if reduced:
+        return (255,)
+    return tuple(int(round(255 * (i + 1) / 8)) for i in range(8))
+
+
+def blend_band_frame(old, new, alpha):
+    """Cross-fade weight `alpha` (0..255) of `new` over `old`. Both are opaque band layers."""
+    frame = old.copy()
+    incoming = new.copy()
+    incoming.set_alpha(max(0, min(255, int(alpha))))
+    frame.blit(incoming, (0, 0))
+    return frame
+
+
+def _band_signature(rows):
+    return tuple((r.get("kind"), r.get("id"), r.get("bot"), r.get("type")) for r in rows)
+
+
+def _render_band_layer(surf, L, rows, now, layout):
+    """Opaque layer of the marker plus the two slots. Painted at absolute coordinates, then cropped."""
+    marker = layout["marker"]
+    tiles = layout["rects"]
+    box = marker.union(tiles[0]).union(tiles[1])
+    canvas = pygame.Surface((surf.get_width(), surf.get_height()))
+    canvas.fill(BG)
+    for row, rect in zip(rows, tiles):
         if row.get("kind") == "update":
-            _paint_update_tile(surf, L, rect, row, now)
+            _paint_update_tile(canvas, L, rect, row, now, layout.get("scale", 1.0))
         else:
-            _paint_home_tile(surf, L, rect, row)
+            _paint_home_tile(canvas, L, rect, row, layout.get("scale", 1.0))
     mark = (LAST_UPDATE_BAND or {}).get("marker")
     if mark:
-        m = _line(surf, "body", L(30), mark, MUTED, L.w // 2)
-        surf.blit(m, (L.w - L.m - m.get_width(), top - m.get_height() - L(6)))
+        m = _line(canvas, "body", L(30), mark, MUTED, marker.w)
+        canvas.blit(m, (marker.right - m.get_width(), marker.top + max(0, (marker.h - m.get_height()) // 2)))
+    layer = pygame.Surface((box.w, box.h))
+    layer.blit(canvas, (0, 0), box)
+    return layer, box
+
+
+def _draw_updates_band(surf, L, rows, now):
+    """Two fixed slots. A changed set cross-fades in place, 8 steps, unless motion is reduced."""
+    global LAST_BAND_GEOM, LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS, LAST_BAND_FADE, _BAND_PREV
+    LAST_UPDATE_AVATARS = []
+    LAST_UPDATE_PILLS = []
+    layout = updates_band_layout(L)
+    LAST_BAND_GEOM = layout
+    if not rows or layout is None:
+        _BAND_PREV = None
+        LAST_BAND_FADE = {"steps": 0, "alphas": []}
+        return
+    layer, box = _render_band_layer(surf, L, rows, now, layout)
+    sig = _band_signature(rows)
+    prev = _BAND_PREV
+    if prev and prev.get("box") == (box.x, box.y, box.w, box.h) and prev.get("sig") != sig:
+        alphas = band_fade_alphas()
+        for alpha in alphas:
+            surf.blit(blend_band_frame(prev["layer"], layer, alpha), box.topleft)
+            if alpha != 255 and os.path.exists(FB):
+                time.sleep(0.2 / 8)
+    else:
+        alphas = (255,)
+        surf.blit(layer, box.topleft)
+    _BAND_PREV = {"sig": sig, "box": (box.x, box.y, box.w, box.h), "layer": layer}
+    LAST_BAND_FADE = {"steps": len(alphas), "alphas": list(alphas)}
 
 
 def recipe_scale(L):
@@ -5836,6 +6103,7 @@ def main():
             last_key = ("setup", now.tm_min, json.dumps(sd, sort_keys=True))
             return
         night = night_face(now)
+        updates_night_edge(night)
         t_now = time.time()
         view_card = None
         page = None
