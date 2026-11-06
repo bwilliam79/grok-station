@@ -75,7 +75,7 @@ def main(argv):
         r"Those two values are the only install COMMIT and HASH; never reconstruct them from knowledge, "
         r"reviews, or other messages\.")
     for rel in ("admin/routine-home.txt", "admin/routine-cloud.txt", "admin/gs_routine.py",
-                "admin/web/app.js", "scripts/gs-update.sh"):
+                "admin/web/app.js", "scripts/gs-update.sh", "docs/bots.md"):
         path = os.path.join(ROOT, rel)
         src = open(path, encoding="utf-8").read()
         if not pins_re.search(src):
