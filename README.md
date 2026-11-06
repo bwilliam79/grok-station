@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
 
+### 0.13.24
+Pressing Update works again for bots still on the 0.13.22 updater. That updater requires one safety line unchanged, and 0.13.23 had edited it, so the update stopped and applied nothing. The line is restored. The owner name is still sent with the update; that exception is the next sentence. Press Update on each bot after installing.
+
 ### 0.13.23
 Pressing Update on a bot no longer stops at "The bot's instructions don't match this release" when the only difference is the owner name. Bots set up before owner names were saved run the updater with no owner, so it fills in "your owner", and a later update keeps that placeholder. The station now sends its owner name with the update. The updater uses that name when the command has no owner or still says "your owner", after the same name check, and quotes it. Press Update on each bot after installing.
 

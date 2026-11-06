@@ -49,7 +49,7 @@ class EmailUpdates(unittest.TestCase):
             body = gs_routine.render(gs_routine.TEMPLATES["home"], "home", "otto", "a" * 40, "b" * 64, owner=owner)
             self.assertIn(INSTRUCTION.format(owner=owner or "your owner"), body)
             self.assertNotIn("{owner}", body)
-            self.assertEqual(gs_routine.check(body, "home"), "0.13.23")
+            self.assertEqual(gs_routine.check(body, "home"), "0.13.24")
 
     def test_browser_copy_owner_matches_server(self):
         import json, re, subprocess, tempfile
