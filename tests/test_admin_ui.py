@@ -1271,6 +1271,29 @@ console.log(JSON.stringify({shells, timers, pageLoadedDown}));
             self.assertEqual(got["timers"], 1, (tag, drawer))  # deferred, one timer only
             self.assertTrue(got["pageLoadedDown"])
 
+    def test_no_repaint_while_page_guard_is_dirty(self):
+        """A reconnect must not call shell() while Display still has unsaved changes."""
+        fn = self._fns("repaintIfLoadedDown")
+        script = """
+let pageLoadedDown = true, stationOffline = false, repaintTimer = 0, shells = 0, timers = 0;
+let pageGuard = () => true;
+const S = {state: {signed_in: true}};
+function shell() { shells++; }
+function userEditing() { return false; }
+global.setInterval = (fn) => { timers++; global._later = fn; return 1; };
+""" + fn + """
+repaintIfLoadedDown();
+const during = {shells, timers, pageLoadedDown};
+pageGuard = () => false;
+if (global._later) global._later();
+console.log(JSON.stringify({during, after: {shells, timers, pageLoadedDown}}));
+"""
+        got = self._node(script)
+        self.assertEqual(got["during"]["shells"], 0)
+        self.assertTrue(got["during"]["pageLoadedDown"])
+        self.assertEqual(got["after"]["shells"], 1)
+        self.assertFalse(got["after"]["pageLoadedDown"])
+
     def test_fresh_page_down_shows_reconnecting_not_error(self):
         upd = _fn(self.js, "paintUpdates")
         self.assertIn("!PAGE_INSTALLED.v) && netDown(r.status)", upd)

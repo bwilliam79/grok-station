@@ -4214,7 +4214,7 @@ async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now
         err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
         body = {"error": err}
         if rej.verdict in PAIR_REASONS:
-            body["reason"] = rej.verdict
+            body["reason"] = PAIR_CLIENT_REASON
         return rej.status, body
     if not allow(opened["bot"]):
         return 429, {"error": "too many"}
@@ -4261,7 +4261,7 @@ def _reject_show(rej):
     err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
     body = {"error": err}
     if getattr(rej, "verdict", None) in PAIR_REASONS:
-        body["reason"] = rej.verdict
+        body["reason"] = PAIR_CLIENT_REASON
     return rej.status, body, rej
 
 
@@ -6119,15 +6119,19 @@ def _pending_doc(rid):
 
 def _reply_error(status, reason=None):
     body = {"error": _REPLY_HTTP.get(status, "bad request")}
-    if reason in REPLY_REASONS or reason in PAIR_REASONS:
+    # One client-facing code for every pairing refusal. Distinct verdicts stay in the audit log.
+    if reason in PAIR_REASONS:
+        reason = PAIR_CLIENT_REASON
+    if reason in REPLY_REASONS or reason == PAIR_CLIENT_REASON:
         body["reason"] = reason
     return web.json_response(body, status=status)
 
 
 # 0.13.0: content-free reason codes for a refused reply from a signed bot with a known request.
 REPLY_REASONS = ("pii", "secret", "schema", "expired", "duplicate")
-# 0.13.27: existing open_signed verdicts for no key / not paired. A bad signature stays a bare forbidden.
+# Pairing refusals (open_signed, before unseal). The HTTP body uses one of them for all three.
 PAIR_REASONS = ("revoked", "killed", "unknown")
+PAIR_CLIENT_REASON = "revoked"
 _BLOCKED = {}  # request id -> reason: a reply for this open handoff was refused; the waiter ends now
 
 
@@ -6273,7 +6277,7 @@ async def voice_reply(req):
         log_reply_reject(rej)
         reason = reply_reason(rej)
         if reason is None and rej.verdict in PAIR_REASONS:
-            reason = rej.verdict
+            reason = PAIR_CLIENT_REASON
         if reason in ("pii", "secret", "schema"):
             _BLOCKED[rej.rid] = reason  # the waiting handoff (if any) ends with a message, not a 3-minute hang
             while len(_BLOCKED) > 64:

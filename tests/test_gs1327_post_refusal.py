@@ -137,7 +137,9 @@ class StationGates(unittest.TestCase):
             self.assertEqual(status, 403, verdict)
             self.assertEqual(posts, [], verdict)
             self.assertEqual(body.get("error"), "forbidden", verdict)
-            self.assertEqual(body.get("reason"), verdict, verdict)
+            # One client-facing code for every pairing failure. The log keeps the real verdict.
+            self.assertEqual(body.get("reason"), "revoked", verdict)
+            self.assertNotIn(verdict, json.dumps(body).replace('"revoked"', ""))
             self.assertEqual(getattr(info, "verdict", None), verdict)
             blob = json.dumps(body)
             self.assertNotIn(seed, blob)

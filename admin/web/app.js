@@ -53,10 +53,12 @@ function userEditing() {
 }
 function repaintIfLoadedDown() {
   if (!pageLoadedDown || stationOffline) return;
-  if (userEditing()) {
-    // Deferred: check again until focus leaves the field or the drawer closes.
+  // A toggle or any other dirty Display field is not a focused input. Leave it until it is saved
+  // or the user confirms leaving. pageLoadedDown stays set so a later reconnect can still repaint.
+  const blocked = () => userEditing() || (typeof pageGuard === "function" && !!pageGuard());
+  if (blocked()) {
     if (!repaintTimer) repaintTimer = setInterval(() => {
-      if (userEditing()) return;
+      if (blocked()) return;
       clearInterval(repaintTimer); repaintTimer = 0;
       repaintIfLoadedDown();
     }, 1500);
