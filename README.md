@@ -121,7 +121,10 @@ Other notes in `docs/` cover the design, handoff between bots, and longer plans.
 
 Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/show`) through cloudflared, a tunnel, or a router port forward.
 
-Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. There is no config allowlist to edit.
+Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
+
+### 0.13.29
+Home bots can post again after another Python on the same computer leaves bytecode caches in the helper's vendor folder. A `.pyc` file inside a `__pycache__` folder no longer makes every post print a bare `refused`, and the helper never loads one; any other extra or changed vendor file still refuses. A refused feed post or card now says why: content filter, too many posts, station busy, station could not show it, signature not accepted, request expired, already answered, or format not accepted. The home helper is release 0.13.29, so Update reinstalls it on each home computer. System, Password and security has a new Allowed networks setting: up to 4 private IPv4 networks (for example a VPN at `192.168.77.0/24`, each /16 to /32) that may open this page and post bot replies, besides this station's own network. It is empty by default, saving it always asks for the admin password, and each change is logged with the old and new list. Press Update on each bot after installing.
 
 ### 0.13.28
 A bot update is accepted for 10 minutes, matching the wait on the Bots page. If a bot is already on that same release, the updater still prints the instructions and status line so a retry can finish. Press Update on each bot after installing.

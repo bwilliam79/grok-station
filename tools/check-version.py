@@ -14,9 +14,15 @@ change admin/web/deploy-pins.js. Anything else, a suffix on the subject, or a
 different X still fails. reused_release treats only that exact ritual commit as
 the release boundary.
 
+0.13.29: it also fails when the home helper files (the ones scripts/install-home.sh fetches) changed but
+HELPER_VERSION did not. tools/helper-releases.txt has one line per helper release, "X.Y.Z <sha256>", oldest
+first; the sha256 covers those files. The last line must be HELPER_VERSION with the files' current digest,
+and versions must go up. A new helper release adds a line; editing the digest on the same version fails.
+
 The comparison matches tools/semver-order.sh and admin version_order: numeric
 MAJOR.MINOR.PATCH, and a non-semver parent counts as older than a semver HEAD.
 """
+import hashlib
 import os
 import re
 import subprocess
@@ -194,9 +200,79 @@ def reused_release(repo):
     return None
 
 
+HELPER_RECORD = "tools/helper-releases.txt"
+_FETCH_ONE = re.compile(r'^\s*fetch_one (\S+) "\$RAW/(scripts/\S+)" ', re.M)
+_HELPER_VERSION = re.compile(r'^HELPER_VERSION = "(\d+\.\d+\.\d+)"$', re.M)
+_RECORD_LINE = re.compile(r"^(\d+\.\d+\.\d+) ([0-9a-f]{64})$")
+
+
+def helper_files(install_home):
+    """The repo paths install-home.sh fetches into the home helper folder, in its order."""
+    return [path for _name, path in _FETCH_ONE.findall(install_home)]
+
+
+def helper_digest(read, files):
+    """sha256 over "<sha256 of file>  <path>" lines, one per helper file, in installer order."""
+    lines = []
+    for path in files:
+        data = read(path)
+        if data is None:
+            return None
+        lines.append("%s  %s\n" % (hashlib.sha256(data).hexdigest(), path))
+    return hashlib.sha256("".join(lines).encode("ascii")).hexdigest()
+
+
+def helper_problem(read):
+    """None when the helper files match the last tools/helper-releases.txt line. Otherwise a one-line reason.
+
+    read(path) returns the bytes of a repo file, or None when it is missing. Passes when the record or the
+    installer is missing (a tree from before 0.13.29)."""
+    record, installer, common = read(HELPER_RECORD), read("scripts/install-home.sh"), read("scripts/gs_seal_common.py")
+    if record is None or installer is None or common is None:
+        return None
+    files = helper_files(installer.decode("utf-8", "replace"))
+    if not files:
+        return "scripts/install-home.sh fetches no helper files."
+    m = _HELPER_VERSION.search(common.decode("utf-8", "replace"))
+    if not m:
+        return "scripts/gs_seal_common.py has no HELPER_VERSION."
+    version = m.group(1)
+    rows = []
+    for line in record.decode("ascii", "replace").splitlines():
+        if not line.strip() or line.startswith("#"):
+            continue
+        row = _RECORD_LINE.fullmatch(line)
+        if not row:
+            return f"{HELPER_RECORD}: bad line {line[:40]!r}."
+        rows.append((semver_tuple(row.group(1)), row.group(1), row.group(2)))
+    if not rows:
+        return f"{HELPER_RECORD} has no helper release."
+    for (a, va, _), (b, vb, _) in zip(rows, rows[1:]):
+        if not b > a:
+            return f"{HELPER_RECORD}: {vb} after {va}; each helper release goes up."
+    digest = helper_digest(read, files)
+    if digest is None:
+        return "a helper file named by scripts/install-home.sh is missing."
+    _, last_version, last_digest = rows[-1]
+    if version != last_version:
+        return (f"HELPER_VERSION {version} has no line in {HELPER_RECORD} (last is {last_version}); "
+                f"add \"{version} {digest}\".")
+    if digest != last_digest:
+        return (f"helper files changed without a HELPER_VERSION bump (still {version}); bump HELPER_VERSION "
+                f"and add a line to {HELPER_RECORD}.")
+    return None
+
+
+def _git_reader(repo, rev="HEAD"):
+    def read(path):
+        proc = subprocess.run(["git", "-C", repo, "show", f"{rev}:{path}"], capture_output=True)
+        return proc.stdout if proc.returncode == 0 else None
+    return read
+
+
 def main(argv):
     repo = argv[1] if len(argv) > 1 else os.getcwd()
-    msg = problem(repo) or reused_release(repo)
+    msg = problem(repo) or reused_release(repo) or helper_problem(_git_reader(repo))
     if msg:
         print(msg, file=sys.stderr)
         return 1

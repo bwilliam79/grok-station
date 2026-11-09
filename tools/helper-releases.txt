@@ -1,0 +1,6 @@
+# Home helper releases, oldest first: HELPER_VERSION, then sha256 over "<sha256>  <path>\n" for each file
+# scripts/install-home.sh fetches (fetch_one), in that order. tools/check-version.py and
+# tests/test_gs1329_helper_guard.py fail when those files change and the last line keeps its version.
+# A helper change bumps HELPER_VERSION (scripts/gs_seal_common.py, admin HELPER_RELEASE) and adds a line.
+# Started at 0.13.29; earlier helper releases are not listed.
+0.13.29 a20d7900a6556654c2d62bc1027c95d1b923a1a95d3041863f737e48daf94790
