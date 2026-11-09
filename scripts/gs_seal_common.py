@@ -707,6 +707,21 @@ def vendor_file_hashes(vendor, uid):
     return found
 
 
+# 0.13.29: a PEP 3147 cache, <module>.<tag>[.opt-N].pyc, directly inside a __pycache__ folder. A .pyc anywhere
+# else is a sourceless module Python can import, and any other name in __pycache__ is unexpected: both refuse.
+_BYTECODE_CACHE = re.compile(r"(?:[^/]+/)*__pycache__/[A-Za-z_][A-Za-z0-9_]*\.[a-z][a-z0-9]*(?:-[0-9]+[a-z]*)?"
+                             r"(?:\.opt-[0-9]+)?\.pyc")
+
+
+def _is_bytecode_cache(rel):
+    return isinstance(rel, str) and _BYTECODE_CACHE.fullmatch(rel) is not None
+
+
+def _no_cache_prefix(manifest):
+    """A pycache_prefix that cannot exist: a path under the manifest, which is a regular file."""
+    return os.path.join(manifest, "no-bytecode-cache")
+
+
 def assert_vendor_trusted(home, uid, vendor=None, manifest=None):
     """Walk $HOME down through the vendor tree and require an exact manifest."""
     if not isinstance(home, str) or not home or "\x00" in home:
@@ -752,7 +767,13 @@ def assert_vendor_trusted(home, uid, vendor=None, manifest=None):
         doc = json.loads(raw.decode("utf-8"))
     except Exception:
         raise Refused()
-    if not isinstance(doc, dict) or set(doc) != set(digests):
+    if not isinstance(doc, dict):
+        raise Refused()
+    # 0.13.29: bytecode caches another interpreter wrote are not part of the set. Each one was still walked
+    # above (owned, no group or world write, not a symlink). load_nacl never reads them (pycache_prefix).
+    for key in [k for k in digests if k not in doc and _is_bytecode_cache(k)]:
+        del digests[key]
+    if set(doc) != set(digests):
         raise Refused()
     for key, digest in digests.items():
         other = doc.get(key)
@@ -776,6 +797,9 @@ def load_nacl(home=None, uid=None):
     home = os.path.abspath(os.path.expanduser(home))
     assert_vendor_trusted(home, uid)
     vendor = os.path.join(home, ".config", "grok-station", "vendor")
+    # 0.13.29: read and write bytecode only under a prefix that cannot exist, so a __pycache__ file that the
+    # manifest check left out is never loaded in place of the checked source.
+    sys.pycache_prefix = _no_cache_prefix(os.path.join(home, ".config", "grok-station", "vendor-manifest.json"))
     # gs_seal_common is already imported. The script directory is no longer required.
     sys.path = [vendor] + _stdlib_dirs()
     import nacl
