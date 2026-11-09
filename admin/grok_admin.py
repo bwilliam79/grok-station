@@ -1437,8 +1437,66 @@ def home_subnets(v4=None, v6=None):
     return nets
 
 
-def lan_ok(ip, nets=None):
-    """True for loopback or an address on one of this station's interface subnets."""
+# 0.13.29: "Allowed networks". Extra IPv4 client ranges (a VPN, another home subnet) besides the interface
+# subnets above. Empty by default. Private (RFC 1918) only, /16 to /32, at most 4. Checked against the TCP peer
+# address only; no forwarded-for header is ever read.
+ALLOWED_NETS_MAX = 4
+ALLOWED_NETS_MIN_PREFIX = 16
+
+
+def _rfc1918(ip):
+    """RFC 1918 by octet (no range literals in the repo; tools/leak-scan.py)."""
+    b = ip.packed
+    return b[0] == 10 or (b[0] == 172 and 16 <= b[1] <= 31) or (b[0] == 192 and b[1] == 168)
+
+
+_CIDR_TEXT = re.compile(r"[0-9]{1,3}(?:\.[0-9]{1,3}){3}(?:/[0-9]{1,2})?")
+ALLOWED_NETS_ERROR = ("Use up to 4 private IPv4 networks (10.x, 172.16-31.x, 192.168.x), "
+                      "each /16 to /32, like 192.168.77.0/24.")
+
+
+def parse_allowed_networks(value):
+    """(normalized list of "a.b.c.d/n", None) or (None, error). Host bits are cleared; duplicates dropped."""
+    if not isinstance(value, list) or len(value) > ALLOWED_NETS_MAX:
+        return None, ALLOWED_NETS_ERROR
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not _CIDR_TEXT.fullmatch(item.strip()):
+            return None, ALLOWED_NETS_ERROR
+        try:
+            net = ipaddress.IPv4Network(item.strip(), strict=False)
+        except ValueError:
+            return None, ALLOWED_NETS_ERROR
+        # /16 or longer fixes the first two octets, so the network address decides the whole range.
+        if net.prefixlen < ALLOWED_NETS_MIN_PREFIX or not _rfc1918(net.network_address):
+            return None, ALLOWED_NETS_ERROR
+        if str(net) not in out:
+            out.append(str(net))
+    return out, None
+
+
+def allowed_networks():
+    """The saved list, re-checked on every read. A stored value that does not pass is ignored as a whole."""
+    got, err = parse_allowed_networks(_settings_doc().get("allowed_networks", []))
+    return got if err is None else []
+
+
+def store_allowed_networks(nets):
+    d = _settings_doc()
+    d["allowed_networks"] = list(nets)
+    write_json(_settings_path(), d)
+
+
+def audit_allowed_networks(old, new, sid):
+    """One journal line when Allowed networks is saved: old and new list. No password, cookie or session key."""
+    sid_s = sid if isinstance(sid, str) and re.fullmatch(r"[0-9a-f]{8}", sid) else "-"
+    show = lambda nets: ",".join(nets) if nets else "-"
+    print(f"audit persona=- action=allowed-networks old={show(old)} new={show(new)} session={sid_s} last4=- "
+          f"time={int(now())}", flush=True)
+
+
+def lan_ok(ip, nets=None, allowed=None):
+    """True for loopback, an address on one of this station's interface subnets, or one in Allowed networks."""
     try:
         a = ipaddress.ip_address(str(ip).removeprefix("::ffff:"))
     except ValueError:
@@ -1447,7 +1505,13 @@ def lan_ok(ip, nets=None):
         return True
     if nets is None:
         nets = home_subnets()
-    return any(a in net for net in nets)
+    if any(a in net for net in nets):
+        return True
+    if a.version != 4:
+        return False
+    if allowed is None:
+        allowed = allowed_networks()
+    return any(a in ipaddress.IPv4Network(n) for n in allowed)
 
 
 HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
@@ -5949,9 +6013,12 @@ class Handler(BaseHTTPRequestHandler):
         if p != "/api/system":
             return self.send(404, {"error": "not found"})
         return self.send(200, {"version": version(), "health": health(), "services": services(), "network": net_summary(),
-                               "tls": {**tls_info(), "url": admin_url()}, "password_grace_min": password_grace_min()})
+                               "tls": {**tls_info(), "url": admin_url()}, "password_grace_min": password_grace_min(),
+                               "allowed_networks": allowed_networks()})
 
     def api_put_system(self, p, q, j):
+        if p == "/api/system/allowed-networks":
+            return self.put_allowed_networks(j)
         if p != "/api/system/password-grace":
             return self.send(404, {"error": "not found"})
         if not isinstance(j, dict):
@@ -5976,6 +6043,21 @@ class Handler(BaseHTTPRequestHandler):
             until = AUTH.stepup_until(token)
         audit_grace(old, n, AUTH.session_public_id(token))
         return self.send(200, {"ok": True, "password_grace_min": n, "stepup_until": until})
+
+    def put_allowed_networks(self, j):
+        """0.13.29: save Allowed networks. Always asks for the password (no grace window, no session mode)."""
+        nets, err = parse_allowed_networks(j.get("allowed_networks") if isinstance(j, dict) else None)
+        if err:
+            return self.send(400, {"error": err})
+        old = allowed_networks()
+        if not self.need_password(j, always=True):
+            return
+        try:
+            store_allowed_networks(nets)
+        except OSError:
+            return self.send(500, {"error": "Couldn't save that."})
+        audit_allowed_networks(old, nets, AUTH.session_public_id(self.cookie("gs_session")))
+        return self.send(200, {"ok": True, "allowed_networks": nets})
 
     def api_post_system(self, p, q, j):
         if p == "/api/system/restart-voice":

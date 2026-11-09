@@ -6036,6 +6036,9 @@ async function pageSystem(el) {
     <div class="card"><h2>Admin password</h2><form id="pw" autocomplete="off"><div class="field"><label for="old">Current password</label><input class="inp" type="password" id="old" autocomplete="current-password" required></div>
       ${pwFields("np1", "np2")}<div id="pe"></div><div class="field"><button class="btn p" id="pgo" disabled>Change password</button></div></form></div>
     <div class="card" id="gracecard"><div class="skel grace-skel"></div></div>
+    <div class="card" id="netcard"><h2>Allowed networks</h2><p class="help">This page and the bot reply endpoints answer only this station's own network. Add up to 4 more private IPv4 networks here, for example a VPN like 192.168.77.0/24 (each /16 to /32). Leave it empty unless you need it. Saving always asks for the password.</p>
+      <div class="field"><label for="annet">Networks (comma separated)</label><input class="inp mono" id="annet" autocomplete="off" spellcheck="false" placeholder="none"></div>
+      <div id="ane"></div><div class="field"><button class="btn" id="ansave" disabled>Save</button></div></div>
     <div class="card certcard" id="tls"><h2>Security certificate</h2></div>`, false) +
     sysGroup("g-trouble", "Troubleshooting", "Logs, restart voice", `
     <div class="card"><div class="inline"><h2>Logs</h2><span class="right inline"><label for="lp">Log</label><select class="sel" id="lp" style="width:200px"><option value="grok-station-wake">Voice listener</option><option value="grok-station">Screen</option><option value="grok-station-admin">Admin page</option></select>
@@ -6116,6 +6119,34 @@ async function pageSystem(el) {
     // 0.13.9: in "Not while I'm signed in" mode being signed in is enough; ask only if the server says so.
     if (graceSession()) saveGrace("").then(r => { if (r && r.status === 403) ask(); });
     else ask();
+  };
+  // 0.13.29: Allowed networks. The server validates and normalizes; this only splits the field.
+  const anIn = $("#annet", el), anSave = $("#ansave", el);
+  const anList = v => String(v || "").split(/[\s,]+/).filter(Boolean);
+  let savedNets = (Array.isArray(s.allowed_networks) ? s.allowed_networks : []).join(", ");
+  if (anIn) {
+    anIn.value = savedNets;
+    anIn.addEventListener("input", () => { anSave.disabled = anList(anIn.value).join(",") === anList(savedNets).join(","); });
+  }
+  if (anSave) anSave.onclick = () => {
+    const nets = anList(anIn.value);
+    attn($("#ane", el), "");
+    const saveNets = async pw => {
+      markSaving();
+      const r = await api("PUT", "/api/system/allowed-networks", {allowed_networks: nets, password: pw});
+      if (r && r.ok) {
+        savedNets = (r.data.allowed_networks || []).join(", ");
+        anIn.value = savedNets;
+        anSave.disabled = true;
+        markSaved();
+        toast(savedNets ? "Allowed networks saved." : "Allowed networks cleared.");
+      } else {
+        markUnsaved();
+        if (r && r.status === 400) attn($("#ane", el), (r.data && r.data.error) || "Couldn't save that.");
+      }
+      return r;
+    };
+    askPassword("Ask for the password again", "Enter the admin password. Changing who can reach this page always asks.", "Save", saveNets);
   };
   const hh = s.health || {};
   const t = s.tls || {};
