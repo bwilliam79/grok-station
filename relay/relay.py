@@ -4257,11 +4257,29 @@ async def accept_avatar(raw, station_sk, keys_doc, known, seen, allow, save, now
     return 200, {"ok": True, "sha8": result.get("sha8")}
 
 
+# 0.13.29: the content-free reason a bot sees for a refused feed post or card, by audit verdict. A fixed code,
+# never the card text. unseal and signature share one code, as the pairing verdicts share "revoked".
+SHOW_REASONS = {
+    "shape": "schema", "schema": "schema", "lint": "lint", "rate": "rate", "busy": "busy",
+    "error": "unavailable", "expired": "expired", "unseal": "signature", "signature": "signature",
+    "duplicate": "duplicate",
+}
+SHOW_CLIENT_REASONS = frozenset(SHOW_REASONS.values())
+
+
+def show_reason(verdict):
+    """The client code for a show verdict, or None."""
+    if verdict in PAIR_REASONS:
+        return PAIR_CLIENT_REASON
+    return SHOW_REASONS.get(verdict) if isinstance(verdict, str) else None
+
+
 def _reject_show(rej):
     err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
     body = {"error": err}
-    if getattr(rej, "verdict", None) in PAIR_REASONS:
-        body["reason"] = PAIR_CLIENT_REASON
+    reason = show_reason(getattr(rej, "verdict", None))
+    if reason:
+        body["reason"] = reason
     return rej.status, body, rej
 
 
@@ -4434,8 +4452,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
             except OSError:
                 pass
         if code in (400, 413):
-            return 400, {"error": "schema"}, botreply.Reject(400, "schema", show.get("bot", "-"))
-        return 503, {"error": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
+            return 400, {"error": "schema", "reason": "schema"}, botreply.Reject(400, "schema", show.get("bot", "-"))
+        return 503, {"error": "unavailable", "reason": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
     if isinstance(seen, set):
         seen.add((show["bot"], show["nonce"]))
     if show.get("op") == "update" and "feed_rule" in (show.get("update") or {}):
@@ -6504,14 +6522,23 @@ async def voice_show(req):
                                       pii=pii_mode(), hosts=_personas.get("hosts") or (),
                                       names=_personas.get("names") or ())
     audit_reply(getattr(info, "bot", "-"), "-", getattr(info, "verdict", "error"), len(raw))
-    if status == 503:
-        return web.json_response({"error": "unavailable"}, status=503)
     if status == 403 and body == {"error": "updates_off"}:
         return web.json_response(body, status=403)
     if status != 200:
         reason = body.get("reason") if isinstance(body, dict) else None
-        return _reply_error(status, reason)
+        return _show_error(status, reason)
     return web.json_response({"ok": True})
+
+
+def _show_error(status, reason=None):
+    """0.13.29: a refused /voice/show with its fixed reason code (SHOW_CLIENT_REASONS only; anything else is dropped).
+    503 keeps its reason too, so busy and unavailable are not one bare refusal."""
+    body = {"error": "unavailable" if status >= 500 else _REPLY_HTTP.get(status, "bad request")}
+    if reason in PAIR_REASONS:
+        reason = PAIR_CLIENT_REASON
+    if reason in SHOW_CLIENT_REASONS or reason == PAIR_CLIENT_REASON:
+        body["reason"] = reason
+    return web.json_response(body, status=status)
 
 
 # 0.13.16: typed setup_relay (design rev3). The relay builds every field from its own state: its station key,

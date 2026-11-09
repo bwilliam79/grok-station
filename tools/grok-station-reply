@@ -314,6 +314,7 @@ def build_avatar(bot, image, seed_b64, station_pub_b64, voice=None):
 
 # 0.13.0: one line per refusal reason. Fixed text only; the reply is never echoed.
 # 0.13.27: no key, not paired, and the Updates switch are named. Unknown text stays "refused".
+# 0.13.29: content filter, rate limit, busy, could not show, and signature are named too.
 REFUSAL_LINES = {
     "pii": "refused: blocked by station PII filter (personal info in reply)",
     "secret": "refused: looks like a secret",
@@ -326,6 +327,12 @@ REFUSAL_LINES = {
     "killed": "refused: not paired",
     "unknown": "refused: not paired",
     "updates_off": "refused: switch off",
+    # 0.13.29: the station names why a feed post or card was refused (relay SHOW_REASONS).
+    "lint": "refused: blocked by station content filter",
+    "rate": "refused: too many posts",
+    "busy": "refused: station busy",
+    "unavailable": "refused: station could not show it",
+    "signature": "refused: signature not accepted",
 }
 
 
