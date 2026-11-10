@@ -1,0 +1,35 @@
+#!/bin/sh
+# Chain tools/release-check-pre-push into this clone's local pre-push hook (<git-common-dir>/hooks/pre-push).
+# The global hooks dispatcher (core.hooksPath, see tools/install-pii-hooks) runs pii-guard and the leak scan on
+# every push first, then chains to that local hook, so pii-guard stays first and a push is also blocked unless
+# tools/release-check.sh prints "release-check: PASS" on the pushed commit. Never writes through the dispatcher's
+# symlinks. Refuses to replace a local pre-push hook it did not write.
+set -eu
+mark="# grok-station release-check pre-push (tools/install-release-hook)"
+global=$(git config --global core.hooksPath 2>/dev/null || true)
+if [ -z "$global" ] || [ -n "$(git config --local core.hooksPath 2>/dev/null || true)" ]; then
+  echo "install-release-hook: no global hooks dispatcher (core.hooksPath) here; nothing installed" >&2
+  exit 1
+fi
+case "$global" in "~/"*) global="$HOME/${global#~/}" ;; esac
+if [ ! -x "$global/pre-push" ]; then
+  echo "install-release-hook: $global/pre-push is missing, so nothing would chain to the local hook" >&2
+  exit 1
+fi
+common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
+hook="$common/hooks/pre-push"
+if [ -L "$hook" ] || { [ -e "$hook" ] && ! grep -qxF "$mark" "$hook"; }; then
+  echo "install-release-hook: $hook exists and is not ours; not replaced" >&2
+  exit 1
+fi
+mkdir -p "$common/hooks"
+cat >"$hook.tmp" <<HOOK
+#!/bin/sh
+$mark
+body="\$(git rev-parse --show-toplevel)/tools/release-check-pre-push"
+if [ ! -f "\$body" ]; then echo "pre-push: \$body is missing; push blocked" >&2; exit 1; fi
+exec sh "\$body" "\$@"
+HOOK
+chmod 755 "$hook.tmp"
+mv "$hook.tmp" "$hook"
+echo "install-release-hook: $hook runs tools/release-check-pre-push after the dispatcher's pii-guard"

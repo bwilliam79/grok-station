@@ -1,0 +1,37 @@
+#!/bin/sh
+# grok-station pre-push hook body (installed by tools/install-release-hook; the global hooks dispatcher runs it
+# after pii-guard and the leak scan). Blocks the push unless every pushed commit is the checked-out commit and
+# tools/release-check.sh, run on that commit, ends with "release-check: PASS". Branch deletes push no commit.
+# stdin: one "<local ref> <local sha> <remote ref> <remote sha>" line per pushed ref (githooks pre-push).
+set -u
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
+top=$(git rev-parse --show-toplevel) || exit 1
+head=$(git -C "$top" rev-parse HEAD) || exit 1
+zero=0000000000000000000000000000000000000000
+n=0
+while read -r lref lsha rref rsha; do
+  [ -n "${lsha:-}" ] || continue
+  [ "$lsha" = "$zero" ] && continue
+  n=$((n + 1))
+  if [ "$lsha" != "$head" ]; then
+    echo "release-check hook: $lref ($lsha) is not the checked-out commit $head; check out the exact tip and push it" >&2
+    exit 1
+  fi
+done
+[ "$n" -eq 0 ] && exit 0
+if [ ! -f "$top/tools/release-check.sh" ]; then
+  echo "release-check hook: $top/tools/release-check.sh is missing; push blocked" >&2
+  exit 1
+fi
+log=$(mktemp "${TMPDIR:-/tmp}/release-check.XXXXXX") || exit 1
+sh "$top/tools/release-check.sh" >"$log" 2>&1
+rc=$?
+last=$(tail -n 1 "$log")
+if [ "$rc" -eq 0 ] && [ "$last" = "release-check: PASS" ]; then
+  rm -f "$log"
+  echo "release-check: PASS on $head" >&2
+  exit 0
+fi
+grep '^FAIL' "$log" >&2
+echo "release-check hook: push blocked, release-check did not print PASS on $head (log: $log)" >&2
+exit 1
