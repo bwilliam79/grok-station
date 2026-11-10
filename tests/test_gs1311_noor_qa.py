@@ -115,6 +115,8 @@ let focused = null, painted = 0;
 const btn = {focus(){ focused = 'setup:' + this.k; }, k: 'otto'};
 const document = {querySelector: s => s === '[data-setupbtn="otto"]' ? btn : null};
 function paintBots(){ painted++; }
+const cleared = [];
+function clearSetupHook(s){ cleared.push(s); }
 const handlers = {};
 function mk(attr, val){ return {getAttribute: a => a === attr ? val : null, set onclick(f){ handlers[attr] = f; }, set onkeydown(f){ handlers.key = f; }}; }
 const list = {querySelectorAll: sel => sel === '[data-setcancel]' ? [mk('data-setcancel','otto')] :
@@ -127,11 +129,11 @@ const a = [focused, el._setupOpen];
 focused = null; el._setupOpen = 'otto';
 let prevented = false;
 handlers.key({key: 'Escape', preventDefault(){ prevented = true; }});
-process.stdout.write(JSON.stringify([a, [focused, el._setupOpen, prevented]]));
+process.stdout.write(JSON.stringify([a, [focused, el._setupOpen, prevented], cleared]));
 """)
         out = subprocess.run(["node", "-e", prog], capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(json.loads(out.stdout), [["setup:otto", None], ["setup:otto", None, True]])
+        self.assertEqual(json.loads(out.stdout), [["setup:otto", None], ["setup:otto", None, True], ["otto", "otto"]])
 
 
 if __name__ == "__main__":

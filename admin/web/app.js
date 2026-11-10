@@ -2737,6 +2737,64 @@ function avatarOnError(img) {
   }
   img.remove();
 }
+// 0.13.36: the Bots list repaints every 3 s with innerHTML, which wiped what was typed into its open fields (the
+// accepted-row Paste webhook URL and key, and an inline setup edit) before it could be saved. keepBotListInputs
+// reads those fields just before the repaint and puts the values, focus and caret back just after. The values
+// live only in this call, never in storage or on el: the webhook key is a secret. A field whose row is gone or
+// left the accepted state after the repaint has nowhere to go, so its value is dropped.
+function botListSel(s) {  // a value safe inside a [attr="..."] selector
+  s = String(s == null ? "" : s);
+  return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/[^a-z0-9_-]/gi, "");
+}
+function botListCaret(inp) {
+  try { return [inp.selectionStart, inp.selectionEnd]; } catch (e) { return [null, null]; }
+}
+function botListFocus(inp, at) {
+  if (!inp || !inp.focus) return;
+  inp.focus();
+  if (at && at[0] != null) { try { inp.setSelectionRange(at[0], at[1] == null ? at[0] : at[1]); } catch (e) { /* no caret on this type */ } }
+}
+function keepBotListInputs(list, paint, reopen) {
+  const act = document.activeElement;
+  const hooks = [];
+  list.querySelectorAll(".setpanel[data-slug] input[data-hook]").forEach(inp => {
+    const focused = inp === act;
+    if (!inp.value && !focused) return;
+    hooks.push({slug: inp.closest(".setpanel").getAttribute("data-slug"), field: inp.getAttribute("data-hook"),
+                value: inp.value, focused, at: focused ? botListCaret(inp) : null});
+  });
+  // Only an edit still in progress (focused). An unfocused one is already saving on its own blur.
+  const ed = act && act.matches && act.matches("input[data-setedit]") && list.contains(act) ? act : null;
+  let edit = null;
+  if (ed) {
+    ed._kept = true;  // its blur save must not run for a node the repaint removes; the reopened input saves
+    edit = {slug: ed.getAttribute("data-slug"), field: ed.getAttribute("data-setedit"), value: ed.value,
+            at: botListCaret(ed)};
+  }
+  paint();
+  hooks.forEach(it => {
+    const inp = list.querySelector('.setpanel[data-slug="' + botListSel(it.slug) + '"] input[data-hook="' +
+                                   botListSel(it.field) + '"]');
+    if (!inp) return;
+    inp.value = it.value;
+    if (it.focused) botListFocus(inp, it.at);
+  });
+  if (edit && typeof reopen === "function") {
+    const inp = reopen(edit.slug, edit.field);
+    if (inp) {
+      inp.value = edit.value;
+      botListFocus(inp, edit.at);
+    }
+  }
+  hooks.length = 0;
+  edit = null;
+}
+function clearSetupHook(slug, fields) {
+  // Clear the live Paste webhook fields for slug (the panel node may have been repainted since it was read).
+  document.querySelectorAll('.setpanel[data-slug="' + botListSel(slug) + '"] input[data-hook]').forEach(inp => {
+    if (!fields || fields.indexOf(inp.getAttribute("data-hook")) >= 0) inp.value = "";
+  });
+}
 function keepAvatarImgs(list, paint) {
   // 0.12.16: the Bots list repaints every 3 s. Move each avatar <img> that is already loaded into the new row
   // when its src is unchanged, so it is not recreated (a new node is blank until the portrait downloads).
@@ -3703,7 +3761,9 @@ function setupRowPanelHTML(row, opts) {
 }
 function setupToggle(el, slug, open) {
   if (!el) return;
-  el._setupOpen = open === false || el._setupOpen === slug ? null : slug;
+  const closing = open === false || el._setupOpen === slug;
+  el._setupOpen = closing ? null : slug;
+  if (closing) clearSetupHook(slug);  // Cancel or collapse drops what was typed
   paintBots(el, el._bots);
   const key = String(slug || "").replace(/[^a-z0-9-]/gi, "");
   const btn = key ? document.querySelector('[data-setupbtn="' + key + '"]') : null;
@@ -3770,6 +3830,7 @@ async function saveSetupWebhook(row, el, panel) {
   }
   const wr = await api("PUT", "/api/bots/" + encodeURIComponent(row.slug) + "/webhook", {url: url, key: key});
   if (keyEl) keyEl.value = "";
+  clearSetupHook(row.slug, wr.ok ? null : ["key"]);  // saved: both go; not saved: the key goes, as before
   if (!wr.ok) return toast((wr.data && wr.data.error) || "Couldn't save the webhook.", "bad");
   const started = await api("POST", "/api/bots/" + encodeURIComponent(row.slug) + "/test", {});
   if (!started.ok || !started.data || !started.data.test_id) return toast("Couldn't start the test.", "bad");
@@ -4046,6 +4107,8 @@ function setupEdit(row, el, field, btn) {
   input.maxLength = 40;
   input.setAttribute("aria-label", field === "wake" ? "Wake word" : field === "computer" ? "Computer name" : "Name");
   input.value = row[field] || "";
+  input.setAttribute("data-setedit", field);
+  input.setAttribute("data-slug", row.slug || "");
   if (field === "computer") input.setAttribute("list", "edithosts");
   btn.replaceWith(input);
   if (field === "computer") {
@@ -4061,6 +4124,7 @@ function setupEdit(row, el, field, btn) {
   input.focus();
   input.onkeydown = ev => { if (ev.key === "Enter") { ev.preventDefault(); input.blur(); } };
   input.onblur = async () => {
+    if (input._kept) return;  // removed by a list repaint; keepBotListInputs reopened it with this value
     const body = {slug: row.slug};
     body[field] = input.value;
     const r = await api("POST", "/api/bots/setup-draft", body);
@@ -4068,6 +4132,7 @@ function setupEdit(row, el, field, btn) {
     else toast((r.data && r.data.error) || "Couldn't save that.", "bad");
     paintSetupList(el);
   };
+  return input;
 }
 function paintSetupList(el) {  // setup is drawn inside the bot rows now
   if (el && Array.isArray(el._bots) && $("#blist", el)) paintBots(el, el._bots);
@@ -4547,8 +4612,15 @@ function paintBots(el, bots) {
       <div class="updcol">${su ? su.action : ""}</div>
       <div class="cfg${sentRow ? " sent3" : ""}"><button class="btn g sm${sentRow ? " sec" : ""}" type="button" data-remove="${esc(row.key)}"${sentRow ? ` aria-label="Remove ${esc(row.name)}"` : ""}>Remove</button></div></div>${su ? su.panel : ""}`;
   }).join("");
-  keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
-  bindSetupRows(list, el, setupRows);
+  const reopen = (slug, field) => {
+    const panel = list.querySelector('.setpanel[data-slug="' + botListSel(slug) + '"]');
+    const btn = panel && panel.querySelector('[data-edit="' + botListSel(field) + '"]');
+    return btn ? setupEdit(setupRows[slug], el, field, btn) : null;
+  };
+  keepBotListInputs(list, () => {
+    keepAvatarImgs(list, () => { list.innerHTML = rowsHTML; });
+    bindSetupRows(list, el, setupRows);
+  }, reopen);
   fillUpdateSwitches(list, el, bots);
   bindWakeToggles(list, el);
   list.querySelectorAll("[data-upd]").forEach(btn => btn.onclick = ev => {
@@ -4594,6 +4666,9 @@ function paintBots(el, bots) {
 async function removePending(key, el) {
   const r = await api("DELETE", "/api/bots/imported/" + encodeURIComponent(key), {});
   if (!r.ok) return attn($("#vere", el), (r.data && r.data.error) || "Couldn't remove that.");
+  const row = document.querySelector('[data-pending="' + botListSel(key) + '"]');
+  const panel = row && row.nextElementSibling;
+  if (panel && panel.classList && panel.classList.contains("setpanel")) clearSetupHook(panel.getAttribute("data-slug"));
   attn($("#vere", el), "");
   refreshBots(el);
 }
