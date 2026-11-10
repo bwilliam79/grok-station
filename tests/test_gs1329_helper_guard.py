@@ -74,13 +74,13 @@ class RecordedHelper(unittest.TestCase):
             self.assertIn("without a HELPER_VERSION bump", msg)
 
     def test_a_later_release_header_does_not_bump_the_helper(self):
-        # A 0.13.34 header lives in the templates, which are not helper files.
+        # A 0.13.35 header lives in the templates, which are not helper files.
         base = _tree_reader()
 
         def read(path):
             data = base(path)
             if path in ("admin/gs_routine.py", "admin/routine-home.txt", "admin/routine-cloud.txt") and data:
-                return data.replace(b"release 0.13.33.", b"release 0.13.34.")
+                return data.replace(b"release 0.13.34.", b"release 0.13.35.")
             return data
 
         self.assertIsNone(cv.helper_problem(read))

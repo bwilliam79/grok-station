@@ -124,6 +124,11 @@ class Script(unittest.TestCase):
         text = open(SCRIPT).read()
         body = text.split("<<'GS_ROUTINE_PY'\n", 1)[1].split("\nGS_ROUTINE_PY\n", 1)[0] + "\n"
         self.assertEqual(body, open(os.path.join(ROOT, "admin", "gs_routine.py")).read())
+        # 0.13.34: gs_routine.py imports gs_render.py, which imports owner_check.py. Both are written next to it.
+        for tag, rel in (("GS_RENDER_PY", ("admin", "gs_render.py")), ("OWNER_CHECK_PY", ("relay", "owner_check.py"))):
+            body = text.split("<<'%s'\n" % tag, 1)[1].split("\n%s\n" % tag, 1)[0] + "\n"
+            self.assertEqual(body, open(os.path.join(ROOT, *rel)).read(), tag)
+            self.assertIn('cat > "$T/%s" <<\'%s\'' % (rel[1], tag), text)
 
     def test_home_update_succeeds_and_keeps_key_g(self):
         f = Fake("home")

@@ -580,7 +580,7 @@ class HelperCommands(unittest.TestCase):
         helper = _load_helper()
         d = tempfile.mkdtemp()
         params = os.path.join(d, "gs-setup-params.txt")
-        release = "0.13.33"
+        release = _text("VERSION").strip()
         blob = _text("admin/routine-home.txt").encode()
         base = PARAMS
         if not base.endswith("\n"):

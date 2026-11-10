@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
 
+### 0.13.34
+The admin page answers again after an install or Update. The 0.13.33 installer left out `admin/gs_render.py`, which the admin page needs at start, so the page kept restarting and never answered. The installer now copies it, and a test fails whenever a module the admin page imports is not installed. Bot updates were not affected. The home helper stays 0.13.33. Press Update on each bot after installing.
+
 ### 0.13.33
 Set up on a bot that is not connected yet is Confirm and send, then one yes in that bot's chat the first time. The bot fetches this release's routine from the pinned GitHub file, posts its public key and computer name, and sends two links for the webhook URL and webhook key. On the row, compare the key fingerprint with the one in the bot's chat and press Accept. Reject leaves the bot unpaired. Paste the webhook URL and key after that. The row is connected only then. The home helper is 0.13.33, so Update reinstalls it. Press Update on each bot after installing.
 
