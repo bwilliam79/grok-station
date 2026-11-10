@@ -50,7 +50,8 @@ class RecordedHelper(unittest.TestCase):
     def test_helper_files_are_the_ones_the_installer_fetches(self):
         files = cv.helper_files(_tree_reader()("scripts/install-home.sh").decode())
         self.assertEqual(files, ["scripts/gs-seal-setup", "scripts/gs-seal-reply",
-                                 "scripts/gs_seal_common.py", "scripts/vendor-lock.txt"])
+                                 "scripts/gs_seal_common.py", "scripts/vendor-lock.txt",
+                                 "admin/gs_render.py", "relay/owner_check.py"])
 
     def test_the_tree_matches_its_record(self):
         self.assertIsNone(cv.helper_problem(_tree_reader()))
@@ -59,17 +60,43 @@ class RecordedHelper(unittest.TestCase):
         self.assertEqual(last[0], _helper_version())
 
     def test_helper_version_is_0_13_30_everywhere(self):
-        self.assertEqual(_helper_version(), "0.13.30")
-        admin = open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8").read()
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.30"  #')
+        self.assertEqual(_helper_version(), "0.13.33")
+        with open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8") as fh:
+            admin = fh.read()
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.33"  #')
 
     def test_a_changed_helper_file_without_a_bump_fails(self):
         for path in ("scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/gs-seal-setup",
-                     "scripts/vendor-lock.txt"):
+                     "scripts/vendor-lock.txt", "admin/gs_render.py"):
             data = _tree_reader()(path) + b"\n# changed\n"
             msg = cv.helper_problem(_tree_reader({path: data}))
             self.assertIsNotNone(msg, path)
             self.assertIn("without a HELPER_VERSION bump", msg)
+
+    def test_a_later_release_header_does_not_bump_the_helper(self):
+        # A 0.13.34 header lives in the templates, which are not helper files.
+        base = _tree_reader()
+
+        def read(path):
+            data = base(path)
+            if path in ("admin/gs_routine.py", "admin/routine-home.txt", "admin/routine-cloud.txt") and data:
+                return data.replace(b"release 0.13.33.", b"release 0.13.34.")
+            return data
+
+        self.assertIsNone(cv.helper_problem(read))
+
+    def test_the_installed_renderer_is_the_file_in_the_digest(self):
+        text = open(os.path.join(ROOT, "scripts", "install-home.sh"), encoding="utf-8").read()
+        commit = re.search(r"(?m)^COMMIT=([0-9a-f]{40})$", text).group(1)
+        want = re.search(r"(?m)^HASH_GS_RENDER=([0-9a-f]{64})$", text).group(1)
+        with open(os.path.join(ROOT, "admin", "gs_render.py"), "rb") as fh:
+            head = fh.read()
+        self.assertEqual(hashlib.sha256(head).hexdigest(), want)
+        blob = subprocess.run(["git", "-C", ROOT, "show", "%s:admin/gs_render.py" % commit], capture_output=True)
+        if blob.returncode != 0:
+            self.skipTest("installer commit does not contain gs_render.py yet")
+        self.assertEqual(blob.stdout, head)
+        self.assertIsNone(cv.helper_problem(_tree_reader()))
 
     def test_a_bump_without_a_record_line_fails(self):
         common = _tree_reader()("scripts/gs_seal_common.py").replace(

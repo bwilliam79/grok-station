@@ -1293,6 +1293,53 @@ class StepUp(unittest.TestCase):
         self.assertNotIn("stepup open", buf.getvalue())
         self.assertIsNone(self._until())
 
+    def test_accept_setup_pair_needs_the_admin_password(self):
+        self._save()
+        for rec in ga.AUTH.sessions.values():
+            if isinstance(rec, dict):
+                rec.pop("stepup_until", None)
+        ga.AUTH.fails.clear()
+        ga.AUTH.locked_until = 0
+        calls = []
+        leak = {"on": True}
+        real = ga.relay_call
+
+        def fake(method, path, payload=None, timeout=10):
+            if path == "/admin/bots/setup-pair":
+                calls.append(dict(payload or {}))
+                if leak["on"] and (payload or {}).get("decision") == "accept":
+                    leak["on"] = False
+                    return 400, {"error": "bad " + GOOD}
+                return 200, {"ok": True, "state": (payload or {}).get("decision")}
+            return real(method, path, payload, timeout)
+
+        ga.relay_call = fake
+        try:
+            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "reject"})
+            self.assertEqual(st, 200, j)
+            self.assertEqual(calls[-1]["decision"], "reject")
+            before = len(calls)
+            fails = len(ga.AUTH.fails)
+            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept"})
+            self.assertEqual(st, 403, j)
+            self.assertEqual(len(calls), before)
+            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "password": "nope"})
+            self.assertEqual(st, 403, j)
+            self.assertEqual(len(calls), before)
+            self.assertGreater(len(ga.AUTH.fails), fails)
+            st, j = self.c.req("POST", "/api/bots/setup-pair",
+                               {"slug": "kai", "decision": "accept", "password": GOOD})
+            self.assertEqual(st, 400, j)
+            self.assertNotIn(GOOD, json.dumps(j))
+            st, j = self.c.req("POST", "/api/bots/setup-pair",
+                               {"slug": "kai", "decision": "accept", "password": GOOD})
+            self.assertEqual(st, 200, j)
+            self.assertEqual(calls[-1]["decision"], "accept")
+        finally:
+            ga.relay_call = real
+            ga.AUTH.fails.clear()
+            ga.AUTH.locked_until = 0
+
 
 class LocationLabel(unittest.TestCase):
     """The browser sees the place name. Coordinates stay in the helper's env write."""
@@ -1629,7 +1676,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "x; y"})["out_of_date"])  # not a version
         self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": ga.HELPER_RELEASE})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.30"})["out_of_date"])  # newer than the station knows
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.30"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.12.0"})["out_of_date"])  # 0.13.0 helper
         common = open(os.path.join(ROOT, "scripts", "gs_seal_common.py"), encoding="utf-8").read()
         self.assertIn('HELPER_VERSION = "%s"' % ga.HELPER_RELEASE, common)

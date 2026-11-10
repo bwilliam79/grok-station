@@ -930,6 +930,7 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .setpanel .seterr{margin:0 0 10px;color:var(--gs-text)}
 .setpanel .seterr .gl{color:var(--gs-amber);margin-right:6px}
 .setpanel .acts{display:flex;gap:8px;margin-top:10px}
+.setpanel .pairlab{font:500 var(--fs-caps) var(--body);color:var(--gs-muted);margin:8px 0 2px}
 /* Rev2 ready chip: pill + clock. First-time uses lavender wash. */
 .setpanel .setready{margin:0 0 12px;font-size:var(--fs-help);color:var(--gs-muted)}
 .setpanel .setready-chip{display:inline-flex;white-space:nowrap;align-items:center;gap:8px;max-width:100%;padding:4px 10px 4px 6px;border-radius:99px;background:var(--gs-teal-bg,#12302A);border:1px solid #1A4A40;color:var(--gs-muted)}

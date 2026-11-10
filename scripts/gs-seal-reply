@@ -159,7 +159,7 @@ from gs_seal_common import (
     _require_dir, _require_file, _check_tree, _open_private, _write_all,
     _pin, _b64_32, station_ok,
     refuse_unsafe_location, require_time_machine_exclusion, require_same_host,
-    load_nacl, HELPER_VERSION,
+    load_nacl, HELPER_VERSION, key_fingerprint, fetch_allowlisted,
 )
 
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
@@ -983,6 +983,144 @@ def cmd_setup_check(slug, station, pin_sha256, station_pub):
     return 0 if same else 1
 
 
+# Same rule as relay/botreply.py _PAIR_HOST. A trailing space is refused.
+_PAIR_NAME = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,38}[A-Za-z0-9._-])?\Z")
+
+
+def canonical_setup_pair(request_id, target, pin_sha256, public_key, computer_name):
+    """Closed setup_pair body. The station accepts exactly these keys."""
+    if REQUEST_ID.fullmatch(request_id or "") is None or not slug_ok(target):
+        raise Refused()
+    if _pin(pin_sha256) != pin_sha256 or _b64_32(public_key) is None:
+        raise Refused()
+    if not isinstance(computer_name, str) or _PAIR_NAME.fullmatch(computer_name) is None:
+        raise Refused()
+    body = {"computer_name": computer_name, "kind": "setup_pair", "pin_sha256": pin_sha256,
+            "public_key": public_key, "request_id": request_id, "target": target}
+    return json.dumps(body, separators=(",", ":"), sort_keys=True).encode("ascii")
+
+
+def cmd_fingerprint(slug):
+    """Print the key fingerprint of this bot's key file. Same form the Accept screen shows."""
+    if not slug_ok(slug):
+        raise Refused()
+    _setup_paths(slug)
+    seed = read_key(slug)
+    try:
+        load_nacl()
+        from nacl.signing import SigningKey
+        raw = bytes(SigningKey(bytes(seed)).verify_key)
+        sys.stdout.write(key_fingerprint(raw) + "\n")
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
+def cmd_setup_pair(slug, request_id, computer_name):
+    """Sign a setup_pair with the bot key, seal it to the station public key, and post it once.
+
+    request_id and the computer name come from the frozen card. The station address, certificate pin
+    and station public key come from the install config, not from a second copy in the command.
+    """
+    if not slug_ok(slug):
+        raise Refused()
+    canonical_setup_pair(request_id, slug, "ab" * 32, base64.b64encode(b"\x11" * 32).decode("ascii"), computer_name)
+    root = _setup_paths(slug)
+    refuse_unsafe_location(root)
+    require_time_machine_exclusion(root)
+    require_same_host()
+    seed = read_key(slug)
+    try:
+        endpoint, pin, station_pub = read_config(slug)
+        load_nacl()
+        from nacl.public import PublicKey, SealedBox
+        from nacl.signing import SigningKey
+        sk = SigningKey(bytes(seed))
+        pub_b64 = base64.b64encode(bytes(sk.verify_key)).decode("ascii")
+        msg = canonical_setup_pair(request_id, slug, pin, pub_b64, computer_name)
+        sealed = SealedBox(PublicKey(station_pub)).encrypt(sk.sign(msg))
+        outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
+        body = json.dumps(outer, separators=(",", ":")).encode("ascii")
+        status_code, why = _run_post(endpoint, body, pin, "/voice/reply")
+        if status_code != 200:
+            raise Refused(why)
+        return 0
+    finally:
+        _wipe(seed)
+        del seed
+
+
+def _refused():
+    sys.stderr.write("refused\n")
+    return 1
+
+
+def cmd_render_routine(slug, mode, params_path, routine_commit, routine_sha, update_commit, update_sha,
+                       install_commit, install_sha, release):
+    """Fetch the pinned routine, check it, render it, and print it. Fail closed on any miss.
+
+    The command-line pins are the frozen or held values. The file must match them before any
+    render or append. Stdout ends with the checked literal lines, not the raw file.
+    """
+    if not slug_ok(slug) or mode not in ("home", "cloud"):
+        raise Refused()
+    if not isinstance(params_path, str) or not params_path or "\x00" in params_path:
+        raise Refused()
+    try:
+        fd = os.open(params_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise Refused()
+    try:
+        raw = os.read(fd, 20000)
+        extra = os.read(fd, 1)
+    finally:
+        os.close(fd)
+    if extra or not raw:
+        return _refused()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return _refused()
+    here = os.path.dirname(os.path.realpath(__file__))
+    for folder in (here, os.path.normpath(os.path.join(here, os.pardir, "admin"))):
+        if os.path.isfile(os.path.join(folder, "gs_render.py")) and folder not in sys.path:
+            sys.path.insert(0, folder)
+            break
+    import gs_render
+    found = gs_render.params_ok(text, {
+        "mode": mode, "routine_commit": routine_commit, "routine_sha256": routine_sha,
+        "update_commit": update_commit, "update_sha256": update_sha,
+        "install_commit": install_commit, "install_sha256": install_sha, "release": release,
+    })
+    if found is None:
+        return _refused()
+    url = gs_render.routine_url(mode, found["ROUTINE_COMMIT"])
+    if url is None:
+        return _refused()
+    status, blob = fetch_allowlisted(url)
+    if status != 200 or not gs_render.verify_fetched(blob, found["routine_sha256"], found["RELEASE"]):
+        return _refused()
+    station = fingerprint = pub = ""
+    if mode == "cloud":
+        endpoint, pin, station_pub = read_config(slug)
+        station = endpoint.rstrip("/")
+        fingerprint = ":".join(pin[i:i + 2].upper() for i in range(0, 64, 2))
+        pub = base64.b64encode(station_pub).decode("ascii")
+    try:
+        rendered = gs_render.render(blob.decode("utf-8"), mode, slug, found["UPDATE_COMMIT"], found["HASH_UPDATE"],
+                                    station, fingerprint, pub)
+        gs_render.check(rendered, mode, blob.decode("utf-8"))
+    except Exception:
+        return _refused()
+    sys.stdout.write(rendered)
+    if not rendered.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.write("\n")
+    sys.stdout.write(gs_render.literals_block(found))
+    return 0
+
+
 def _parser():
     p = QuietParser(prog="gs-seal-reply")
     sub = p.add_subparsers(dest="cmd", required=True, parser_class=QuietParser)
@@ -1006,6 +1144,23 @@ def _parser():
     check.add_argument("--station", required=True)
     check.add_argument("--pin-sha256", required=True, dest="pin_sha256")
     check.add_argument("--station-pub", required=True, dest="station_pub")
+    pair = sub.add_parser("setup-pair")
+    pair.add_argument("--persona", required=True)
+    pair.add_argument("--request-id", required=True, dest="request_id")
+    pair.add_argument("--computer-name", required=True, dest="computer_name")
+    finger = sub.add_parser("fingerprint")
+    finger.add_argument("--persona", required=True)
+    render = sub.add_parser("render-routine")
+    render.add_argument("--persona", required=True)
+    render.add_argument("--mode", required=True, choices=("home", "cloud"))
+    render.add_argument("--params", required=True)
+    render.add_argument("--routine-commit", required=True, dest="routine_commit")
+    render.add_argument("--routine-sha256", required=True, dest="routine_sha")
+    render.add_argument("--update-commit", required=True, dest="update_commit")
+    render.add_argument("--update-sha256", required=True, dest="update_sha")
+    render.add_argument("--install-commit", required=True, dest="install_commit")
+    render.add_argument("--install-sha256", required=True, dest="install_sha")
+    render.add_argument("--release", required=True)
     sub.add_parser("version")
     return p
 
@@ -1026,6 +1181,14 @@ def main(argv=None):
             return cmd_setup_ack(args.persona, args.request_id, args.status, args.reason)
         if args.cmd == "setup-check":
             return cmd_setup_check(args.persona, args.station, args.pin_sha256, args.station_pub)
+        if args.cmd == "setup-pair":
+            return cmd_setup_pair(args.persona, args.request_id, args.computer_name)
+        if args.cmd == "fingerprint":
+            return cmd_fingerprint(args.persona)
+        if args.cmd == "render-routine":
+            return cmd_render_routine(
+                args.persona, args.mode, args.params, args.routine_commit, args.routine_sha,
+                args.update_commit, args.update_sha, args.install_commit, args.install_sha, args.release)
         if args.cmd == "version":
             sys.stdout.write(HELPER_VERSION + "\n")
             return 0

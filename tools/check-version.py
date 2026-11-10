@@ -41,6 +41,9 @@ _RITUAL_FILES = {
     }),
     "re-pin deploy files": frozenset({
         "admin/web/deploy-pins.js",
+        "admin/setup-params.txt",
+        "admin/web/app.js",
+        "docs/bots.md",
     }),
 }
 
@@ -103,12 +106,64 @@ def ritual_commit(subject):
     return match.group(1), match.group(2)
 
 
+# Re-pin may change these three only on lines that are a pin literal. deploy-pins.js stays
+# allowlisted by file name: its body is the pin object, not these prose lines.
+_REPIN_LITERAL_FILES = frozenset({
+    "admin/setup-params.txt",
+    "admin/web/app.js",
+    "docs/bots.md",
+})
+_REPIN_LINE = re.compile(
+    r"(?:"
+    r"T=\$\(mktemp\) && curl -fsS --proto '=https' --max-redirs 0 -o \"\$T\" "
+    r"'https://raw\.githubusercontent\.com/bwilliam79/grok-station/[0-9a-f]{40}/scripts/install-home\.sh' "
+    r"&& printf '%s  %s\\n' '[0-9a-f]{64}' \"\$T\" \| sha256sum -c - && sh \"\$T\" "
+    r"--persona '<target>' --station '<station>' --pin-sha256 '<pin_sha256>' --station-pub '<station_pub>'; "
+    r"rc=\$\?; rm -f \"\$T\"; \(exit \$rc\)"
+    r"|\([0-9a-f]{40} and [0-9a-f]{64} are literal in this Station setup text for "
+    r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem\.\)"
+    r"|(?:ROUTINE_COMMIT|UPDATE_COMMIT) [0-9a-f]{40}"
+    r"|(?:HASH_ROUTINE_HOME|HASH_ROUTINE_CLOUD|HASH_UPDATE) [0-9a-f]{64}"
+    r"|RELEASE [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
+    r")\Z"
+)
+
+
+def repin_nonliteral(repo, rev, files):
+    """Paths whose re-pin diff has a line that is not a pin literal. Empty when every line matches."""
+    bad = []
+    for path in files:
+        if path not in _REPIN_LITERAL_FILES:
+            continue
+        proc = subprocess.run(
+            ["git", "-C", repo, "diff", "-U0", f"{rev}~1", rev, "--", path],
+            capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            bad.append(path)
+            continue
+        for line in proc.stdout.splitlines():
+            if not line or line[:1] not in "+-" or line.startswith(("+++", "---")):
+                continue
+            if _REPIN_LINE.fullmatch(line[1:]) is None:
+                bad.append(path)
+                break
+    return bad
+
+
 def ritual_extra(repo, rev, kind):
-    """Files in rev that are outside that ritual's allowlist. None when rev cannot be read."""
+    """Files in rev that are outside that ritual's allowlist. None when rev cannot be read.
+
+    For a re-pin, admin/setup-params.txt, admin/web/app.js, and docs/bots.md are inside the
+    allowlist only when every added or removed line is a pin literal.
+    """
     files = changed_files(repo, rev)
     if files is None:
         return None
-    return [path for path in files if path not in _RITUAL_FILES[kind]]
+    extra = [path for path in files if path not in _RITUAL_FILES[kind]]
+    if extra or kind != "re-pin deploy files":
+        return extra
+    return repin_nonliteral(repo, rev, files)
 
 
 def _same_version(prev, head, extra=None):
@@ -201,7 +256,7 @@ def reused_release(repo):
 
 
 HELPER_RECORD = "tools/helper-releases.txt"
-_FETCH_ONE = re.compile(r'^\s*fetch_one (\S+) "\$RAW/(scripts/\S+)" ', re.M)
+_FETCH_ONE = re.compile(r'^\s*fetch_one (\S+) "\$RAW/((?:scripts|admin|relay)/\S+)" ', re.M)
 _HELPER_VERSION = re.compile(r'^HELPER_VERSION = "(\d+\.\d+\.\d+)"$', re.M)
 _RECORD_LINE = re.compile(r"^(\d+\.\d+\.\d+) ([0-9a-f]{64})$")
 

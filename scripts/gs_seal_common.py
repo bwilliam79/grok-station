@@ -61,7 +61,38 @@ class QuietParser(argparse.ArgumentParser):
 
 # The home helper's release. Sent as the X-GS-Helper header on each post (not signed; older stations
 # ignore it). The station shows "Helper out of date" when this is behind its own helper release.
-HELPER_VERSION = "0.13.30"
+HELPER_VERSION = "0.13.33"
+
+
+def fetch_allowlisted(url):
+    """One HTTPS GET of the station's GitHub raw URL. curl --proto=https --tlsv1.2 --max-redirs 0.
+
+    Returns (status, body). A redirect, a missing curl, or any other failure is status 0.
+    """
+    prefix = "https://raw.githubusercontent.com/bwilliam79/grok-station/"
+    if not isinstance(url, str) or not url.startswith(prefix) or "\n" in url or "\x00" in url:
+        return 0, b""
+    try:
+        proc = subprocess.run(
+            ["curl", "--proto", "=https", "--tlsv1.2", "--max-redirs", "0", "-sS",
+             "--max-time", "30", "-w", "\n%{http_code}", "-o", "-", url],
+            capture_output=True)
+    except OSError:
+        return 0, b""
+    if proc.returncode != 0 or not proc.stdout:
+        return 0, b""
+    body, _, code = proc.stdout.rpartition(b"\n")
+    if not code.isdigit():
+        return 0, b""
+    return int(code), body
+
+
+def key_fingerprint(raw):
+    """SHA-256 of the 32 raw verify-key bytes, lowercase hex, first 16 characters, grouped in fours."""
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) != 32:
+        raise ValueError("key")
+    h = hashlib.sha256(bytes(raw)).hexdigest()[:16]
+    return " ".join(h[i:i + 4] for i in range(0, 16, 4))
 
 def root_dir():
     return os.path.join(os.path.expanduser("~"), ".config", "grok-station")

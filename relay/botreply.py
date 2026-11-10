@@ -3,7 +3,7 @@
 The relay calls these. Nothing here speaks, logs a body, or stores a bot's private key.
 A reply is SealedBox(station public key) around an Ed25519 attached signature of the reply JSON.
 """
-import base64, json, os, re, tempfile, threading, time, unicodedata
+import base64, hashlib, json, os, re, tempfile, threading, time, unicodedata
 import handoff
 import safe_io
 from nacl.exceptions import CryptoError
@@ -61,6 +61,10 @@ def _lint_client_reason(why):
     if why:
         return "pii"
     return None
+
+
+class NotSetupPair(Exception):
+    """The sealed body is not a setup_pair. The reply path should handle it. No rate charge here."""
 
 
 class Reject(Exception):
@@ -221,6 +225,19 @@ def load_or_create_station(secrets_dir):
 
 def station_pub_b64(sk):
     return base64.b64encode(bytes(sk.public_key)).decode()
+
+
+def key_fingerprint(b64):
+    """The Accept-screen fingerprint. Same string as admin/web/app.js keyFingerprint.
+
+    SHA-256 of the 32 raw verify-key bytes, lowercase hex, first 16 characters,
+    grouped in fours with spaces. Derived from the printed public key only.
+    """
+    raw = parse_pub(b64)
+    if raw is None:
+        return ""
+    short = hashlib.sha256(raw).hexdigest()[:16]
+    return " ".join(short[i:i + 4] for i in range(0, 16, 4))
 
 
 def env_rate(name, default):
@@ -682,6 +699,136 @@ def _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source):
     return out
 
 
+# 0.13.33 setup_pair. Possession is an Ed25519 signature by the posted key over these fields.
+# SealedBox(station public key) is confidentiality only, the same envelope as every other post.
+# The signature does not by itself pin the key. The owner accepts it in the admin UI.
+_PAIR_KEYS = frozenset(("kind", "request_id", "target", "pin_sha256", "public_key", "computer_name"))
+_PAIR_PUB = re.compile(r"\A[A-Za-z0-9+/]{43}=\Z")
+_PAIR_PIN = re.compile(r"\A[0-9a-f]{64}\Z")
+# Same shape as a stored computer name: leading letter or digit, then up to 39 more, ASCII only.
+# Same rule as scripts/gs-seal-reply _PAIR_NAME. One character, or up to 40 ending on a
+# letter, digit, dot, underscore, or hyphen, so a trailing space does not pass.
+_PAIR_HOST = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,38}[A-Za-z0-9._-])?\Z")
+
+
+def _pair_outer(raw):
+    """(bot, sealed bytes) from the reply envelope, or Reject. Does not look up a pinned key."""
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > OUTER_MAX:
+        _shape()
+    try:
+        outer = json.loads(raw)
+    except ValueError:
+        _shape()
+    if not isinstance(outer, dict) or set(outer) != _OUTER_KEYS:
+        bot = outer.get("bot") if isinstance(outer, dict) else "-"
+        _shape(bot if handoff.bot_slug_ok(bot) else "-")
+    bot = outer.get("bot")
+    if type(outer.get("v")) is not int or outer.get("v") != 1 or not handoff.bot_slug_ok(bot):
+        _shape(bot if handoff.bot_slug_ok(bot) else "-")
+    sealed = outer.get("sealed")
+    if not isinstance(sealed, str) or not sealed or any(c.isspace() for c in sealed):
+        _shape(bot)
+    try:
+        blob = base64.b64decode(sealed, validate=True)
+    except Exception:
+        _shape(bot)
+    if not blob:
+        _shape(bot)
+    return bot, blob
+
+
+def _pair_host_ok(host):
+    """Closed computer-name rule. fullmatch, no leading or trailing whitespace, no control characters."""
+    if not isinstance(host, str) or host != host.strip():
+        return False
+    if any(ord(c) < 32 or ord(c) > 126 for c in host):
+        return False
+    return _PAIR_HOST.fullmatch(host) is not None
+
+
+def accept_setup_pair(raw, station_sk, pending_for, now_ms=None, limiter=None, rate_now=None):
+    """Check one setup_pair. Returns the pending fields. Does not pin the key and does not write state.
+
+    Possession: Ed25519 signature by the public_key field over the exact JSON
+    (kind, request_id, target, pin_sha256, public_key, computer_name).
+    SealedBox to this station's key: a box for any other station_pub fails unseal.
+    Extra keys, including a webhook URL or key, are schema. The caller marks the request used.
+    """
+    bot, blob = _pair_outer(raw)
+    if limiter is not None and not limiter.allow(bot, now=rate_now):
+        raise Reject(429, "rate", bot)
+    try:
+        signed = SealedBox(station_sk).decrypt(blob)
+    except (CryptoError, Exception):
+        raise Reject(403, "unseal", bot)
+    if not isinstance(signed, (bytes, bytearray)) or len(signed) < 64:
+        raise Reject(403, "signature", bot)
+    try:
+        pre = json.loads(bytes(signed)[64:])
+    except ValueError:
+        raise NotSetupPair()
+    if not isinstance(pre, dict) or pre.get("kind") != "setup_pair":
+        # A reply, a card, or an ack is not this path. The caller falls through.
+        raise NotSetupPair()
+    claimed = pre.get("public_key")
+    vk_raw = parse_pub(claimed) if isinstance(claimed, str) and _PAIR_PUB.fullmatch(claimed) else None
+    if vk_raw is None:
+        raise Reject(400, "schema", bot)
+    try:
+        message = VerifyKey(vk_raw).verify(bytes(signed))
+    except Exception:
+        raise Reject(403, "signature", bot)
+    try:
+        doc = json.loads(message)
+    except ValueError:
+        raise Reject(400, "schema", bot)
+    rid = doc.get("request_id") if isinstance(doc, dict) and isinstance(doc.get("request_id"), str) else "-"
+    if set(doc) != _PAIR_KEYS:
+        raise Reject(400, "schema", bot, rid if rid != "-" else "-")
+    if not handoff.REQUEST_ID.fullmatch(rid):
+        raise Reject(400, "schema", bot)
+    if parse_pub(doc.get("public_key")) != vk_raw or _PAIR_PUB.fullmatch(doc.get("public_key")) is None:
+        raise Reject(403, "signature", bot, rid)
+    target = doc.get("target")
+    pin = doc.get("pin_sha256")
+    if not handoff.setup_field_ok("target", target) or not isinstance(pin, str) or _PAIR_PIN.fullmatch(pin) is None:
+        raise Reject(400, "schema", bot, rid)
+    host = doc.get("computer_name")
+    if not _pair_host_ok(host):
+        raise Reject(400, "schema", bot, rid)
+    try:
+        why = handoff.lint_reply(host, pii=False, digits=True)
+    except Exception:
+        why = "error"
+    if why:
+        rej = Reject(400, "lint", bot, rid)
+        rej.reason = _lint_client_reason(why)
+        raise rej
+    try:
+        pending = pending_for(rid) if pending_for is not None else None
+    except Exception:
+        pending = None
+    if not isinstance(pending, dict) or pending.get("request_id") != rid or pending.get("kind") != "setup_relay":
+        raise Reject(403, "request", bot, rid)
+    if pending.get("pair_used") is True:
+        raise Reject(409, "duplicate", bot, rid)
+    pend_target = pending.get("target")
+    if not handoff.setup_field_ok("target", pend_target) or pend_target != bot or target != bot:
+        raise Reject(403, "target", bot, rid)
+    frozen = pending.get("frozen") if isinstance(pending.get("frozen"), dict) else {}
+    if frozen.get("pin_sha256") != pin:
+        raise Reject(403, "request", bot, rid)
+    exp = pending.get("expires_ms")
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    if type(exp) is not int or type(now) is not int:
+        raise Reject(403, "request", bot, rid)
+    if exp < now:
+        raise Reject(403, "expired", bot, rid)
+    nonce = pending.get("nonce")
+    return {"request_id": rid, "bot": bot, "target": target, "pin_sha256": pin,
+            "public_key": doc["public_key"], "computer_name": host,
+            "nonce": nonce if isinstance(nonce, str) else ""}
+
 
 def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
            rate_now=None, source=None, pii=None):
@@ -699,6 +846,10 @@ def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(
         doc = json.loads(message)
     except ValueError:
         raise Reject(400, "schema", bot)
+    if isinstance(doc, dict) and doc.get("kind") == "setup_pair":
+        # Kind isolation: setup_pair is not a reply. It has its own ingest path.
+        rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
+        raise Reject(400, "schema", bot, rid)
     if isinstance(doc, dict) and doc.get("kind") == "bot_list":
         return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source, pii=pii)
     if isinstance(doc, dict) and doc.get("kind") == "setup_relay_ack":

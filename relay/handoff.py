@@ -472,6 +472,11 @@ SETUP_RELAY_KEYS = ("v", "kind", "request_id", "persona", "reply_by", "target", 
                     "station_pub", "mode", "release")
 # Optional on first-time (2a) only; absent on steady-state (2b). Same fullmatch rules as pin_sha256 / request pins.
 SETUP_RELAY_PIN_KEYS = ("template_commit", "template_sha256")
+# Optional on every setup_relay. The target fetches admin/routine-<mode>.txt at this commit.
+# Both present or both absent, same fullmatch rules as the install pin.
+SETUP_RELAY_ROUTINE_KEYS = ("routine_commit", "routine_sha256")
+# First-time requires both. The render command reads these, not a value invented in chat.
+SETUP_RELAY_UPDATE_KEYS = ("update_commit", "update_sha256")
 SETUP_FIELD_RE = {
     "kind": (r"setup_relay", 11),
     "request_id": (r"vs_[A-Za-z0-9_-]{22}", 25),
@@ -485,6 +490,10 @@ SETUP_FIELD_RE = {
     "release": (r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", 11),
     "template_commit": (r"[0-9a-f]{40}", 40),
     "template_sha256": (r"[0-9a-f]{64}", 64),
+    "routine_commit": (r"[0-9a-f]{40}", 40),
+    "routine_sha256": (r"[0-9a-f]{64}", 64),
+    "update_commit": (r"[0-9a-f]{40}", 40),
+    "update_sha256": (r"[0-9a-f]{64}", 64),
 }
 SETUP_ACK_STATUS = ("relayed", "failed", "needs_details")
 SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
@@ -518,17 +527,38 @@ def pin_hex(fingerprint):
 
 
 def setup_relay_payload(rid, persona, reply_by, target, station, pin_sha256, station_pub, mode, release,
-                        template_commit=None, template_sha256=None):
-    """The exact setup_relay webhook body, or ValueError. Optional 2a pin fields must both be set or both absent."""
+                        template_commit=None, template_sha256=None, routine_commit=None, routine_sha256=None,
+                        update_commit=None, update_sha256=None):
+    """The exact setup_relay webhook body, or ValueError.
+
+    Install pin fields (first-time) must both be set or both absent. Routine pin fields must both be set
+    or both absent. Update pin fields must both be set or both absent. No other keys.
+    """
     body = {"v": 1, "kind": "setup_relay", "request_id": rid, "persona": persona, "reply_by": reply_by,
             "target": target, "station": station, "pin_sha256": pin_sha256, "station_pub": station_pub,
             "mode": mode, "release": release}
+    extras = set()
     pins = (template_commit is not None, template_sha256 is not None)
     if pins[0] != pins[1]:
         raise ValueError("setup_relay field")
     if pins[0]:
         body["template_commit"] = template_commit
         body["template_sha256"] = template_sha256
+        extras |= set(SETUP_RELAY_PIN_KEYS)
+    rpins = (routine_commit is not None, routine_sha256 is not None)
+    if rpins[0] != rpins[1]:
+        raise ValueError("setup_relay field")
+    if rpins[0]:
+        body["routine_commit"] = routine_commit
+        body["routine_sha256"] = routine_sha256
+        extras |= set(SETUP_RELAY_ROUTINE_KEYS)
+    upins = (update_commit is not None, update_sha256 is not None)
+    if upins[0] != upins[1]:
+        raise ValueError("setup_relay field")
+    if upins[0]:
+        body["update_commit"] = update_commit
+        body["update_sha256"] = update_sha256
+        extras |= set(SETUP_RELAY_UPDATE_KEYS)
     for name in body:
         if name == "v":
             if body["v"] != 1:
@@ -536,7 +566,7 @@ def setup_relay_payload(rid, persona, reply_by, target, station, pin_sha256, sta
             continue
         if not setup_field_ok(name, body[name]):
             raise ValueError("setup_relay field")
-    if set(body) - {"v"} != set(SETUP_RELAY_KEYS[1:]) and set(body) - {"v"} != set(SETUP_RELAY_KEYS[1:]) | set(SETUP_RELAY_PIN_KEYS):
+    if set(body) - {"v"} != set(SETUP_RELAY_KEYS[1:]) | extras:
         raise ValueError("setup_relay field")
     if persona == "grok" or target in ("grok", persona):
         raise ValueError("setup_relay field")
@@ -557,7 +587,9 @@ def write_setup_pending(pdir, rid, persona, nonce, expires_ms, target, frozen=No
         setup_relay_payload(
             frozen["request_id"], frozen["persona"], frozen["reply_by"], frozen["target"],
             frozen["station"], frozen["pin_sha256"], frozen["station_pub"], frozen["mode"], frozen["release"],
-            frozen.get("template_commit"), frozen.get("template_sha256"))
+            frozen.get("template_commit"), frozen.get("template_sha256"),
+            frozen.get("routine_commit"), frozen.get("routine_sha256"),
+            frozen.get("update_commit"), frozen.get("update_sha256"))
     os.makedirs(pdir, exist_ok=True)
     doc = {"request_id": rid, "persona": persona, "nonce": nonce, "expires_ms": expires_ms,
            "kind": "setup_relay", "target": target}
@@ -567,6 +599,32 @@ def write_setup_pending(pdir, rid, persona, nonce, expires_ms, target, frozen=No
         doc["path"] = path
     safe_io.replace_file(os.path.join(pdir, rid + ".json"), json.dumps(doc, separators=(",", ":"), sort_keys=True),
                          "pending", mode=0o644)
+
+
+# Routine fetch pins are not the install pins. template_commit stays install-home.sh.
+ROUTINE_OWNER = "bwilliam79"
+ROUTINE_HOST = "raw.githubusercontent.com"
+_ROUTINE_COMMIT = re.compile(r"\A[0-9a-f]{40}\Z")
+_ROUTINE_SHA = re.compile(r"\A[0-9a-f]{64}\Z")
+# Regression: the 0.13.32 install commit and that tree's routine-cloud hash are not this release's routine pins.
+OLD_INSTALL_COMMIT = "6b978580132da4f4be724b3d535c7927ca7fc86f"
+OLD_ROUTINE_CLOUD_SHA = "5bbde90f1dd5e264a84a6e7d934b83366abe1d9d86e3f5d16890bc4f1175385f"
+
+
+def mark_setup_pair_used(pdir, rid):
+    """Single-use flag on an open setup_relay pending. False when the file is missing or not that request."""
+    if not setup_field_ok("request_id", rid):
+        return False
+    path = os.path.join(pdir, rid + ".json")
+    try:
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "pending")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(doc, dict) or doc.get("request_id") != rid or doc.get("kind") != "setup_relay":
+        return False
+    doc["pair_used"] = True
+    safe_io.replace_file(path, json.dumps(doc, separators=(",", ":"), sort_keys=True), "pending", mode=0o644)
+    return True
 
 
 def remove_pending(pdir, rid):

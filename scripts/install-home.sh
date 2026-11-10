@@ -33,9 +33,11 @@ umask 077
 
 COMMIT=360da7759ec0a929c0b5d46413c84241de4a32d5
 HASH_SETUP=15565f30203b6772d41557190b426dc973167b1c15f6b238da4e4d6ee5aeae5f
-HASH_REPLY=7c298b4c56d2eebda8eeb85e3e35078b3338870fbada63e9bf9255119ec597a4
-HASH_COMMON=6783dca79c95afc46bc8520267e81b02c15b8537fe5bc475bea5eea0a120663d
+HASH_REPLY=4404c1472b51b398073898be219134cf25e94b36c384faad28dfedaeed7c0904
+HASH_COMMON=551ffe2ec25ef4ac948a1b3f4486c907668b994eaa651f98bbcdd359a352be61
 HASH_LOCK=00074509bf2d0a3d1084c2155251f1d3e88f250488e863838d0bb19fa9b6a617
+HASH_GS_RENDER=57c27f8f4e19767bffdf124e0b82fb25824c684c665c696646a1bffa73e46526
+HASH_OWNER=403bb0c076c5dad669f7979255c7983a884af49856d7847083e1de2ef8deab45
 
 die() {
   printf '%s\n' "$1" >&2
@@ -337,7 +339,8 @@ have_pinned() {
 }
 have=0
 if [ "${UPGRADE:-}" != "1" ] && have_pinned gs-seal-setup "$HASH_SETUP" && have_pinned gs-seal-reply "$HASH_REPLY" \
-    && have_pinned gs_seal_common.py "$HASH_COMMON" && have_pinned vendor-lock.txt "$HASH_LOCK"; then
+    && have_pinned gs_seal_common.py "$HASH_COMMON" && have_pinned vendor-lock.txt "$HASH_LOCK" \
+    && have_pinned gs_render.py "$HASH_GS_RENDER" && have_pinned owner_check.py "$HASH_OWNER"; then
   have=1
 fi
 S="$stage"
@@ -349,10 +352,14 @@ else
   refuse_exists "$BIN/gs-seal-reply"
   refuse_exists "$BIN/gs_seal_common.py"
   refuse_exists "$BIN/vendor-lock.txt"
+  refuse_exists "$BIN/gs_render.py"
+  refuse_exists "$BIN/owner_check.py"
   fetch_one gs-seal-setup "$RAW/scripts/gs-seal-setup" "$HASH_SETUP" 700
   fetch_one gs-seal-reply "$RAW/scripts/gs-seal-reply" "$HASH_REPLY" 700
   fetch_one gs_seal_common.py "$RAW/scripts/gs_seal_common.py" "$HASH_COMMON" 600
   fetch_one vendor-lock.txt "$RAW/scripts/vendor-lock.txt" "$HASH_LOCK" 600
+  fetch_one gs_render.py "$RAW/admin/gs_render.py" "$HASH_GS_RENDER" 600
+  fetch_one owner_check.py "$RAW/relay/owner_check.py" "$HASH_OWNER" 600
   "$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"
 fi
 
@@ -382,6 +389,8 @@ if [ "$have" != "1" ]; then
   place_one gs-seal-reply
   place_one gs_seal_common.py
   place_one vendor-lock.txt
+  place_one gs_render.py
+  place_one owner_check.py
 fi
 
 wrapdir="$HOME/.local/bin"

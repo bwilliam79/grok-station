@@ -191,6 +191,21 @@ class CheckVersion(unittest.TestCase):
             self.assertIn("not newer", check_version.problem(repo))
             self.assertIn("app.js", check_version.reused_release(repo))
 
+    def test_repin_literal_lines_pass_and_an_extra_app_line_fails(self):
+        pin = "ROUTINE_COMMIT " + ("a" * 40) + "\n"
+        with tempfile.TemporaryDirectory() as repo:
+            _released_repo(repo)
+            _write(repo, "admin", "web", "app.js", text=pin)
+            _commit(repo, "release: re-pin deploy files for 0.1.1")
+            self.assertIsNone(check_version.problem(repo))
+            self.assertIsNone(check_version.reused_release(repo))
+            _write(repo, "admin", "web", "app.js", text=pin + "const extra = 1;\n")
+            _commit(repo, "release: re-pin deploy files for 0.1.1")
+            problem = check_version.problem(repo)
+            self.assertIn("not newer", problem)
+            self.assertIn("admin/web/app.js", problem)
+            self.assertIn("admin/web/app.js", check_version.reused_release(repo))
+
     def test_ritual_subject_with_a_product_file_fails_both_gates(self):
         with tempfile.TemporaryDirectory() as repo:
             _released_repo(repo)

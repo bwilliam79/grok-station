@@ -1078,7 +1078,8 @@ class SealReply(unittest.TestCase):
         for action in su._parser()._actions:
             if isinstance(action, argparse._SubParsersAction):
                 setup_cmds = set(action.choices)
-        self.assertEqual(reply_cmds, {"reply", "avatar", "show", "version", "seal-setup-ack", "setup-check"})  # 0.13.16
+        self.assertEqual(reply_cmds, {"reply", "avatar", "show", "version", "seal-setup-ack", "setup-check",
+                                      "setup-pair", "fingerprint", "render-routine"})
         self.assertEqual(setup_cmds, {"keygen", "init", "vendor-install"})
 
     def test_version_prints_the_release_and_posts_send_it(self):

@@ -433,7 +433,15 @@ class DeployKeySetup(unittest.TestCase):
         os.mkdir(stub, 0o755)
         fix = os.path.join(stage, "fixtures")
         os.mkdir(fix, 0o755)
-        for rel, data in self.blobs.items():
+        blobs = dict(self.blobs)
+        with open(os.path.join(ROOT, "scripts", "install-home.sh"), encoding="utf-8") as fh:
+            installer = fh.read()
+        pinned = re.search(r"(?m)^COMMIT=([0-9a-f]{40})$", installer)
+        for rel in re.findall(r'fetch_one \S+ "\$RAW/([^"]+)"', installer):
+            if rel in blobs or pinned is None:
+                continue
+            blobs[rel] = subprocess.check_output(["git", "-C", ROOT, "show", "%s:%s" % (pinned.group(1), rel)])
+        for rel, data in blobs.items():
             body = data + (b"\xff" if rel == alter else b"")
             dest = os.path.join(fix, *rel.split("/"))
             os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)

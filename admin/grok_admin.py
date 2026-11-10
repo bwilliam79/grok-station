@@ -3323,7 +3323,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.30"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.33"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -4018,7 +4018,8 @@ def _setup_row(doc, slug):
     return row
 
 
-_SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired", "awaiting_confirm", "needs_details")
+_SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired", "awaiting_confirm", "needs_details",
+                      "review", "accepted", "rejected")
 _SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
 
 
@@ -4037,6 +4038,11 @@ def setup_relay_view(raw):
             ent["reason"] = row["reason"]
         if row.get("path") in ("first", "held"):
             ent["path"] = row["path"]
+        fp = row.get("fp")
+        if isinstance(fp, str) and re.fullmatch(r"[0-9a-f]{16}", fp):
+            ent["fp"] = fp
+        if host_name_ok(row.get("computer")):
+            ent["computer"] = row["computer"]
         out[slug] = ent
     return out
 
@@ -4099,13 +4105,18 @@ def setup_public(doc, now, relay=None, holds=None):
             rows[slug]["holds_setup"] = True
         rel = relay.get(slug)
         if status == "sent" and isinstance(rel, dict) and rel.get("state") in (
-                "relayed", "failed", "expired", "awaiting_confirm", "needs_details") \
+                "relayed", "failed", "expired", "awaiting_confirm", "needs_details",
+                "review", "accepted", "rejected") \
                 and rel.get("at", 0) >= sent - 5:
             rows[slug]["relay"] = rel["state"]
             if rel["state"] == "failed" and rel.get("reason"):
                 rows[slug]["relay_reason"] = rel["reason"]
             if rel.get("path") in ("first", "held"):
                 rows[slug]["relay_path"] = rel["path"]
+            if isinstance(rel.get("fp"), str):
+                rows[slug]["relay_fp"] = rel["fp"]
+            if rel.get("computer"):
+                rows[slug]["paired_computer"] = rel["computer"]
     hint = doc.get("hint") if isinstance(doc, dict) else None
     if not (isinstance(hint, dict) and hint.get("name")):
         hint_out = None
@@ -5239,6 +5250,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_setup_connected(j)
         if p == "/api/bots/setup-hint":
             return self.bots_setup_hint(j)
+        if p == "/api/bots/setup-pair":
+            return self.bots_setup_pair(j)
         if p == "/api/bots/refresh-avatars":
             return self.bots_refresh_avatars()
         if p == "/api/bots/revoke-all":
@@ -5352,6 +5365,26 @@ class Handler(BaseHTTPRequestHandler):
             print("admin: setup finish check failed", flush=True)
         return {"known": known, "main": src, "main_name": names.get(src) or "", "outdated": outdated,
                 "names": names, "hosts": hosts, "configured": configured, "modes": modes}
+
+    def bots_setup_pair(self, j):
+        """Accept or reject the posted key. Same admin session and CSRF gate as the other bot writes."""
+        if setup_check_body(j, ("slug", "decision", "password")):
+            return self.send(400, {"error": "bad request"})
+        slug, decision = j.get("slug"), j.get("decision")
+        if not slug_ok(slug) or decision not in ("accept", "reject"):
+            return self.send(400, {"error": "bad request"})
+        # Accept pins the posted key. Same password gate as bots_key_put. Reject only needs the session.
+        if decision == "accept" and not self.need_password(j):
+            return
+        got = relay_call("POST", "/admin/bots/setup-pair",
+                         {"actor": RELAY_ACTOR, "slug": slug, "decision": decision}, timeout=15)
+        if not got:
+            return self.send(422, {"error": "not configured"})
+        status, data = got[0], got[1] if isinstance(got[1], dict) else {}
+        if status != 200:
+            return self.relay_fail(status, data, (j.get("password"),))
+        return self.send(200, {"ok": True, "state": data.get("state") if isinstance(data.get("state"), str) else "",
+                               "setup": bots_setup_field()})
 
     def bots_setup_send(self, j):
         if setup_check_body(j, ("slug",)):

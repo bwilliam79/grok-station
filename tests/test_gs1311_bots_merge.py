@@ -59,7 +59,8 @@ def _run(names, expr, dom=False):
 
 
 SETUP = ("clockTime", "joinBotNames", "setupCopy", "setupStuck", "setupDomId", "setupMark", "setupOwnerLabel",
-         "setupSteps", "setupIcon", "setupShortCommit", "setupShortHash", "setupShortPin", "setupInstallPins", "setupPanelValues",
+         "setupSteps", "setupIcon", "setupShortCommit", "setupShortHash", "setupShortPin", "setupInstallPins",
+         "setupRoutinePins", "setupUpdatePins", "setupCardReady", "setupPanelValues",
          "setupRowModel", "setupPanelId", "setupRowNeeds", "setupRowActionHTML", "setupRowPanelHTML", "setupRowStatus",
          "setupResendWaitMin", "setupSentHelper", "setupRowStatusHTML", "setupThrottleLine")
 OTTO = {"slug": "otto", "name": "Otto", "wake": "Hey Otto", "computer": "Office computer",

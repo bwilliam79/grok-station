@@ -20,10 +20,13 @@ def update_output(mode):
     """Render the routine exactly as gs-update.sh does, with the gs_routine copy embedded in gs-update.sh."""
     sh = read("scripts", "gs-update.sh")
     mod = sh.split("<<'GS_ROUTINE_PY'\n", 1)[1].split("\nGS_ROUTINE_PY\n", 1)[0]
+    render = sh.split("<<'GS_RENDER_PY'\n", 1)[1].split("\nGS_RENDER_PY\n", 1)[0]
     owner = sh.split("<<'OWNER_CHECK_PY'\n", 1)[1].split("\nOWNER_CHECK_PY\n", 1)[0]
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "gs_routine.py"), "w") as fh:
             fh.write(mod)
+        with open(os.path.join(d, "gs_render.py"), "w") as fh:
+            fh.write(render)
         with open(os.path.join(d, "owner_check.py"), "w") as fh:
             fh.write(owner)
         args = [sys.executable, "-I", os.path.join(d, "gs_routine.py"), "render",

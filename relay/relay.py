@@ -6270,6 +6270,77 @@ def _reply_step(rid, bot, reply):
     return "final" if st["interim"] and st["n"] == 2 else "followup"
 
 
+class _AllowOnce:
+    """One allow() after the setup path already took the token. Not a second charge."""
+
+    def allow(self, bot, now=None):
+        return True
+
+
+def _outer_bot(raw):
+    """Bot slug on the envelope. No unseal."""
+    try:
+        outer = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(outer, dict):
+        return None
+    bot = outer.get("bot")
+    return bot if handoff.bot_slug_ok(bot) else None
+
+
+def _open_setup_target(bot):
+    """True when this slug is the target of an open, unexpired, unused setup request."""
+    if not handoff.bot_slug_ok(bot):
+        return False
+    try:
+        names = os.listdir(PENDING_DIR)
+    except OSError:
+        return False
+    now = int(time.time() * 1000)
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        doc = _pending_doc(name[:-5])
+        if not isinstance(doc, dict) or doc.get("kind") != "setup_relay" or doc.get("target") != bot:
+            continue
+        exp = doc.get("expires_ms")
+        if type(exp) is int and exp >= now:
+            return True
+    return False
+
+
+def _setup_pair_refused(rej, n):
+    """One client reason. The verdict stays in the local log only."""
+    audit_reply(rej.bot, rej.rid, rej.verdict, n)
+    log_reply_reject(rej)
+    status = 409 if rej.status == 409 else (429 if rej.status == 429 else 400)
+    if status == 429:
+        return web.json_response({"error": "too many requests", "reason": "refused"}, status=429)
+    return web.json_response({"error": "bad request", "reason": "refused"}, status=status)
+
+
+async def _voice_setup_pair(raw, station):
+    """Hold a setup_pair for review. The caller already applied the size cap and the rate limit.
+
+    Does not pin the key. The log has the fingerprint, never the key or the computer name.
+    """
+    try:
+        pair = botreply.accept_setup_pair(raw, station, _pending_doc, limiter=None)
+    except botreply.NotSetupPair:
+        raise
+    except botreply.Reject as rej:
+        return _setup_pair_refused(rej, len(raw))
+    if not handoff.mark_setup_pair_used(PENDING_DIR, pair["request_id"]):
+        return _setup_pair_refused(botreply.Reject(403, "request", pair["bot"], pair["request_id"]), len(raw))
+    if not setup_note_review(pair["request_id"], pair["bot"], pair["public_key"], pair["computer_name"]):
+        return _setup_pair_refused(botreply.Reject(403, "request", pair["bot"], pair["request_id"]), len(raw))
+    fp = _pubkey_fp(pair["public_key"])
+    log("setup-pair rid=%s agent=%s fp=%s bytes=%d" % (pair["request_id"], pair["bot"], fp, len(raw)))
+    audit_reply(pair["bot"], pair["request_id"], "ok", len(raw))
+    return web.json_response({"ok": True})
+
+
 async def voice_reply(req):
     """Verify a sealed reply and hand the text to the waiting ask. Generic errors; the body is not echoed."""
     n_hdr = req.content_length if isinstance(req.content_length, int) else 0
@@ -6283,6 +6354,9 @@ async def voice_reply(req):
         return _reply_error(400)
     if not isinstance(raw, (bytes, bytearray)):
         raw = b""
+    if len(raw) > botreply.OUTER_MAX:
+        audit_reply("-", "-", "shape", len(raw))
+        return _reply_error(400)
     try:
         station = botreply.load_or_create_station(SECRETS_DIR)
     except botreply.StationKeyError:
@@ -6291,9 +6365,27 @@ async def voice_reply(req):
     except OSError:
         audit_reply("-", "-", "error", len(raw))
         return web.json_response({"error": "unavailable"}, status=500)
+    # Rate limit and the size cap run before any unseal. A setup_pair is attempted only for
+    # the pending target, and only after the signature verifies inside accept_setup_pair.
+    outer_bot = _outer_bot(raw)
+    charged = False
+    if outer_bot and _open_setup_target(outer_bot):
+        lim = reply_limiter()
+        if not lim.allow(outer_bot):
+            audit_reply(outer_bot, "-", "rate", len(raw))
+            return web.json_response({"error": "too many requests", "reason": "refused"}, status=429)
+        charged = True
+        try:
+            return await _voice_setup_pair(raw, station)
+        except botreply.NotSetupPair:
+            pass
     try:
+        # open_signed treats a missing limiter as over rate. A request we already charged
+        # gets a limiter that allows this one fall-through without taking a second token.
+        follow = _AllowOnce() if charged else reply_limiter()
         reply = botreply.ingest(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
-                                _pending_doc, _reply_seen, reply_limiter(), hosts=_personas.get("hosts") or (),
+                                _pending_doc, _reply_seen, follow,
+                                hosts=_personas.get("hosts") or (),
                                 names=_personas.get("names") or (), source=list_source_slug, pii=pii_mode())
     except botreply.Reject as rej:
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
@@ -6308,9 +6400,9 @@ async def voice_reply(req):
         return _reply_error(rej.status, reason)
     rid, bot = reply["request_id"], reply["bot"]
     if reply.get("kind") == "setup_relay_ack":
-        # Display-only (§4a): one pending removed, the rid marked seen, one row's label. No other change.
+        # Display-only. The pending stays until the target pairs or the TTL ends, so the pairing
+        # POST can still bind to this request_id. A second ack is a duplicate via _reply_seen.
         _reply_seen.add(rid)
-        handoff.remove_pending(PENDING_DIR, rid)
         try:
             setup_note_ack(rid, reply["target"], reply["status"], reply.get("reason"))
         except OSError:
@@ -6609,7 +6701,7 @@ def _show_error(status, reason=None):
 TLS_DIR = E("RELAY_TLS_DIR", os.path.join(STATE_DIR, "tls"))
 VERSION_FILE = E("RELAY_VERSION_FILE", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION"))
 SETUP_STATE_FILE = E("RELAY_SETUP_STATE", os.path.join(STATE_DIR, "voice", "setup-relay.json"))
-_SETUP_STATES = ("sent", "relayed", "failed", "needs_details", "awaiting_confirm")
+_SETUP_STATES = ("sent", "relayed", "failed", "needs_details", "awaiting_confirm", "review", "accepted", "rejected")
 _SETUP_STATE_LOCK = threading.Lock()
 
 
@@ -6664,6 +6756,63 @@ def setup_install_pins():
         return None, None
     return c, h
 
+
+def setup_routine_literals(text=None):
+    """(commit, home_sha, cloud_sha) from setup-params literals, or (None, None, None).
+
+    These are the routine pins, not the install-home.sh pins. The re-pin commit writes them.
+    """
+    if text is None:
+        path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "setup-params.txt")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read(16000)
+        except OSError:
+            return None, None, None
+    if not isinstance(text, str):
+        return None, None, None
+    commit = re.search(r"(?m)^ROUTINE_COMMIT ([0-9a-f]{40})$", text)
+    home = re.search(r"(?m)^HASH_ROUTINE_HOME ([0-9a-f]{64})$", text)
+    cloud = re.search(r"(?m)^HASH_ROUTINE_CLOUD ([0-9a-f]{64})$", text)
+    if not (commit and home and cloud):
+        return None, None, None
+    c, h, k = commit.group(1), home.group(1), cloud.group(1)
+    if c == handoff.OLD_INSTALL_COMMIT or k == handoff.OLD_ROUTINE_CLOUD_SHA:
+        return None, None, None
+    return c, h, k
+
+
+def setup_update_pins():
+    """(update_commit, update_sha256) from the setup-params literals. The gs-update.sh pin, not the install pin."""
+    path = os.path.join(os.path.dirname(VERSION_FILE), "admin", "setup-params.txt")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read(16000)
+    except OSError:
+        return None, None
+    commit = re.search(r"(?m)^UPDATE_COMMIT ([0-9a-f]{40})$", text)
+    sha = re.search(r"(?m)^HASH_UPDATE ([0-9a-f]{64})$", text)
+    if not (commit and sha):
+        return None, None
+    c, h = commit.group(1), sha.group(1)
+    if not (handoff.setup_field_ok("update_commit", c) and handoff.setup_field_ok("update_sha256", h)):
+        return None, None
+    return c, h
+
+
+def setup_routine_pins(mode):
+    """(routine_commit, routine_sha256) for one mode from the setup-params literals. Never the install pin."""
+    if mode not in ("home", "cloud"):
+        return None, None
+    commit, home, cloud = setup_routine_literals()
+    if not commit:
+        return None, None
+    digest = home if mode == "home" else cloud
+    if not (handoff.setup_field_ok("routine_commit", commit) and handoff.setup_field_ok("routine_sha256", digest)):
+        return None, None
+    return commit, digest
+
+
 def _imported_ids():
     """Bot ids of imported names that are not set up yet (same id rule as the admin's bot_id_from_name)."""
     out = set()
@@ -6683,7 +6832,7 @@ def _imported_ids():
 
 
 def setup_state_load():
-    """{target: {"state", "rid", "at", "expires_ms", "reason"?, "path"?}}. Status only; no token, URL or text."""
+    """{target: {"state", "rid", "at", "expires_ms", "reason"?, "path"?, "computer"?}}. Status only; no token or URL."""
     try:
         doc = safe_io.read_json(SETUP_STATE_FILE, safe_io.SMALL_JSON, "setup-relay")
     except (OSError, ValueError):
@@ -6701,6 +6850,14 @@ def setup_state_load():
             ent["reason"] = row["reason"]
         if row.get("path") in handoff.SETUP_PATHS:
             ent["path"] = row["path"]
+        if host_name_ok(row.get("computer")):
+            ent["computer"] = row["computer"]
+        pub = row.get("pending_pub")
+        if isinstance(pub, str) and botreply._PAIR_PUB.fullmatch(pub):
+            ent["pending_pub"] = pub
+        fp = row.get("fp")
+        if isinstance(fp, str) and re.fullmatch(r"[0-9a-f]{16}", fp):
+            ent["fp"] = fp
         out[target] = ent
     return out
 
@@ -6717,9 +6874,12 @@ def setup_state_public(now_ms=None):
     out = {}
     for target, row in setup_state_load().items():
         st = row["state"]
-        if st == "sent" and row["expires_ms"] < now_ms:
+        # A review row expires with the setup request. Accept is refused after that.
+        if st == "review" and row["expires_ms"] < now_ms:
             st = "expired"
-        elif st in ("sent", "relayed", "awaiting_confirm") and row["expires_ms"] < now_ms:
+        elif st not in ("accepted", "rejected") and st == "sent" and row["expires_ms"] < now_ms:
+            st = "expired"
+        elif st not in ("accepted", "rejected", "review") and st in ("sent", "relayed", "awaiting_confirm") and row["expires_ms"] < now_ms:
             st = "expired"
         elif st == "relayed" and row.get("path") == "first":
             st = "awaiting_confirm"
@@ -6728,6 +6888,12 @@ def setup_state_public(now_ms=None):
             ent["reason"] = row["reason"]
         if row.get("path") in handoff.SETUP_PATHS:
             ent["path"] = row["path"]
+        if host_name_ok(row.get("computer")):
+            ent["computer"] = row["computer"]
+        # Fingerprint only. The raw public key stays in the state file for Accept and is not sent here.
+        fp = row.get("fp")
+        if isinstance(fp, str) and re.fullmatch(r"[0-9a-f]{16}", fp):
+            ent["fp"] = fp
         out[target] = ent
     return out
 
@@ -6739,6 +6905,9 @@ def setup_note_ack(rid, target, status, reason=None):
         row = doc.get(target)
         if not isinstance(row, dict) or row.get("rid") != rid:
             return False
+        # A posted or accepted key is not moved back to waiting by a late ack.
+        if row.get("state") in ("review", "accepted", "rejected"):
+            return False
         # Preserve path so relayed+first can display as awaiting_confirm.
         path = row.get("path") if row.get("path") in handoff.SETUP_PATHS else None
         row = {"state": status, "rid": rid, "at": int(time.time()), "expires_ms": row["expires_ms"]}
@@ -6749,6 +6918,85 @@ def setup_note_ack(rid, target, status, reason=None):
         doc[target] = row
         setup_state_save(doc)
     return True
+
+
+def _pubkey_fp(b64):
+    """16 lowercase hex of the key fingerprint. The UI groups it the way keyFingerprint does. Not the key."""
+    shown = botreply.key_fingerprint(b64)
+    return shown.replace(" ", "") if shown else ""
+
+
+def setup_note_review(rid, target, public_key, computer):
+    """Hold a posted key for the owner to compare. Does not pin it and does not mark the row Connected."""
+    if not (botreply._PAIR_PUB.fullmatch(public_key or "") and botreply._pair_host_ok(computer)):
+        return False
+    fp = _pubkey_fp(public_key)
+    if not fp:
+        return False
+    with _SETUP_STATE_LOCK:
+        doc = setup_state_load()
+        row = doc.get(target)
+        if not isinstance(row, dict) or row.get("rid") != rid:
+            return False
+        if row.get("state") == "review" and row.get("pending_pub"):
+            return False  # a second post must not replace a posted key
+        path = row.get("path") if row.get("path") in handoff.SETUP_PATHS else None
+        nxt = {"state": "review", "rid": rid, "at": int(time.time()), "expires_ms": row["expires_ms"],
+               "computer": computer, "pending_pub": public_key, "fp": fp}
+        if path:
+            nxt["path"] = path
+        doc[target] = nxt
+        setup_state_save(doc)
+    return True
+
+
+def setup_pair_decide(target, decision):
+    """Accept pins the posted key. Reject discards it. Neither sets Connected. None on a bad row."""
+    if decision not in ("accept", "reject") or not handoff.setup_field_ok("target", target):
+        return None
+    with _SETUP_STATE_LOCK:
+        doc = setup_state_load()
+        row = doc.get(target)
+        if not isinstance(row, dict) or row.get("state") != "review":
+            return None
+        exp = row.get("expires_ms")
+        if type(exp) is not int or exp < int(time.time() * 1000):
+            return None
+        pub = row.get("pending_pub")
+        if not isinstance(pub, str) or botreply._PAIR_PUB.fullmatch(pub) is None:
+            return None
+        path = row.get("path") if row.get("path") in handoff.SETUP_PATHS else None
+        base = {"rid": row["rid"], "at": int(time.time()), "expires_ms": row["expires_ms"], "fp": row.get("fp") or ""}
+        if host_name_ok(row.get("computer")):
+            base["computer"] = row["computer"]
+        if path:
+            base["path"] = path
+        if decision == "reject":
+            base["state"] = "rejected"
+            doc[target] = base
+            setup_state_save(doc)
+            return {"ok": True, "state": "rejected", "slug": target}
+        try:
+            pinned = botreply.pin_key(bot_keys_path(), target, pub)
+        except OSError:
+            return None
+        if not pinned:
+            return None
+        if base.get("computer"):
+            try:
+                ov = load_overlay_doc()
+                ov["reply_host"][target] = base["computer"]
+                save_overlay(ov)
+            except OSError:
+                return None
+        try:
+            forget_bot_status(target)
+        except Exception:
+            pass
+        base["state"] = "accepted"
+        doc[target] = base
+        setup_state_save(doc)
+    return {"ok": True, "state": "accepted", "slug": target}
 
 
 def _retire_setup_pending(target, keep=""):
@@ -6766,6 +7014,28 @@ def _retire_setup_pending(target, keep=""):
         doc = _pending_doc(rid)
         if isinstance(doc, dict) and doc.get("kind") == "setup_relay" and doc.get("target") == target:
             handoff.remove_pending(PENDING_DIR, rid)
+
+
+async def admin_setup_pair_post(req):
+    """Accept or reject a posted key. Admin session only. Does not set Connected."""
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if (not isinstance(body, dict) or not actor_ok(body.get("actor"))
+            or set(body) != {"actor", "slug", "decision"}):
+        return web.json_response({"error": "bad request"}, status=400)
+    slug, decision = body.get("slug"), body.get("decision")
+    if not handoff.setup_field_ok("target", slug) or decision not in ("accept", "reject"):
+        return web.json_response({"error": "bad request"}, status=400)
+    try:
+        result = setup_pair_decide(slug, decision)
+    except OSError:
+        return web.json_response({"error": "unavailable"}, status=500)
+    if not result:
+        return web.json_response({"error": "not found"}, status=404)
+    audit(body.get("actor"), slug, "setup-pair-" + decision, "-")
+    return web.json_response({"ok": True, "state": result["state"]})
 
 
 async def admin_setup_relay_state(req):
@@ -6811,6 +7081,8 @@ async def admin_setup_relay(req):
     pin_c = pin_h = None
     if path == "first":
         pin_c, pin_h = setup_install_pins()
+    rc, rh = setup_routine_pins(mode) if path == "first" else (None, None)
+    uc, uh = setup_update_pins() if path == "first" else (None, None)
     now = time.time()
     rid = handoff.new_request_id()
     reply_by = datetime.datetime.fromtimestamp(
@@ -6820,12 +7092,17 @@ async def admin_setup_relay(req):
             raise ValueError("station state")
         if path == "first" and (not pin_c or not pin_h):
             raise ValueError("missing install pins")
+        if path == "first" and (not rc or not rh):
+            raise ValueError("missing routine pins")
+        if path == "first" and (not uc or not uh):
+            raise ValueError("missing update pins")
         frozen = handoff.setup_relay_payload(
             rid, main, reply_by, target, vals[0], vals[1], vals[2], mode, release,
-            pin_c if path == "first" else None, pin_h if path == "first" else None)
+            pin_c if path == "first" else None, pin_h if path == "first" else None,
+            rc, rh, uc, uh)
     except ValueError as err:
         # These two are short and safe to show. Any other ValueError stays generic.
-        text = str(err) if str(err) in ("station state", "missing install pins") else "bad request"
+        text = str(err) if str(err) in ("station state", "missing install pins", "missing routine pins", "missing update pins") else "bad request"
         return web.json_response({"error": text}, status=400)
     expires_ms = int((now + handoff.SETUP_RELAY_TTL_S) * 1000)
     try:
@@ -6899,6 +7176,7 @@ ADMIN_ROUTES = [
     web.post("/admin/bots/revoke-all", admin_revoke_all),
     web.post("/admin/bots/setup-relay", admin_setup_relay),
     web.get("/admin/bots/setup-relay", admin_setup_relay_state),
+    web.post("/admin/bots/setup-pair", admin_setup_pair_post),
     web.get("/admin/bots/imported", admin_imported_get),
     web.post("/admin/bots/import", admin_import_post),
     web.post("/admin/bots/rescan", admin_rescan_post),

@@ -515,7 +515,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Cloud computer", step2)
         self.assertNotIn("Home machine", step2)
         step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
-        self.assertIn("Copy the instructions to your Grok Bot, then paste what it sends back below.", step3)
+        self.assertIn("Paste the webhook URL and webhook key. The public key and computer name are filled when the bot pairs.", step3)
         self.assertIn(">Deploy bot key setup on system running Grok Bot</div>", step3)
         self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. You already approved it by copying them here, and it only happens once.", step3)
         self.assertNotIn("It asks you first", step3)
@@ -970,7 +970,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1153,7 +1153,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1567,7 +1567,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
             step,
         )
         self.assertIn("const syncHookHalo = () => {", step)
-        self.assertIn("[urlEl, keyEl, pubEl, hostEl].every(field => field && field.value.trim())", step)
+        self.assertIn("const webhookOk = [urlEl, keyEl].every(field => field && field.value.trim());", step)
         self.assertIn('copy.classList.toggle("halo", !filled)', step)
         self.assertIn("next.disabled = !filled", step)
         self.assertIn('next.classList.toggle("halo", filled)', step)

@@ -121,9 +121,9 @@ class Pins(unittest.TestCase):
         manifest = open(os.path.join(ROOT, "scripts", "update-manifest.txt")).read()
         # 0.13.16: the helper gained seal-setup-ack and setup-check (typed setup_relay), so the helper version moved on
         # 0.13.29: the helper changed in 0.13.27 without a bump (vendor bytecode caches, named refusals); 0.13.29
-        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.30"$')
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.30"  #')
-        self.assertRegex(manifest, r"(?m)^helper 0\.13\.30$")
+        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.33"$')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.33"  #')
+        self.assertRegex(manifest, r"(?m)^helper 0\.13\.33$")
         sys.path.insert(0, os.path.join(ROOT, "tests"))
         import test_admin  # sets the admin test env before grok_admin is first imported
         ga = test_admin.ga
@@ -132,7 +132,8 @@ class Pins(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.15"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.17"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.29"})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.30"})["out_of_date"])
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.30"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.33"})["out_of_date"])
 
 
 if __name__ == "__main__":
