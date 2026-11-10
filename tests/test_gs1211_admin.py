@@ -24,7 +24,7 @@ class AnchoredHeader(unittest.TestCase):
         line = b'    "home": r\'\'\'Grok Station instructions, release 0.12.9.\n'
         self.assertEqual(bot_content.normalize(line), b'    "home": r\'\'\'Grok Station instructions, release X.Y.Z.\n')
         script = open(os.path.join(ROOT, "scripts", "gs-update.sh"), "rb").read()
-        self.assertEqual(bot_content.normalize(script).count(b"release X.Y.Z."), 2)
+        self.assertEqual(bot_content.normalize(script).count(b"release X.Y.Z."), 1)  # 0.13.37: the home template only
 
 
 class _Rows(t10._Rel):

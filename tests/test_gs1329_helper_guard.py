@@ -60,10 +60,10 @@ class RecordedHelper(unittest.TestCase):
         self.assertEqual(last[0], _helper_version())
 
     def test_helper_version_is_0_13_30_everywhere(self):
-        self.assertEqual(_helper_version(), "0.13.33")
+        self.assertEqual(_helper_version(), "0.13.37")  # 0.13.37: vendor-install changed
         with open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8") as fh:
             admin = fh.read()
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.33"  #')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.37"  #')
 
     def test_a_changed_helper_file_without_a_bump_fails(self):
         for path in ("scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/gs-seal-setup",
@@ -74,13 +74,13 @@ class RecordedHelper(unittest.TestCase):
             self.assertIn("without a HELPER_VERSION bump", msg)
 
     def test_a_later_release_header_does_not_bump_the_helper(self):
-        # A 0.13.37 header lives in the templates, which are not helper files.
+        # A 0.13.38 header lives in the templates, which are not helper files.
         base = _tree_reader()
 
         def read(path):
             data = base(path)
-            if path in ("admin/gs_routine.py", "admin/routine-home.txt", "admin/routine-cloud.txt") and data:
-                return data.replace(b"release 0.13.36.", b"release 0.13.37.")
+            if path in ("admin/gs_routine.py", "admin/routine-home.txt") and data:
+                return data.replace(b"release 0.13.37.", b"release 0.13.38.")
             return data
 
         self.assertIsNone(cv.helper_problem(read))

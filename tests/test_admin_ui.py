@@ -137,7 +137,8 @@ class AdminUI(unittest.TestCase):
 
     def test_add_bot_wizard_and_connect_webhook(self):
         js = self.js
-        self.assertIn("1 Bot · 2 Connect · 3 Webhook · 4 Done", js)
+        self.assertIn("1 Bot · 2 Webhook · 3 Done", js)  # 0.13.37: no key-location step
+        self.assertNotIn("1 Bot · 2 Connect · 3 Webhook · 4 Done", js)
         self.assertNotIn("Pair keys", js)
         self.assertIn("Skip for now", js)
         self.assertIn(">Connect webhook<", js)
@@ -176,8 +177,8 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("function keyNote", js)
         self.assertNotIn("From grok-station-reply keygen.", js)
         self.assertNotIn("From gs-seal-setup keygen", js)
-        self.assertIn("Gives up after ${TEST_LIMIT_S} seconds.", js)  # 0.13.0: one deadline with the relay
-        self.assertIn("const TEST_LIMIT_S = 30;", js)
+        self.assertIn("Waiting until the reply comes, up to ${mss(TEST_LIMIT_S)}.", js)  # 0.13.0: one deadline with the relay
+        self.assertIn("const TEST_LIMIT_S = 180;", js)  # 0.13.37: was 30
         self.assertNotIn("No answer after 2 min", js)
         self.assertNotIn("Gives up after 2 min", js)
         hook = _fn(js, "mountWebhookStep")
@@ -287,8 +288,9 @@ class AdminUI(unittest.TestCase):
                      "This station sends nothing.",
                      "You paste the webhook URL, webhook key, webhook header and public keys into the station yourself. Nothing fills them in.",
                      "The computer's name exactly as the Grok Bot app gives it to your bot, dots included. The station keeps it as typed and only shortens it on screen.",
-                     "No new key or pairing needed."):
+                     ):
             self.assertIn(text, js, text)
+        self.assertNotIn("No new key or pairing needed.", js)  # 0.13.37: the cloud move panel is gone
         bots = _fn(js, "paintBots")
         self.assertIn("data-pending", bots)
         self.assertIn("su.action", bots)  # 0.13.11: Set up comes from the row setup model
@@ -366,11 +368,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn('id="chcomp"', js)
         self.assertIn("Change computer", js)
         self.assertIn("use Replace key", js)
-        fn = js.split("function routineChangeComputer", 1)[1].split("function routineForBot", 1)[0]
-        self.assertIn("Reply with that computer's name exactly as it shows in the Grok Bot app, in its own fenced code block with a short plain label on the line before it:", fn)
-        self.assertIn("Computer name:\\n```\\n<computer name>\\n```", fn)
-        self.assertIn("dots included. Do not shorten it.", fn)
-        self.assertNotIn("hostname is fine", fn)
+        self.assertNotIn("function routineChangeComputer", js)  # 0.13.37: only the cloud move used it
         add = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
         self.assertIn("Give the home computer's name exactly as it shows in the Grok Bot app. Send it exactly as listed, dots included. Do not shorten it.", add)
         self.assertIn("never write a placeholder value.", add)  # 0.12.11, reworded 0.12.16
@@ -380,7 +378,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("<webhook key>", add)
         self.assertIn("stays on all the time", js.split("const BOT_ROUTINE_HOME = String.raw`", 1)[1].split("`;", 1)[0])  # 0.12.17: in the template
         for word in ("mailbox", "Mailbox"):
-            self.assertNotIn(word, fn)
+            self.assertNotIn(word, add)
         host = js.split('<input class="inp" id="ahost"', 1)[1].split(">", 1)[0]
         self.assertNotIn("hostname", host)
         self.assertNotIn("value=", host)
@@ -405,21 +403,18 @@ class AdminUI(unittest.TestCase):
         docs = _read(os.path.join("docs", "bots.md"))
         fences = [part.split("\n```", 1)[0] for part in docs.split("```text\n")[1:]]
         js = self.js
-        cloud = js.split("const BOT_ROUTINE = String.raw`", 1)[1].split("`;", 1)[0]
+        # 0.13.37: one routine, the home one; no Bot computer / Home computer choice anywhere.
+        self.assertNotIn("const BOT_ROUTINE = String.raw`", js)
         home = js.split("const BOT_ROUTINE_HOME = String.raw`", 1)[1].split("`;", 1)[0]
-        self.assertIn(cloud, fences)
         self.assertIn(home, fences)
-        self.assertIn("const HOME_MODE = true;", js)
-        self.assertEqual(js.count('value="cloud"${home ? "" : " checked"}> Bot computer</label>'), 2)
-        self.assertNotIn("Cloud computer (default)", js)
-        self.assertIn('keyMode: "cloud"', js)
-        self.assertEqual(js.count("Home computer will be available after it's been tested."), 2)
-        self.assertIn("grok-station-reply seal", cloud)
-        self.assertNotIn("gs-seal-reply", cloud)
+        self.assertNotIn("Bot computer</label>", js)
+        self.assertNotIn('value="cloud"', js)
+        self.assertNotIn('keyMode: "cloud"', js)
+        self.assertNotIn("Home computer will be available after it's been tested.", js)
+        self.assertNotIn("grok-station-reply", home)
         self.assertIn('/gs-seal-reply" reply', home)
         self.assertNotIn("<base64 seed>", js.split("function routineForBot", 1)[1].split("function addBot", 1)[0])
-        for token in ("<slug>", "<station public key>", "<station address>", "<fingerprint>"):
-            self.assertIn(token, cloud, token)
+        self.assertIn("<slug>", home)
         fn = js.split("function routineForBot", 1)[1].split("function addBot", 1)[0]
         self.assertNotIn("Also run grok-station-reply keygen once", fn)
         self.assertNotIn("On the home machine, once, run gs-seal-setup keygen", fn)
@@ -430,9 +425,9 @@ class AdminUI(unittest.TestCase):
         self.assertIn("deployScript(", fn)
         self.assertIn("DEPLOY_PINS", fn)
         self.assertIn("stationAddress()", fn)
-        self.assertIn("your own computer", fn)
+        self.assertNotIn("your own computer", fn)  # 0.13.37: one computer
         self.assertIn("home computer running Grok Bot", fn)
-        self.assertIn("~/.local/share/grok-station/bin/grok-station-reply", fn)
+        self.assertNotIn("grok-station-reply", fn)
         self.assertIn("~/.local/share/grok-station/bin/vendor-lock.txt", fn)
         self.assertIn("~/.local/share/grok-station/bin/gs-seal-setup", fn)
         self.assertIn("~/.local/share/grok-station/bin/gs-seal-reply", fn)
@@ -447,7 +442,6 @@ class AdminUI(unittest.TestCase):
         self.assertIn("public key it printed", fn)
         self.assertIn("Never send the private key or the seed.", fn)
         self.assertIn("Replace key", fn)
-        self.assertGreater(fn.rindex("Reply in this order"), fn.index("your own computer"))
         self.assertGreater(fn.rindex("Reply in this order"), fn.index("gs-seal-setup"))
         self.assertIn("Webhook URL", fn)
         self.assertIn("Webhook key", fn)
@@ -465,16 +459,13 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("Reply with the webhook URL and the webhook key.", fn)
         # Keygen lines now live in the installer routineForBot pastes, not in the old tails.
         installer = js.split("function deployScript", 1)[1].split("\nboot();", 1)[0]
-        self.assertIn('"$stage/grok-station-reply" keygen', installer)
-        self.assertIn("GROK_STATION_BOT_KEY", installer)
+        self.assertNotIn("grok-station-reply", installer)  # 0.13.37: the cloud tool is gone
+        self.assertNotIn("GROK_STATION_BOT_KEY", installer)
         self.assertIn('"$S/gs-seal-setup" keygen', installer)  # $S: the stage, or the verified installed helper (0.12.6)
         self.assertIn('"$S/gs-seal-setup" init', installer)
-        self.assertNotIn("mailbox", cloud.lower())
         self.assertNotIn("mailbox", home.lower())
         self.assertNotIn("mailbox", js.lower())
-        self.assertNotIn("The bot needs Grok Bot", cloud)
         self.assertNotIn("The bot needs Grok Bot", home)
-        self.assertTrue(cloud.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in cloud)
         self.assertTrue(home.startswith("Grok Station instructions, release ") and "\n\nAnswer as the bot named in the request's persona field, in that bot's voice." in home)
         self.assertIn("printf '%s' \"$CARD_JSON\" | \"$HOME/.local/share/grok-station/bin/gs-seal-reply\" show --persona <slug>", home)
         self.assertIn("macOS or Linux", fn)
@@ -495,26 +486,17 @@ class AdminUI(unittest.TestCase):
         js, css = self.js, self.css
         add = js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertIn("Add your main bot first.", add)
-        step2 = js.split("const step2 = ", 1)[1].split("const step1 = ", 1)[0]
-        self.assertIn("Connect your bot", step2)
-        self.assertIn("Where the bot's key lives", step2)
-        self.assertIn('name="alives"', step2)
-        self.assertIn('value="cloud"', step2)
-        self.assertIn('value="home"', step2)
-        self.assertIn("> Bot computer</label>", step2)
-        self.assertIn("> Home computer</label>", step2)
-        self.assertNotIn("Replies come back faster.</span>", step2)
-        self.assertNotIn("(default)", step2)
-        self.assertEqual(step2.count("esc(HOME_24_7)"), 1)
-        self.assertEqual(js.count("Storing the key on your home computer allows replies to come back faster. Either way, a computer on your home network must be running the Grok Bot app, and be on and reachable 24/7, for replies to reach the station."), 1)
-        self.assertNotIn("old-hostname", step2.lower())
-        self.assertNotIn('id="apairskip"', step2)
-        self.assertNotIn("keygen", step2)
-        self.assertNotIn("seal", step2.lower())
-        self.assertNotIn("mailbox", step2.lower())
-        self.assertNotIn("Cloud computer", step2)
-        self.assertNotIn("Home machine", step2)
-        step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
+        # 0.13.37: no "Where the bot's key lives" step; step 1 says the key lives on the home computer.
+        self.assertNotIn("const step2 = ", js)
+        self.assertNotIn("Where the bot's key lives", js)
+        self.assertNotIn('name="alives"', js)
+        self.assertNotIn("> Bot computer</label>", js)
+        self.assertNotIn("> Home computer</label>", js)
+        step1 = js.split("const step1 = ", 1)[1].split("\n  };", 1)[0]
+        self.assertEqual(step1.count("esc(HOME_24_7)"), 1)
+        self.assertNotIn("Storing the key on your home computer allows replies to come back faster.", js)
+        self.assertNotIn("Cloud computer", js)
+        step3 = js.split("const step3 = ", 1)[1].split("const step1 = ", 1)[0]  # 0.13.37: readLive went with step 2
         self.assertIn("Paste the webhook URL and webhook key. The public key and computer name are filled when the bot pairs.", step3)
         self.assertIn(">Deploy bot key setup on system running Grok Bot</div>", step3)
         self.assertIn("These instructions have your Grok Bot set up its key on the computer running Grok Bot. You already approved it by copying them here, and it only happens once.", step3)
@@ -537,20 +519,16 @@ class AdminUI(unittest.TestCase):
         for text in ("secret store", "station address is this page", "never open the admin port", "station's lan", " seed"):
             self.assertNotIn(text, add_l, text)
         self.assertNotIn("mailbox", step3.lower())
-        self.assertIn("key_mode", add)
-        self.assertIn("Key lives", add)
-        # 0.10.3: the row no longer says where the key lives. Configure's Computer section does.
+        # 0.13.37: no key location anywhere: not in Add bot, not in Configure.
+        self.assertNotIn("key_mode", add)
+        self.assertNotIn("Key lives", add)
         drawer = _fn(js, "openBot")
-        self.assertIn("Home key", drawer)
-        self.assertIn("Cloud key", drawer)
+        self.assertNotIn("Cloud key", drawer)
         self.assertNotIn("Key on home machine", _fn(js, "paintBots"))
         self.assertNotIn("Key on cloud computer", _fn(js, "paintBots"))
-        mode = _fn(js, "wireKeyMode")
-        self.assertIn("_kmLock", mode)
-        self.assertIn("needs_key", mode)
-        self.assertIn("keyModeFields(bot.key_mode)", _fn(js, "openBot"))
-        self.assertIn('name="blives"', _fn(js, "keyModeFields"))
-        self.assertIn("attn(", mode)
+        self.assertNotIn("function wireKeyMode", js)
+        self.assertNotIn("function keyModeFields", js)
+        self.assertNotIn('name="blives"', js)
         self.assertIn("Needs attention", _fn(js, "attn"))
         self.assertIn("accent-color:var(--gs-teal)", css.replace(" ", ""))
         docs = _read(os.path.join("docs", "bots.md"))
@@ -579,7 +557,7 @@ class AdminUI(unittest.TestCase):
             self.assertIn(text, blurb, text)
 
     def test_add_bot_shows_certificate_fingerprint(self):
-        step2 = self.js.split("const step2 = ", 1)[1].split("const step1 = ", 1)[0]
+        step2 = self.js.split("const step1 = ", 1)[1].split("\n  };", 1)[0]  # 0.13.37: no step2; step 1 is the first screen
         self.assertNotIn("Certificate fingerprint", step2)
         self.assertNotIn("Station public key", step2)
         self.assertNotIn('id="apub"', step2)
@@ -754,15 +732,13 @@ class Release092UI(unittest.TestCase):
         cls.js = _read(os.path.join("admin", "web", "app.js"))
 
     def test_setup_prompt_teaches_display_cards(self):
-        for routine in ("BOT_ROUTINE = String.raw`", "BOT_ROUTINE_HOME = String.raw`"):
+        for routine in ("BOT_ROUTINE_HOME = String.raw`",):
             start = self.js.index(routine)
             body = self.js[start:self.js.index("`;", start)]
             for needle in ("Display cards", '"type":"recipe"', '"type":"sports"', '"type":"calendar"', '"type":"home"',
                            '"op":"clear"', "a.espncdn.com"):
                 self.assertIn(needle, body, (routine, needle))
-        cloud = self.js[self.js.index("BOT_ROUTINE = String.raw`"):self.js.index("BOT_ROUTINE_HOME")]
-        self.assertIn("seal-show --bot <slug>", cloud)
-        self.assertIn("post --show", cloud)
+        self.assertNotIn("seal-show --bot <slug>", self.js)  # 0.13.37: the cloud routine is gone
 
     def test_copy_updated_instructions_for_paired_bots(self):
         self.assertIn("Copy updated instructions", self.js)
@@ -837,7 +813,8 @@ vm.runInContext(src + "\nthis.__occ = openChangeComputer; this.toast = () => {};
                            capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
         out = json.loads(r.stdout.strip().splitlines()[-1])
-        self.assertEqual(out["cloud"], {"shown": True, "copy": True, "field": True, "save": True, "saved": "Den iMac"})
+        # 0.13.37: every bot is home, so a bot with no key_mode gets the home panel too (no copy-instructions path).
+        self.assertEqual(out["cloud"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
         # Home key with no computer yet (a bot from before 0.10.2) can still set the name.
         self.assertEqual(out["home"], {"shown": True, "copy": False, "field": True, "save": True, "saved": "Den iMac"})
         self.assertEqual(out["homeNamed"], {"field": True, "replace": True})  # 0.12.6: the name can be edited
@@ -970,7 +947,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33", "0.13.34", "0.13.35", "0.13.36"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33", "0.13.34", "0.13.35", "0.13.36", "0.13.37"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1153,7 +1130,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33", "0.13.34", "0.13.35", "0.13.36"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31", "0.13.32", "0.13.33", "0.13.34", "0.13.35", "0.13.36", "0.13.37"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1167,10 +1144,10 @@ class BotPictureUI(unittest.TestCase):
     def test_ask_bot_for_picture_and_routines(self):
         self.assertIn(">Ask bot for avatar<", self.js)
         self.assertNotIn("Refresh avatar<", self.js)
-        self.assertIn("grok-station-reply seal-avatar --bot <slug>", self.js)
-        self.assertIn("post --avatar --station <station address>", self.js)
+        self.assertNotIn("grok-station-reply seal-avatar --bot <slug>", self.js)  # 0.13.37: cloud routine gone
+        self.assertNotIn("post --avatar --station <station address>", self.js)
         self.assertIn('gs-seal-reply" avatar --persona <slug> < "$HOME/.local/share/grok-station/avatar-<slug>.png"', self.js)  # 0.12.16
-        self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 2)
+        self.assertEqual(self.js.count("Send your profile picture once after you are paired"), 1)
         self.assertIn("kind is avatar", self.js)
 
 
@@ -1575,7 +1552,8 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertIn("draft.url = urlEl ? urlEl.value.trim() : \"\";", step)
         self.assertIn("draft.pub = pubEl ? pubEl.value.trim() : \"\";", step)
         self.assertIn("if (hostEl) draft.host = hostEl.value;", step)
-        self.assertIn("step2();", step)
+        self.assertNotIn("step2();", step)  # 0.13.37: Back from the webhook step goes to step 1
+        self.assertIn("step1();", step)
         self.assertIn("Paste the webhook URL and webhook key your bot sent back.", step)
         self.assertIn(".btn.halo{border-color:var(--gs-teal);box-shadow:0 0 0 3px rgba(63,211,182,.30)}", self.css)
         self.assertIn(".acts .back{margin-right:auto}", self.css)
@@ -1630,7 +1608,8 @@ class FinishUpdateUI(unittest.TestCase):
         return json.loads(out.stdout)
 
     def test_js_templates_are_the_station_templates(self):
-        for name, f in (("BOT_ROUTINE", "routine-cloud.txt"), ("BOT_ROUTINE_HOME", "routine-home.txt")):
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "admin", "routine-cloud.txt")))
+        for name, f in (("BOT_ROUTINE_HOME", "routine-home.txt"),):
             body = self.js.split("const %s = String.raw`" % name, 1)[1].split("`;", 1)[0]
             self.assertEqual(body, _read(os.path.join("admin", f)).rstrip("\n"), name)
             self.assertNotIn("update_helper", body)
@@ -1644,9 +1623,10 @@ class FinishUpdateUI(unittest.TestCase):
         fp, pub = ":".join(["AB"] * 32), "A" * 43 + "="
         self.assertEqual(self._cmd(pins, "home", "kit", "", "", ""),
                          gs_routine.update_command("home", "kit", "a" * 40, "b" * 64))
-        self.assertEqual(self._cmd(pins, "cloud", "kit", "https://st.example", fp, pub),
-                         gs_routine.update_command("cloud", "kit", "a" * 40, "b" * 64, "https://st.example", fp, pub))
-        for bad in (("home", "grok"), ("home", "Kit"), ("home", "r; rm -rf ~"), ("cloud", "kit"), ("other", "kit")):
+        self.assertEqual(self._cmd(pins, "cloud", "kit", "https://st.example", fp, pub), "")  # 0.13.37
+        with self.assertRaises(Exception):
+            gs_routine.update_command("cloud", "kit", "a" * 40, "b" * 64, "https://st.example", fp, pub)
+        for bad in (("home", "grok"), ("home", "Kit"), ("home", "r; rm -rf ~"), ("other", "kit")):
             self.assertEqual(self._cmd(pins, bad[0], bad[1], "", "", ""), "", bad)
         self.assertEqual(self._cmd({"commit": "main", "files": pins["files"]}, "home", "kit", "", "", ""), "")
 

@@ -34,7 +34,6 @@ RAW = "https://raw.githubusercontent.com/bwilliam79/grok-station/"
 # Same list as tools/gen-deploy-pins.py FILES. A path missing from the pin
 # file is a pending note, not a hard failure, until the next re-pin.
 FILES = (
-    "tools/grok-station-reply",
     "scripts/gs-seal-setup",
     "scripts/gs-seal-reply",
     "scripts/gs_seal_common.py",
@@ -96,11 +95,11 @@ def pinned_commits(pins_path=PINS, rev="HEAD"):
     return out
 
 
-TEMPLATES = ("admin/routine-home.txt", "admin/routine-cloud.txt")
+TEMPLATES = ("admin/routine-home.txt",)
 
 
 def manifest_templates(pins_path=PINS):
-    """Problems unless the pinned update manifest lists both templates (0.11.9: gs-update.sh has no fallback)."""
+    """Problems unless the pinned update manifest lists the home template (0.11.9: gs-update.sh has no fallback)."""
     text = open(pins_path, encoding="utf-8").read()
     m = re.search(r'^  update_commit: "([0-9a-f]{40})",$', text, re.M)
     man = (blob(m.group(1), "scripts/update-manifest.txt") or b"").decode("ascii", "replace") if m else ""

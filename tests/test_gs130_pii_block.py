@@ -81,7 +81,7 @@ class HelperLines(unittest.TestCase):
 
     def test_reason_lines(self):
         home = self._load("gsr_home_pii", "scripts/gs-seal-reply")
-        cloud = self._load("gsr_cloud_pii", "tools/grok-station-reply")
+        cloud = self._load("gsr_cloud_pii", "tests/fixtures/grok-station-reply")
         for mod in (home, cloud):
             self.assertEqual(mod.refusal_line("pii"), "refused: blocked by station PII filter (personal info in reply)")
             self.assertEqual(mod.refusal_line("secret"), "refused: looks like a secret")

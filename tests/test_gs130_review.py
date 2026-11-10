@@ -44,7 +44,7 @@ class ReasonNeedsOwnRequest(unittest.IsolatedAsyncioTestCase):
 
 
 class HelperCompat(unittest.TestCase):
-    FILES = ("admin/routine-home.txt", "admin/routine-cloud.txt")
+    FILES = ("admin/routine-home.txt",)  # 0.13.37: home only
 
     def test_instructions_fall_back_without_interim(self):
         for f in self.FILES:

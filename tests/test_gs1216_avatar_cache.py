@@ -98,9 +98,9 @@ class PerPersonaPicturePath(unittest.TestCase):
         import gs_routine
         path = '"$HOME/.local/share/grok-station/avatar-<slug>.png"'
         texts = dict(gs_routine.TEMPLATES)
-        for name in ("routine-cloud.txt", "routine-home.txt"):
+        for name in ("routine-home.txt",):  # 0.13.37: home only
             texts[name] = open(os.path.join(ROOT, "admin", name), encoding="utf-8").read()
-        for i in ("BOT_ROUTINE", "BOT_ROUTINE_HOME"):
+        for i in ("BOT_ROUTINE_HOME",):
             start = JS.index("const " + i + " = String.raw`")
             texts["app.js " + i] = JS[start:JS.index("`;", start)]
         for name, t in texts.items():

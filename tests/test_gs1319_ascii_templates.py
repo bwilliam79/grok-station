@@ -17,7 +17,7 @@ def _printable(text):
 class AsciiTemplates(unittest.TestCase):
     def test_every_routine_file_opens_as_ascii(self):
         files = sorted(glob.glob(os.path.join(ROOT, "admin", "routine-*.txt")))
-        self.assertGreaterEqual(len(files), 2)
+        self.assertEqual([os.path.basename(f) for f in files], ["routine-home.txt"])  # 0.13.37: home only
         for path in files:
             with self.subTest(path=os.path.basename(path)):
                 with open(path, encoding="ascii") as fh:  # the 0.13.17 opener

@@ -6,7 +6,8 @@ flagged every bot as behind after every station update. content_fp() hashes the 
 template, the pinned gs-update.sh, and its helper file) with only that header line normalized.
 
 tools/gen-update-manifest.py writes admin/bot-releases.txt from git: one line per published manifest,
-    <release> <update commit> <gs-update.sh sha256> <home fingerprint> <cloud fingerprint>
+    <release> <update commit> <gs-update.sh sha256> <home fingerprint>
+Lines written before 0.13.37 also carry a fifth field, the fingerprint of the removed cloud bot; it is ignored.
 The station reads it to decide whether a bot on an older release is already running the same content.
 This file never reaches a bot and changes nothing a bot checks: it only decides whether a row says Updated.
 """
@@ -19,8 +20,8 @@ import re
 # anywhere else is content, so changing it changes the fingerprint.
 HEADER_RX = re.compile(rb"""(?m)^((?:    "(?:home|cloud)": r''')?)Grok Station instructions, release [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.$""")
 HEADER_NORM = rb"\1Grok Station instructions, release X.Y.Z."
-HELPER = {"home": "scripts/install-home.sh", "cloud": "tools/grok-station-reply"}
-_LINE = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) ([0-9a-f]{40}) ([0-9a-f]{64}) ([0-9a-f]{64}) ([0-9a-f]{64})$")
+HELPER = {"home": "scripts/install-home.sh"}
+_LINE = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) ([0-9a-f]{40}) ([0-9a-f]{64}) ([0-9a-f]{64})(?: [0-9a-f]{64})?$")
 TABLE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot-releases.txt")
 
 
@@ -39,7 +40,7 @@ def content_fp(template, update_script, helper):
 
 
 def read_table(path=None):
-    """[{release, update_commit, update_sha, fp: {home, cloud}}] from bot-releases.txt. Bad lines are skipped."""
+    """[{release, update_commit, update_sha, fp: {home}}] from bot-releases.txt. Bad lines are skipped."""
     try:
         text = open(path or TABLE, encoding="ascii").read()
     except (OSError, UnicodeDecodeError):
@@ -49,5 +50,5 @@ def read_table(path=None):
         m = _LINE.fullmatch(ln)
         if m:
             out.append({"release": m.group(1), "update_commit": m.group(2), "update_sha": m.group(3),
-                        "fp": {"home": m.group(4), "cloud": m.group(5)}})
+                        "fp": {"home": m.group(4)}})
     return out

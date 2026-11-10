@@ -22,7 +22,7 @@ import test_admin as ta  # noqa: E402  (sets the admin env, then imports grok_ad
 
 ga = ta.ga
 gs_routine = ga.gs_routine
-REL = re.search(r"release (\d+\.\d+\.\d+)\.", open(os.path.join(ROOT, "admin", "routine-cloud.txt")).readline()).group(1)
+REL = re.search(r"release (\d+\.\d+\.\d+)\.", open(os.path.join(ROOT, "admin", "routine-home.txt")).readline()).group(1)
 STATION = "https://st.example"
 FP = ":".join(["AB"] * 32)
 PUB = "A" * 43 + "="
@@ -41,24 +41,25 @@ PREV = _prev(REL)
 
 
 def _old_instr(slug):
-    """The hash a cloud bot on PREV signs: this template with PREV's header and PREV's pinned update command."""
-    rest = gs_routine.TEMPLATES["cloud"].split("\n", 1)[1]
-    text = gs_routine.render("Grok Station instructions, release %s.\n" % PREV + rest, "cloud", slug, C_OLD, S_OLD,
-                             STATION, FP, PUB)
+    """The hash a home bot on PREV signs: this template with PREV's header and PREV's pinned update command.
+    0.13.37: every bot is home."""
+    rest = gs_routine.TEMPLATES["home"].split("\n", 1)[1]
+    text = gs_routine.render("Grok Station instructions, release %s.\n" % PREV + rest, "home", slug, C_OLD, S_OLD,
+                             owner="")
     return gs_routine.instr_hash(text)
 
 
 def _bot(slug, update=None):
     return {"slug": slug, "name": slug.title(), "paired": True, "public_key": KEY, "webhook": {"configured": True},
-            "key_mode": "cloud", "update": update or {}}
+            "update": update or {}}
 
 
 class _Env(unittest.TestCase):
     """This tree's release, a fingerprint table where PREV and REL run the same content, and fixed pins."""
 
     def setUp(self):
-        table = [{"release": PREV, "update_commit": C_OLD, "update_sha": S_OLD, "fp": {"home": "c" * 64, "cloud": "c" * 64}},
-                 {"release": REL, "update_commit": C_NEW, "update_sha": S_NEW, "fp": {"home": "c" * 64, "cloud": "c" * 64}}]
+        table = [{"release": PREV, "update_commit": C_OLD, "update_sha": S_OLD, "fp": {"home": "c" * 64}},
+                 {"release": REL, "update_commit": C_NEW, "update_sha": S_NEW, "fp": {"home": "c" * 64}}]
         self.fin = {"sent": {}, "copied": {}, "updaters": {}, "setup": {}, "failed": {}}
         self.saved = (ga.version, ga.bot_content.read_table, ga.deploy_pins, ga.setup_owner_name, ga.read_finish)
         ga.version = lambda: REL
@@ -313,7 +314,7 @@ class PairingStamp(unittest.IsolatedAsyncioTestCase):
         from nacl.signing import SigningKey
         pub = base64.b64encode(bytes(SigningKey.generate().verify_key)).decode()
         self.assertEqual(await self._call("PUT", "/admin/bots/%s/key" % self.main,
-                                          {"actor": "admin", "public_key": pub}), 200)
+                                          {"actor": "admin", "public_key": pub, "expect_old_fp": "-"}), 200)
         with open(r.VERSION_FILE) as fh:
             rel = fh.read().strip()
         self.assertEqual(r.paired_releases(), {self.main: rel})

@@ -1,15 +1,19 @@
-# Bot Update and Set up lifecycle (authoritative, 0.13.35)
+# Bot Update and Set up lifecycle (authoritative, 0.13.37)
 
 This is the spec for how the station updates a bot's instructions and sets up a new bot through the main bot. It
 covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the relay (`relay/relay.py`,
-`relay/botreply.py`, `relay/handoff.py`) and the bot side (the routine templates `admin/routine-home.txt` and
-`admin/routine-cloud.txt`, `scripts/gs-update.sh`, `admin/setup-params.txt`). Every rule names the function that
+`relay/botreply.py`, `relay/handoff.py`) and the bot side (the routine template `admin/routine-home.txt`, `scripts/gs-update.sh`, `admin/setup-params.txt`;
+0.13.37 removed `admin/routine-cloud.txt`). Every rule names the function that
 enforces it. If code and this file disagree, the code is wrong or this file is stale: fix one in the same change.
 `tests/test_lifecycle_scenarios.py` checks the rules marked [S] on a tree installed by `tools/install-files.sh`, and
 `tools/release-check.sh` runs it before every push to `main` (the clone's pre-push hook, `tools/install-release-hook`).
 
 ## Words
 
+- **Home bot**: since 0.13.37 the only kind. The bot's key lives on its always-on home computer, which seals and
+  posts every reply. There is no key location to store or switch: `key_mode` is not stored, listed or forwarded,
+  and any value but "home" is refused (`relay.py:key_mode_refused`, `grok_admin.py:KEY_HOME_ONLY`). An overlay
+  written by an older release loses its `key_mode` on the next save.
 - **Release**: `VERSION` on the station. Every release changes the first line of each routine template
   ("Grok Station instructions, release X.Y.Z.").
 - **Main bot**: the relay overlay's `list_source` (`relay.py:list_source_slug`). The first bot added becomes it
@@ -19,16 +23,17 @@ enforces it. If code and this file disagree, the code is wrong or this file is s
   (`relay.py:note_update`, `bot_updates`) and drops it on delete or a new pairing (`relay.py:forget_bot_status`).
 - **Pairing stamp**: the release that was current when the relay pinned a bot's key (`relay.py:note_paired`, from
   `admin_key_put` and `setup_pair_decide` accept), kept in `state/bots/paired.json` (`relay.py:PAIRED_FILE`). It is
-  read only while the bot has no signed status: `note_update` drops it, and so do a key revoke, revoke-all, a key
-  mode switch, a delete and a new pairing (`relay.py:forget_paired`, called by `forget_bot_status`).
+  read only while the bot has no signed status: `note_update` drops it, and so do a key revoke, revoke-all, a
+  delete and a new pairing (`relay.py:forget_paired`, called by `forget_bot_status`).
 - **instr hash**: `gs_routine.instr_hash` of the exact instructions text. The station's expected text for a bot is
-  `grok_admin.py:render_bot_routine` (this release's template, this bot's slug and mode, the update pin from
-  `admin/web/deploy-pins.js`, and for cloud bots the station address, TLS fingerprint and station public key).
+  `grok_admin.py:render_bot_routine` (this release's home template, this bot's slug and the update pin from
+  `admin/web/deploy-pins.js`).
 - **Content fingerprint table**: `admin/bot-releases.txt` (`tools/gen-update-manifest.py`, `admin/bot_content.py`).
-  One line per release: update commit, `gs-update.sh` sha256, and a fingerprint of what a home and a cloud bot run
-  with the release line taken out.
+  One line per release: update commit, `gs-update.sh` sha256, and a fingerprint of what a home bot runs with the
+  release line taken out. Lines from before 0.13.37 also carry a cloud fingerprint; it is read past and not used.
 - **Setup literals**: `admin/setup-params.txt` (`tools/gen-setup-params.py`): RELEASE, the install commit and
-  `install-home.sh` sha256, ROUTINE_COMMIT, HASH_ROUTINE_HOME, HASH_ROUTINE_CLOUD, UPDATE_COMMIT, HASH_UPDATE. A bot
+  `install-home.sh` sha256, ROUTINE_COMMIT, HASH_ROUTINE_HOME, UPDATE_COMMIT, HASH_UPDATE (0.13.37 dropped
+  HASH_ROUTINE_CLOUD). A bot
   saves this text as `gs-setup-params.txt` when it sets up or updates; those are the literals it holds.
 
 ## Update
@@ -61,10 +66,11 @@ Row state is `grok_admin.py:finish_rows`, computed on every read from the relay'
 | Set up before 0.11.8 (no update_bot in its instructions) | copy | Copy instructions | nothing until copied | n/a |
 | Home bot whose helper is out of date | needs, even when otherwise done | Update (reinstalls the helper) | update_bot; helper ask via `admin_helper_update` | pinned `install-home.sh` sha256 |
 | Station can't render the instructions | error | the render error | nothing | n/a |
+| Bot set up with its key on a bot computer before 0.13.37 | as above (treated as home) | Update | update_bot | `gs-update.sh` refuses the cloud routine (CLOUD_GONE): use Set up or Replace key on the home computer |
 
-Home and cloud: home bots on one computer form one group sharing a helper; the group's updater is the chosen bot,
-else one that has answered (`finish_rows`, `api_post_finish_update` /updater). Cloud bots render the station
-address, fingerprint and public key into their instructions; home bots do not.
+Home bots on one computer form one group sharing a helper; the group's updater is the chosen bot, else one that has
+answered (`finish_rows`, `api_post_finish_update` /updater). Home instructions carry no station address,
+fingerprint or public key; the helper holds those from `gs-seal-setup init`.
 
 Page side: the page ends a waiting row on its own clock at the server's `wait_left`, even when it can't re-read the
 station (`app.js:finishExpire`, `rowUpdating`) [S].
@@ -73,7 +79,8 @@ station (`app.js:finishExpire`, `rowUpdating`) [S].
 
 Flow: Set up on a row (`app.js`, `POST /api/bots/setup-send`) to `grok_admin.py:Handler.bots_setup_send`, which
 builds `_setup_ctx` and calls `setup_send`. The poster asks `relay.py:admin_setup_relay` with
-`{slug: main, target, mode, path}`. The relay builds the payload from station state only
+`{slug: main, target, mode, path}`; mode is always "home" (`bots_setup_send` sets it, `handoff.setup_field_ok`
+refuses anything else, 0.13.37) [S]. The relay builds the payload from station state only
 (`setup_station_values`, `station_release`, `setup_install_pins`, `setup_routine_pins`, `setup_update_pins`),
 freezes it into a pending file, then posts exactly those bytes to the main bot's webhook. The main bot's routine
 (step 1 of the Station setup relay section) checks every field, including that routine_commit/routine_sha256 and
@@ -97,8 +104,10 @@ expired), merged onto a Sent row by `grok_admin.py:setup_public`.
 | sent, past SETUP_RELAY_TTL_S (900 s), no ack | "No reply from {main}." | Send again allowed | n/a |
 | relayed (held path) | "{main} passed it to {bot} · waiting for {bot} to finish" | nothing | target installs from held literals |
 | awaiting_confirm (relayed, first path) | "… waiting for {bot} to confirm" | nothing | target's owner compares address and fingerprint |
-| review | "Key posted · compare the fingerprint, then Accept" | Accept needs the admin password (`bots_setup_pair`) | fingerprint shown |
-| accepted | "Paired", paste webhook URL and key | webhook paste marks Connected | n/a |
+| review | "Action needed · {bot}'s key is waiting for you to accept", an **Accept key** button that focuses Accept in a panel headed "Accept the key from {bot}" | Accept needs the admin password (`bots_setup_pair`); a key that differs from the pinned one asks "Replace {bot}'s key?" first | fingerprint shown; a changed key shows old and new |
+| accepted | "Paired", paste webhook URL and key | the paste saves the webhook and runs the Test | n/a |
+| accepted, Test running | "Testing · waiting for {bot}'s reply, up to 3:00" | nothing | Test waits TEST_LIMIT_S (180 s, the same as REPLY_WAIT) |
+| accepted, Test passed | "Connected" | `bots_setup_connected` needs the passing `test_id` (the relay's Test state "ok"); otherwise 409 | n/a |
 | rejected | "Key not accepted" | Set up sends a new request | n/a |
 | needs_details | "{bot} finished · add webhook details on this page" | manual paste | n/a |
 | failed / declined | "{main} couldn't pass it on." | Send again or enter details yourself | (0.13.34 incident: main bot on 0.13.33 declined 0.13.34 pins) |
@@ -106,7 +115,71 @@ expired), merged onto a Sent row by `grok_admin.py:setup_public`.
 | connected | "Connected" | n/a | n/a |
 
 A new Set up press replaces the pending request for that target (`relay.py:_retire_setup_pending`), so a reply to
-the old one is refused.
+the old one is refused. Since 0.13.37 the page asks "Replace the pending request?" first while a request is open
+(`app.js:setupSend`, `setupPendingWhat`), and a key posted on the old request can no longer be accepted or posted
+(`setup_note_review` refuses a row whose rid or expiry no longer matches) [S].
+
+**Forget (0.13.37).** Remove (`grok_admin.py:bots_remove`, `relay.py:admin_bots_delete`) and Dismiss
+(`bots_dismiss`, `admin_imported_delete` with `forget`) run the same per-slug forget: `relay.py:forget_bot_traces`
+(setup-relay row, every pending request for the slug, a running Test, the bot-status entry, signed update status,
+pairing stamp, ack clips) and `grok_admin.py:forget_bot_admin` (Set up row and hint, Finish rows). Dismiss forgets
+the slug the name would Set up as only when that slug is not a bot: `known_bot_slugs_or_none` (registry including
+hidden bots, plus added bots) must be readable and must not list it, else nothing is forgotten (fail closed,
+GS1337-02); the admin clears its own state only when the relay answers `forgot: true`. So a rescan after either shows a net-new Not set
+up row, and Set up sends fresh home-mode details [S].
+
+**Stale cloud requests (0.13.37 upgrade).** A setup_relay pending frozen with a mode other than home (0.13.36 froze
+"cloud" for a bot with no stored key location) is not actionable: the relay drops all of them at start
+(`relay.py:retire_cloud_setup_requests`, which also expires the row and drops its posted key, so the row shows "No
+reply from {main}." and Send again), and `_pending_doc` refuses one found later. An ack, a key post or Accept for it
+is refused [S].
+
+**Key migration (0.13.37 upgrade, GS1337-01).** At its first 0.13.37 start, before the stale-request retire,
+the relay runs `relay.py:run_key_migration` once (it is skipped once `bots/key-migration.json` exists, and waits a
+start when the overlay or the keys file can't be read). For each pinned key it reads the overlay's raw `key_mode`
+(kept by `save_overlay` until this file exists) and `home_evidence`:
+
+| Pin | Verdict | Effect |
+|---|---|---|
+| `key_mode` cloud | cloud | marked "needs Replace key" |
+| `key_mode` home | home | trusted |
+| no `key_mode`, home evidence | home-evidence | trusted |
+| no `key_mode`, no evidence | no-evidence | marked "needs Replace key" |
+
+Home evidence (station fields only the home helper fills): `helpers.json` signed helper version
+(`helper-signed`), `helpers.json` `X-GS-Helper` header version on a seal-verified post (`helper-header`),
+`updates.json` signed update status with helper != "-" (`status-helper`) or computer != "-" (`status-computer`),
+and a `paired.json` stamp of 0.13.37 or later (`paired-0.13.37`). A stamp from before 0.13.37 is not evidence.
+A marked key stays in `bot_keys.json` (nothing is deleted) but `trusted_keys` leaves it out of every signature
+check (`bot_paired`, `icon_view`, avatars, `botreply.ingest`, the Accept view), so replies, avatars and statuses
+from it are refused. The bot list carries `key_move` (cloud | no-evidence) and the row asks for Set up. The mark
+holds only while the pinned fingerprint equals the marked one. `clear_key_move` clears it on a different key from
+Configure, or on any key accepted through Set up for no-evidence (a home re-setup keeps an existing key). One audit
+line per slug: `<slug> key-migration <verdict> fp=<16 hex> mode=<home|cloud|-> evidence=<list|->`, and
+`key-migration cleared was=... new=... via=setup|configure`. `tools/key-migration-preview.py` prints the verdicts
+from a temporary copy of the state: an allowlist of the six files the migration reads (`bot_keys.json`,
+`personas-overlay.json`, `helpers.json`, `updates.json`, `paired.json`, `personas/personas.json`), never `webhooks.json`,
+minted tokens or secrets, in a 0700 directory removed on exit and on signals (GS1337-04) [S].
+
+**Restoring `bot_keys.json` after the check (GS1337-07).** The migration judges keys once. After a good first 0.13.37 start, a restored `bot_keys.json` that holds a key the migration never saw leaves that key trusted and unmarked. Restore only a backup taken after the first 0.13.37 start. Revoke any bot whose key you don't recognize and set it up again. A restore before the check has completed is still judged in full at the next start.
+
+**The key check fails closed (GS1337-05).** `key_move_state` reports damage when `key-migration.json` exists but
+can't be read, has the wrong shape or a bad entry, or vanished after this relay read it; `key_migration_start` (the
+relay start) also reports it when the migration raised or could not decide. While damaged, `trusted_keys` returns no
+keys (like a corrupt `bot_keys.json`), the bot list shows `key_move: damaged`, marks can't be cleared, the relay logs
+"KEY CHECK FAILED CLOSED" and the audit log gets one `key-migration damaged reason=... all-keys-distrusted` line.
+A readable file again restores the marks as written; deleting it reruns the migration at the next start [S].
+The migration reads `bot_keys.json` strictly (GS1337-06, `_strict_pinned_keys`; `botreply.load_keys` reads a damaged
+file as no keys, which is right for replies but would finish the migration with nothing marked). A keys file that
+exists but can't be read, isn't JSON or has the wrong shape, or is missing while the station has bots
+(`_station_has_bots`: overlay key_mode, registry or added bots, or paired, helper or update records), makes it return
+None: nothing is written, `key_migration_start` reports damage for this run, and the next start judges every key once
+the file reads. A missing file on a fresh station with no bots counts as done. The preview prints "could not decide"
+and exits 1 instead of an empty would_mark.
+
+**Stale pages (GS1337-03).** `PUT /admin/bots/<slug>/key` and Accept (`setup-pair` decision accept) require
+`expect_old_fp`, the 16-hex fingerprint of the key the page showed as pinned, or `-` for none. When it no longer
+names the pinned key the relay answers 409 `KEY_CHANGED` and pins nothing [S].
 
 ## Invariants
 
@@ -144,9 +217,15 @@ the old one is refused.
 8. **Nothing from a webhook becomes a command.** Update carries a release and a commit only; setup_relay carries
    typed fields only; both are frozen before posting (`admin_bot_update`, `admin_setup_relay`,
    `handoff.setup_relay_payload`).
-9. **The release gates fail closed.** A missing, unreadable or unexpected input to the main bot gate is a refusal,
+9. **Every Set up is home.** The admin poster, the relay and the frozen payload carry mode home only; a bot with
+   no stored key location gets home details, never cloud (before 0.13.37 the missing value fell back to cloud). [S]
+10. **Connected means the Test passed.** The row is Connected only after `bots_setup_connected` sees the relay's
+   Test for that slug in state "ok". [S for the gate via `tests/test_gs1337_connected_after_test.py`]
+11. **The release gates fail closed.** A missing, unreadable or unexpected input to the main bot gate is a refusal,
    not a pass (`_setup_ctx`, `main_release_ok`). The install sim behind the scenarios refuses to run as root and
    stops if a host directory can't be bound read-only (`tests/lifecycle_sim.py:install`).
+12. **A key that may be on a bot computer is not trusted.** After the key migration, a pin marked cloud or
+   no-evidence verifies nothing until it is replaced or set up again; no pin is deleted by the migration. [S]
 
 ## Release order
 

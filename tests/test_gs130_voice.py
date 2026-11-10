@@ -410,7 +410,7 @@ class SealCommands(unittest.TestCase):
         import botreply
         cls.botreply = botreply
         cls.seal = _load_named("gs130_seal_reply", os.path.join(ROOT, "scripts", "gs-seal-reply"), patch_lstat=True)
-        cls.tool = _load_named("gs130_reply_tool", os.path.join(ROOT, "tools", "grok-station-reply"))
+        cls.tool = _load_named("gs130_reply_tool", os.path.join(ROOT, "tests", "fixtures", "grok-station-reply"))
         cls.png = _png()
 
     def _open(self, body, signer, station, slug="max"):
@@ -479,17 +479,15 @@ class InstructionTemplates(unittest.TestCase):
             sys.path.insert(0, admin)
         import gs_routine
         home = open(os.path.join(admin, "routine-home.txt"), encoding="utf-8").read()
-        cloud = open(os.path.join(admin, "routine-cloud.txt"), encoding="utf-8").read()
         self.assertEqual(gs_routine.TEMPLATES["home"], home)
-        self.assertEqual(gs_routine.TEMPLATES["cloud"], cloud)
+        self.assertEqual(set(gs_routine.TEMPLATES), {"home"})  # 0.13.37: home only
         sh = open(os.path.join(ROOT, "scripts", "gs-update.sh"), encoding="utf-8").read()
         embedded = sh.split("<<'GS_ROUTINE_PY'\n", 1)[1].split("\nGS_ROUTINE_PY\n", 1)[0] + "\n"
         self.assertEqual(embedded, open(os.path.join(admin, "gs_routine.py"), encoding="utf-8").read())
         js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
         docs = open(os.path.join(ROOT, "docs", "bots.md"), encoding="utf-8").read()
-        copies = {"routine-home.txt": home, "routine-cloud.txt": cloud,
-                  "gs_routine home": gs_routine.TEMPLATES["home"], "gs_routine cloud": gs_routine.TEMPLATES["cloud"]}
-        for name, fname in (("BOT_ROUTINE_HOME", "routine-home.txt"), ("BOT_ROUTINE", "routine-cloud.txt")):
+        copies = {"routine-home.txt": home, "gs_routine home": gs_routine.TEMPLATES["home"]}
+        for name, fname in (("BOT_ROUTINE_HOME", "routine-home.txt"),):
             body = js.split("const %s = String.raw`" % name, 1)[1].split("`;", 1)[0]
             self.assertEqual(body, open(os.path.join(admin, fname), encoding="utf-8").read().rstrip("\n"), name)
             copies["app.js " + name] = body
@@ -503,8 +501,8 @@ class InstructionTemplates(unittest.TestCase):
             self.assertTrue(text.startswith("Grok Station instructions, release " + open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() + "."), label)
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
-        self.assertEqual(docs.count(_VOICE_SENTENCE), 2)
-        self.assertEqual(docs.count("Grok Station instructions, release " + open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() + "."), 2)
+        self.assertEqual(docs.count(_VOICE_SENTENCE), 1)  # 0.13.37: one template
+        self.assertEqual(docs.count("Grok Station instructions, release " + open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() + "."), 1)
         self.assertIn("never replaced by a report", docs)  # 0.13.0: the add-bot picker stays; a report only seeds
 
 

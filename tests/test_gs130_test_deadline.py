@@ -14,7 +14,7 @@ class TestDeadline(unittest.IsolatedAsyncioTestCase):
 
     async def test_server_gives_up_at_the_shared_limit(self):
         r = self.relay
-        self.assertEqual(getattr(r, "TEST_LIMIT_S", None), 30)
+        self.assertEqual(getattr(r, "TEST_LIMIT_S", None), 180)  # 0.13.37: was 30
         real_teammate, real_limit = r.ask_teammate, r.TEST_LIMIT_S
 
         async def silent_bot(http, slug, q, cancel=None, **kw):

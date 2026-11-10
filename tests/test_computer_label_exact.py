@@ -59,7 +59,7 @@ class DisplayOnly(unittest.TestCase):
         self.assertIn('id="chname" maxlength="40" autocomplete="off" spellcheck="false" value="${esc(host)}"', JS)
 
     def test_instructions_ask_for_the_exact_label(self):
-        for fn in ("function routineChangeComputer", "function routineForBot"):
+        for fn in ("function routineForBot",):  # 0.13.37: routineChangeComputer was the cloud move
             body = JS.split(fn, 1)[1][:6000]
             self.assertIn("exactly as it shows in the Grok Bot app", body)
             self.assertIn("dots included. Do not shorten it.", body)

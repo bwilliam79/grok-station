@@ -9,7 +9,7 @@ INSTRUCTION = "When you email your owner, also post a short version here: your e
 
 class EmailUpdates(unittest.TestCase):
     def test_template_is_required_not_optional(self):
-        for mode in ("cloud", "home"):
+        for mode in ("home",):  # 0.13.37: home only
             text = (ROOT / "admin" / ("routine-" + mode + ".txt")).read_text()
             self.assertIn(INSTRUCTION, text)
             self.assertNotIn("Station updates (optional)", text)
@@ -32,7 +32,7 @@ class EmailUpdates(unittest.TestCase):
         def fn(name):
             start = js.index("function " + name + "(")
             return js[start:js.index("\nfunction ", start + 1)]
-        templates = "\n".join("const " + name + " = " + json.dumps(js.split("const " + name + " = String.raw`", 1)[1].split("`;", 1)[0]) + ";" for name in ("BOT_ROUTINE", "BOT_ROUTINE_HOME", "SETUP_PARAMS"))
+        templates = "\n".join("const " + name + " = " + json.dumps(js.split("const " + name + " = String.raw`", 1)[1].split("`;", 1)[0]) + ";" for name in ("BOT_ROUTINE_HOME", "SETUP_PARAMS"))
         for owner in ("Sample Owner", "", "bad'name"):
             for name in ("routineForBot", "routineUpdate"):
                 prog = templates + "\nconst STATION_OWNER = {v:" + json.dumps(owner) + "};\n" + fn("stationOwnerName") + "\nfunction stationAddress(){return 'https://station.example';}\nfunction deployScript(){return 'SCRIPT';}\nfunction fillUpdateCommand(b){return b;}\n" + fn(name)
@@ -71,10 +71,9 @@ class EmailUpdates(unittest.TestCase):
         station = "https://station-demo.local"
         pins = {"commit": "a" * 40, "files": {"scripts/gs-update.sh": "b" * 64}}
         for value in ("Sample Owner", "", "bad'name", None):
-            for mode in ("home", "cloud"):
+            for mode in ("home",):  # 0.13.37: home only
                 expected = gs_routine.owner_name(value)
                 prog = (
-                    "const BOT_ROUTINE = " + json.dumps(tmpl("BOT_ROUTINE")) + ";\n"
                     "const BOT_ROUTINE_HOME = " + json.dumps(tmpl("BOT_ROUTINE_HOME")) + ";\n"
                     "const SETUP_PARAMS = " + json.dumps(tmpl("SETUP_PARAMS")) + ";\n"
                     "const STATION_OWNER = {v: " + json.dumps(value) + "};\n"

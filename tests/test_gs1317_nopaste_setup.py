@@ -30,7 +30,7 @@ HASH = "b" * 64
 
 def _payload(path="held", **kw):
     d = {"request_id": RID, "persona": "rhea", "reply_by": "2026-11-05T20:15:00Z", "target": "otto",
-         "station": "https://station-demo.local", "pin_sha256": PIN, "station_pub": PUB, "mode": "cloud",
+         "station": "https://station-demo.local", "pin_sha256": PIN, "station_pub": PUB, "mode": "home",
          "release": "0.13.18"}
     d.update(kw)
     pins = {}
@@ -60,7 +60,7 @@ class PayloadKeys(unittest.TestCase):
     def test_one_pin_field_refused(self):
         with self.assertRaises(ValueError):
             handoff.setup_relay_payload(RID, "rhea", "2026-11-05T20:15:00Z", "otto",
-                                        "https://station-demo.local", PIN, PUB, "cloud", "0.13.18",
+                                        "https://station-demo.local", PIN, PUB, "home", "0.13.18",
                                         COMMIT, None)
 
     def test_trailing_newline_refused(self):
@@ -261,7 +261,7 @@ class N05Fixture(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_version_file(self):
-        self.assertEqual(_read("VERSION").strip(), "0.13.36")
+        self.assertEqual(_read("VERSION").strip(), "0.13.37")
 
 
 if __name__ == "__main__":

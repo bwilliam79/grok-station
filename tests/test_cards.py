@@ -15,7 +15,7 @@ os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import grok_station as gs  # noqa: E402
 import pygame  # noqa: E402
 
-_helper_path = os.path.join(ROOT, "tools", "grok-station-reply")
+_helper_path = os.path.join(ROOT, "tests", "fixtures", "grok-station-reply")
 _loader = importlib.machinery.SourceFileLoader("grok_station_reply_cards", _helper_path)
 _spec = importlib.util.spec_from_loader("grok_station_reply_cards", _loader)
 reply_tool = importlib.util.module_from_spec(_spec)

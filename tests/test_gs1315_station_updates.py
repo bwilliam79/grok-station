@@ -45,7 +45,7 @@ class HelperOps(unittest.TestCase):
 class Templates(unittest.TestCase):
     def test_section_in_every_template(self):
         gs = load("gs_routine_1315", "admin/gs_routine.py")
-        for mode in ("home", "cloud"):
+        for mode in ("home",):  # 0.13.37: home only
             t = gs.TEMPLATES[mode]
             self.assertIn("\nStation updates.", t)
             self.assertIn('"op":"update_clear"', t)
@@ -53,7 +53,7 @@ class Templates(unittest.TestCase):
             with open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode)) as f:
                 self.assertEqual(f.read(), t)
         sh = open(os.path.join(ROOT, "scripts", "gs-update.sh")).read()
-        self.assertEqual(sh.count("\nStation updates."), 2)
+        self.assertEqual(sh.count("\nStation updates."), 1)  # 0.13.37: home template only
 
 
 if __name__ == "__main__":

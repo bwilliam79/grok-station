@@ -82,13 +82,14 @@ paintBots(el, el._bots);  // the 3 s refresh lands while the PUT is out
 res.during = [hook('url').value, hook('key').value];
 release(); await tick(50);
 paintBots(el, el._bots);
-res.after = [hook('url').value, hook('key').value];
+// 0.13.37: after the save the Test runs and the panel shows Testing (no fields) until it passes or fails.
+res.after = hook('url') ? [hook('url').value, hook('key').value] : (L().textContent.indexOf('Waiting for') >= 0 ? 'testing' : 'gone');
 const put = window.calls.filter(c => c.url.indexOf('/webhook') >= 0)[0];
 res.sent = put ? JSON.parse(put.body) : null;
 """)
         self.assertEqual(r["during"], [URL, PASTED])
         self.assertEqual(r["sent"], {"url": URL, "key": PASTED})
-        self.assertEqual(r["after"], ["", ""])
+        self.assertIn(r["after"], (["", ""], "testing"))
 
     def test_failed_save_drops_the_key_and_keeps_the_url(self):
         r = H.chrome(TYPE + """

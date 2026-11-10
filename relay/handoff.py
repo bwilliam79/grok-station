@@ -486,7 +486,7 @@ SETUP_FIELD_RE = {
     "station": (r"https://[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?/?", 300),
     "pin_sha256": (r"[0-9a-f]{64}", 64),
     "station_pub": (r"[A-Za-z0-9+/]{43}=", 44),
-    "mode": (r"home|cloud", 5),
+    "mode": (r"home", 4),  # 0.13.37: the key and the sealing are on the home computer only
     "release": (r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", 11),
     "template_commit": (r"[0-9a-f]{40}", 40),
     "template_sha256": (r"[0-9a-f]{64}", 64),
@@ -606,9 +606,8 @@ ROUTINE_OWNER = "bwilliam79"
 ROUTINE_HOST = "raw.githubusercontent.com"
 _ROUTINE_COMMIT = re.compile(r"\A[0-9a-f]{40}\Z")
 _ROUTINE_SHA = re.compile(r"\A[0-9a-f]{64}\Z")
-# Regression: the 0.13.32 install commit and that tree's routine-cloud hash are not this release's routine pins.
+# Regression: the 0.13.32 install commit is not this release's routine pin.
 OLD_INSTALL_COMMIT = "6b978580132da4f4be724b3d535c7927ca7fc86f"
-OLD_ROUTINE_CLOUD_SHA = "5bbde90f1dd5e264a84a6e7d934b83366abe1d9d86e3f5d16890bc4f1175385f"
 
 
 def mark_setup_pair_used(pdir, rid):

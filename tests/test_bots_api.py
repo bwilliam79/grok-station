@@ -497,7 +497,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
 
     def _helper(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        path = os.path.join(root, "tools", "grok-station-reply")
+        path = os.path.join(root, "tests", "fixtures", "grok-station-reply")  # 0.13.37: test fixture only
         loader = importlib.machinery.SourceFileLoader("grok_station_reply", path)
         spec = importlib.util.spec_from_loader("grok_station_reply", loader)
         mod = importlib.util.module_from_spec(spec)
@@ -514,7 +514,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         pub = base64.b64encode(bytes(signer.verify_key)).decode()
         seed = base64.b64encode(bytes(signer)).decode()
         put = await self.client.put("/admin/bots/jules/key", headers=self.headers(),
-                                    json={"public_key": pub, "actor": "admin"})
+                                    json={"public_key": pub, "actor": "admin", "expect_old_fp": "-"})
         self.assertEqual(put.status, 200, await put.text())
         listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
         self.assertTrue(listed["bots"][0]["paired"])
@@ -591,7 +591,7 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         signer = SigningKey.generate()
         pub = base64.b64encode(bytes(signer.verify_key)).decode()
         put = await self.client.put("/admin/bots/jules/key", headers=self.headers(),
-                                    json={"public_key": pub, "actor": "admin"})
+                                    json={"public_key": pub, "actor": "admin", "expect_old_fp": "-"})
         self.assertEqual(put.status, 200, await put.text())
         self.assertEqual(r.icon_view(), {"paired": True, "ok": True})
         old_tokens = list(r.TOKENS)
@@ -765,70 +765,48 @@ class BotsApi(unittest.IsolatedAsyncioTestCase):
         self.assertIn(" test ", audit)
 
     async def test_key_mode_defaults_cloud_and_switching_revokes(self):
-        """cloud is the default and is not stored. home is stored. A real switch revokes the pinned key."""
+        """0.13.37: every key is on a home computer. key_mode is never stored or listed; "home" changes nothing,
+        anything else is refused; an old stored key_mode is dropped on the next save and never revokes a key."""
         import botreply
         from nacl.signing import SigningKey
         h = self.headers()
         listed = await (await self.client.get("/admin/bots", headers=h)).json()
-        self.assertEqual(listed["bots"][0]["key_mode"], "cloud")
-        voiced = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "rex", "actor": "admin"})
-        self.assertEqual(voiced.status, 200, await voiced.text())
-        self.assertNotIn(b"key_mode", open(self.relay.overlay_path(), "rb").read())
-        bad = await self.client.post("/admin/bots", headers=h,
-                                     json={"slug": "nova", "name": "Nova", "voice": "rex", "actor": "admin", "key_mode": "laptop"})
-        self.assertEqual(bad.status, 400)
-        self.assertEqual((await bad.json())["error"], "bad key mode")
+        self.assertNotIn("key_mode", listed["bots"][0])
+        for bad_mode in ("laptop", "cloud"):
+            bad = await self.client.post("/admin/bots", headers=h, json={"slug": "nova", "name": "Nova", "voice": "rex",
+                                                                         "actor": "admin", "key_mode": bad_mode})
+            self.assertEqual(bad.status, 400)
+            self.assertEqual((await bad.json())["error"], self.relay.KEY_HOME_ONLY)
         made = await self.client.post("/admin/bots", headers=h,
                                       json={"slug": "nova", "name": "Nova", "voice": "rex", "actor": "admin", "key_mode": "home"})
         self.assertEqual(made.status, 201, await made.text())
-        disk = json.load(open(self.relay.overlay_path()))
-        self.assertEqual(disk["key_mode"], {"nova": "home"})
-        body = await (await self.client.get("/admin/bots", headers=h)).json()
-        modes = {b["slug"]: b["key_mode"] for b in body["bots"]}
-        self.assertEqual(modes["nova"], "home")
-        self.assertEqual(modes["jules"], "cloud")
+        self.assertNotIn(b"key_mode", open(self.relay.overlay_path(), "rb").read())
         signer = SigningKey.generate()
         pub = base64.b64encode(bytes(signer.verify_key)).decode()
-        put = await self.client.put("/admin/bots/jules/key", headers=h, json={"public_key": pub, "actor": "admin"})
+        put = await self.client.put("/admin/bots/jules/key", headers=h, json={"public_key": pub, "actor": "admin", "expect_old_fp": "-"})
         self.assertEqual(put.status, 200, await put.text())
-        same = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "cloud", "actor": "admin"})
-        self.assertEqual(same.status, 200)
-        self.assertEqual(await same.json(), {"ok": True})
+        same = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "home", "actor": "admin"})
+        self.assertEqual((same.status, await same.json()), (200, {"ok": True}))
+        cloud = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "cloud", "actor": "admin"})
+        self.assertEqual(cloud.status, 400)
         still = await (await self.client.get("/admin/bots", headers=h)).json()
-        self.assertTrue(next(b["paired"] for b in still["bots"] if b["slug"] == "jules"))
-        switched = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "home", "actor": "admin"})
-        self.assertEqual(switched.status, 200)
-        self.assertEqual(await switched.json(), {"ok": True, "needs_key": True})
-        after = await (await self.client.get("/admin/bots", headers=h)).json()
-        jules = next(b for b in after["bots"] if b["slug"] == "jules")
-        self.assertEqual(jules["key_mode"], "home")
-        self.assertFalse(jules["paired"])
-        keys = botreply.load_keys(self.relay.bot_keys_path())
-        self.assertNotIn("jules", keys.get("keys") or {})
-        audit = self._audit()
-        self.assertRegex(audit, r"admin jules key-mode -\n")
-        self.assertNotIn(pub, audit)
-        for line in audit.splitlines():
-            if "key-mode" in line:
-                self.assertTrue(line.endswith(" -"))
-                self.assertNotIn("home", line)
-        put = await self.client.put("/admin/bots/jules/key", headers=h, json={"public_key": pub, "actor": "admin"})
-        self.assertEqual(put.status, 200, await put.text())
-        again = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "home", "actor": "admin"})
-        self.assertEqual(await again.json(), {"ok": True})
-        mid = await (await self.client.get("/admin/bots", headers=h)).json()
-        self.assertTrue(next(b["paired"] for b in mid["bots"] if b["slug"] == "jules"))
-        back = await self.client.patch("/admin/bots/jules", headers=h, json={"key_mode": "cloud", "actor": "admin"})
-        self.assertTrue((await back.json()).get("needs_key"))
-        disk = json.load(open(self.relay.overlay_path()))
-        self.assertNotIn("jules", disk.get("key_mode") or {})
-        self.assertEqual(disk["key_mode"]["nova"], "home")
-        gone = await self.client.delete("/admin/bots/nova", headers=h, json={"actor": "admin"})
-        self.assertEqual(gone.status, 200)
-        disk = json.load(open(self.relay.overlay_path()))
-        self.assertNotIn("key_mode", disk)
-        self.assertNotIn("nova", disk.get("added") or {})
-
+        self.assertTrue(next(b["paired"] for b in still["bots"] if b["slug"] == "jules"))  # never revoked
+        self.assertIn("jules", botreply.load_keys(self.relay.bot_keys_path()).get("keys") or {})
+        # An overlay written by 0.13.36 with key_mode keeps it until the one-time key migration has read it
+        # (GS1337-01), then loses it on the next save.
+        doc = json.load(open(self.relay.overlay_path()))
+        doc["key_mode"] = {"jules": "cloud", "nova": "home"}
+        with open(self.relay.overlay_path(), "w") as fh:
+            json.dump(doc, fh)
+        listed = await (await self.client.get("/admin/bots", headers=h)).json()
+        self.assertFalse(any("key_mode" in b for b in listed["bots"]))
+        voiced = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "rex", "actor": "admin"})
+        self.assertEqual(voiced.status, 200, await voiced.text())
+        self.assertEqual(json.load(open(self.relay.overlay_path()))["key_mode"], {"jules": "cloud", "nova": "home"})
+        self.assertEqual(self.relay.run_key_migration()["jules"]["verdict"], "cloud")
+        voiced = await self.client.patch("/admin/bots/jules", headers=h, json={"voice": "rex", "actor": "admin"})
+        self.assertEqual(voiced.status, 200, await voiced.text())
+        self.assertNotIn("key_mode", json.load(open(self.relay.overlay_path())))
 
     async def test_reply_host_is_a_label(self):
         """Which computer posts replies: stored, listed, changed without touching the key, gone with the bot."""

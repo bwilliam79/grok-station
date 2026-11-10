@@ -11,6 +11,10 @@
         same outer JSON, inner kind setup_relay_ack (0.13.16).
 
 The seed is never taken from an argument or a file. This does not import the station relay.
+
+0.13.37: test fixture only. Bot keys now always live on the home computer (gs-seal-reply), so this cloud tool is no
+longer shipped, installed, fetched by any routine, or listed in the update manifest or deploy pins. Tests keep it as
+an independent reference sealer for the station's reply checks.
 """
 import argparse, base64, hashlib, http.client, json, os, re, secrets, select, ssl, sys, time, unicodedata
 from urllib.parse import urlsplit

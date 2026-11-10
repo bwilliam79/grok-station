@@ -22,7 +22,6 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(ROOT, "admin", "web", "deploy-pins.js")
 FILES = (
-    "tools/grok-station-reply",
     "scripts/gs-seal-setup",
     "scripts/gs-seal-reply",
     "scripts/gs_seal_common.py",

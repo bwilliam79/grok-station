@@ -32,11 +32,11 @@ set -eu
 umask 077
 
 COMMIT=a1a448c6574794c416b6d6d88670184a406864ca
-HASH_SETUP=15565f30203b6772d41557190b426dc973167b1c15f6b238da4e4d6ee5aeae5f
-HASH_REPLY=4404c1472b51b398073898be219134cf25e94b36c384faad28dfedaeed7c0904
-HASH_COMMON=551ffe2ec25ef4ac948a1b3f4486c907668b994eaa651f98bbcdd359a352be61
-HASH_LOCK=00074509bf2d0a3d1084c2155251f1d3e88f250488e863838d0bb19fa9b6a617
-HASH_GS_RENDER=57c27f8f4e19767bffdf124e0b82fb25824c684c665c696646a1bffa73e46526
+HASH_SETUP=8e7eebcdb77958d69d2aa0e5660f899f4bc20e10921c817ed2469d690d5f133e
+HASH_REPLY=640b3fc16596c45b9930f33888ee3d8ed7aee7949d6b02207aee338d6b664410
+HASH_COMMON=7cbf24b491c8ebd191ca3b9f9f4d4d5484e71658c1038e611800679c8770ea19
+HASH_LOCK=af95b085e4775b875a08d692523007eb40a4c2adb36c807592874e390c90039f
+HASH_GS_RENDER=60cf61ddfa522240c0e7d61ff5fb88a2c49b8d00d52a10aa45844144b23b51f3
 HASH_OWNER=403bb0c076c5dad669f7979255c7983a884af49856d7847083e1de2ef8deab45
 
 die() {
@@ -360,8 +360,12 @@ else
   fetch_one vendor-lock.txt "$RAW/scripts/vendor-lock.txt" "$HASH_LOCK" 600
   fetch_one gs_render.py "$RAW/admin/gs_render.py" "$HASH_GS_RENDER" 600
   fetch_one owner_check.py "$RAW/relay/owner_check.py" "$HASH_OWNER" 600
-  "$stage/gs-seal-setup" vendor-install --lock "$stage/vendor-lock.txt"
 fi
+# 0.13.37: PyNaCl is part of every first-time setup, including a second bot on a computer that has the helper.
+# vendor-install keeps a set that already matches the lock and verifies, and otherwise downloads only the
+# pinned wheels and checks each sha256. It fails closed: there is no pip or system PyNaCl fallback.
+"$S/gs-seal-setup" vendor-install --lock "$S/vendor-lock.txt" \
+  || die "PyNaCl was not installed (see the line above), so this computer cannot seal replies. Nothing unverified was installed. Fix that and run this command again."
 
 phase=setup
 keyf="$HOME/.config/grok-station/keys/$persona.key"

@@ -293,7 +293,7 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .menu li button{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:0 12px;background:none;border:0;border-radius:8px;color:var(--gs-text);font:500 var(--fs-label) var(--body);text-align:left;cursor:pointer}
 .menu li button.act{background:var(--gs-surface-3);box-shadow:inset 0 0 0 2px var(--gs-teal)}
 .menu li.sep{height:1px;background:var(--gs-rule-2);margin:6px 4px;list-style:none}
-.menu li button.danger{color:var(--gs-amber)}
+.menu li button.danger{color:var(--gs-amber);margin:0}  /* 0.13.37: the Settings .danger box rule gave Revoke all bots a 24px top margin */
 #botmenu [role=menuitem]:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
 @media (min-width:768px){#botmenu [role=menuitem]{min-height:36px}}
 #botmenu #rescan{flex-wrap:wrap;height:auto;align-items:center}
@@ -826,6 +826,8 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .sinfo .lbl{height:24px;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sline{display:flex;align-items:center;gap:8px;min-width:0;height:20px;margin-top:2px}
 .sline .schip{margin-top:0;min-width:0}
+.sline.wrap{height:auto;min-height:20px;align-items:flex-start}
+.sline.wrap .schip{align-items:flex-start;line-height:18px;white-space:normal;overflow-wrap:anywhere}
 .ssub{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;height:20px;margin:0;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;cursor:pointer;position:relative;border-radius:4px}
 .ssub::before{content:"";position:absolute;inset:-2px -4px}
 .ssub .schip{flex:none}
@@ -928,6 +930,9 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 .setacts{display:inline-flex;align-items:center;gap:8px}
 .setpanel{margin:0 0 12px 58px;padding:14px 16px;border-radius:10px;background:var(--gs-surface-2);border-left:3px solid var(--gs-teal)}
 .setpanel.is-err{border-left-color:var(--gs-amber)}
+.setpanel.is-review{border:2px solid var(--gs-lavender);border-left-width:4px;background:var(--gs-lavender-bg)}
+.setpanel .needact{display:inline-block;margin:0 0 6px;padding:2px 8px;border-radius:999px;background:var(--gs-lavender);color:var(--gs-on-teal);font:600 var(--fs-caps) var(--body)}
+.setpanel .btn-accept{min-width:148px}
 .setpanel h3.lbl{margin:0 0 8px;font-size:var(--fs-help)}
 .setpanel .steps{margin:0 0 10px;padding:0 0 0 20px;background:transparent;border:0;border-radius:0;font-size:var(--fs-help);line-height:1.55;color:var(--gs-text)}
 .setpanel .steps li{margin:4px 0}

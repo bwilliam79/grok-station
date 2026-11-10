@@ -200,7 +200,7 @@ class VoiceOffFlow(unittest.IsolatedAsyncioTestCase):
 
 class CloudHelperPinMiss(unittest.TestCase):
     def test_pin_miss_stays_a_bare_refusal(self):
-        path = os.path.join(ROOT, "tools", "grok-station-reply")
+        path = os.path.join(ROOT, "tests", "fixtures", "grok-station-reply")
         loader = importlib.machinery.SourceFileLoader("gsr_nix", path)
         spec = importlib.util.spec_from_loader("gsr_nix", loader)
         mod = importlib.util.module_from_spec(spec)

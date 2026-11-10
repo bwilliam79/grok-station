@@ -769,9 +769,12 @@ class Bots(unittest.TestCase):
         self.assertEqual(C().req("POST", "/api/bots/refresh-avatars", {})[0], 401)
 
     def test_key_mode_forwarded_only_when_sent(self):
-        st, j = self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "key_mode": "disk"})
-        self.assertEqual(st, 400)
-        self.assertEqual(j["error"], "Pick where the key lives.")
+        # 0.13.37: keys live only on the home computer. Any key_mode but "home" is refused before the password,
+        # and nothing about the key location is ever forwarded to the relay.
+        for bad in ("disk", "cloud"):
+            st, j = self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "key_mode": bad})
+            self.assertEqual(st, 400)
+            self.assertEqual(j["error"], ga.KEY_HOME_ONLY)
         self.assertFalse(any(c[0] == "POST" for c in self.calls))
         self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
         st, j = self.c.req("POST", "/api/bots", {"slug": "pip", "name": "Pip", "password": GOOD})
@@ -780,25 +783,22 @@ class Bots(unittest.TestCase):
         self.assertNotIn("voice", self.calls[-1][2])
         st, j = self.c.req("POST", "/api/bots", {"slug": "quo", "name": "Quo", "key_mode": "home"})
         self.assertEqual(st, 201, j)
-        self.assertEqual(self.calls[-1][2]["key_mode"], "home")
-        self.assertNotIn("voice", self.calls[-1][2])
+        self.assertNotIn("key_mode", self.calls[-1][2])
         st, j = self.c.req("GET", "/api/bots")
-        self.assertEqual(j["bots"][0]["key_mode"], "cloud")
+        self.assertNotIn("key_mode", j["bots"][0])
 
         def fake(method, path, payload=None, timeout=10):
             self.calls.append((method, path, payload))
             if path == "/admin/bots" and method == "GET":
                 return 200, {"bots": [{"slug": "kai", "name": "Kai", "voice": "eve", "source": "registry",
-                                       "key_mode": "home",
+                                       "key_mode": "cloud",
                                        "webhook": {"configured": False},
                                        "status": {"state": "not_configured"}}], "voices": ["eve"]}
-            if method == "PATCH" and isinstance(payload, dict) and payload.get("key_mode") in ("cloud", "home"):
-                return 200, {"ok": True, "needs_key": True}
             return 200, {"ok": True}
 
         ga.relay_call = fake
         st, j = self.c.req("GET", "/api/bots")
-        self.assertEqual(j["bots"][0]["key_mode"], "home")
+        self.assertNotIn("key_mode", j["bots"][0])  # an old stored cloud value is not shown
         self.assertIsNone(j["bots"][0]["public_key"])  # unpaired, and a missing key is null
         pub = base64.b64encode(b"\x11" * 32).decode()
         pinned = ga.safe_bot({"slug": "kai", "name": "Kai", "paired": True, "public_key": " " + pub + "\n"})
@@ -806,20 +806,21 @@ class Bots(unittest.TestCase):
         self.assertIsNone(ga.safe_bot({"slug": "kai", "name": "Kai", "paired": False, "public_key": pub})["public_key"])
         self.assertIsNone(ga.safe_bot({"slug": "kai", "name": "Kai", "paired": True, "public_key": "not-a-key"})["public_key"])
         self.assertIsNone(ga.local_bots()[0]["public_key"] if ga.local_bots() else ga.bot_public_key({}))
-        st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "cloud"})
-        self.assertEqual(st, 200, j)
-        self.assertIs(j.get("needs_key"), True)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"key_mode": "cloud", "actor": "admin"}))
         before = len(self.calls)
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "cloud"})
+        self.assertEqual(st, 400)
+        self.assertEqual(j["error"], ga.KEY_HOME_ONLY)
+        self.assertEqual(len(self.calls), before)
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "home"})
+        self.assertEqual((st, j), (200, {"ok": True}))
+        self.assertEqual(len(self.calls), before)  # nothing to change, nothing sent
         st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})
         self.assertEqual(st, 200, j)
         self.assertNotIn("needs_key", j)
         self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "eve", "actor": "admin"}))
         st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "sideways"})
         self.assertEqual(st, 400)
-        self.assertEqual(j["error"], "Pick where the key lives.")
-        self.assertEqual(len(self.calls), before + 1)
-
+        self.assertEqual(j["error"], ga.KEY_HOME_ONLY)
 
 class WakePhraseAndStatus(unittest.TestCase):
     """Custom wake phrase: normalization, quality checks, persona mapping, training status."""
@@ -1320,19 +1321,19 @@ class StepUp(unittest.TestCase):
             self.assertEqual(calls[-1]["decision"], "reject")
             before = len(calls)
             fails = len(ga.AUTH.fails)
-            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept"})
+            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "expect_old_fp": "-"})
             self.assertEqual(st, 403, j)
             self.assertEqual(len(calls), before)
-            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "password": "nope"})
+            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": "nope"})
             self.assertEqual(st, 403, j)
             self.assertEqual(len(calls), before)
             self.assertGreater(len(ga.AUTH.fails), fails)
             st, j = self.c.req("POST", "/api/bots/setup-pair",
-                               {"slug": "kai", "decision": "accept", "password": GOOD})
+                               {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": GOOD})
             self.assertEqual(st, 400, j)
             self.assertNotIn(GOOD, json.dumps(j))
             st, j = self.c.req("POST", "/api/bots/setup-pair",
-                               {"slug": "kai", "decision": "accept", "password": GOOD})
+                               {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": GOOD})
             self.assertEqual(st, 200, j)
             self.assertEqual(calls[-1]["decision"], "accept")
         finally:
@@ -1670,7 +1671,7 @@ class PrivacyGuestBotIdAndWake(unittest.TestCase):
             self.assertEqual((st, j["error"]), (502, "Couldn't reach the bot."))
         finally:
             ga.relay_call = old
-        self.assertIsNone(ga.helper_view({"key_mode": "cloud"}))
+        self.assertIsNotNone(ga.helper_view({"key_mode": "cloud"}))  # 0.13.37: every bot is home, so every bot has a helper view
         self.assertFalse(ga.helper_view({"key_mode": "home"})["out_of_date"])  # 0.12.11: nothing posted yet, no evidence
         self.assertFalse(ga.helper_view({"key_mode": "home", "update": {"release": "0.12.0"}})["out_of_date"])  # 0.12.12: no version is no evidence
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.11.6"})["out_of_date"])

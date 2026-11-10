@@ -178,7 +178,8 @@ console.log(JSON.stringify({fail: botRowL2HTML("Replies from: X", "", "Update fa
         self.assertIn('class="bmsg"', got["note"])
         self.assertNotIn("bmsg", got["none"])
         paint = JS[JS.index("const noteFail"):]
-        self.assertIn("const noteFail = !!note && note === rowFailLine(b);", paint[:200])
+        # A refused-key note is a failure line too, so it wraps instead of truncating.
+        self.assertIn("const noteFail = !!note && (note === rowFailLine(b) || note === keyMoveText(b));", paint[:200])
         self.assertIn("b.slug, noteFail)}", paint[:3000])
 
     def test_css(self):

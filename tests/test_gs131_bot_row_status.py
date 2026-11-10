@@ -26,7 +26,7 @@ def _fn(src, name):
 
 def _render(src, bot, view):
     """The one status line the Bots page paints, from the page's own functions."""
-    names = ("helperBehind", "rowUpdating", "rowFailLine", "finishNotes", "botMessageLineHTML")
+    names = ("helperBehind", "rowUpdating", "rowFailLine", "keyMoveText", "finishNotes", "botMessageLineHTML")
     parts = [_fn(src, name) for name in names]
     prog = "\n".join([
         "const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')"

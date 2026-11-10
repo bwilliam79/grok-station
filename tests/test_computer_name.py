@@ -16,8 +16,7 @@ def _between(a, b):
 
 class ComputerNameInstructions(unittest.TestCase):
     def test_instructions_ask_for_grok_bot_app_name_not_hostname(self):
-        for fn in (_between("function routineChangeComputer", "function openChangeComputer"),
-                   _between("function routineForBot", "function addBot")):
+        for fn in (_between("function routineForBot", "function addBot"),):  # 0.13.37: no routineChangeComputer
             self.assertIn("exactly as it shows in the Grok Bot app", fn)
             self.assertIn("dots included. Do not shorten it.", fn)  # 0.12.9: the exact label, never trimmed
             self.assertNotIn("hostname is fine", fn)

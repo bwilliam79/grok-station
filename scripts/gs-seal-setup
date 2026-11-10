@@ -647,7 +647,7 @@ def _network_fetch_wheel(name, version, hashes):
     data = _https_bytes(chosen["url"], ("files.pythonhosted.org",), _WHEEL_BYTES)
     digest = hashlib.sha256(data).hexdigest()
     if digest != chosen["sha256"] or digest not in set(hashes):
-        raise Refused()
+        raise Refused("hash")
     return data
 
 
@@ -778,25 +778,119 @@ def _read_lock(path):
         raise Refused()
 
 
+# 0.13.37: every vendor-install failure says what failed, and that nothing unverified was installed. There is
+# no fallback to pip or to a system PyNaCl: the helper imports nacl only from the verified vendor tree.
+VENDOR_FAIL_TAIL = " Nothing unverified was installed, and replies cannot be sealed until this succeeds."
+
+
+def _vendor_fail(what):
+    return Unsupported("PyNaCl install refused: %s.%s" % (what, VENDOR_FAIL_TAIL))
+
+
+def vendor_lock_digest(reqs):
+    """sha256 over the parsed lock (name, version, sorted hashes). Written beside vendor/ after an install."""
+    body = json.dumps([[n, v, sorted(h)] for n, v, h in reqs], separators=(",", ":"))
+    return hashlib.sha256(body.encode("ascii")).hexdigest()
+
+
+def vendor_stamp_path():
+    return os.path.join(root_dir(), "vendor-lock.sha256")
+
+
+def _dist_key(name, version):
+    return "%s-%s" % (re.sub(r"[-_.]+", "_", name).lower(), version)
+
+
+def _import_check(want):
+    """Import nacl from the verified vendor tree in a fresh interpreter. want: the locked pynacl version or None."""
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]); import gs_seal_common as g; n = g.load_nacl(); "
+        "import nacl.public, nacl.signing; w = sys.argv[2]; "
+        "sys.exit(0 if (not w or getattr(n, '__version__', '') == w) else 3)"
+    )
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        res = subprocess.run([sys.executable, "-I", "-c", code, here, want or ""], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+    except Exception:
+        return False
+    return res.returncode == 0
+
+
+def installed_vendor_matches(reqs, vendor):
+    """True when vendor/ already holds exactly this lock's set: the manifest verifies, the dist-info names and
+    versions are the locked ones, the stamp (when present) names this lock, and nacl imports at the locked version."""
+    if not os.path.isdir(vendor) or os.path.islink(vendor):
+        return False
+    try:
+        assert_vendor_trusted(os.path.expanduser("~"), os.geteuid(), vendor, vendor_manifest_path())
+    except Exception:
+        return False
+    have = set()
+    for entry in os.listdir(vendor):
+        if entry.endswith(".dist-info"):
+            stem = entry[: -len(".dist-info")]
+            name, _, version = stem.rpartition("-")
+            have.add(_dist_key(name, version))
+    if have != {_dist_key(n, v) for n, v, _h in reqs}:
+        return False
+    stamp = vendor_stamp_path()
+    if os.path.lexists(stamp):
+        try:
+            _require_file(stamp, 0o600)
+            with open(stamp, "r", encoding="ascii") as fh:
+                if fh.read().strip() != vendor_lock_digest(reqs):
+                    return False
+        except Exception:
+            return False
+    want = next((v for n, v, _h in reqs if n == "pynacl"), None)
+    return _import_check(want)
+
+
 def cmd_vendor_install(lock):
-    """Install hash-locked wheels into the private vendor directory. No shell and no pip."""
+    """Install hash-locked wheels into the private vendor directory. No shell and no pip.
+
+    0.13.37: a vendor/ that already holds exactly the locked set is kept (nothing downloaded). Every failure is
+    a clear message and leaves the previous set, or none, in place.
+    """
     refuse_musl()
     if not isinstance(lock, str) or not lock or "\x00" in lock:
-        raise Refused()
+        raise _vendor_fail("no vendor lock file was given")
     root = root_dir()
     refuse_unsafe_location(root)
     _ensure_private_dir(root)
     vendor = vendor_dir()
-    reqs = parse_vendor_lock(_read_lock(lock))
+    try:
+        reqs = parse_vendor_lock(_read_lock(lock))
+    except Refused:
+        raise _vendor_fail("the vendor lock file is missing or not valid")
     # Build the whole set in a fresh private directory beside vendor/, then swap it in by rename. An existing
     # vendor/ (an update) is replaced as a unit, never written over file by file, and put back if the swap fails.
     _recover_vendor(root, vendor)
+    if installed_vendor_matches(reqs, vendor):
+        want = next((v for n, v, _h in reqs if n == "pynacl"), None)
+        sys.stderr.write("PyNaCl %s is already installed and verifies. Keeping it.\n" % (want or "set"))
+        if not os.path.lexists(vendor_stamp_path()):
+            _write_private(vendor_stamp_path(), (vendor_lock_digest(reqs) + "\n").encode("ascii"))
+        return 0
     new = tempfile.mkdtemp(prefix=".vendor-new.", dir=root)
     os.chmod(new, 0o700)
     try:
         for name, version, hashes in reqs:
-            blob = fetch_wheel(name, version, hashes)
-            extract_wheel(blob, new)
+            label = "%s %s" % (name, version)
+            try:
+                blob = fetch_wheel(name, version, hashes)
+            except Refused as exc:
+                if getattr(exc, "reason", None) == "hash":
+                    raise _vendor_fail("the %s download did not match its pinned sha256" % label)
+                raise _vendor_fail("could not download %s from PyPI (no network, or no wheel for this "
+                                   "computer)" % label)
+            if not isinstance(blob, (bytes, bytearray)) or hashlib.sha256(blob).hexdigest() not in set(hashes):
+                raise _vendor_fail("the %s download did not match its pinned sha256" % label)
+            try:
+                extract_wheel(blob, new)
+            except Refused:
+                raise _vendor_fail("the %s wheel has an unsafe file layout" % label)
         mapping = vendor_file_hashes(new, os.geteuid())
     except BaseException:
         _remove_tree(new)
@@ -822,9 +916,16 @@ def cmd_vendor_install(lock):
     except BaseException:
         _rollback_vendor(root, vendor, old)
         _remove_tree(new)
-        raise Refused()
+        raise _vendor_fail("could not swap in the verified libraries, so the previous set was kept")
     if old:
         _remove_tree(old)
+    stamp = vendor_stamp_path()
+    try:
+        if os.path.lexists(stamp):
+            os.unlink(stamp)
+        _write_private(stamp, (vendor_lock_digest(reqs) + "\n").encode("ascii"))
+    except OSError:
+        pass  # only an optimization: without it the next run checks dist-info and imports
     return 0
 
 

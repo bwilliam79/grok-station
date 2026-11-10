@@ -165,24 +165,43 @@ def table_entries():
     return bot_content.read_table()
 
 
+# A release that changes what a bot runs (0.13.37 did) has no older release with the same content in the table.
+# The same-content scenarios then add one older line with this release's content and update pin, in memory only,
+# so the rule is still checked. out["prev_synthetic"] says when that happened.
+SYNTH_RELEASE = "0.12.99"
+_SYNTH = []
+_read_table = bot_content.read_table
+
+
+def _read_table_with_synth(path=None):
+    return _read_table(path) + (list(_SYNTH) if path is None else [])
+
+
+bot_content.read_table = _read_table_with_synth
+
+
 def prev_same():
-    """The newest older release whose cloud content equals this release's (what same_content accepts)."""
+    """The newest older release whose home content equals this release's (what same_content accepts)."""
     tab = table_entries()
     cur = [e for e in tab if e["release"] == REL]
     if not cur:
         raise SystemExit("admin/bot-releases.txt has no line for %s (run the manifest step first)" % REL)
-    want = cur[-1]["fp"]["cloud"]
-    olds = [e for e in tab if e["release"] != REL and e["fp"]["cloud"] == want
+    want = cur[-1]["fp"]["home"]
+    olds = [e for e in tab if e["release"] != REL and e["fp"]["home"] == want
             and ga.version_order(e["release"], REL) == "newer"]
+    if not olds and not _SYNTH and ga.version_order(SYNTH_RELEASE, REL) == "newer":
+        _SYNTH.append(dict(cur[-1], release=SYNTH_RELEASE))
+        out["prev_synthetic"] = SYNTH_RELEASE
+        return prev_same()
     return olds[-1] if olds else None
 
 
 def old_instr(slug, entry):
-    """The hash a cloud bot on entry["release"] signs: the template with that header and that release's update pin."""
-    rest = gs_routine.TEMPLATES["cloud"].split("\n", 1)[1]
-    pub = "".join(r.botreply.station_pub_b64(r.botreply.load_or_create_station(r.SECRETS_DIR)).split())
-    text = gs_routine.render("Grok Station instructions, release %s.\n" % entry["release"] + rest, "cloud", slug,
-                             entry["update_commit"], entry["update_sha"], STATION, FP, pub)
+    """The hash a home bot on entry["release"] signs: the template with that header and that release's update pin.
+    0.13.37: every bot is home (the cloud template is gone)."""
+    rest = gs_routine.TEMPLATES["home"].split("\n", 1)[1]
+    text = gs_routine.render("Grok Station instructions, release %s.\n" % entry["release"] + rest, "home", slug,
+                             entry["update_commit"], entry["update_sha"], owner=ga.setup_owner_name())
     return gs_routine.instr_hash(text)
 
 
@@ -191,7 +210,7 @@ def station_pub():
 
 
 def current_text(slug):
-    b = {"slug": slug, "key_mode": "cloud"}
+    b = {"slug": slug}  # 0.13.37: no key_mode; every bot is home
     return ga.render_bot_routine(b, STATION, FP, station_pub())
 
 
@@ -210,11 +229,91 @@ def setup(slug):
 def literals():
     with open(os.path.join(OPT, "admin", "setup-params.txt")) as fh:
         text = fh.read()
-    lit = dict(re.findall(r"^(ROUTINE_COMMIT|HASH_ROUTINE_HOME|HASH_ROUTINE_CLOUD|UPDATE_COMMIT|HASH_UPDATE|RELEASE) (\S+)$",
+    lit = dict(re.findall(r"^(ROUTINE_COMMIT|HASH_ROUTINE_HOME|UPDATE_COMMIT|HASH_UPDATE|RELEASE) (\S+)$",
                           text, re.M))
     m = re.search(r"/grok-station/([0-9a-f]{40})/scripts/install-home\.sh' && printf '%s  %s\\n' '([0-9a-f]{64})'", text)
     lit["INSTALL_COMMIT"], lit["HASH_INSTALL"] = m.groups()
     return lit
+
+
+
+# ---- 0.13.37: per-slug forget and Set up mode ----
+PAIR_KEY = base64.b64encode(b"\x09" * 32).decode()
+
+
+def no_password():
+    H.need_password = lambda self, j, always=False, session_ok=False: True
+
+
+def pendings_for(slug):
+    found = []
+    for name in sorted(os.listdir(r.PENDING_DIR)) if os.path.isdir(r.PENDING_DIR) else []:
+        if not name.endswith(".json"):
+            continue
+        with open(os.path.join(r.PENDING_DIR, name)) as fh:
+            doc = json.load(fh)
+        if doc.get("persona") == slug or (doc.get("kind") == "setup_relay" and doc.get("target") == slug):
+            found.append({"rid": doc.get("request_id"), "kind": doc.get("kind"),
+                          "mode": (doc.get("frozen") or {}).get("mode")})
+    return found
+
+
+def traces(slug):
+    """Everything a Set up or a Test leaves on the station for slug."""
+    status = {}
+    try:
+        with open(r.status_path()) as fh:
+            status = json.load(fh)
+    except (OSError, ValueError):
+        status = {}
+    return {"setup_relay": r.setup_state_load().get(slug), "pendings": pendings_for(slug),
+            "bot_status": slug in status if isinstance(status, dict) else False,
+            "admin_row": (ga.setup_load().get("rows") or {}).get(slug)}
+
+
+def setup_rid(slug):
+    row = r.setup_state_load().get(slug) or {}
+    return row.get("rid")
+
+
+def send_and_post_key(slug):
+    """Set up through the main bot, then the target posts its key (what the verified setup_pair post records)."""
+    code, body, posts = setup(slug)
+    rid = setup_rid(slug)
+    posted = bool(rid) and r.setup_note_review(rid, slug, PAIR_KEY, "Den iMac")
+    r._note_status(slug, answered=True)
+    return {"code": code, "error": (body or {}).get("error"), "posts": len(posts), "rid": rid, "review": posted,
+            "mode": posts[0]["json"].get("mode") if posts else None}
+
+
+def setup_payload(slug):
+    """A fresh Set up: what was posted and what was frozen in the pending request."""
+    code, body, posts = setup(slug)
+    rid = setup_rid(slug)
+    frozen = None
+    if rid:
+        with open(os.path.join(r.PENDING_DIR, rid + ".json")) as fh:
+            frozen = json.load(fh).get("frozen")
+    p = posts[0]["json"] if posts else {}
+    return {"code": code, "error": (body or {}).get("error"), "posts": len(posts), "mode": p.get("mode"),
+            "routine_sha256": p.get("routine_sha256"), "frozen_mode": (frozen or {}).get("mode"),
+            "frozen_equals_post": frozen == p if p else False, "has_cloud": "cloud" in json.dumps(p)}
+
+
+def imported_state(name):
+    row = (r._load_imported().get("rows") or {}).get(name.casefold())
+    return row.get("state") if isinstance(row, dict) else None
+
+
+def setup_view(slug):
+    """The Bots page's Set up row for slug: the admin row status and the relay state it shows ({} = no row)."""
+    rows = (ga.bots_setup_field() or {}).get("rows") or {}
+    row = rows.get(slug) or {}
+    return {k: row.get(k) for k in ("status", "relay", "relay_fp") if k in row}
+
+
+def main_current():
+    status("juno", REL, gs_routine.instr_hash(current_text("juno")))
 
 
 out = {"scenario": SCENARIO, "release": REL, "loaded": LOADED}
@@ -224,13 +323,13 @@ if SCENARIO == "main_behind_same_content":
     out["prev"] = prev and prev["release"]
     status("juno", prev["release"], old_instr("juno", prev))
     status("kai", prev["release"], old_instr("kai", prev))
-    out["same_content_rule"] = ga.same_content({"slug": "juno", "key_mode": "cloud"}, prev["release"],
+    out["same_content_rule"] = ga.same_content({"slug": "juno"}, prev["release"],
                                                old_instr("juno", prev), STATION, FP, station_pub())
     out["page"] = page()
     code, body, posts = setup("otto")
     out["gate"] = {"code": code, "error": (body or {}).get("error"), "setup_relay_posts": len(posts)}
     got = ga.relay_call("POST", "/admin/bots/setup-relay", {"actor": ga.RELAY_ACTOR, "slug": "juno", "target": "otto",
-                                                            "mode": "cloud", "path": "first"})
+                                                            "mode": "home", "path": "first"})
     out["relay_direct"] = {"code": got[0], "error": got[1].get("error"), "posts": len([p for p in POSTS if p["json"].get("kind") == "setup_relay"])}
 
 elif SCENARIO == "main_current_setup_proceeds":
@@ -252,10 +351,11 @@ elif SCENARIO == "main_paired_no_status":
     def relay_direct():
         n = len([p for p in POSTS if p["json"].get("kind") == "setup_relay"])
         got = ga.relay_call("POST", "/admin/bots/setup-relay", {"actor": ga.RELAY_ACTOR, "slug": "juno",
-                                                                "target": "otto", "mode": "cloud", "path": "first"})
+                                                                "target": "otto", "mode": "home", "path": "first"})
         return {"code": got[0], "error": got[1].get("error"),
                 "posts": len([p for p in POSTS if p["json"].get("kind") == "setup_relay"]) - n}
-    got = ga.relay_call("PUT", "/admin/bots/juno/key", {"actor": ga.RELAY_ACTOR, "public_key": KEY})
+    got = ga.relay_call("PUT", "/admin/bots/juno/key", {"actor": ga.RELAY_ACTOR, "public_key": KEY,
+                                                        "expect_old_fp": r.botreply.key_fingerprint(KEY).replace(" ", "")})
     out["pin"] = got[0]
     out["stamp"] = r.paired_releases().get("juno")
     out["held"] = r.bot_updates().get("juno")
@@ -271,8 +371,8 @@ elif SCENARIO == "main_paired_no_status":
 elif SCENARIO == "mixed_releases":
     prev = prev_same()
     tab = table_entries()
-    cur_fp = [e for e in tab if e["release"] == REL][-1]["fp"]["cloud"]  # prev_same() checked it is listed
-    diff = [e for e in tab if e["fp"]["cloud"] != cur_fp][-1]
+    cur_fp = [e for e in tab if e["release"] == REL][-1]["fp"]["home"]  # prev_same() checked it is listed
+    diff = [e for e in tab if e["fp"]["home"] != cur_fp][-1]
     status("juno", REL, gs_routine.instr_hash(current_text("juno")))
     status("kai", prev["release"], old_instr("kai", prev))
     status("pip", diff["release"], old_instr("pip", diff))
@@ -326,6 +426,168 @@ elif SCENARIO == "status_lint_digits":
     out["recorded"] = r.note_update("kai", got["text"]) if out["accepted"] else False
     out["page"] = page()
 
+elif SCENARIO == "remove_then_rescan":
+    # 0.13.37: Remove a home bot that was set up, rescan, Set up again: a net-new row and home-mode details.
+    no_password()
+    main_current()
+    out["first"] = send_and_post_key("pip")
+    out["before"] = traces("pip")
+    code, body = admin("bots_remove", "pip", {})
+    out["remove"] = code
+    out["after_remove"] = traces("pip")
+    out["merge"] = r.merge_imported(["Juno", "Otto", "Kai", "Pip"], "juno")
+    out["imported_state"] = imported_state("Pip")
+    out["view"] = setup_view("pip")
+    out["again"] = setup_payload("pip")
+    out["literals"] = literals()
+
+elif SCENARIO == "dismiss_then_rescan":
+    # 0.13.37: a Not set up name with a pending Set up, dismissed, then listed again: net-new, no old request.
+    no_password()
+    main_current()
+    out["merge1"] = r.merge_imported(["Juno", "Otto", "Kai", "Pip", "Nix"], "juno")
+    out["first"] = send_and_post_key("nix")
+    out["before"] = traces("nix")
+    r.merge_imported(["Juno", "Otto", "Kai", "Pip"], "juno")  # the fifth bot drops off: the row is missing, so it can be dismissed
+    code, body = admin("bots_dismiss", "nix")
+    out["dismiss"] = [code, (body or {}).get("error")]
+    out["after_dismiss"] = traces("nix")
+    out["merge2"] = r.merge_imported(["Juno", "Otto", "Kai", "Pip", "Nix"], "juno")
+    out["imported_state"] = imported_state("Nix")
+    out["view"] = setup_view("nix")
+    out["accept_old"] = r.setup_pair_decide("nix", "accept")
+    out["again"] = setup_payload("nix")
+
+elif SCENARIO == "re_setup_while_pending":
+    # 0.13.37: Set up again while a posted key waits for Accept. The page asks first; once replaced, the old
+    # request and its posted key can't be accepted or posted to.
+    no_password()
+    main_current()
+    out["first"] = send_and_post_key("otto")
+    old = out["first"]["rid"]
+    doc = ga.setup_load()
+    row = doc["rows"]["otto"]
+    for k in ("sent_at", "at"):
+        if isinstance(row.get(k), (int, float)):
+            row[k] -= 3600  # past the resend wait, so the second Set up is a real new request
+    ga.setup_store(doc)
+    out["second"] = setup_payload("otto")
+    new = setup_rid("otto")
+    out["rids_differ"] = bool(new) and new != old
+    out["old_pending"] = os.path.exists(os.path.join(r.PENDING_DIR, old + ".json"))
+    out["old_doc"] = r._pending_doc(old)
+    out["late_post_old"] = r.setup_note_review(old, "otto", PAIR_KEY, "Den iMac")
+    out["accept"] = r.setup_pair_decide("otto", "accept")
+    out["pinned"] = [r.pinned_fingerprint("otto"), r._pubkey_fp(KEY), r._pubkey_fp(PAIR_KEY)]
+    out["pendings"] = pendings_for("otto")
+
+elif SCENARIO == "stale_cloud_request":
+    # 0.13.37 upgrade: a Set up request frozen as cloud by 0.13.36 (posted key waiting, never accepted) is retired.
+    no_password()
+    main_current()
+    now = time.time()
+    vals = r.setup_station_values()
+
+    def old_cloud_pending(target):
+        rid = r.handoff.new_request_id()
+        reply_by = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 900))
+        frozen = r.handoff.setup_relay_payload(rid, "juno", reply_by, target, vals[0], vals[1], vals[2], "home", REL)
+        frozen["mode"] = "cloud"  # what 0.13.36 froze for a bot with no stored key location
+        doc = {"request_id": rid, "persona": "juno", "nonce": "n" * 16, "expires_ms": int((now + 900) * 1000),
+               "kind": "setup_relay", "target": target, "frozen": frozen, "path": "first"}
+        os.makedirs(r.PENDING_DIR, exist_ok=True)
+        with open(os.path.join(r.PENDING_DIR, rid + ".json"), "w") as fh:
+            json.dump(doc, fh)
+        st = r.setup_state_load()
+        st[target] = {"state": "review", "rid": rid, "at": int(now), "expires_ms": int((now + 900) * 1000),
+                      "computer": "Den iMac", "pending_pub": PAIR_KEY, "fp": r._pubkey_fp(PAIR_KEY), "path": "first"}
+        r.setup_state_save(st)
+        return rid
+    rid_otto = old_cloud_pending("otto")
+    doc = ga.setup_load()
+    doc.setdefault("rows", {})["otto"] = {"name": "Otto", "wake": "Hey Otto", "computer": "", "status": "sent",
+                                         "sent_at": int(now), "fails": 0, "message": "", "unknown": False}
+    ga.setup_store(doc)
+    out["before"] = {"view": setup_view("otto"), "public": (r.setup_state_public().get("otto") or {}).get("state")}
+    out["retired"] = r.retire_cloud_setup_requests()
+    out["after"] = {"pending": os.path.exists(os.path.join(r.PENDING_DIR, rid_otto + ".json")),
+                    "public": (r.setup_state_public().get("otto") or {}).get("state"),
+                    "view": setup_view("otto"), "pending_pub": "pending_pub" in (r.setup_state_load().get("otto") or {})}
+    out["accept"] = r.setup_pair_decide("otto", "accept")
+    out["accept_admin"] = admin("bots_setup_pair", {"slug": "otto", "decision": "accept",
+                                                  "expect_old_fp": r.botreply.key_fingerprint(KEY).replace(" ", "")})[0]
+    out["late_post"] = r.setup_note_review(rid_otto, "otto", PAIR_KEY, "Den iMac")
+    # A stale request that appears without a restart is refused when it is read.
+    rid_kai = old_cloud_pending("kai")
+    out["read_kai"] = r._pending_doc(rid_kai)
+    out["kai_file"] = os.path.exists(os.path.join(r.PENDING_DIR, rid_kai + ".json"))
+    doc = ga.setup_load()
+    for row in (doc.get("rows") or {}).values():
+        for k in ("sent_at", "at"):
+            if isinstance(row.get(k), (int, float)):
+                row[k] -= 3600
+    ga.setup_store(doc)
+    out["fresh"] = setup_payload("otto")
+elif SCENARIO == "key_migration":
+    # GS1337-01: what the relay does at its first 0.13.37 start with pins from 0.13.36. Three bots, one per
+    # case: kai explicit key_mode cloud; otto no key_mode but a signed update status from its home helper; pip no
+    # key_mode and nothing from a home helper. juno (the main bot) is key_mode home. All four have the same pin.
+    no_password()
+    main_current()
+    with open(r.overlay_path()) as fh:
+        ov = json.load(fh)
+    ov["key_mode"] = {"juno": "home", "kai": "cloud"}
+    with open(r.overlay_path(), "w") as fh:
+        json.dump(ov, fh)
+    status("otto", REL, gs_routine.instr_hash(current_text("otto")))
+    trusted = getattr(r, "trusted_keys", None) or (lambda: botreply.load_keys(r.bot_keys_path()))
+
+    def trust():
+        keys = trusted().get("keys") or {}
+        return {s: (s in keys and r.bot_paired(s)) for s in BOTS}
+
+    def listed():
+        got = ga.relay_call("GET", "/admin/bots")
+        rows = {b["slug"]: ga.safe_bot(b) for b in (got[1].get("bots") or [])}
+        return {s: (rows.get(s) or {}).get("key_move") for s in BOTS}
+
+    def mig_audit():
+        path = r.audit_path()
+        if not os.path.exists(path):
+            return []
+        with open(path) as fh:
+            return [l.split(" ", 2)[2] for l in fh.read().splitlines() if " key-migration " in l]
+
+    # 0.13.36's save_overlay dropped key_mode on the first save; it must survive until the migration has read it.
+    got = ga.relay_call("PATCH", "/admin/bots/kai", {"voice": "ara", "actor": ga.RELAY_ACTOR})
+    with open(r.overlay_path()) as fh:
+        out["key_mode_before_migration"] = (got[0], json.load(fh).get("key_mode"))
+    out["trusted_before"] = trust()
+    run = getattr(r, "run_key_migration", None)
+    out["verdicts"] = {s: v["verdict"] for s, v in (run() or {}).items()} if run else None
+    out["evidence"] = {s: v["evidence"] for s, v in (r.run_key_migration(preview=True) or {}).items()} if run else None
+    out["second_run"] = run() if run else "no migration"
+    mpath = os.path.join(r.bots_dir(), "key-migration.json")
+    out["file"] = json.load(open(mpath)) if os.path.exists(mpath) else None
+    out["audit"] = mig_audit()
+    out["trusted_after"] = trust()
+    out["listed"] = listed()
+    out["icon"] = r.icon_view()
+    got = ga.relay_call("PATCH", "/admin/bots/kai", {"voice": "ara", "actor": ga.RELAY_ACTOR})
+    with open(r.overlay_path()) as fh:
+        out["key_mode_after_migration"] = (got[0], json.load(fh).get("key_mode"))
+    # kai: Configure > Replace key with a new key from its home computer.
+    new_key = base64.b64encode(b"\x0b" * 32).decode()
+    old_fp = r.botreply.key_fingerprint(KEY).replace(" ", "")
+    out["kai_same_key"] = admin("bots_key_put", "kai", {"public_key": KEY, "expect_old_fp": old_fp})[0]
+    out["kai_same_key_listed"] = listed()["kai"]
+    out["kai_replace"] = admin("bots_key_put", "kai", {"public_key": new_key, "expect_old_fp": old_fp})[0]
+    # pip: Set up again; its home helper posts a key and the admin accepts it.
+    out["pip_setup"] = send_and_post_key("pip")
+    out["pip_accept"] = admin("bots_setup_pair", {"slug": "pip", "decision": "accept", "expect_old_fp": old_fp})
+    out["trusted_end"] = trust()
+    out["listed_end"] = listed()
+    out["audit_end"] = mig_audit()[len(out["audit"]):]
 elif SCENARIO == "utc_stamps":
     import fewshot as fs
     import grok_wake as gw

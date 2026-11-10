@@ -29,21 +29,11 @@ def setup_pins():
 
 class G01CloudMainHoldsInstallLiterals(unittest.TestCase):
     def test_cloud_template_contains_setup_install_pins(self):
-        c, h = setup_pins()
-        self.assertTrue(c and h)
-        cloud = gs_routine.TEMPLATES["cloud"]
-        self.assertIn(PIN_BIND, cloud)
-        m = PINS_LINE.search(cloud)
-        self.assertIsNotNone(m, "cloud template missing Install pins line")
-        self.assertEqual(m.group(1), c)
-        self.assertEqual(m.group(2), h)
-        self.assertIn(NEVER, cloud.lower())
-        rc = open(os.path.join(ROOT, "admin", "routine-cloud.txt"), encoding="utf-8").read()
-        self.assertEqual(rc, cloud)
+        # 0.13.37: there is no cloud template, file or app.js copy; G02 covers the one (home) template.
+        self.assertNotIn("cloud", gs_routine.TEMPLATES)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "admin", "routine-cloud.txt")))
         js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
-        i = js.index("const BOT_ROUTINE = String.raw`") + len("const BOT_ROUTINE = String.raw`")
-        j = js.index("`;", i)
-        self.assertEqual(js[i:j], cloud)
+        self.assertNotIn("const BOT_ROUTINE = String.raw`", js)
 
 
 class G02HomeMainPinBind(unittest.TestCase):
@@ -63,7 +53,7 @@ class G02HomeMainPinBind(unittest.TestCase):
 class G03HoldsSetupWired(unittest.TestCase):
     def test_update_only_never_attests_target_install_procedure(self):
         # Actual Update render + signed status hash: only the main routine was adopted.
-        bot = {"slug": "otto", "paired": True, "key_mode": "cloud"}
+        bot = {"slug": "otto", "paired": True}
         station, fp, pub = "https://station-demo.local", ":".join(["AB"] * 32), "A" * 43 + "="
         from unittest.mock import patch
         with patch.object(ga, "VERSION_FILE", os.path.join(ROOT, "VERSION")):

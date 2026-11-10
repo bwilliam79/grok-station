@@ -37,9 +37,7 @@ class OldUpdaterAcceptsTemplates(unittest.TestCase):
                 return fh.read()
         texts = {
             "routine-home.txt": read("routine-home.txt"),
-            "routine-cloud.txt": read("routine-cloud.txt"),
             "template home": gs_routine.TEMPLATES["home"],
-            "template cloud": gs_routine.TEMPLATES["cloud"],
         }
         for name, text in texts.items():
             for line in lines:

@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "relay"))
 import handoff  # noqa: E402
 
 _loader = importlib.machinery.SourceFileLoader(
-    "grok_station_reply_rescan", os.path.join(ROOT, "tools", "grok-station-reply"))
+    "grok_station_reply_rescan", os.path.join(ROOT, "tests", "fixtures", "grok-station-reply"))
 _spec = importlib.util.spec_from_loader("grok_station_reply_rescan", _loader)
 helper = importlib.util.module_from_spec(_spec)
 _loader.exec_module(helper)
@@ -127,7 +127,7 @@ class RelayRescan(unittest.IsolatedAsyncioTestCase):
         r, c = self.relay, self.client
         pub = _b64(bytes(self.signer.verify_key))
         res = await c.put("/admin/bots/sol/key", headers=self.headers(),
-                          json={"public_key": pub, "actor": "admin"})
+                          json={"public_key": pub, "actor": "admin", "expect_old_fp": "-"})
         self.assertEqual(res.status, 200, await res.text())
         self.assertTrue(r.write_webhooks({"sol": {"url": url, "token": self.token, "saved_at": 10}}))
         saved = await c.put("/admin/bots/list-source", headers=self.headers(),

@@ -18,7 +18,7 @@ import test_admin as ta  # noqa: E402  (sets the admin env, then imports grok_ad
 from nacl.signing import SigningKey  # noqa: E402
 
 ga = ta.ga
-_loader = importlib.machinery.SourceFileLoader("gs_reply_1212", os.path.join(ROOT, "tools", "grok-station-reply"))
+_loader = importlib.machinery.SourceFileLoader("gs_reply_1212", os.path.join(ROOT, "tests", "fixtures", "grok-station-reply"))
 _spec = importlib.util.spec_from_loader("gs_reply_1212", _loader)
 helper = importlib.util.module_from_spec(_spec)
 _loader.exec_module(helper)
@@ -37,7 +37,7 @@ def render_notes(bot):
     """The Bots row's amber notes, from the page's own helperBehind and finishNotes."""
     if not shutil.which("node"):
         return None
-    prog = (_fn("helperBehind") + _fn("finishNotes")
+    prog = (_fn("helperBehind") + _fn("keyMoveText") + _fn("finishNotes")
             + "const rowUpdating=()=>false, rowFailLine=()=>'', finishFind=()=>null, FINISH={view:null};"
             + "const ICO_TRI='', esc=s=>String(s);"
             + "process.stdout.write(JSON.stringify(finishNotes(%s)));" % json.dumps(bot))
@@ -169,7 +169,7 @@ class _Flow(unittest.TestCase):
                                              "reply_host": "box.example.lan", "password": ta.GOOD})
         self.assertEqual(st, 201, j)
         self.check("after create")
-        st, j = c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": self.pub, "password": ta.GOOD})
+        st, j = c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": self.pub, "expect_old_fp": "-", "password": ta.GOOD})
         self.assertEqual(st, 200, j)
         self.check("after pairing")
         st, j = c.req("PUT", "/api/bots/%s/webhook" % slug, {"url": URL, "key": HOOK, "password": ta.GOOD})

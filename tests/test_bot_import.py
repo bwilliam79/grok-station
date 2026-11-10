@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(ROOT, "relay"))
 import botreply  # noqa: E402
 import handoff  # noqa: E402
 
-_loader = importlib.machinery.SourceFileLoader("grok_station_reply_list", os.path.join(ROOT, "tools", "grok-station-reply"))
+_loader = importlib.machinery.SourceFileLoader("grok_station_reply_list", os.path.join(ROOT, "tests", "fixtures", "grok-station-reply"))
 _spec = importlib.util.spec_from_loader("grok_station_reply_list", _loader)
 helper = importlib.util.module_from_spec(_spec)
 _loader.exec_module(helper)
@@ -410,7 +410,7 @@ class ImportApi(unittest.IsolatedAsyncioTestCase):
     async def _pair(self, slug="sol"):
         pub = _b64(bytes(self.signer.verify_key))
         res = await self.client.put(f"/admin/bots/{slug}/key", headers=self.headers(),
-                                    json={"public_key": pub, "actor": "admin"})
+                                    json={"public_key": pub, "actor": "admin", "expect_old_fp": "-"})
         self.assertEqual(res.status, 200, await res.text())
 
     async def _main(self):

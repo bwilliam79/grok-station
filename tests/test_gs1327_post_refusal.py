@@ -41,7 +41,7 @@ class HelperPhrases(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.home = _load("gs1327_home", "scripts/gs-seal-reply")
-        cls.cloud = _load("gs1327_cloud", "tools/grok-station-reply")
+        cls.cloud = _load("gs1327_cloud", "tests/fixtures/grok-station-reply")
 
     def test_named_lines_and_unknown_stays_bare(self):
         for mod in (self.home, self.cloud):

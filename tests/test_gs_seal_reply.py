@@ -1613,7 +1613,9 @@ class SealReply(unittest.TestCase):
 
         with _patched(su.os, "replace", boom):
             rc = self._vendor_run([("nacl/__init__.py", b"V = 2\n")])
-        self.assertEqual(rc, (1, "", "refused\n"))
+        # 0.13.37: the refusal says what failed and that nothing unverified was installed.
+        self.assertEqual(rc, (1, "", "PyNaCl install refused: could not swap in the verified libraries, so the previous "
+                                     "set was kept." + su.VENDOR_FAIL_TAIL + "\n"))
         self.assertEqual(self.slurp(os.path.join(vendor, "nacl", "__init__.py"), binary=True), b"V = 1\n")
         self.assertEqual(open(os.path.join(root, "vendor-manifest.json"), "rb").read(), man)
         self.assertEqual([n for n in os.listdir(root) if n.startswith(".vendor-")], [])
@@ -1645,7 +1647,9 @@ class SealReply(unittest.TestCase):
         self._lock(lock, digest)
         with _patched(su, "fetch_wheel", lambda *a: link):
             refused = self.cli(["vendor-install", "--lock", lock], HOME=home)
-        self.assertEqual(refused, (1, "", "refused\n"))
+        self.assertEqual(refused[:2], (1, ""))
+        self.assertRegex(refused[2], r"^PyNaCl install refused: the \S+ \S+ wheel has an unsafe file layout\.")
+        self.assertTrue(refused[2].endswith(su.VENDOR_FAIL_TAIL + "\n"))
         self.assertFalse(os.path.exists(os.path.join(home, ".config", "grok-station", "vendor-manifest.json")))
 
         home = tempfile.mkdtemp(dir=self.home)
@@ -1658,7 +1662,9 @@ class SealReply(unittest.TestCase):
 
         with _patched(su, "fetch_wheel", boom):
             refused = self.cli(["vendor-install", "--lock", lock], HOME=home)
-        self.assertEqual(refused, (1, "", "refused\n"))
+        self.assertEqual(refused[:2], (1, ""))
+        self.assertRegex(refused[2], r"^PyNaCl install refused: could not download \S+ \S+ from PyPI")
+        self.assertTrue(refused[2].endswith(su.VENDOR_FAIL_TAIL + "\n"))
         self.assertFalse(os.path.exists(os.path.join(home, ".config", "grok-station", "vendor-manifest.json")))
 
     def test_keygen_refuses_without_a_trusted_vendor(self):

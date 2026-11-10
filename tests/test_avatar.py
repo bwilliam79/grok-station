@@ -71,7 +71,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
             "hooks": {"mtime": r._hooks.get("mtime"), "map": dict(r._hooks.get("map") or {})},
             "runs": dict(r._runs),
         }
-        self.snap.update(HELPER_FILE=r.HELPER_FILE, key_mode_of=r.key_mode_of, helper_asked=dict(r._helper_asked))
+        self.snap.update(HELPER_FILE=r.HELPER_FILE, helper_asked=dict(r._helper_asked))
         r.HELPER_FILE = os.path.join(self.tmp, "helpers.json")
         r._helper_asked.clear()
         r._helper_reset_state()  # helper status cached by an earlier test (any order) must not leak in
@@ -160,7 +160,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
         r.PERSONAS_FILE, r.ADMIN_TOKEN = s["PERSONAS_FILE"], s["ADMIN_TOKEN"]
         r.REPLY_WAIT, r.HANDOFF, r.log, r._limits = s["REPLY_WAIT"], s["HANDOFF"], s["log"], s["_limits"]
         r.TOKENS = s["TOKENS"]
-        r.HELPER_FILE, r.key_mode_of = s["HELPER_FILE"], s["key_mode_of"]
+        r.HELPER_FILE = s["HELPER_FILE"]
         r.UPDATES_FILE = s["UPDATES_FILE"]
         r._helper_asked.clear()
         r._helper_asked.update(s["helper_asked"])
@@ -341,10 +341,7 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
                                                        "saved_at": 1}}))
             ask = lambda: self.client.post("/admin/bots/jules/helper-update", headers=self.admin("application/json"),
                                            json={"actor": "admin"})
-            cloud = await ask()
-            self.assertEqual(cloud.status, 400)  # a cloud-key bot has no home helper
-            r.key_mode_of = lambda doc, slug: "home"
-            got = await ask()
+            got = await ask()  # 0.13.37: every bot keeps its key at home, so every bot has a helper
             self.assertEqual(got.status, 202, await got.text())
             body = seen[-1]
             self.assertEqual(set(body), {"v", "request_id", "persona", "question", "reply_by", "kind"})
@@ -362,7 +359,6 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
 
     async def test_helper_update_failed_send_frees_the_slot(self):
         r = self.relay
-        r.key_mode_of = lambda doc, slug: "home"
         self.assertTrue(r.write_webhooks({"jules": {"url": "http://127.0.0.1:9/hook", "token": "hook-token-dddd",
                                                    "saved_at": 1}}))
         ask = lambda: self.client.post("/admin/bots/jules/helper-update", headers=self.admin("application/json"),
@@ -375,7 +371,6 @@ class Avatar(unittest.IsolatedAsyncioTestCase):
     async def test_update_helper_confirmation_end_to_end(self):
         """The bot's sealed reply to an update_helper ask goes through botreply.ingest into the version record."""
         r = self.relay
-        r.key_mode_of = lambda doc, slug: "home"
         seen = []
 
         async def hook(req):

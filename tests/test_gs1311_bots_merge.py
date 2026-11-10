@@ -154,6 +154,13 @@ class RowSetup(unittest.TestCase):
             self.assertIn(".onclick", line)
         for fn in ("paintBots", "refreshBots", "paintSetupList", "paintBotCallout"):
             self.assertNotIn("setupSend(", _fn(fn))
+            self.assertNotIn("setupSendNow(", _fn(fn))
+        # 0.13.37: the send itself runs only from setupSend: directly, or from its Replace sheet's button.
+        now = [m.start() for m in re.finditer(r"\bsetupSendNow\(", JS)]
+        self.assertEqual(len(now), 3)  # the definition, the direct call, the sheet's go
+        body = _fn("setupSend").split("async function setupSendNow(", 1)[0]
+        self.assertEqual(body.count("setupSendNow("), 2)
+        self.assertIn("go: async () => { await setupSendNow(row, el, btn);", body)
 
 
 class UpdatesSwitch(unittest.TestCase):

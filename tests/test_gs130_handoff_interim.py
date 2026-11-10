@@ -138,7 +138,7 @@ class InterimWire(unittest.TestCase):
             mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
             loader.exec_module(mod)
             return mod
-        cloud = load("gsr_cloud_130", "tools/grok-station-reply")
+        cloud = load("gsr_cloud_130", "tests/fixtures/grok-station-reply")
         self.assertTrue(json.loads(cloud.canonical("vs_" + "c" * 22, "On it.", True))["interim"])
         self.assertNotIn("interim", json.loads(cloud.canonical("vs_" + "c" * 22, "Dinner.")))
         home = load("gsr_home_130", "scripts/gs-seal-reply")

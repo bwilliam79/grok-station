@@ -30,7 +30,8 @@ fi
 install -m755 "$S/admin/grok_admin.py" /opt/grok-station/admin/
 # Every module grok_admin.py imports, and every local module those import, must be installed next to it (a missing
 # one crash-loops the admin page). 0.13.34: gs_routine.py imports gs_render.py (tests/test_gs1334_admin_install.py).
-install -m644 "$S/admin/gs_routine.py" "$S/admin/gs_render.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/routine-cloud.txt" "$S/admin/setup-params.txt" /opt/grok-station/admin/
+install -m644 "$S/admin/gs_routine.py" "$S/admin/gs_render.py" "$S/admin/bot_content.py" "$S/admin/gs_integrations.py" "$S/admin/bot-releases.txt" "$S/admin/routine-home.txt" "$S/admin/setup-params.txt" /opt/grok-station/admin/
+rm -f /opt/grok-station/admin/routine-cloud.txt  # 0.13.37: the cloud routine is gone
 rm -f /opt/grok-station/admin/pairing.py /opt/grok-station/admin/pair_listener.py /opt/grok-station/admin/release.py  # removed (single device)
 install -m644 "$S"/admin/web/index.html "$S"/admin/web/deploy-pins.js "$S"/admin/web/app.js "$S"/admin/web/admin.css /opt/grok-station/admin/web/
 install -m644 "$S"/admin/web/assets/* /opt/grok-station/admin/web/assets/

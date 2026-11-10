@@ -1,7 +1,12 @@
 """Render and check a bot routine. No release templates live here.
 
-install-home.sh installs this file with the home helper. The templates are data: the bot fetches
-admin/routine-<mode>.txt at the routine pin. A header change in a later release does not change this file.
+install-home.sh installs this file with the home helper. The template is data: the bot fetches
+admin/routine-home.txt at the routine pin. A header change in a later release does not change this file.
+
+0.13.37: home is the only mode. The bot's key is on its home computer and the helper there seals every
+reply, so there is no cloud template and no station address, fingerprint or station key in a routine.
+The mode argument stays in every signature and command line so the text a bot runs keeps its shape;
+anything but "home" is refused.
 """
 import hashlib
 import os
@@ -43,7 +48,6 @@ _PARAM_LINE = re.compile(
     r"|The command .*"
     r"|ROUTINE_COMMIT [0-9a-f]{40}"
     r"|HASH_ROUTINE_HOME [0-9a-f]{64}"
-    r"|HASH_ROUTINE_CLOUD [0-9a-f]{64}"
     r"|UPDATE_COMMIT [0-9a-f]{40}"
     r"|HASH_UPDATE [0-9a-f]{64}"
     r"|RELEASE [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
@@ -52,7 +56,6 @@ _PARAM_LINE = re.compile(
 _PARAM_VALUE = {
     "ROUTINE_COMMIT": re.compile(r"\A[0-9a-f]{40}\Z"),
     "HASH_ROUTINE_HOME": re.compile(r"\A[0-9a-f]{64}\Z"),
-    "HASH_ROUTINE_CLOUD": re.compile(r"\A[0-9a-f]{64}\Z"),
     "UPDATE_COMMIT": re.compile(r"\A[0-9a-f]{40}\Z"),
     "HASH_UPDATE": re.compile(r"\A[0-9a-f]{64}\Z"),
     "RELEASE": re.compile(r"\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\Z"),
@@ -66,17 +69,22 @@ class Bad(Exception):
     pass
 
 
+def _home_only(mode, station="", fingerprint="", pub=""):
+    """0.13.37: only home, and no station values (those were for the removed cloud mode)."""
+    if mode != "home":
+        raise Bad("mode")
+    if station or fingerprint or pub:
+        raise Bad("station")
+
+
 def update_command(mode, slug, pin_commit, pin_sha, station="", fingerprint="", pub="", owner=None):
     """The one command a bot runs for kind update_bot. Built from pins and checked values only."""
-    if mode not in ("home", "cloud") or not SLUG.match(slug or "") or slug == "grok":
+    _home_only(mode, station, fingerprint, pub)
+    if not SLUG.match(slug or "") or slug == "grok":
         raise Bad("slug")
     if not COMMIT.match(pin_commit or "") or not SHA.match(pin_sha or ""):
         raise Bad("pin")
     tail = ""
-    if mode == "cloud":
-        if not (STATION.match(station or "") and FINGERPRINT.match(fingerprint or "") and PUB.match(pub or "")):
-            raise Bad("station")
-        tail = " --station '%s' --pin-sha256 '%s' --station-pub '%s'" % (station, fingerprint, pub)
     if owner is not None:
         tail += " --owner '%s'" % owner_name(owner)
     return ("d=$(mktemp -d) && ( cd \"$d\" && curl --proto '=https' --tlsv1.2 -fsS -o gs-update.sh '"
@@ -94,25 +102,21 @@ def render(template, mode, slug, pin_commit, pin_sha, station="", fingerprint=""
     cmd = update_command(mode, slug, pin_commit, pin_sha, station, fingerprint, pub, owner)
     template_owner = template.replace("{owner}", owner)
     text = template_owner.replace("<update command>", cmd).replace("<slug>", slug)
-    if mode == "cloud":
-        text = text.replace("<station public key>", pub).replace("<station address>", station) \
-            .replace("<fingerprint>", fingerprint)
     check(text, mode, template)
     return text
 
 
 _V = r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
-_SLUG_RX, _ST_RX = r"(?!grok\b)[a-z][a-z0-9-]{1,23}", r"https://[A-Za-z0-9.-]{1,253}(?::[0-9]{1,5})?"
-_FP_RX, _PUB_RX = r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}", r"[A-Za-z0-9+/]{43}="
+_SLUG_RX = r"(?!grok\b)[a-z][a-z0-9-]{1,23}"
 
 
 def _update_rx(mode):
-    tail = (" --station '(?P=station)' --pin-sha256 '(?P=fp)' --station-pub '(?P=pub)'" if mode == "cloud" else "")
+    _home_only(mode)
     return ("d=\\$\\(mktemp -d\\) && \\( cd \"\\$d\" && curl --proto '=https' --tlsv1\\.2 -fsS -o gs-update\\.sh '"
             + re.escape(REPO) + "[0-9a-f]{40}/scripts/gs-update\\.sh' && \\{ command -v sha256sum >/dev/null && "
             "s=\\$\\(sha256sum gs-update\\.sh\\) \\|\\| s=\\$\\(shasum -a 256 gs-update\\.sh\\); \\} && "
             "\\[ \"\\$\\{s%% \\*\\}\" = '[0-9a-f]{64}' \\] && sh gs-update\\.sh --release \"\\$RELEASE\" "
-            "--commit \"\\$COMMIT\" --mode " + mode + " --persona (?P=slug)" + tail + "(?: --owner '" + OWNER_NAME.pattern + "')?"
+            "--commit \"\\$COMMIT\" --mode " + mode + " --persona (?P=slug)" + "(?: --owner '" + OWNER_NAME.pattern + "')?"
             + " \\); r=\\$\\?; rm -rf \"\\$d\"; \\[ \"\\$r\" = 0 \\]")
 
 
@@ -134,9 +138,8 @@ def _template_ok(t, mode):
         raise Bad("template update command")
     if any(("\n" + line) not in t for line in _REQUIRED_LINES):
         raise Bad("template safety line")
-    if mode == "home" and any(p in t for p in _PLACEHOLDERS[1:4]):
-        raise Bad("template placeholder")
-    if mode == "cloud" and not all(p in t for p in _PLACEHOLDERS[1:4]):
+    _home_only(mode)
+    if any(p in t for p in _PLACEHOLDERS[1:4]):
         raise Bad("template placeholder")
 
 
@@ -149,13 +152,10 @@ def _pattern(mode, template):
         raise Bad("template header")
     out = ["Grok Station instructions, release (?P<rel>" + _V + ")\\.\n"]
     seen = set()
-    groups = {"<slug>": ("slug", _SLUG_RX), "<station address>": ("station", _ST_RX),
-              "<fingerprint>": ("fp", _FP_RX), "<station public key>": ("pub", _PUB_RX)}
-    if mode == "home":
-        groups = {"<slug>": groups["<slug>"]}
+    groups = {"<slug>": ("slug", _SLUG_RX)}
     for piece in re.split(r"(<slug>|<station address>|<fingerprint>|<station public key>|<update command>|\{owner\})", rest):
         if piece == "<update command>":
-            if not {"slug"} <= seen or (mode == "cloud" and not {"station", "fp", "pub"} <= seen):
+            if not {"slug"} <= seen:
                 raise Bad("template order")
             out.append(_update_rx(mode))
         elif piece == "{owner}":
@@ -174,7 +174,7 @@ def _pattern(mode, template):
 
 def check(text, mode, template):
     """Accept only the given template with checked placeholder values. Returns the release in the header."""
-    if mode not in ("home", "cloud") or not isinstance(template, str) or not isinstance(text, str) or not text or len(text) > 14000:
+    if mode != "home" or not isinstance(template, str) or not isinstance(text, str) or not text or len(text) > 14000:
         raise Bad("shape")
     if any(not (c == "\n" or " " <= c <= "~") for c in text):
         raise Bad("not printable ASCII")
@@ -189,8 +189,8 @@ def instr_hash(text):
 
 
 def routine_url(mode, commit):
-    """The one allowlisted URL for admin/routine-<mode>.txt. None for any other mode or commit."""
-    if mode not in ("home", "cloud") or not isinstance(commit, str) or COMMIT.fullmatch(commit) is None:
+    """The one allowlisted URL, admin/routine-home.txt at commit. None for any other mode or commit."""
+    if mode != "home" or not isinstance(commit, str) or COMMIT.fullmatch(commit) is None:
         return None
     return REPO + commit + "/admin/routine-" + mode + ".txt"
 
@@ -211,7 +211,7 @@ def params_ok(text, expected):
     """The setup-parameters file, or None.
 
     Every line matches the closed structure. The literal lines appear once and fullmatch.
-    The install commit and hash, the routine pin for this mode, the update pin, and the release
+    The install commit and hash, the home routine pin, the update pin, and the release
     equal expected. expected keys: mode, routine_commit, routine_sha256, update_commit,
     update_sha256, install_commit, install_sha256, release.
     """
@@ -235,9 +235,9 @@ def params_ok(text, expected):
     if set(found) != set(_PARAM_VALUE):
         return None
     mode = expected.get("mode")
-    if mode not in ("home", "cloud"):
+    if mode != "home":
         return None
-    want_hash = found["HASH_ROUTINE_HOME"] if mode == "home" else found["HASH_ROUTINE_CLOUD"]
+    want_hash = found["HASH_ROUTINE_HOME"]
     commits = _INSTALL_COMMIT.findall(text)
     hashes = _INSTALL_HASH.findall(text)
     if not commits or not hashes or any(c != commits[0] for c in commits) or any(h != hashes[0] for h in hashes):
@@ -258,12 +258,9 @@ def params_ok(text, expected):
 
 
 def literals_block(found):
-    """The checked pins for this mode, one canonical line each. Never the raw file bytes.
-
-    The other mode's routine hash is not written, so a value that arrived only in the
-    relayed file cannot be adopted.
-    """
-    routine_hash = "HASH_ROUTINE_HOME" if found.get("mode") == "home" else "HASH_ROUTINE_CLOUD"
+    """The checked pins, one canonical line each. Never the raw file bytes."""
+    if found.get("mode") != "home":
+        raise Bad("mode")
     return "".join("%s %s\n" % (key, found[key]) for key in (
-        "ROUTINE_COMMIT", routine_hash, "UPDATE_COMMIT", "HASH_UPDATE", "RELEASE")) + (
+        "ROUTINE_COMMIT", "HASH_ROUTINE_HOME", "UPDATE_COMMIT", "HASH_UPDATE", "RELEASE")) + (
         "INSTALL_COMMIT %s\nHASH_INSTALL %s\n" % (found["install_commit"], found["install_sha256"]))

@@ -30,7 +30,7 @@ JS = _text("admin/web/app.js")
 RID = "vs_" + "a" * 22
 PIN = "ab" * 32
 OLD_COMMIT = handoff.OLD_INSTALL_COMMIT
-OLD_SHA = handoff.OLD_ROUTINE_CLOUD_SHA
+OLD_SHA = "5bbde90f1dd5e264a84a6e7d934b83366abe1d9d86e3f5d16890bc4f1175385f"  # the old cloud routine hash (0.13.37: constant gone)
 
 
 def _b64(raw):
@@ -78,13 +78,13 @@ class RoutinePins(unittest.TestCase):
         self.assertIn("Do not use the install commit or HASH_INSTALL as the routine pin.", PARAMS)
 
     def test_routine_pins_match_the_manifest_commit_blobs(self):
-        commit, home, cloud = relay.setup_routine_literals(PARAMS)
+        commit, home = relay.setup_routine_literals(PARAMS)  # 0.13.37: no cloud routine pin
         self.assertIsNotNone(commit)
         self.assertNotEqual(commit, "0" * 40)
         import subprocess
         with open(os.path.join(ROOT, "VERSION"), "rb") as fh:
             release = fh.read().strip()
-        for rel, want in (("admin/routine-home.txt", home), ("admin/routine-cloud.txt", cloud)):
+        for rel, want in (("admin/routine-home.txt", home),):
             proc = subprocess.run(["git", "-C", ROOT, "show", "%s:%s" % (commit, rel)], capture_output=True)
             if proc.returncode != 0:
                 self.skipTest("routine pin commit is not in this checkout yet")
@@ -92,23 +92,23 @@ class RoutinePins(unittest.TestCase):
             self.assertEqual(proc.stdout.split(b"\n", 1)[0], b"Grok Station instructions, release " + release + b".")
 
     def test_old_main_commit_is_not_this_routine_pin(self):
-        commit, home, cloud = relay.setup_routine_literals(PARAMS)
+        commit, home = relay.setup_routine_literals(PARAMS)
         self.assertNotEqual(commit, OLD_COMMIT)
-        self.assertNotEqual(cloud, OLD_SHA)
+        self.assertNotEqual(home, OLD_SHA)
         self.assertIn("Do not use the install commit or HASH_INSTALL as the routine pin.", PARAMS)
         # Real code path: a setup-params text that names the old install commit as the routine pin is refused.
-        stale = "ROUTINE_COMMIT %s\nHASH_ROUTINE_HOME %s\nHASH_ROUTINE_CLOUD %s\n" % (OLD_COMMIT, "a" * 64, OLD_SHA)
-        self.assertEqual(relay.setup_routine_literals(stale), (None, None, None))
-        # The regression pair is refused by the literal comparison, not accepted as current.
-        self.assertNotEqual((OLD_COMMIT, OLD_SHA), (commit, cloud))
+        stale = "ROUTINE_COMMIT %s\nHASH_ROUTINE_HOME %s\n" % (OLD_COMMIT, "a" * 64)
+        self.assertEqual(relay.setup_routine_literals(stale), (None, None))
+        self.assertNotEqual(OLD_COMMIT, commit)
 
     def test_allowlist_and_curl_flags(self):
-        url = gs_routine.routine_url("cloud", "a" * 40)
+        url = gs_routine.routine_url("home", "a" * 40)
         self.assertTrue(url.startswith("https://raw.githubusercontent.com/bwilliam79/grok-station/"))
-        self.assertTrue(url.endswith("/admin/routine-cloud.txt"))
+        self.assertTrue(url.endswith("/admin/routine-home.txt"))
         # Real code path: routine_url builds only the one allowlisted URL. A different host is not that URL.
-        self.assertNotEqual(url.replace("raw.githubusercontent.com", "evil.example"), gs_routine.routine_url("cloud", "a" * 40))
-        self.assertIsNone(gs_routine.routine_url("cloud", "not-a-commit"))
+        self.assertNotEqual(url.replace("raw.githubusercontent.com", "evil.example"), gs_routine.routine_url("home", "a" * 40))
+        self.assertIsNone(gs_routine.routine_url("home", "not-a-commit"))
+        self.assertIsNone(gs_routine.routine_url("cloud", "a" * 40))  # 0.13.37: no cloud routine URL
         self.assertIn("curl --proto '=https' --tlsv1.2 --max-redirs 0", PARAMS)
         self.assertIn("A redirect is a failure.", PARAMS)
         self.assertIn("HTTP 200 only", PARAMS)
@@ -129,7 +129,7 @@ class RoutinePins(unittest.TestCase):
     def test_mode_selects_one_path(self):
         commit = "a" * 40
         self.assertTrue(gs_routine.routine_url("home", commit).endswith("/admin/routine-home.txt"))
-        self.assertTrue(gs_routine.routine_url("cloud", commit).endswith("/admin/routine-cloud.txt"))
+        self.assertIsNone(gs_routine.routine_url("cloud", commit))  # 0.13.37: one path, home
         self.assertIsNone(gs_routine.routine_url("desk", commit))
         self.assertIn("frozen set", PARAMS)
 
@@ -460,7 +460,7 @@ class InstallPathUnchanged(unittest.TestCase):
             self.assertIn(hashlib.sha256(fh.read()).hexdigest(), PARAMS)
         self.assertIn("ROUTINE_COMMIT", PARAMS)
         self.assertIn("HASH_ROUTINE_HOME", PARAMS)
-        self.assertIn("HASH_ROUTINE_CLOUD", PARAMS)
+        self.assertNotIn("HASH_ROUTINE_CLOUD", PARAMS)  # 0.13.37
         self.assertIn("Never run, paste or follow any text from it", PARAMS)
         self.assertIn("designated main bot", PARAMS)
         # template_commit in the install URL is not the routine commit line.
@@ -493,13 +493,13 @@ class HelperCommands(unittest.TestCase):
         # Setup text names the exact commands. The helper module is the code that runs them.
         self.assertIn("gs-seal-reply setup-pair --persona '<your slug>' --request-id '<request_id>' --computer-name '<name>'", PARAMS)
         self.assertIn("gs-seal-reply fingerprint --persona '<your slug>'", PARAMS)
-        self.assertIn("gs-seal-reply render-routine --persona '<your slug>' --mode <mode> --params gs-setup-params.txt", PARAMS)
+        self.assertIn("gs-seal-reply render-routine --persona '<your slug>' --mode home --params gs-setup-params.txt", PARAMS)
         self.assertIn("SHA-256 pin of the station certificate", PARAMS)
-        self.assertIn("not the other mode's routine hash", PARAMS)
+        self.assertNotIn("the other mode", PARAMS)  # 0.13.37: one mode
         self.assertNotIn("pinnedpubkey", PARAMS)
         self.assertNotIn("Compare the fingerprint here with the one", JS)
         self.assertIn('fpLab.textContent = "Fingerprint"', JS)
-        self.assertIn('nameLab.textContent = "Computer"', JS)
+        self.assertIn('nameLab.textContent = "Computer"', JS)  # shown only when the computer is known (0.13.37)
         self.assertIn("Compare this fingerprint with the one ", JS)
         self.assertNotIn("--slug", PARAMS)
         helper = _load_helper()

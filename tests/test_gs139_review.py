@@ -183,7 +183,7 @@ class N2FailedSurvivesRefresh(unittest.TestCase):
         self.assertFalse(sent["otto"].get("unknown"))
         refresh = _fn("refreshBots")
         self.assertIn("setupAdopt(", refresh)
-        send = _fn("setupSend")
+        send = _fn("setupSend") + _fn("setupSendNow")  # 0.13.37: the POST moved to setupSendNow
         self.assertIn("/api/bots/setup-unknown", send)
 
 

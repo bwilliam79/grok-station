@@ -60,7 +60,7 @@ class StationAndBotRenderTheSameText(unittest.TestCase):
         self.addCleanup(setattr, ga, "VERSION_FILE", old)
 
     def _both(self, mode):
-        bot = {"slug": "kai", "key_mode": mode}
+        bot = {"slug": "kai"}  # 0.13.37: no key_mode; every bot is home
         station = ga.render_bot_routine(bot, self.STATION, self.FP, self.PUB, pins=ga.deploy_pins())
         commit, upd = pins()
         upd_commit, upd_sha = manifest_update(upd)
@@ -74,8 +74,10 @@ class StationAndBotRenderTheSameText(unittest.TestCase):
         self.assertEqual(s, b)
 
     def test_cloud(self):
-        s, b = self._both("cloud")
-        self.assertEqual(s, b)
+        # 0.13.37: there is no cloud routine; a cloud render is refused on both sides.
+        with self.assertRaises(gs_routine.Bad):
+            gs_routine.render("x", "cloud", "kai", "a" * 40, "b" * 64, self.STATION, self.FP, self.PUB)
+        self.assertNotIn("cloud", gs_routine.TEMPLATES)
 
 
 class GeneratorCannotPinTheWrongCommit(unittest.TestCase):

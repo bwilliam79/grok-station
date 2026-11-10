@@ -24,7 +24,7 @@ class TeamPhrase(unittest.TestCase):
             self.assertTrue(relay.import_team_request(said), said)
 
     def test_no_typed_chat_phrase_in_templates(self):
-        for f in ("routine-home.txt", "routine-cloud.txt"):
+        for f in ("routine-home.txt",):
             body = open(os.path.join(ROOT, "admin", f)).read()
             self.assertNotIn("Set up the rest of my team", body)
         self.assertNotIn("Set up the rest of my team", JS)

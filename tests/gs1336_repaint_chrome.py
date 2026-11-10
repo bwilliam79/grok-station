@@ -15,7 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHROME = shutil.which("google-chrome") or shutil.which("chromium")
 
 
-def chrome(scenario, root=ROOT):
+def chrome(scenario, root=ROOT, budget=4000):
     with open(os.path.join(root, "admin", "web", "app.js"), encoding="utf-8") as f:
         js = f.read()
     page = """<!doctype html><html><head><meta charset=utf-8></head><body>
@@ -51,7 +51,7 @@ const tick = ms => new Promise(r => setTimeout(r, ms || 0));
         with open(inner, "w", encoding="utf-8") as f:
             f.write(page)
         out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
-                              "--window-size=1200,900", "--virtual-time-budget=4000", "--dump-dom", "file://" + inner],
+                              "--window-size=1200,900", "--virtual-time-budget=%d" % budget, "--dump-dom", "file://" + inner],
                              capture_output=True, text=True, timeout=120).stdout
     finally:
         shutil.rmtree(d, ignore_errors=True)

@@ -32,11 +32,11 @@ HOME_SEED = "known-home-seed-value"
 HOME_PUB = "home-public-key-visible"
 
 CLOUD_BOT = (
-    ("tools/grok-station-reply", "grok-station-reply", 0o700),
+    ("tests/fixtures/grok-station-reply", "grok-station-reply", 0o700),
     ("scripts/vendor-lock.txt", "vendor-lock.txt", 0o600),
 )
 CLOUD_HOME_ROLE = (
-    ("tools/grok-station-reply", "grok-station-reply", 0o700),
+    ("tests/fixtures/grok-station-reply", "grok-station-reply", 0o700),
 )
 HOME_FILES = (
     ("scripts/gs-seal-setup", "gs-seal-setup", 0o700),
@@ -569,23 +569,14 @@ class DeployKeySetup(unittest.TestCase):
             self.__class__.seal = _seal_common()
         return self.seal
 
-    def test_happy_path_cloud_and_home(self):
-        bot = self._run("cloud", ["bot"])
-        self.assertEqual(bot["proc"].returncode, 0, bot["proc"].stderr)
-        self._assert_files(bot["home"], CLOUD_BOT)
-        self._assert_seed_hidden(bot["proc"], bot["home"])
-        pip = _calls(bot["pip_log"])
-        self.assertEqual(len(pip), 1, bot["pip_log"])
-        for flag in ("--require-hashes", "--no-deps", "--only-binary", "-r"):
-            self.assertIn(flag, pip[0], pip[0])
-
-        role = self._run("cloud", ["home"])
-        self.assertEqual(role["proc"].returncode, 0, role["proc"].stderr)
-        self._assert_files(role["home"], CLOUD_HOME_ROLE)
-        self.assertFalse(os.path.exists(os.path.join(self._bin(role["home"]), "vendor-lock.txt")))
-        self.assertEqual(_calls(role["pip_log"]), [])
-        self.assertFalse(os.path.exists(os.path.join(role["home"], ".local", "share", "grok-station", "bot-seed")))
-
+    def test_happy_path_home_and_no_cloud(self):
+        # 0.13.37: the cloud deploy (bot + home roles, the cloud reply tool, pip) is gone; asking for it is an error.
+        if shutil.which("node") is None:
+            self.skipTest("node is absent")
+        proc = subprocess.run(["node", self.loader, ROOT, "cloud", self.pins_path, PERSONA, STATION, PIN, STATION_PUB],
+                              capture_output=True, text=True, timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("deployScript: mode must be home", proc.stderr)
         home = self._run("home", home_mode=True)
         self.assertEqual(home["proc"].returncode, 0, home["proc"].stderr)
         self._assert_files(home["home"], HOME_FILES)
@@ -643,20 +634,20 @@ class DeployKeySetup(unittest.TestCase):
         self._assert_absent(out["home"], [row[1] for row in HOME_FILES])
 
     def test_embedded_script_under_20kb(self):
-        for mode in ("cloud", "home"):
+        for mode in ("home",):  # 0.13.37: home only
             script = self._script(mode)
             self.assertLess(len(script.encode("utf-8")), 20 * 1024, mode)
 
     def test_hash_mismatch_installs_nothing(self):
-        out = self._run("cloud", ["bot"], alter="tools/grok-station-reply")
+        out = self._run("home", home_mode=True, alter="scripts/gs-seal-reply")
         self.assertNotEqual(out["proc"].returncode, 0, out["proc"].stdout)
         self.assertIn("checksum mismatch", out["proc"].stderr)
-        self._assert_absent(out["home"], [row[1] for row in CLOUD_BOT])
+        self._assert_absent(out["home"], [row[1] for row in HOME_FILES])
 
     def test_404_and_curl_refuses_redirects(self):
-        out = self._run("cloud", ["bot"], curl_404=True)
+        out = self._run("home", home_mode=True, curl_404=True)
         self.assertNotEqual(out["proc"].returncode, 0, out["proc"].stdout)
-        self._assert_absent(out["home"], [row[1] for row in CLOUD_BOT])
+        self._assert_absent(out["home"], [row[1] for row in HOME_FILES])
         self.assertIn("pinned file unavailable (repo private or commit gone)", out["proc"].stderr)
         calls = _calls(out["curl_log"])
         self.assertTrue(calls, out["curl_log"])
@@ -674,39 +665,6 @@ class DeployKeySetup(unittest.TestCase):
             for url in urls:
                 self.assertIn("/" + self.pins["commit"] + "/", url)
                 self.assertNotIn("token", url.lower())
-
-    def test_existing_file_and_upgrade(self):
-        old = b"OLD\n"
-        refused = self._run("cloud", ["bot"], preexist={"grok-station-reply": old})
-        self.assertNotEqual(refused["proc"].returncode, 0, refused["proc"].stdout)
-        self.assertIn("already exists", refused["proc"].stderr)
-        self.assertEqual(_calls(refused["curl_log"]), [])
-        path = os.path.join(self._bin(refused["home"]), "grok-station-reply")
-        with open(path, "rb") as fh:
-            self.assertEqual(fh.read(), old)
-        self.assertEqual(os.lstat(path).st_ino, refused["planted"]["grok-station-reply"])
-
-        upgraded = self._run("cloud", ["bot"], preexist={"grok-station-reply": old}, upgrade="1")
-        self.assertEqual(upgraded["proc"].returncode, 0, upgraded["proc"].stderr)
-        self.assertTrue(_calls(upgraded["curl_log"]))
-        path = os.path.join(self._bin(upgraded["home"]), "grok-station-reply")
-        with open(path, "rb") as fh:
-            self.assertEqual(fh.read(), self.blobs["tools/grok-station-reply"])
-        self._assert_mode(path, 0o700, "file")
-        self._assert_seed_hidden(upgraded["proc"], upgraded["home"])
-
-        mismatch = self._run(
-            "cloud", ["bot"], preexist={"grok-station-reply": old}, upgrade="1",
-            alter="tools/grok-station-reply")
-        self.assertNotEqual(mismatch["proc"].returncode, 0, mismatch["proc"].stdout)
-        self.assertIn("checksum mismatch", mismatch["proc"].stderr)
-        path = os.path.join(self._bin(mismatch["home"]), "grok-station-reply")
-        with open(path, "rb") as fh:
-            self.assertEqual(fh.read(), old)
-        self.assertEqual(os.lstat(path).st_ino, mismatch["planted"]["grok-station-reply"])
-        self.assertTrue(_calls(mismatch["curl_log"]))
-        self.assertEqual(self._stages(self._bin(mismatch["home"])), [])
-        self.assertFalse(os.path.exists(os.path.join(self._bin(mismatch["home"]), "vendor-lock.txt")))
 
     def test_home_second_bot_reuses_a_verified_helper(self):
         first = self._run("home", home_mode=True)
@@ -741,9 +699,8 @@ class DeployKeySetup(unittest.TestCase):
         self.assertEqual(_calls(refused["curl_log"]), [])
 
     def test_pip_sudo_and_pinned_urls(self):
-        cloud = self._script("cloud")
-        home = self._script("home")
-        for script in (cloud, home):
+        home = self._script("home")  # 0.13.37: home only
+        for script in (home,):
             syntax = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
             self.assertEqual(syntax.returncode, 0, syntax.stderr)
             self.assertIsNone(re.search(r"\bsudo\b", script, re.I))
@@ -771,11 +728,8 @@ class DeployKeySetup(unittest.TestCase):
                 for flag in ("--require-hashes", "--no-deps", "--only-binary", "-r"):
                     self.assertIn(flag, line, line)
                 self.assertIn("python3 -m pip install", line)
-        cloud_pips = [ln for ln in cloud.splitlines() if "pip install" in ln]
         home_pips = [ln for ln in home.splitlines() if "pip install" in ln]
-        self.assertEqual(len(cloud_pips), 1, cloud_pips)
-        self.assertEqual(home_pips, [])
-        self.assertEqual(cloud.count("pip install"), 1)
+        self.assertEqual(home_pips, [])  # PyNaCl comes from the hash lock via vendor-install, never pip
 
     def _install_home_text(self):
         path = os.path.join(ROOT, "scripts", "install-home.sh")
@@ -902,7 +856,7 @@ class DeployKeySetup(unittest.TestCase):
     def test_step3_label_and_note_have_no_internal_names(self):
         with open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8") as fh:
             js = fh.read()
-        step3 = js.split("const step3 = ", 1)[1].split("const readLive = ", 1)[0]
+        step3 = js.split("const step3 = ", 1)[1].split("const step1 = ", 1)[0]
         shown = []
         shown += re.findall(r'class="lbl">(.*?)</div>', step3)
         shown += re.findall(r'class="help">(.*?)</p>', step3)
@@ -959,6 +913,8 @@ class DeployPinsReleaseCheck(unittest.TestCase):
 
 class SealShow(unittest.TestCase):
     def test_seal_show_then_post_show(self):
-        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "grok-station-reply")).read()
-        self.assertIn('sub.add_parser("seal-show")', src)
-        self.assertIn('"/voice/show" if args.show else "/voice/reply"', src)
+        # 0.13.37: the cloud tool's seal-show/post --show is gone; the home helper seals and posts a card in one step.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(root, "scripts", "gs-seal-reply")).read()
+        self.assertIn('"/voice/show"', src)
+        self.assertFalse(os.path.exists(os.path.join(root, "tools", "grok-station-reply")))

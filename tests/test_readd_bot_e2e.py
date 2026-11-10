@@ -94,7 +94,7 @@ class AddBotEndToEnd(unittest.TestCase):
         st, j = self.c.req("POST", "/api/bots", {"name": "Alpha", "slug": slug, "key_mode": "home", "voice": "ara",
                                                   "reply_host": host, "password": ta.GOOD})
         self.assertEqual(st, 201, j)
-        st, j = self.c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": PUB, "password": ta.GOOD})
+        st, j = self.c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": PUB, "expect_old_fp": "-", "password": ta.GOOD})
         self.assertEqual(st, 200, j)
         st, j = self.c.req("PUT", "/api/bots/%s/webhook" % slug, {"url": URL, "key": HOOK, "password": ta.GOOD})
         self.assertEqual(st, 200, j)
@@ -136,7 +136,8 @@ class AddBotEndToEnd(unittest.TestCase):
         self.add_bot("alpha", "alpha.example.lan")
         json.dump({"alpha": {"release": "0.12.0", "instr": "0" * 16, "helper": "-", "computer": "-",
                              "at": int(time.time()) - 3600}}, open(self.relay.r.UPDATES_FILE, "w"))
-        st, j = self.c.req("PUT", "/api/bots/alpha/key", {"public_key": PUB, "password": ta.GOOD})
+        st, j = self.c.req("PUT", "/api/bots/alpha/key", {"public_key": PUB, "password": ta.GOOD,
+                                                         "expect_old_fp": self.relay.r.botreply.key_fingerprint(PUB).replace(" ", "")})
         self.assertEqual(st, 200, j)
         r, _ = self.row("alpha")
         self.assertEqual(r["state"], "done", r)

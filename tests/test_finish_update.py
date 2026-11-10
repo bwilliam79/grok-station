@@ -57,9 +57,7 @@ class Fake:
         self.mode = mode
         self.files = {
             "admin/routine-home.txt": open(os.path.join(ROOT, "admin/routine-home.txt"), "rb").read(),
-            "admin/routine-cloud.txt": open(os.path.join(ROOT, "admin/routine-cloud.txt"), "rb").read(),
             "scripts/install-home.sh": FAKE_INSTALL.encode(),
-            "tools/grok-station-reply": b"#!/bin/sh\necho new reply tool\n",
         }
         self.compare = {"status": "ahead", "base_commit": {"sha": C}}
         st = os.path.join(self.home, ".local/share/grok-station")
@@ -153,15 +151,15 @@ class Script(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(f.home, "install-args")))
         self.assertIn(" helper=9.9.9 ", status(r.stdout))
 
-    def test_cloud_update_replaces_reply_tool_only(self):
+    def test_cloud_mode_is_refused_with_a_set_up_again_message(self):
+        """0.13.37: the Bot computer key is gone. A cloud routine's update stops and says to run Set up again."""
         f = Fake("cloud")
         r = f.run()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(open(os.path.join(f.state, "bin/grok-station-reply")).read(), "#!/bin/sh\necho new reply tool\n")
-        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(f.state, "bin/grok-station-reply")).st_mode), 0o700)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("run Set up for it on the station's Bots page", r.stderr)
+        self.assertNotIn("BEGIN INSTRUCTIONS", r.stdout)
         self.assertEqual(open(f.key).read(), "SECRET-KEY-BYTES\n")
-        self.assertTrue(status(r.stdout).endswith(" helper=- computer=-"))
-        self.assertIn("https://station.example", r.stdout)
+        self.assertEqual([u for u in f.urls() if "raw.githubusercontent" in u], [])
 
     def test_a_commit_not_on_main_is_refused(self):
         for compare in ({"status": "diverged", "base_commit": {"sha": C}}, {"status": "behind", "base_commit": {"sha": C}},
@@ -369,7 +367,7 @@ class FetchedTemplate(unittest.TestCase):
             self.assertIn("not the allowed template", r.stderr)
 
     def test_template_not_in_manifest_is_refused(self):
-        for mode in ("home", "cloud"):
+        for mode in ("home",):  # 0.13.37: home only
             f = Fake(mode); f.publish(omit=("admin/routine-%s.txt" % mode,))
             r = f.run()
             self.assertNotEqual(r.returncode, 0, mode)
@@ -381,7 +379,7 @@ class FetchedTemplate(unittest.TestCase):
 
     def test_template_missing_a_safety_line_is_refused(self):
         for line in gs_routine._REQUIRED_LINES:
-            for mode in ("home", "cloud"):
+            for mode in ("home",):  # 0.13.37: home only
                 t = open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode)).read()
                 self.assertIn("\n" + line, t)
                 bad = t.replace(line, line.replace("Never", "Always").replace("do not answer", "answer"), 1)
@@ -455,8 +453,9 @@ class Checker(unittest.TestCase):
         self.assertEqual(gs_routine.check(base, "home"), REL)
 
     def test_templates_are_embedded_byte_for_byte(self):
-        for m in ("home", "cloud"):
-            self.assertEqual(gs_routine.TEMPLATES[m], self.tpl(m))
+        self.assertEqual(sorted(gs_routine.TEMPLATES), ["home"])  # 0.13.37: the cloud template is gone
+        self.assertEqual(gs_routine.TEMPLATES["home"], self.tpl("home"))
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "admin", "routine-cloud.txt")))
 
     def tpl(self, mode):
         return open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode)).read()
@@ -464,8 +463,8 @@ class Checker(unittest.TestCase):
     def test_both_templates_render(self):
         h = gs_routine.render(self.tpl("home"), "home", "jules", U, "f" * 64)
         self.assertEqual(gs_routine.check(h, "home"), REL)
-        c = gs_routine.render(self.tpl("cloud"), "cloud", "jules", U, "f" * 64, "https://st.example", FP, PUB)
-        self.assertEqual(gs_routine.check(c, "cloud"), REL)
+        with self.assertRaises(gs_routine.Bad):  # 0.13.37: no cloud mode
+            gs_routine.render(self.tpl("home"), "cloud", "jules", U, "f" * 64, "https://st.example", FP, PUB)
 
     def test_station_refuses_to_render_anything_else(self):
         tpl = self.tpl("home")
@@ -477,7 +476,7 @@ class Checker(unittest.TestCase):
         with self.assertRaises(gs_routine.Bad):
             gs_routine.render(self.tpl("home"), "home", "jules", "x" * 40, "f" * 64)
         with self.assertRaises(gs_routine.Bad):
-            gs_routine.render(self.tpl("cloud"), "cloud", "jules", U, "f" * 64, "http://st", FP, PUB)
+            gs_routine.render(self.tpl("home"), "home", "jules", U, "f" * 64, "https://st.example", FP, PUB)
 
 
 if __name__ == "__main__":
@@ -597,14 +596,14 @@ class Station(unittest.TestCase):
         src = open(os.path.join(ROOT, "relay", "relay.py")).read()
         self.assertIn("HELPER_ASK_GAP_S = %d " % self.ga.FINISH_WAIT_S, src)
 
-    def test_cloud_bots_get_station_values_and_home_groups_pick_updater(self):
+    def test_every_bot_is_home_and_home_groups_pick_updater(self):
         ok = {"release": "0.0.1", "instr": "1" * 16, "helper": "0.11.7", "computer": "a" * 16}
         v, rows = self.rows([_bot("ann"), _bot("kit", update=ok), _bot("cat", mode="cloud")])
-        self.assertIn("--station 'https://st.example'", rows["cat"]["message"])
-        self.assertIn("--mode cloud", rows["cat"]["message"])
-        self.assertIsNone([g for g in v["computers"] if not g["home"]][0]["updater"])
-        home = [g for g in v["computers"] if g["home"]]
-        self.assertEqual(sorted(len(g["bots"]) for g in home), [1, 1])  # kit's computer id is known, ann's is not
+        # 0.13.37: a stored key_mode "cloud" (left by an older release) still renders the home routine
+        self.assertNotIn("--station 'https://st.example'", rows["cat"]["message"])
+        self.assertIn("--mode home", rows["cat"]["message"])
+        self.assertNotIn("GROK_STATION_BOT_KEY", rows["cat"]["message"])
+        self.assertTrue(all(g["home"] for g in v["computers"]))  # kit's computer id is known, ann's is not
         self.fin["updaters"]["c:" + "a" * 16] = "kit"
         v, _ = self.rows([_bot("kit", update=ok), _bot("lou", update=ok)])
         self.assertEqual(v["computers"][0]["updater"], "kit")
@@ -731,14 +730,14 @@ class TemplateReleaseIsVersion(unittest.TestCase):
     def test_every_template_copy_names_version(self):
         rel = open(os.path.join(ROOT, "VERSION")).read().strip()
         head = "Grok Station instructions, release %s." % rel
-        for mode in ("home", "cloud"):
+        for mode in ("home",):  # 0.13.37: home only
             self.assertEqual(gs_routine.TEMPLATES[mode].split("\n", 1)[0], head, mode)
             with open(os.path.join(ROOT, "admin", "routine-%s.txt" % mode), encoding="utf-8") as fh:
                 self.assertEqual(fh.read().split("\n", 1)[0], head, mode)
         for path in ("scripts/gs-update.sh", "admin/web/app.js", "docs/bots.md"):
             text = open(os.path.join(ROOT, path), encoding="utf-8").read()
             found = re.findall(r"Grok Station instructions, release ([0-9]+\.[0-9]+\.[0-9]+)\.", text)
-            self.assertEqual(len(found), 2, path)
+            self.assertEqual(len(found), 1, path)  # 0.13.37: one (home) template copy
             self.assertEqual(set(found), {rel}, path)
 
     def test_finish_rows_build_with_the_real_version(self):

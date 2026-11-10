@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(ROOT, "relay"))
 import botreply  # noqa: E402
 import handoff  # noqa: E402
 
-_helper_path = os.path.join(ROOT, "tools", "grok-station-reply")
+_helper_path = os.path.join(ROOT, "tests", "fixtures", "grok-station-reply")
 _loader = importlib.machinery.SourceFileLoader("grok_station_reply", _helper_path)
 _spec = importlib.util.spec_from_loader("grok_station_reply", _loader)
 helper = importlib.util.module_from_spec(_spec)
@@ -543,7 +543,7 @@ class SealPost(unittest.TestCase):
 
     def test_picture_commands_stay_on_the_reply_tools(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        tool = open(os.path.join(root, "tools", "grok-station-reply")).read()
+        tool = open(os.path.join(root, "tests", "fixtures", "grok-station-reply")).read()  # 0.13.37: test fixture only
         home = open(os.path.join(root, "scripts", "gs-seal-reply")).read()
         self.assertIn('sub.add_parser("seal-avatar")', tool)
         self.assertIn('"/voice/show" if args.show else "/voice/reply"', tool)

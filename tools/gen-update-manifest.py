@@ -8,8 +8,12 @@ sha256 of each file a bot's update fetches, read from git HEAD. Commit it; the s
 
 0.12.10: it also writes admin/bot-releases.txt (station side only; bots never read it), one line per published
 manifest in git history plus this one: release, update commit, gs-update.sh sha256, and the content fingerprint
-(admin/bot_content.py) of the home and cloud bot. The manifest format itself is unchanged, because the update
+(admin/bot_content.py) of the home bot. The manifest format itself is unchanged, because the update
 script already on every bot refuses a manifest line it doesn't know.
+
+0.13.37: home is the only mode, so the manifest lists only admin/routine-home.txt and scripts/install-home.sh.
+A home bot's updater (every release since 0.11.9) needs only those two lines. bot-releases.txt lines from
+0.13.37 on have four fields; older lines keep their fifth (the old cloud fingerprint), which is ignored.
 """
 import hashlib, os, re, subprocess, sys
 
@@ -17,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import bot_content  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FILES = ("admin/routine-home.txt", "admin/routine-cloud.txt", "scripts/install-home.sh", "tools/grok-station-reply")
+FILES = ("admin/routine-home.txt", "scripts/install-home.sh")
 
 
 def blob(ref, path):
@@ -45,13 +49,12 @@ def fp_line(rel, upd_commit, upd_sha, ref):
     script = blob(upd_commit, "scripts/gs-update.sh")
     if hashlib.sha256(script).hexdigest() != upd_sha:
         raise SystemExit("gs-update.sh at %s does not match the manifest" % upd_commit)
-    fps = [bot_content.content_fp(blob(ref, "admin/routine-%s.txt" % m), script, blob(ref, bot_content.HELPER[m]))
-           for m in ("home", "cloud")]
-    return "%s %s %s %s %s" % (rel, upd_commit, upd_sha, fps[0], fps[1])
+    fp = bot_content.content_fp(blob(ref, "admin/routine-home.txt"), script, blob(ref, bot_content.HELPER["home"]))
+    return "%s %s %s %s" % (rel, upd_commit, upd_sha, fp)
 
 
 def releases(manifest_text, ref="HEAD"):
-    """bot-releases.txt: every manifest committed on this branch that lists both templates, then this one."""
+    """bot-releases.txt: every manifest committed on this branch that lists the home template, then this one."""
     log = subprocess.run(["git", "-C", ROOT, "log", "--format=%H", "--reverse", ref, "--", "scripts/update-manifest.txt"],
                          check=True, capture_output=True, text=True).stdout.split()
     out, seen = [], set()
@@ -60,7 +63,7 @@ def releases(manifest_text, ref="HEAD"):
             got = _parse(blob(c, "scripts/update-manifest.txt").decode("ascii") if c else manifest_text)
         except (subprocess.CalledProcessError, UnicodeDecodeError):
             continue
-        if not got or not {"admin/routine-home.txt", "admin/routine-cloud.txt"} <= got[3]:
+        if not got or "admin/routine-home.txt" not in got[3]:
             continue  # before 0.11.9 a manifest listed no templates
         # Skip update commits not reachable from ref (rebase left dangling SHAs in old manifests).
         if subprocess.run(["git", "-C", ROOT, "merge-base", "--is-ancestor", got[1], ref],

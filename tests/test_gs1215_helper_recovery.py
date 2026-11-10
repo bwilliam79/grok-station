@@ -38,7 +38,7 @@ class _R(t13._F):
                                              "voice": "ara", "reply_host": "box.example.lan", "password": ta.GOOD})
         self.assertEqual(st, 201, j)
         self.check("after create", slug)
-        st, j = c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": self.pub, "password": ta.GOOD})
+        st, j = c.req("PUT", "/api/bots/%s/key" % slug, {"public_key": self.pub, "expect_old_fp": "-", "password": ta.GOOD})
         self.assertEqual(st, 200, j)
         self.check("after pairing", slug)
         st, j = c.req("PUT", "/api/bots/%s/webhook" % slug, {"url": e2e.URL, "key": e2e.HOOK, "password": ta.GOOD})

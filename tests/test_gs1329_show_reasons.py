@@ -65,7 +65,7 @@ class Base(unittest.TestCase):
         cls.keys = {"killed": False, "keys": {"jules": base64.b64encode(bytes(cls.signer.verify_key)).decode()}}
         cls.known = {"jules"}
         cls.home = _load("gs1329_home", "scripts/gs-seal-reply")
-        cls.cloud = _load("gs1329_cloud", "tools/grok-station-reply")
+        cls.cloud = _load("gs1329_cloud", "tests/fixtures/grok-station-reply")
 
     def seal(self, doc, signer=None, station=None):
         raw = json.dumps(doc, separators=(",", ":")).encode()

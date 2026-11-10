@@ -143,7 +143,9 @@ MINTED_FILE = E("VOICE_MINTED_FILE", os.path.join(STATE_DIR, "voice", "minted", 
 _hooks = {"mtime": None, "map": {}}
 TEST_COOLDOWN_S = 15
 FOLLOWUP_S = 60  # 0.13.0: after a bot's first answer, one more reply within this window is spoken as a late line
-TEST_LIMIT_S = 30  # 0.13.0: one deadline for an admin Test; the page counts down to this same number
+TEST_LIMIT_S = 180  # 0.13.0: one deadline for an admin Test; the page counts down to this same number. 0.13.37: 30 s cut
+# off slow first replies (a cold bot can take a minute or more), and the late reply then got 403 "request" because the
+# pending was gone. 180 s matches REPLY_WAIT, so any reply the station would accept in a real ask also passes a Test.
 _test_last = {}     # slug -> monotonic time of the last admin Test started
 _runs = {}          # admin test id -> in-memory record (pasted url/key live only until that test posts)
 _run_tasks = set()
@@ -434,17 +436,6 @@ def overlay_path():
     return os.path.join(bots_dir(), "personas-overlay.json")
 
 
-def _home_modes(raw):
-    """Only home is stored. Cloud is the default and is left out of the file."""
-    out = {}
-    if not isinstance(raw, dict):
-        return out
-    for slug, mode in raw.items():
-        if handoff.bot_slug_ok(slug) and mode == "home":
-            out[slug] = "home"
-    return out
-
-
 _HOST_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._'’-]{0,39}")
 
 
@@ -465,19 +456,24 @@ def reply_host_of(slug):
     return load_overlay_doc()["reply_host"].get(slug)
 
 
-def key_mode_of(doc, slug):
-    """cloud or home. Missing and anything other than home are cloud."""
-    modes = doc.get("key_mode") if isinstance(doc, dict) else None
-    return "home" if isinstance(modes, dict) and modes.get(slug) == "home" else "cloud"
+# 0.13.37: a bot's key lives only on its home computer, and the helper there seals every reply. The old
+# per-bot key location (key_mode, "cloud" or "home") is gone: a stored key_mode is ignored on read and dropped
+# on the next overlay save, and a request that asks for any location but home is refused with this text.
+KEY_HOME_ONLY = "Keys live on the home computer. The Bot computer option was removed in 0.13.37."
+
+
+def key_mode_refused(body):
+    """True when a request names a key location other than home. Home is the only one and is accepted as a no-op."""
+    return isinstance(body, dict) and "key_mode" in body and body.get("key_mode") != "home"
 
 
 def load_overlay_doc():
     """Raw overlay. Shape-checked so a bad file can't grow; voice membership is enforced later, at read.
 
-    list_source is always present here ("" when unset). key_mode is always a dict (only home entries).
-    An empty list_source or key_mode is left out of the file on save.
+    list_source is always present here ("" when unset). An empty list_source is left out of the file on save.
+    A key_mode left by a release before 0.13.37 is not read (every key is on a home computer).
     """
-    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "key_mode": {}, "reply_host": {}}
+    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
     try:
         doc = safe_io.read_json(overlay_path(), safe_io.LARGE_JSON, "personas-overlay")
     except (OSError, ValueError):
@@ -510,19 +506,22 @@ def load_overlay_doc():
     if not handoff.bot_slug_ok(src):
         src = ""
     return {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices, "list_source": src,
-            "key_mode": _home_modes(doc.get("key_mode")), "reply_host": _reply_hosts(doc.get("reply_host"))}
+            "reply_host": _reply_hosts(doc.get("reply_host"))}
 
 
 def save_overlay(doc):
-    """Write the overlay. Empty list_source and key_mode are omitted so a voice or rename save does not add them."""
+    """Write the overlay. An empty list_source is omitted so a voice or rename save does not add it.
+    0.13.37: key_mode is never written; a file from an older release loses it on the first save after the one-time
+    key migration (run_key_migration) has read it."""
     out = dict(doc) if isinstance(doc, dict) else {}
     if not handoff.bot_slug_ok(out.get("list_source")):
         out.pop("list_source", None)
-    modes = _home_modes(out.get("key_mode"))
-    if modes:
-        out["key_mode"] = modes
-    else:
-        out.pop("key_mode", None)
+    out.pop("key_mode", None)
+    if not os.path.lexists(key_migration_path()):
+        # GS1337-01: keep the old key_mode until run_key_migration() has read it once.
+        old = _raw_overlay_key_modes()
+        if old:
+            out["key_mode"] = old
     hosts = _reply_hosts(out.get("reply_host"))
     if hosts:
         out["reply_host"] = hosts
@@ -685,7 +684,7 @@ def bot_keys_path():
 
 def bot_paired(bot):
     """A pinned verify key, and the kill switch off. A webhook alone is not enough."""
-    doc = botreply.load_keys(bot_keys_path())
+    doc = trusted_keys()  # 0.13.37: a key marked by the key-location migration is not trusted
     if doc.get("killed"):
         return False
     return botreply.pinned_bytes(doc, bot) is not None
@@ -3494,7 +3493,7 @@ def icon_from_status(paired, doc):
 
 def icon_view():
     """What the display polls. No slug, question, reply, or key."""
-    doc = botreply.load_keys(bot_keys_path())
+    doc = trusted_keys()
     paired = []
     if not (isinstance(doc, dict) and doc.get("killed") is True):
         keys = doc.get("keys") if isinstance(doc, dict) else None
@@ -3611,6 +3610,337 @@ def audit_home_voice(action, outcome):
     act = action if action in _HOME_AUDIT else "command"
     out = outcome if outcome in ("ok", "fail", "off") else "fail"
     _write_audit_line(f"{_audit_stamp()} voice - home-{act} {out} -\n")
+
+
+def pinned_fingerprint(slug):
+    """The Accept-screen fingerprint of the key pinned for slug now, or "" when none. Public data only."""
+    try:
+        raw = botreply.load_keys(bot_keys_path()).get("keys", {}).get(slug)
+    except Exception:
+        return ""
+    return botreply.key_fingerprint(raw) if isinstance(raw, str) else ""
+
+
+def audit_repin(actor, slug, old_fp, new_fp, how):
+    """0.13.37: `<ts> <actor> <slug> repin new=<16 hex> old=<16 hex|-> changed|same|first via=<how>`.
+
+    Fingerprints of public verify keys only, never a key. "changed" marks a pin that replaced a different key."""
+    if not handoff.bot_slug_ok(slug):
+        return
+    who = actor if actor_ok(actor) else "-"
+    new = re.sub(r"[^0-9a-f]", "", str(new_fp or ""))[:16] or "-"
+    old = re.sub(r"[^0-9a-f]", "", str(old_fp or ""))[:16] or "-"
+    verdict = "first" if old == "-" else ("same" if old == new else "changed")
+    via = how if how in ("configure", "setup") else "-"
+    _write_audit_line(f"{_audit_stamp()} {who} {slug} repin new={new} old={old} {verdict} via={via}\n")
+    return verdict
+
+
+# ---- 0.13.37 key-location migration (GS1337-01) ----
+# Before 0.13.37 a bot's key could live on a bot (cloud) computer, and a bot with no stored key_mode was treated as
+# cloud. 0.13.37 drops key_mode from the overlay on its next save, so run_key_migration() reads it once at relay
+# start, before anything saves the overlay, and decides for every pinned key:
+#   key_mode "home" stored, or home evidence in station state  -> kept trusted ("home" / "home-evidence")
+#   key_mode "cloud" stored                                     -> needs Replace key ("cloud")
+#   no key_mode and no home evidence                            -> needs Replace key ("no-evidence")
+# Nothing is deleted: the pin stays, so the Bots page still shows the key, but replies, cards and avatars signed
+# with it are refused (trusted_keys) until a new pin clears the mark (clear_key_move). One audit line per slug.
+KEY_MOVE_WHY = ("cloud", "no-evidence")
+_key_move_cache = {"flags": None, "seen": None, "failed": None, "alarm": None}
+
+
+def key_migration_path():
+    return os.path.join(bots_dir(), "key-migration.json")
+
+
+def _fp16(fp):
+    return re.sub(r"[^0-9a-f]", "", str(fp or "").lower())[:16]
+
+
+def _raw_overlay_key_modes():
+    """{slug: mode} from the overlay FILE (load_overlay_doc ignores key_mode). {} when the file is absent;
+    None when it exists but can't be read (then nothing is decided and the migration runs again next start)."""
+    path = overlay_path()
+    if not os.path.lexists(path):
+        return {}
+    try:
+        doc = safe_io.read_json(path, safe_io.LARGE_JSON, "personas-overlay")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    modes = doc.get("key_mode")
+    if not isinstance(modes, dict):
+        return {}
+    return {k: v for k, v in modes.items() if handoff.bot_slug_ok(k) and isinstance(v, str)}
+
+
+def _ver_at_least(v, floor):
+    try:
+        return tuple(int(x) for x in v.split(".")) >= tuple(int(x) for x in floor.split("."))
+    except (AttributeError, ValueError):
+        return False
+
+
+def home_evidence(slug, mode=None):
+    """The station fields that show slug's key is on a home computer. Only the home helper writes any of them:
+    1. personas-overlay.json key_mode[slug] == "home" (Add bot or Configure chose Home computer);
+    2. helpers.json signed helper version (an update_helper confirmation or signed update status from the helper);
+    3. helpers.json X-GS-Helper header version (sent by gs-seal-reply, the home helper, on a seal-verified post);
+    4. bot-updates.json signed update status with helper != "-" or computer != "-" (gs-update.sh fills both only
+       in home mode);
+    5. paired.json stamp of 0.13.37 or later (a pin made after the cloud path was removed).
+    A pairing stamp from before 0.13.37 is not evidence: cloud pins were stamped too."""
+    out = []
+    if mode == "home":
+        out.append("key_mode")
+    try:
+        rec = helper_records().get(slug) or {}
+    except Exception:
+        rec = {}
+    if isinstance(rec.get("signed"), str) and HELPER_V.match(rec["signed"]):
+        out.append("helper-signed")
+    if isinstance(rec.get("header"), str) and HELPER_V.match(rec["header"]):
+        out.append("helper-header")
+    try:
+        upd = bot_updates().get(slug) or {}
+    except Exception:
+        upd = {}
+    if upd.get("helper") not in (None, "-"):
+        out.append("status-helper")
+    if upd.get("computer") not in (None, "-"):
+        out.append("status-computer")
+    try:
+        stamp = paired_releases().get(slug)
+    except Exception:
+        stamp = None
+    if isinstance(stamp, str) and _ver_at_least(stamp, "0.13.37"):
+        out.append("paired-0.13.37")
+    return out
+
+
+def _key_move_alarm(reason):
+    """Log loudly once per change of the damaged state, and say so in the audit log."""
+    if _key_move_cache.get("alarm") == reason:
+        return
+    _key_move_cache["alarm"] = reason
+    if reason:
+        log("KEY CHECK FAILED CLOSED: %s. Every bot key is distrusted (replies, cards, avatars and statuses are "
+            "refused) until %s is readable again or the relay restarts and the key migration completes." %
+            (reason, key_migration_path()))
+        _write_audit_line(f"{_audit_stamp()} - - key-migration damaged reason={reason.split(':')[0].replace(' ', '-')} all-keys-distrusted\n")
+    else:
+        log("key check file readable again; bot keys trusted per key-migration.json")
+
+
+def key_move_state():
+    """({slug: {"why": cloud|no-evidence, "fp": 16 hex}}, damaged reason or None).
+
+    GS1337-05: fails closed like a corrupt bot_keys.json. A key-migration.json that exists but can't be read or has
+    the wrong shape, one that vanished after this relay read it, or a migration that raised or could not run at this
+    start (key_migration_start) is "damaged": every pinned key is distrusted until it is fixed."""
+    path = key_migration_path()
+    failed = _key_move_cache.get("failed")
+    if failed and failed[0] == path:
+        _key_move_alarm(failed[1])
+        return {}, failed[1]
+    reason = None
+    try:
+        doc = safe_io.read_json(path, safe_io.SMALL_JSON, "key-migration")
+    except FileNotFoundError:
+        doc = None
+        if _key_move_cache.get("seen") == path:
+            reason = "key-migration.json disappeared"
+    except (OSError, ValueError) as e:
+        doc, reason = None, "key-migration.json unreadable: " + type(e).__name__
+    out = {}
+    if doc is not None:
+        raw = doc.get("needs_replace") if isinstance(doc, dict) else None
+        if not isinstance(raw, dict):
+            reason = "key-migration.json corrupt"
+        else:
+            for slug, ent in raw.items():
+                if (handoff.bot_slug_ok(slug) and isinstance(ent, dict) and ent.get("why") in KEY_MOVE_WHY
+                        and re.fullmatch(r"[0-9a-f]{16}", str(ent.get("fp") or ""))):
+                    out[slug] = {"why": ent["why"], "fp": ent["fp"]}
+                else:
+                    reason = "key-migration.json corrupt"
+                    break
+    if reason:
+        _key_move_alarm(reason)
+        return {}, reason
+    if doc is not None:
+        _key_move_cache["seen"] = path
+    if _key_move_cache.get("alarm"):
+        _key_move_alarm(None)
+    _key_move_cache["flags"] = out
+    return dict(out), None
+
+
+def key_move_flags():
+    """The marks only (see key_move_state). Empty while damaged; trusted_keys then distrusts every key."""
+    return key_move_state()[0]
+
+
+def key_move_for(slug, keys=None):
+    """The mark for slug when its pinned key is still the marked one, else None. While the key check is damaged,
+    every pinned key reads {"why": "damaged"}."""
+    flags, damaged = key_move_state()
+    doc = keys if keys is not None else botreply.load_keys(bot_keys_path())
+    raw = (doc.get("keys") or {}).get(slug) if isinstance(doc, dict) else None
+    if damaged:
+        return {"why": "damaged", "fp": _fp16(botreply.key_fingerprint(raw)) if isinstance(raw, str) else ""}
+    ent = flags.get(slug)
+    if not ent:
+        return None
+    if not isinstance(raw, str) or _fp16(botreply.key_fingerprint(raw)) != ent["fp"]:
+        return None
+    return ent
+
+
+def trusted_keys():
+    """load_keys() without keys marked by the 0.13.37 migration, and with no keys at all while the key check is
+    damaged (GS1337-05). Used wherever a signature is verified."""
+    doc = botreply.load_keys(bot_keys_path())
+    flags, damaged = key_move_state()
+    if damaged and isinstance(doc, dict):
+        return dict(doc, keys={})
+    if not flags or not isinstance(doc, dict) or not isinstance(doc.get("keys"), dict):
+        return doc
+    keys = {}
+    for slug, raw in doc["keys"].items():
+        ent = flags.get(slug)
+        if ent and isinstance(raw, str) and _fp16(botreply.key_fingerprint(raw)) == ent["fp"]:
+            continue
+        keys[slug] = raw
+    return dict(doc, keys=keys)
+
+
+def key_migration_start():
+    """Relay start (GS1337-05): run the migration; if it raises, or could not decide (an unreadable overlay, or a
+    bot_keys.json that is damaged or missing on a station with bots, GS1337-06), every pinned key is distrusted
+    for this run and the next start tries again."""
+    path = key_migration_path()
+    try:
+        run_key_migration()
+    except Exception as e:
+        _key_move_cache["failed"] = (path, "key migration raised " + type(e).__name__)
+    else:
+        if not os.path.lexists(path):
+            _key_move_cache["failed"] = (path, "key migration could not run (overlay or keys file unreadable or missing)")
+    return key_move_state()[1]
+
+
+def _save_key_migration(doc):
+    os.makedirs(os.path.dirname(key_migration_path()), exist_ok=True)
+    atomic_write(key_migration_path(), (json.dumps(doc, sort_keys=True, indent=1) + "\n").encode())
+    _key_move_cache["flags"] = None
+
+
+def clear_key_move(slug, new_fp, via):
+    """A new pin for slug. A cloud mark clears only for a different key (the old one was on the bot computer). A
+    no-evidence mark also clears when the key came through Set up Accept (the home helper posted it), since a
+    home computer that already has a key keeps it."""
+    flags, damaged = key_move_state()
+    ent = flags.get(slug)
+    if damaged or not ent:
+        return False
+    same = _fp16(new_fp) == ent["fp"]
+    if same and not (ent["why"] == "no-evidence" and via == "setup"):
+        return False
+    try:
+        doc = safe_io.read_json(key_migration_path(), safe_io.SMALL_JSON, "key-migration")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(doc, dict) or not isinstance(doc.get("needs_replace"), dict):
+        return False
+    doc["needs_replace"].pop(slug, None)
+    _save_key_migration(doc)
+    _write_audit_line(f"{_audit_stamp()} - {slug} key-migration cleared was={ent['why']} new={_fp16(new_fp) or '-'} via={via if via in ('setup', 'configure') else '-'}\n")
+    return True
+
+
+def _station_has_bots(modes):
+    """GS1337-06: any sign that this station has (or had) bots, read from the files the migration copies. A file
+    that exists but can't be read counts as a sign, so a doubt never reads as a fresh station."""
+    if modes:
+        return True
+    known = known_bot_slugs_or_none()
+    if known is None or known:
+        return True
+    for path, label in ((PAIRED_FILE, "paired"), (HELPER_FILE, "helpers"), (UPDATES_FILE, "bot updates")):
+        if not os.path.lexists(path):
+            continue
+        try:
+            doc = safe_io.read_json(path, safe_io.LARGE_JSON, label)
+        except (OSError, ValueError):
+            return True
+        if not isinstance(doc, dict) or doc:
+            return True
+    return False
+
+
+def _strict_pinned_keys(modes):
+    """GS1337-06: {slug: b64} from bot_keys.json, read strictly. botreply.load_keys reads a damaged file as no keys
+    (right for replies, wrong here: the migration would finish with nothing marked). None when the file exists but
+    can't be read, isn't JSON or has the wrong shape, or is missing while the station has bots. A missing file on a
+    fresh station with no bots is no keys."""
+    path = bot_keys_path()
+    if not os.path.lexists(path):
+        return None if _station_has_bots(modes) else {}
+    try:
+        doc = safe_io.read_json(path, safe_io.LARGE_JSON, "bot keys")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("keys"), dict):
+        return None
+    return doc["keys"]
+
+
+def run_key_migration(preview=False):
+    """Once per station (key-migration.json records it). Returns {slug: verdict} or None when it could not run.
+    preview=True decides and returns without writing anything (tools/key-migration-preview.py)."""
+    if not preview and os.path.lexists(key_migration_path()):
+        return None
+    modes = _raw_overlay_key_modes()
+    if modes is None:
+        log("key migration waiting: the overlay file is unreadable")
+        return None
+    pinned = _strict_pinned_keys(modes)
+    if pinned is None:
+        log("key migration waiting: bots/bot_keys.json is unreadable or damaged, or missing on a station that has "
+            "bots; nothing is decided and every key stays distrusted until a start can read it")
+        return None
+    verdicts, needs, kept, lines = {}, {}, {}, []
+    for slug in sorted(pinned):
+        raw = pinned[slug]
+        if not handoff.bot_slug_ok(slug) or botreply.parse_pub(raw) is None:
+            continue
+        fp = _fp16(botreply.key_fingerprint(raw))
+        mode = modes.get(slug)
+        ev = home_evidence(slug, mode)
+        if mode == "cloud":
+            verdict = "cloud"
+        elif mode == "home":
+            verdict = "home"
+        elif ev:
+            verdict = "home-evidence"
+        else:
+            verdict = "no-evidence"
+        verdicts[slug] = {"verdict": verdict, "evidence": ev, "fp": fp}
+        if verdict in KEY_MOVE_WHY:
+            needs[slug] = {"why": verdict, "fp": fp}
+        else:
+            kept[slug] = {"fp": fp, "evidence": ev}
+        lines.append(f"{_audit_stamp()} - {slug} key-migration {verdict} fp={fp} "
+                     f"mode={mode if mode in ('home', 'cloud') else '-'} evidence={','.join(ev) or '-'}\n")
+    if preview:
+        return verdicts
+    _save_key_migration({"v": 1, "release": station_release() or "", "needs_replace": needs, "kept": kept})
+    for line in lines:
+        _write_audit_line(line)
+    log("key migration: %d kept, %d need Replace key" % (len(kept), len(needs)))
+    return verdicts
 
 
 def audit_policy(actor, on):
@@ -4773,7 +5103,7 @@ async def voice_avatar(req):
             return {"ok": False, "status": 500}
         return {"ok": True, "sha8": sha8}
 
-    status, body = await accept_avatar(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+    status, body = await accept_avatar(raw, station, trusted_keys(), known_bot_slugs(),
                                  avatar_seen(), _avatar_allow, save)
     return web.json_response(body, status=status)
 
@@ -4876,7 +5206,6 @@ async def admin_bots_get(req):
     roster = persona_list()
     ov_now = load_overlay_doc()
     added = ov_now["added"]
-    modes = ov_now["key_mode"]
     hooks = current_webhooks()
     keys = botreply.load_keys(bot_keys_path())
     killed = keys.get("killed") is True
@@ -4906,7 +5235,7 @@ async def admin_bots_get(req):
                      "webhook": webhook_view(ent), "status": status_view(slug, bool(ent)),
                      "paired": pinned,
                      "public_key": base64.b64encode(raw_key).decode() if pinned else None,
-                     "key_mode": "home" if modes.get(slug) == "home" else "cloud",
+                     "key_move": ((key_move_for(slug, keys) or {}).get("why") if pinned else None),
                      "reply_host": ov_now["reply_host"].get(slug),
                      "helper_version": (helpers.get(slug) or {}).get("header"),
                      "helper_signed": (helpers.get(slug) or {}).get("signed"),
@@ -4941,11 +5270,8 @@ async def admin_bots_post(req):
     voice = chosen_voice(voice, allow_default=True)
     if voice is False:
         return web.json_response({"error": "bad voice"}, status=400)
-    mode = "cloud"
-    if "key_mode" in body:
-        mode = body.get("key_mode")
-        if mode not in ("cloud", "home"):
-            return web.json_response({"error": "bad key mode"}, status=400)
+    if key_mode_refused(body):
+        return web.json_response({"error": KEY_HOME_ONLY}, status=400)
     host = body.get("reply_host")
     if host is not None and not host_name_ok(host):
         return web.json_response({"error": "bad computer name"}, status=400)
@@ -4958,8 +5284,6 @@ async def admin_bots_post(req):
     ov["added"][slug] = entry
     if not list_source_slug():  # the first bot (or the first after the main bot went away) becomes the main bot
         ov["list_source"] = slug
-    if mode == "home":
-        ov["key_mode"][slug] = "home"
     if host:
         ov["reply_host"][slug] = host
     try:
@@ -4978,10 +5302,10 @@ async def admin_bots_post(req):
 
 
 async def admin_bots_patch(req):
-    """Name, voice, key location, or a combination. At least one is required.
+    """Name, voice, computer, or a combination. At least one is required.
 
-    A key_mode change revokes the pinned key first, then saves. The same mode does not revoke.
-    A key exists on only one machine, so the caller must pair a new public key after a switch.
+    0.13.37: there is no key location to switch. key_mode "home" alone is accepted and changes nothing (an older
+    page may still send it); any other key_mode is refused before anything is saved.
     """
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -4992,6 +5316,8 @@ async def admin_bots_patch(req):
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
+    if key_mode_refused(body):
+        return web.json_response({"error": KEY_HOME_ONLY}, status=400)
     has_name, has_voice, has_mode = "name" in body, "voice" in body, "key_mode" in body
     has_host = "reply_host" in body
     if not has_name and not has_voice and not has_mode and not has_host:
@@ -5008,11 +5334,8 @@ async def admin_bots_patch(req):
             return web.json_response({"error": "bad voice"}, status=400)
         if voice is None:
             voice = VOICE.lower()
-    mode = None
-    if has_mode:
-        mode = body.get("key_mode")
-        if mode not in ("cloud", "home"):
-            return web.json_response({"error": "bad key mode"}, status=400)
+    if has_mode and not (has_name or has_voice or has_host):
+        return web.json_response({"ok": True})  # home is the only location: nothing to change
     ov = load_overlay_doc()
     if has_name:
         ov["renamed"][slug] = body["name"]
@@ -5027,20 +5350,6 @@ async def admin_bots_patch(req):
             ov["reply_host"][slug] = body["reply_host"]
         else:
             ov["reply_host"].pop(slug, None)
-    switched = False
-    if has_mode and mode != key_mode_of(ov, slug):
-        switched = True
-        if mode == "home":
-            ov["key_mode"][slug] = "home"
-        else:
-            ov["key_mode"].pop(slug, None)
-    if switched:
-        # Revoke before the overlay save. A failed save leaves the old mode, but the old key is already dead.
-        try:
-            botreply.revoke_one(bot_keys_path(), slug)
-        except OSError:
-            return web.json_response({"error": "unavailable"}, status=500)
-        forget_paired(slug)
     try:
         save_overlay(ov)
     except OSError:
@@ -5055,12 +5364,7 @@ async def admin_bots_patch(req):
         persona_list()
     if has_host:
         audit(body["actor"], slug, "reply-host", "-")
-    if switched:
-        audit(body["actor"], slug, "key-mode", "-")
-    resp = {"ok": True}
-    if switched:
-        resp["needs_key"] = True
-    return web.json_response(resp)
+    return web.json_response({"ok": True})
 
 
 def _bot_display_name(slug, roster, ov, reg):
@@ -5121,6 +5425,60 @@ def _delete_written_portrait(slug):
         return
 
 
+def forget_bot_traces(slug):
+    """0.13.37: the one per-slug forget that Remove and Dismiss both run. Returns the stores it changed.
+
+    Clears what a Set up or a Test left on the station for slug: the setup-relay row (state, posted key and
+    fingerprint), every open pending request for it (setup_relay targets and asks or tests by this persona), a
+    running Test, its bot-status.json entry, the signed update and helper status, the paired-at note, and its
+    acknowledgement clips. Before, Remove left the setup-relay row and pendings behind and Dismiss left all of
+    it, so a rescan showed the old Set up state instead of a new row. Keys, webhooks and the roster are not
+    touched here; Remove drops those itself.
+    """
+    if not handoff.bot_slug_ok(slug):
+        return []
+    done = []
+    with _SETUP_STATE_LOCK:
+        doc = setup_state_load()
+        if slug in doc:
+            doc.pop(slug, None)
+            setup_state_save(doc)
+            done.append("setup-relay")
+    try:
+        names = os.listdir(PENDING_DIR)
+    except OSError:
+        names = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        rid = name[:-5]
+        pend = _pending_doc(rid)
+        if isinstance(pend, dict) and (pend.get("persona") == slug
+                                       or (pend.get("kind") == "setup_relay" and pend.get("target") == slug)):
+            handoff.remove_pending(PENDING_DIR, rid)
+            if "pending" not in done:
+                done.append("pending")
+    for tid, rec in list(_runs.items()):
+        if isinstance(rec, dict) and rec.get("slug") == slug:
+            ev = rec.get("cancel")
+            if ev is not None:
+                ev.set()
+            _runs.pop(tid, None)
+            if "test" not in done:
+                done.append("test")
+    try:
+        st = read_json_file(status_path())
+        if isinstance(st, dict) and slug in st:
+            st.pop(slug, None)
+            _write_status(st)
+            done.append("bot-status")
+    except OSError:
+        pass
+    forget_bot_status(slug)
+    forget_ack_clips(slug)
+    return done
+
+
 async def admin_bots_delete(req):
     """Added persona: removed. Registry persona: hidden. Webhook and minted voice token go either way."""
     bad = await admin_gate(req)
@@ -5144,7 +5502,6 @@ async def admin_bots_delete(req):
         ov["hidden"].append(slug)
     ov["renamed"].pop(slug, None)
     ov["voices"].pop(slug, None)
-    ov["key_mode"].pop(slug, None)
     ov["reply_host"].pop(slug, None)
     if ov.get("list_source") == slug:  # the main bot is gone: clear it, or pick the only bot left
         left = [s for s in persona_list() if s != slug]
@@ -5159,9 +5516,8 @@ async def admin_bots_delete(req):
         botreply.revoke_one(bot_keys_path(), slug)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
-    forget_bot_status(slug)
+    forget_bot_traces(slug)  # 0.13.37: the same per-slug forget Dismiss runs
     audit(body["actor"], slug, "remove", tail)
-    forget_ack_clips(slug)
     persona_list()
     _forget_imported_bot(slug, display_name)
     _delete_written_portrait(slug)
@@ -5539,7 +5895,7 @@ def _read_helper_file():
 
 
 def _paired_home_bots():
-    """Bot ids that are listed, home-key and paired right now (what the Bots page shows as paired home bots).
+    """Bot ids that are listed and paired right now (0.13.37: every key is a home key).
 
     None when the key, overlay or persona data cannot be loaded (0.12.15, Nix): the file is then not rewritten on a
     guess; the degraded view uses _home_bots_fallback() until a retry gets a reliable list."""
@@ -5547,8 +5903,8 @@ def _paired_home_bots():
         keys = botreply.load_keys(bot_keys_path())
         if keys.get("killed") is True:
             return []
-        roster, modes = persona_list(), load_overlay_doc()["key_mode"]
-        bots = sorted(s for s in roster if modes.get(s) == "home" and botreply.pinned_bytes(keys, s) is not None)
+        roster = persona_list()
+        bots = sorted(s for s in roster if botreply.pinned_bytes(keys, s) is not None)
     except Exception as e:  # advisory: never break a post or the Bots page over this
         _log_once("list", "helper status rebuild waiting: bot list unreadable (%s)" % type(e).__name__)
         return None
@@ -5558,12 +5914,11 @@ def _paired_home_bots():
 
 
 def _home_bots_fallback():
-    """Best available set while the full list cannot load: home bots on the roster, plus the last known set.
+    """Best available set while the full list cannot load: bots on the roster, plus the last known set.
     0.12.15 (Nix I1): when the keys file is readable, only bots with a pinned key count (paired home bots).
     Records the roster part as the set at the moment of the damage (None if the roster could not be read)."""
     try:
-        roster, modes = persona_list(), load_overlay_doc()["key_mode"]
-        bots = set(s for s in roster if modes.get(s) == "home")
+        bots = set(persona_list())
         _hs["at_damage"] = set(bots)
     except Exception:
         bots = set()
@@ -6024,8 +6379,6 @@ async def admin_helper_update(req):
     body = await admin_json(req)
     if body is None or not actor_ok(body.get("actor", "admin")):
         return web.json_response({"error": "bad request"}, status=400)
-    if key_mode_of(load_overlay_doc(), slug) != "home":
-        return web.json_response({"error": "This bot doesn't use a home helper."}, status=400)
     ent = current_webhooks().get(slug)
     if not ent:
         return web.json_response({"error": "not configured"}, status=400)
@@ -6174,10 +6527,38 @@ async def healthz(_req):
 # GET /voice/request is gone: the question rides on the webhook.
 
 
+def known_bot_slugs_or_none():
+    """Every bot slug: the registry (hidden ones too) and the overlay's added bots. None when either file exists
+    but can't be read, so a caller that would clear state fails closed (GS1337-02)."""
+    out = set()
+    for path, label, pick in ((PERSONAS_FILE, "personas", lambda d: [p.get("slug") for p in d.get("personas", [])
+                                                                       if isinstance(p, dict)]),
+                              (overlay_path(), "personas-overlay", lambda d: list((d.get("added") or {}).keys()))):
+        if not os.path.lexists(path):
+            continue
+        try:
+            doc = safe_io.read_json(path, safe_io.LARGE_JSON, label)
+            if not isinstance(doc, dict):
+                return None
+            out |= {s for s in pick(doc) if isinstance(s, str) and handoff.bot_slug_ok(s)}
+        except (OSError, ValueError, AttributeError, TypeError):
+            return None
+    return out
+
+
 def known_bot_slugs():
     """Registry and added personas, minus ones the admin has hidden. Does not depend on the voice list."""
     ov = load_overlay_doc()
     return (set(registry_index()) | set(ov["added"])) - set(ov["hidden"])
+
+
+def _stale_cloud_setup(doc):
+    """0.13.37: a setup_relay request frozen before the upgrade with a mode other than home (the removed Bot computer
+    key). Its card would install a cloud routine that asks for a key secret the station no longer supports."""
+    if not isinstance(doc, dict) or doc.get("kind") != "setup_relay":
+        return False
+    frozen = doc.get("frozen")
+    return isinstance(frozen, dict) and "mode" in frozen and frozen.get("mode") != "home"
 
 
 def _pending_doc(rid):
@@ -6187,7 +6568,46 @@ def _pending_doc(rid):
         doc = safe_io.read_json(os.path.join(PENDING_DIR, rid + ".json"), safe_io.SMALL_JSON, "pending")
     except (OSError, ValueError):
         return None
+    if _stale_cloud_setup(doc):
+        handoff.remove_pending(PENDING_DIR, rid)  # not actionable: an ack, pair post or reply to it is refused
+        return None
     return doc if isinstance(doc, dict) else None
+
+
+def retire_cloud_setup_requests():
+    """0.13.37 upgrade: drop every open setup_relay request frozen with a non-home mode, and expire its setup-relay
+    row so the Bots page offers a fresh (home) Set up instead of the stale one. Returns the targets retired."""
+    try:
+        names = os.listdir(PENDING_DIR)
+    except OSError:
+        return []
+    gone = {}
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        rid = name[:-5]
+        try:
+            doc = safe_io.read_json(os.path.join(PENDING_DIR, name), safe_io.SMALL_JSON, "pending")
+        except (OSError, ValueError):
+            continue
+        if _stale_cloud_setup(doc):
+            handoff.remove_pending(PENDING_DIR, rid)
+            gone[rid] = doc.get("target")
+    if not gone:
+        return []
+    with _SETUP_STATE_LOCK:
+        st = setup_state_load()
+        changed = False
+        for target, row in st.items():
+            if row.get("rid") in gone:
+                row.update({"state": "sent", "expires_ms": 0})  # shows as expired: send a new request
+                row.pop("pending_pub", None)
+                row.pop("fp", None)
+                changed = True
+        if changed:
+            setup_state_save(st)
+    log("retired %d setup request(s) made for the removed Bot computer key" % len(gone))
+    return sorted(t for t in gone.values() if isinstance(t, str))
 
 
 def _reply_error(status, reason=None):
@@ -6225,6 +6645,21 @@ def reply_reason(rej):
     return rej.verdict if rej.verdict in ("schema", "expired", "duplicate") else None
 
 
+EXPECT_OLD_FP = re.compile(r"^([0-9a-f]{16}|-)$")
+KEY_CHANGED = "The paired key changed since this page loaded. Reload and compare the fingerprint again."
+
+
+def expect_old_ok(slug, expect):
+    """GS1337-03: the page sends the fingerprint its confirm showed (16 hex, or "-" for no key). True only when
+    it still names the key pinned now, so a second tab or a stale page can't replace a different key."""
+    if not isinstance(expect, str):
+        return False
+    want = re.sub(r"\s+", "", expect.lower())
+    if not EXPECT_OLD_FP.fullmatch(want):
+        return False
+    return want == (_fp16(pinned_fingerprint(slug)) or "-")
+
+
 async def admin_key_put(req):
     """Pin a bot's Ed25519 verify key. The private key never comes here. Pairing clears the kill switch."""
     bad = await admin_gate(req)
@@ -6238,6 +6673,11 @@ async def admin_key_put(req):
         return web.json_response({"error": "bad request"}, status=400)
     if botreply.parse_pub(body.get("public_key")) is None:
         return web.json_response({"error": "bad request"}, status=400)
+    if "expect_old_fp" not in body:
+        return web.json_response({"error": "bad request"}, status=400)
+    if not expect_old_ok(slug, body.get("expect_old_fp")):
+        return web.json_response({"error": KEY_CHANGED}, status=409)
+    old_fp = pinned_fingerprint(slug)
     try:
         ok = botreply.pin_key(bot_keys_path(), slug, body.get("public_key"))
     except OSError:
@@ -6247,7 +6687,11 @@ async def admin_key_put(req):
     forget_bot_status(slug)  # a new key is a new pairing: the old key's update and helper status are not this bot's
     note_paired(slug)
     audit(body["actor"], slug, "pair", "-")
-    return web.json_response({"ok": True})
+    new_fp = botreply.key_fingerprint(body.get("public_key"))
+    verdict = audit_repin(body["actor"], slug, old_fp, new_fp, "configure")
+    clear_key_move(slug, new_fp, "configure")
+    return web.json_response({"ok": True, "fingerprint": new_fp, "previous_fingerprint": old_fp,
+                              "changed": verdict == "changed"})
 
 
 async def admin_key_delete(req):
@@ -6436,7 +6880,7 @@ async def voice_reply(req):
         # open_signed treats a missing limiter as over rate. A request we already charged
         # gets a limiter that allows this one fall-through without taking a second token.
         follow = _AllowOnce() if charged else reply_limiter()
-        reply = botreply.ingest(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+        reply = botreply.ingest(raw, station, trusted_keys(), known_bot_slugs(),
                                 _pending_doc, _reply_seen, follow,
                                 hosts=_personas.get("hosts") or (),
                                 names=_personas.get("names") or (), source=list_source_slug, pii=pii_mode())
@@ -6653,15 +7097,29 @@ async def admin_imported_delete(req):
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
+    forget = body.get("forget", "")
+    if forget not in ("", None) and not handoff.bot_slug_ok(forget):
+        return web.json_response({"error": "bad request"}, status=400)
     result = dismiss_imported(req.match_info.get("key", ""))
     if result is False:
         return web.json_response({"error": "bad request"}, status=400)
     if result is None:
         return web.json_response({"error": "Not on the list."}, status=404)
+    # 0.13.37: the admin names the slug this row would Set up as. A name that is not a bot yet is forgotten the
+    # same way Remove forgets a bot, so a rescan shows it as new. A real bot's traces are left alone.
+    # GS1337-02: every bot (registry, added, hidden) is protected, and an unreadable bot list skips the forget.
+    forgot = False
+    if forget:
+        bots = known_bot_slugs_or_none()
+        if bots is None:
+            log("dismiss: bot list unreadable; setup traces kept")
+        elif forget not in bots:
+            forget_bot_traces(forget)
+            forgot = True
     slug = list_source_slug() or _load_imported().get("source") or ""
     if handoff.bot_slug_ok(slug):
         audit(body["actor"], slug, "dismiss", "-")
-    return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "forgot": forgot})
 
 
 async def admin_list_source_put(req):
@@ -6725,7 +7183,7 @@ async def voice_show(req):
             return 200  # checked and accepted; shown when the late answer is spoken
         return post_station_show(show)
 
-    status, body, info = accept_show(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
+    status, body, info = accept_show(raw, station, trusted_keys(), known_bot_slugs(),
                                       card_limiter(), post, ttl_max=card_ttl_max(), seen=show_seen(),
                                       pii=pii_mode(), hosts=_personas.get("hosts") or (),
                                       names=_personas.get("names") or ())
@@ -6811,7 +7269,7 @@ def setup_install_pins():
 
 
 def setup_routine_literals(text=None):
-    """(commit, home_sha, cloud_sha) from setup-params literals, or (None, None, None).
+    """(commit, home_sha) from setup-params literals, or (None, None). 0.13.37: there is no cloud routine.
 
     These are the routine pins, not the install-home.sh pins. The re-pin commit writes them.
     """
@@ -6821,18 +7279,17 @@ def setup_routine_literals(text=None):
             with open(path, encoding="utf-8") as fh:
                 text = fh.read(16000)
         except OSError:
-            return None, None, None
+            return None, None
     if not isinstance(text, str):
-        return None, None, None
+        return None, None
     commit = re.search(r"(?m)^ROUTINE_COMMIT ([0-9a-f]{40})$", text)
     home = re.search(r"(?m)^HASH_ROUTINE_HOME ([0-9a-f]{64})$", text)
-    cloud = re.search(r"(?m)^HASH_ROUTINE_CLOUD ([0-9a-f]{64})$", text)
-    if not (commit and home and cloud):
-        return None, None, None
-    c, h, k = commit.group(1), home.group(1), cloud.group(1)
-    if c == handoff.OLD_INSTALL_COMMIT or k == handoff.OLD_ROUTINE_CLOUD_SHA:
-        return None, None, None
-    return c, h, k
+    if not (commit and home):
+        return None, None
+    c, h = commit.group(1), home.group(1)
+    if c == handoff.OLD_INSTALL_COMMIT:
+        return None, None
+    return c, h
 
 
 def setup_update_pins():
@@ -6854,13 +7311,12 @@ def setup_update_pins():
 
 
 def setup_routine_pins(mode):
-    """(routine_commit, routine_sha256) for one mode from the setup-params literals. Never the install pin."""
-    if mode not in ("home", "cloud"):
+    """(routine_commit, routine_sha256) from the setup-params literals. Never the install pin. Home is the only mode."""
+    if mode != "home":
         return None, None
-    commit, home, cloud = setup_routine_literals()
+    commit, digest = setup_routine_literals()
     if not commit:
         return None, None
-    digest = home if mode == "home" else cloud
     if not (handoff.setup_field_ok("routine_commit", commit) and handoff.setup_field_ok("routine_sha256", digest)):
         return None, None
     return commit, digest
@@ -6993,6 +7449,8 @@ def setup_note_review(rid, target, public_key, computer):
             return False
         if row.get("state") == "review" and row.get("pending_pub"):
             return False  # a second post must not replace a posted key
+        if type(row.get("expires_ms")) is not int or row["expires_ms"] < int(time.time() * 1000):
+            return False  # 0.13.37: an expired or retired request (expires_ms 0) takes no key
         path = row.get("path") if row.get("path") in handoff.SETUP_PATHS else None
         nxt = {"state": "review", "rid": rid, "at": int(time.time()), "expires_ms": row["expires_ms"],
                "computer": computer, "pending_pub": public_key, "fp": fp}
@@ -7003,8 +7461,10 @@ def setup_note_review(rid, target, public_key, computer):
     return True
 
 
-def setup_pair_decide(target, decision):
-    """Accept pins the posted key. Reject discards it. Neither sets Connected. None on a bad row."""
+def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
+    """Accept pins the posted key. Reject discards it. Neither sets Connected. None on a bad row.
+    expect_old_fp (GS1337-03): when given, Accept returns {"ok": False, "changed": True} unless it still names
+    the key pinned now. The admin route always gives it."""
     if decision not in ("accept", "reject") or not handoff.setup_field_ok("target", target):
         return None
     with _SETUP_STATE_LOCK:
@@ -7029,12 +7489,17 @@ def setup_pair_decide(target, decision):
             doc[target] = base
             setup_state_save(doc)
             return {"ok": True, "state": "rejected", "slug": target}
+        if expect_old_fp is not None and not expect_old_ok(target, expect_old_fp):
+            return {"ok": False, "changed": True, "slug": target}
+        old_fp = pinned_fingerprint(target)
         try:
             pinned = botreply.pin_key(bot_keys_path(), target, pub)
         except OSError:
             return None
         if not pinned:
             return None
+        audit_repin(actor, target, old_fp, botreply.key_fingerprint(pub), "setup")
+        clear_key_move(target, botreply.key_fingerprint(pub), "setup")
         if base.get("computer"):
             try:
                 ov = load_overlay_doc()
@@ -7077,17 +7542,22 @@ async def admin_setup_pair_post(req):
         return bad
     body = await admin_json(req)
     if (not isinstance(body, dict) or not actor_ok(body.get("actor"))
-            or set(body) != {"actor", "slug", "decision"}):
+            or set(body) - {"expect_old_fp"} != {"actor", "slug", "decision"}):
         return web.json_response({"error": "bad request"}, status=400)
     slug, decision = body.get("slug"), body.get("decision")
     if not handoff.setup_field_ok("target", slug) or decision not in ("accept", "reject"):
         return web.json_response({"error": "bad request"}, status=400)
+    if decision == "accept" and "expect_old_fp" not in body:
+        return web.json_response({"error": "bad request"}, status=400)  # GS1337-03: Accept names the old key
     try:
-        result = setup_pair_decide(slug, decision)
+        result = setup_pair_decide(slug, decision, body["actor"],
+                                   body.get("expect_old_fp") if decision == "accept" else None)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
     if not result:
         return web.json_response({"error": "not found"}, status=404)
+    if result.get("changed"):
+        return web.json_response({"error": KEY_CHANGED}, status=409)
     audit(body.get("actor"), slug, "setup-pair-" + decision, "-")
     return web.json_response({"ok": True, "state": result["state"]})
 
@@ -7280,8 +7750,13 @@ if __name__ == "__main__":
         ensure_policy()  # missing or invalid policy.json becomes pii_mode true, on both files
     except OSError as e:
         log("policy init failed", type(e).__name__)
+    key_migration_start()  # 0.13.37 (GS1337-01/05): first, before anything saves the overlay; fails closed
     seed_offered_voices()
     drop_stale_backups()
+    try:
+        retire_cloud_setup_requests()  # 0.13.37: a cloud-mode Set up request from before the upgrade is not actionable
+    except Exception as e:
+        log("setup request cleanup failed", type(e).__name__)
     app = web.Application()  # default body cap; the picture routes read with their own cap (_read_capped)
     app.add_routes([web.get("/health", health), web.get("/healthz", healthz), web.get("/ws", session), web.get("/personas", personas_route),
                     web.get("/portrait/{slug}", portrait_route), web.post("/voice/avatar", voice_avatar),

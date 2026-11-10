@@ -490,7 +490,7 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             r.PAIRED_FILE = os.path.join(tmp, "paired.json")
             with open(r.PAIRED_FILE, "w") as f:
                 json.dump({"juniper": "0.13.16"}, f)
-            body = {"actor": "admin", "target": "otto", "mode": "cloud"}
+            body = {"actor": "admin", "target": "otto", "mode": "home"}
             ok = await client.post("/admin/bots/setup-relay", headers=headers,
                                    json=dict(body, slug="juniper"))
             self.assertEqual(ok.status, 202, await ok.text())

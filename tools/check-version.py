@@ -123,7 +123,7 @@ _REPIN_LINE = re.compile(
     r"|\([0-9a-f]{40} and [0-9a-f]{64} are literal in this Station setup text for "
     r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem\.\)"
     r"|(?:ROUTINE_COMMIT|UPDATE_COMMIT) [0-9a-f]{40}"
-    r"|(?:HASH_ROUTINE_HOME|HASH_ROUTINE_CLOUD|HASH_UPDATE) [0-9a-f]{64}"
+    r"|(?:HASH_ROUTINE_HOME|HASH_UPDATE) [0-9a-f]{64}"
     r"|RELEASE [0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
     r")\Z"
 )

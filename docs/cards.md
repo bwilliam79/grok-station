@@ -32,7 +32,7 @@ After the card text is normalized, every text field is checked with the same sec
 
 `id` matches `^[a-z0-9][a-z0-9_-]{0,31}$`. `priority` is an integer 0..100 (higher shows first). `ttl_s` is an integer from 1 to the station cap (default 86400, never above that, and a configured cap below 60 is ignored). Unknown fields are rejected.
 
-`tools/grok-station-reply show` reads the show JSON on stdin, adds `kind`, a fresh `nonce`, and `exp_ms` (about 60 seconds ahead), seals it, and posts `/voice/show`. You do not put those three fields in the JSON you pipe. `seal`, `post`, and `send` are unchanged, except a reply now carries `"kind":"reply"`.
+`gs-seal-reply show --persona <slug>` on the bot's home computer reads the show JSON on stdin, adds `kind`, a fresh `nonce`, and `exp_ms` (about 60 seconds ahead), seals it, and posts `/voice/show` once. You do not put those three fields in the JSON you pipe. A reply carries `"kind":"reply"`. (Before 0.13.37 a cloud-key bot used `tools/grok-station-reply show`; that tool is gone.)
 
 ## Card v1
 
@@ -63,7 +63,7 @@ When the station accepts a sports card it fetches logos itself and serves the fi
 
 What changed: paired bots can put and clear display cards through the existing sealed path (`POST /voice/show`) and the station's existing `/show` listener. The Display page sets rotation seconds and the logo-host allowlist. Expired cards leave on their own.
 
-How to test: install this tree, open **Display**, set rotation to 10 seconds, and leave logo hosts empty (or add only `cdn.example.com`). Pair a bot. From the bot machine, pipe a small recipe JSON (the put shape above, without nonce or exp) into `grok-station-reply show --bot jules --station-pub … --station https://…`. Then clear it with `{"v":1,"op":"clear","id":"soup"}`. Posting the same sealed bytes a second time is rejected.
+How to test: install this tree, open **Display**, set rotation to 10 seconds, and leave logo hosts empty (or add only `cdn.example.com`). Pair a bot. On the bot's home computer, pipe a small recipe JSON (the put shape above, without nonce or exp) into `gs-seal-reply show --persona jules`. Then clear it with `{"v":1,"op":"clear","id":"soup"}`. Posting the same sealed bytes a second time is rejected.
 
 Expected result: the recipe replaces the idle clock, the step line is plain text, and a sports card with a logo on any other host shows a monogram instead of a picture. After the ttl, or after clear, the clock comes back. Another bot's clear for the same id does nothing. The night clock and a voice session still cover the card.
 
@@ -75,7 +75,7 @@ The admin HTTPS port also carries `/voice/reply` and `/voice/show`. Never route 
 
 0.13.10. A short status line a bot puts on the station's own feed (not Team TV). It rides the same signed `POST /voice/show` envelope as a card (same seal, signature, `kind` `show`, nonce, `exp_ms`, replay set, rate limit and secret lint), so there is no new port, path or key.
 
-Put (signed JSON, before `tools/grok-station-reply show` adds `kind`, `nonce` and `exp_ms`):
+Put (signed JSON, before `gs-seal-reply show` adds `kind`, `nonce` and `exp_ms`):
 
 ```json
 {"v":1,"op":"update","id":"table","update":{"type":"done","line":"Booked the table for 7","time":"2026-10-30T18:00:00Z"}}

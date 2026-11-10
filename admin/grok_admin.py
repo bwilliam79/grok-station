@@ -2168,7 +2168,9 @@ import gs_routine  # noqa: E402  (shared with scripts/gs-update.sh; a test keeps
 import bot_content  # noqa: E402  (0.12.10: release-free content fingerprints, station side only)
 import gs_integrations as gsi  # noqa: E402  (WLED registry; installed next to this file)
 
-ROUTINES = {m: os.path.join(HERE, "routine-%s.txt" % m) for m in ("home", "cloud")}
+# 0.13.37: one routine. Every bot's key is on its home computer and the helper there seals every reply.
+ROUTINES = {"home": os.path.join(HERE, "routine-home.txt")}
+KEY_HOME_ONLY = "Keys live on the home computer. The Bot computer option was removed in 0.13.37."
 FINISH = "finish-update.json"
 FINISH_WAIT_S = 600  # a sent update waits this long for the bot's reply; matches the relay's one ask per bot per 10 min
 
@@ -2188,16 +2190,13 @@ def deploy_pins():
 def render_bot_routine(bot, station, fingerprint, pub, pins=None):
     """Exactly the instructions this bot will adopt (F: only the allowed template renders). Raises gs_routine.Bad."""
     pins = deploy_pins() if pins is None else pins
-    mode = "home" if bot.get("key_mode") == "home" else "cloud"
+    mode = "home"
     with open(ROUTINES[mode], encoding="utf-8") as fh:
         template = fh.read()
     if template != gs_routine.TEMPLATES[mode]:  # the station's file ships with its code; anything else is tampering
         raise gs_routine.Bad("station template file differs from this release")
-    fp = str(fingerprint or "").upper()
     text = gs_routine.render(template, mode, bot.get("slug", ""), pins.get("commit", ""),
-                             pins.get("files", {}).get("scripts/gs-update.sh", ""),
-                             station if mode == "cloud" else "", fp if mode == "cloud" else "",
-                             pub if mode == "cloud" else "", owner=setup_owner_name())
+                             pins.get("files", {}).get("scripts/gs-update.sh", ""), owner=setup_owner_name())
     rel = gs_routine.check(text, mode)
     if rel != version():
         raise gs_routine.Bad("release")
@@ -2227,7 +2226,7 @@ def same_content(b, have_rel, have_instr, station, fingerprint, pub, table=None)
         return False
     if version_order(have_rel, version()) != "newer":
         return False  # never call a newer or unknown release "the same"
-    mode = "home" if b.get("key_mode") == "home" else "cloud"
+    mode = "home"
     entries = _content_entries(have_rel, mode, bot_content.read_table() if table is None else table)
     if not entries:
         return False
@@ -2242,12 +2241,9 @@ def same_content(b, have_rel, have_instr, station, fingerprint, pub, table=None)
         return False
     first, rest = template.split("\n", 1)
     old = "Grok Station instructions, release %s.\n" % have_rel + rest
-    fp = str(fingerprint or "").upper()
     for e in entries:
         try:
-            text = gs_routine.render(old, mode, b.get("slug", ""), e["update_commit"], e["update_sha"],
-                                     station if mode == "cloud" else "", fp if mode == "cloud" else "",
-                                     pub if mode == "cloud" else "")
+            text = gs_routine.render(old, mode, b.get("slug", ""), e["update_commit"], e["update_sha"])
         except gs_routine.Bad:
             continue
         if gs_routine.instr_hash(text) == have_instr:
@@ -2304,6 +2300,36 @@ def note_setup(slug, rel=None):
     doc = read_finish()
     doc["setup"][slug] = {"release": rel or version(), "at": time.time()}
     write_json(path(FINISH), doc)
+
+
+def setup_forget(slug):
+    """0.13.37: drop the admin's Set up row for slug, and the hint when it names that bot. Part of the per-slug
+    forget that Remove and Dismiss share (the relay side is forget_bot_traces)."""
+    if not slug_ok(slug):
+        return False
+    with _SETUP_LOCK:
+        disk = setup_load()
+        changed = False
+        name = ((disk.get("rows") or {}).get(slug) or {}).get("name") or ""
+        if slug in (disk.get("rows") or {}):
+            disk["rows"].pop(slug, None)
+            changed = True
+        hint = disk.get("hint")
+        if isinstance(hint, dict) and (bot_id_from_name(hint.get("name")) == slug or (name and hint.get("name") == name)):
+            disk["hint"] = None
+            changed = True
+        if changed:
+            setup_store(disk)
+    return changed
+
+
+def forget_bot_admin(slug):
+    """0.13.37: the admin half of the per-slug forget used by Remove and Dismiss: Set up row and Finish rows."""
+    setup_forget(slug)
+    try:
+        forget_finish(slug)
+    except OSError:
+        pass
 
 
 def forget_finish(slug):
@@ -2381,7 +2407,6 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
     for b in bots:
         if not (b.get("paired") and (b.get("webhook") or {}).get("configured")):
             continue
-        home = b.get("key_mode") == "home"
         try:
             text = render_bot_routine(b, station, fingerprint, pub, pins)
             want, err = gs_routine.instr_hash(text), ""
@@ -2396,7 +2421,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         exact_only = bool(main) and b["slug"] == main  # 0.13.35: the main bot needs this exact release
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
-        elif want and u and not exact_only and not (home and (b.get("helper") or {}).get("out_of_date")) \
+        elif want and u and not exact_only and not (b.get("helper") or {}).get("out_of_date") \
                 and same_content(b, u.get("release"), u.get("instr"), station, fingerprint, pub):
             state = "done"  # 0.12.10: an older release with identical content apart from the release line
         elif b.get("update_refused_at") and not (setup and _setup_newer(setup, {"at": b.get("update_refused_at")})):
@@ -2410,7 +2435,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "waiting" if wait_left > 0 else "noreply"  # stored with its time, so a restart keeps it
         elif not u and setup.get("release") == rel:
             state = "done"  # paired with this release's Add bot instructions: nothing to update yet
-        elif not u and setup and want and not exact_only and not (home and (b.get("helper") or {}).get("out_of_date")) \
+        elif not u and setup and want and not exact_only and not (b.get("helper") or {}).get("out_of_date") \
                 and same_content(b, setup.get("release"), None, station, fingerprint, pub):
             state = "done"  # paired on an older release whose content is identical to this one
             unconfirmed = True  # Nix 0.12.10: table match only; cleared by the bot's first signed status
@@ -2423,7 +2448,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "needs" if placeholder_owner_mismatch(text, u.get("instr"), setup_owner_name()) else "different"
         else:
             state = "needs"
-        if home and state == "done" and (b.get("helper") or {}).get("out_of_date"):
+        if state == "done" and (b.get("helper") or {}).get("out_of_date"):
             state = "needs"  # 0.12.13: an old or unconfirmed helper counts in the Bots-menu dot
         if err:
             state = "error"
@@ -2440,15 +2465,12 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             reason = fail["reason"]  # the last Update click failed before the bot was asked (kept across reloads)
         if state != "done":
             behind += 1
-        if home:
-            key = "c:" + u["computer"] if u.get("computer") else "h:" + (b.get("reply_host") or b["slug"])
-            label = b.get("reply_host") or "Home computer"
-        else:
-            key, label = "bot", "Bot computer"
-        g = groups.setdefault(key, {"key": key, "label": label, "home": home, "bots": [], "helper": None})
-        if home and (b.get("helper") or {}).get("version"):
+        key = "c:" + u["computer"] if u.get("computer") else "h:" + (b.get("reply_host") or b["slug"])
+        label = b.get("reply_host") or "Home computer"
+        g = groups.setdefault(key, {"key": key, "label": label, "home": True, "bots": [], "helper": None})
+        if (b.get("helper") or {}).get("version"):
             g["helper"] = b["helper"]["version"]
-        g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home" if home else "cloud",
+        g["bots"].append({"slug": b["slug"], "name": b.get("name") or b["slug"], "mode": "home",
                           "state": state, "message": text, "instr": want, "have": u.get("instr"),
                           "have_release": u.get("release"), "error": err,
                           "wait_left": wait_left if state == "waiting" else 0, "fail": reason,
@@ -2459,10 +2481,8 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
         answered = [r["slug"] for r in g["bots"] if r["have"]]
         names = [r["slug"] for r in g["bots"]]
         g["updater"] = chosen if chosen in names else (answered[0] if answered else (names[0] if names else None))
-        if not g["home"]:
-            g["updater"] = None  # no shared helper on a bot computer
-        g["want_helper"] = HELPER_RELEASE if g["home"] else None
-    order = sorted(groups.values(), key=lambda g: (g["key"] != "bot", g["label"].lower()))
+        g["want_helper"] = HELPER_RELEASE
+    order = sorted(groups.values(), key=lambda g: g["label"].lower())
     # 0.12.10: one "Some bots need an update" notice per station release, only while a listed bot is behind.
     notice = behind > 0 and finish.get("notice_dismissed") != rel
     return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order,
@@ -3289,7 +3309,8 @@ def safe_bot(b):
         },
         "paired": b.get("paired") is True,
         "public_key": bot_public_key(b),
-        "key_mode": b.get("key_mode") if b.get("key_mode") in ("cloud", "home") else "cloud",
+        # 0.13.37 (GS1337-01): the key-location migration marked this key; replies are refused until Set up.
+        "key_move": b.get("key_move") if b.get("key_move") in ("cloud", "no-evidence", "damaged") else None,
         "reply_host": b.get("reply_host") if host_name_ok(b.get("reply_host")) else None,
         "helper": helper_view(b),
         "update": update_view(b.get("update")),
@@ -3336,7 +3357,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.33"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.37"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -3353,9 +3374,6 @@ def helper_view(b):
     sends it, so that means a helper older than 0.11.7 (Nix M1). No post yet is not evidence: state "unknown", no
     warning, so nothing flashes right after Add bot.
     """
-    if b.get("key_mode") != "home":
-        return None
-
     def ok(v):
         return v if HELPER_V.fullmatch(str(v or "")) else None
     seen = ok(b.get("helper_signed"))
@@ -3462,7 +3480,7 @@ def local_bots():
                 "source": "registry",
                 "webhook": {"configured": False, "last4": None, "saved_at": None},
                 "status": {"state": "not_configured", "last_answered_at": None, "last_error": None, "last_error_at": None},
-                "paired": False, "public_key": None, "key_mode": "cloud", "reply_host": None, "stats": stats_view(None),
+                "paired": False, "public_key": None, "reply_host": None, "stats": stats_view(None),
             })
     return out
 
@@ -3992,6 +4010,19 @@ def setup_message(name, wake, computer, owner=None):
         "into the station." % who,
     ]
     return " ".join("Step %d: %s" % (i, line) for i, line in enumerate(steps, 1))
+
+
+SETUP_TEST_ID = re.compile(r"t_[A-Za-z0-9_-]{8,64}")
+SETUP_NOT_TESTED = "The test hasn't passed yet. The row shows Connected only after it passes."
+
+
+def expect_fp_clean(raw):
+    """GS1337-03: the fingerprint of the key the page's confirm showed, as 16 hex, or "-" for no key. None when
+    missing or malformed."""
+    if not isinstance(raw, str):
+        return None
+    v = re.sub(r"\s+", "", raw.lower())
+    return v if re.fullmatch(r"[0-9a-f]{16}|-", v) else None
 
 
 def setup_check_body(j, allowed):
@@ -5351,7 +5382,7 @@ class Handler(BaseHTTPRequestHandler):
         known, names, hosts, configured, modes = set(), {}, {}, set(), {}
         for b in bots:
             known.add(b["slug"])
-            modes[b["slug"]] = "home" if b.get("key_mode") == "home" else "cloud"
+            modes[b["slug"]] = "home"
             names[b["slug"]] = b["name"]
             hosts[b["slug"]] = b.get("reply_host") or ""
             if (b.get("webhook") or {}).get("configured"):
@@ -5382,16 +5413,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def bots_setup_pair(self, j):
         """Accept or reject the posted key. Same admin session and CSRF gate as the other bot writes."""
-        if setup_check_body(j, ("slug", "decision", "password")):
+        if setup_check_body(j, ("slug", "decision", "password", "expect_old_fp")):
             return self.send(400, {"error": "bad request"})
         slug, decision = j.get("slug"), j.get("decision")
         if not slug_ok(slug) or decision not in ("accept", "reject"):
             return self.send(400, {"error": "bad request"})
+        expect = expect_fp_clean(j.get("expect_old_fp"))
+        if decision == "accept" and expect is None:
+            return self.send(400, {"error": "bad request"})  # GS1337-03: Accept names the key it replaces
         # Accept pins the posted key. Same password gate as bots_key_put. Reject only needs the session.
         if decision == "accept" and not self.need_password(j):
             return
-        got = relay_call("POST", "/admin/bots/setup-pair",
-                         {"actor": RELAY_ACTOR, "slug": slug, "decision": decision}, timeout=15)
+        rbody = {"actor": RELAY_ACTOR, "slug": slug, "decision": decision}
+        if decision == "accept":
+            rbody["expect_old_fp"] = expect
+        got = relay_call("POST", "/admin/bots/setup-pair", rbody, timeout=15)
         if not got:
             return self.send(422, {"error": "not configured"})
         status, data = got[0], got[1] if isinstance(got[1], dict) else {}
@@ -5424,7 +5460,7 @@ class Handler(BaseHTTPRequestHandler):
             main = ctx["main"]
             if not main:
                 return (400, {"error": "not configured"})
-            mode = "home" if ctx.get("modes", {}).get(target) == "home" else "cloud"
+            mode = "home"  # 0.13.37: a new bot's key is made on its home computer; there is no other mode
             # G03: path=held when the live bot already holds this release's instructions.
             holds = False
             try:
@@ -5500,7 +5536,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(code, body)
 
     def bots_setup_connected(self, j):
-        if setup_check_body(j, ("slug",)):
+        # 0.13.37: Connected only after the Test passes. Before, the page called this right after it started the
+        # Test, so the row said Connected while the Test was still waiting (or about to fail). The body now names the
+        # Test, and the relay's record for that slug must say "ok".
+        if setup_check_body(j, ("slug", "test_id")):
             return self.send(400, {"error": "bad request"})
         slug = j.get("slug")
         if not slug_ok(slug):
@@ -5510,6 +5549,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.bots_unconfigured()
         if slug not in ctx["known"]:
             return self.send(404, {"error": "not found"})
+        tid = j.get("test_id")
+        if not isinstance(tid, str) or not SETUP_TEST_ID.fullmatch(tid):
+            return self.send(409, {"error": SETUP_NOT_TESTED})
+        got = relay_call("GET", "/admin/bots/" + slug + "/test/" + tid)
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        if status != 200 or not isinstance(data, dict) or data.get("state") != "ok":
+            return self.send(409, {"error": SETUP_NOT_TESTED})
         doc = setup_load()
         code, body = setup_connected(
             doc, slug, known=ctx["known"], has_webhook=slug in ctx["configured"], now=time.time(),
@@ -5629,12 +5677,25 @@ class Handler(BaseHTTPRequestHandler):
         key = key.casefold()
         if _IMPORTED_KEY.fullmatch(key) is None:
             return self.send(400, {"error": "Not on the list."})
-        got = relay_call("DELETE", "/admin/bots/imported/" + urllib.parse.quote(key, safe=""), {"actor": RELAY_ACTOR})
+        # 0.13.37: Dismiss forgets the slug this name would Set up as (unless it is already a bot), like Remove.
+        sid = bot_id_from_name(key)
+        # GS1337-02: an unreadable bot list means no forget (fail closed). The relay checks every bot slug
+        # again and says whether it forgot; only then is the admin side cleared.
+        listed = relay_call("GET", "/admin/bots")
+        if listed is not None and listed[0] == 200 and isinstance(listed[1], dict):
+            known = {b["slug"] for b in (safe_bot(x) for x in (listed[1].get("bots") or [])) if b}
+            forget = sid if sid and sid not in known else ""
+        else:
+            forget = ""
+        got = relay_call("DELETE", "/admin/bots/imported/" + urllib.parse.quote(key, safe=""),
+                         {"actor": RELAY_ACTOR, "forget": forget})
         if got is None:
             return self.bots_unconfigured()
         status, data = got
         if status != 200 or not isinstance(data, dict) or data.get("ok") is not True:
             return self.relay_fail(status, data)
+        if forget and data.get("forgot") is True:
+            forget_bot_admin(forget)
         return self.send(200, {"ok": True})
 
     def bots_list_source(self, j):
@@ -5855,11 +5916,8 @@ class Handler(BaseHTTPRequestHandler):
                 voice = None
             elif not voice_ok(voice):
                 return self.send(400, {"error": "Pick a voice."})
-        mode = None
-        if isinstance(j, dict) and "key_mode" in j:
-            mode = j.get("key_mode")
-            if mode not in ("cloud", "home"):
-                return self.send(400, {"error": "Pick where the key lives."})
+        if isinstance(j, dict) and "key_mode" in j and j.get("key_mode") != "home":
+            return self.send(400, {"error": KEY_HOME_ONLY})
         host = clean_host(j.get("reply_host", "")) if isinstance(j, dict) else ""
         if host is None:
             return self.send(400, {"error": HOST_BAD})
@@ -5870,8 +5928,6 @@ class Handler(BaseHTTPRequestHandler):
             body["reply_host"] = host
         if voice:
             body["voice"] = voice
-        if mode in ("cloud", "home"):
-            body["key_mode"] = mode
         got = relay_call("POST", "/admin/bots", body)
         if got is None:
             return self.bots_unconfigured()
@@ -5886,12 +5942,15 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
 
     def bots_rename(self, slug, j):
-        """Rename, change voice, change where the key lives, or a combination.
+        """Rename, change voice, change the computer, or a combination.
 
-        key_mode is optional. Sending it alone is enough. An invalid mode is rejected before the password.
+        0.13.37: a key lives only on the home computer. key_mode "home" is accepted and changes nothing; any
+        other key_mode is refused before the password.
         """
         if not isinstance(j, dict):
             return self.send(400, {"error": "Type a name."})
+        if "key_mode" in j and j.get("key_mode") != "home":
+            return self.send(400, {"error": KEY_HOME_ONLY})
         has_name, has_voice, has_mode = "name" in j, "voice" in j, "key_mode" in j
         has_host = "reply_host" in j
         if not has_name and not has_voice and not has_mode and not has_host:
@@ -5914,13 +5973,10 @@ class Handler(BaseHTTPRequestHandler):
             voice = voice.strip()
             if voice and not voice_ok(voice):
                 return self.send(400, {"error": "Pick a voice."})
-        mode = None
-        if has_mode:
-            mode = j.get("key_mode")
-            if mode not in ("cloud", "home"):
-                return self.send(400, {"error": "Pick where the key lives."})
+        if has_mode and not (has_name or has_voice or has_host):
+            return self.send(200, {"ok": True})  # home is the only key location: nothing to change
         # Only the computer name is a label, not access, so it doesn't ask for the password again.
-        if (has_name or has_voice or has_mode) and not self.need_password(j):
+        if (has_name or has_voice) and not self.need_password(j):
             return
         body = {"actor": RELAY_ACTOR}
         if has_host:
@@ -5929,8 +5985,6 @@ class Handler(BaseHTTPRequestHandler):
             body["name"] = name
         if has_voice:
             body["voice"] = voice
-        if has_mode:
-            body["key_mode"] = mode
         got = relay_call("PATCH", "/admin/bots/" + slug, body)
         if got is None:
             return self.bots_unconfigured()
@@ -5941,11 +5995,7 @@ class Handler(BaseHTTPRequestHandler):
             audit(slug, "rename")
         if has_voice:
             audit(slug, "voice")
-        out = {"ok": True}
-        if data.get("needs_key") is True:
-            out["needs_key"] = True
-            audit(slug, "key-mode")
-        return self.send(200, out)
+        return self.send(200, {"ok": True})
 
     def bots_remove(self, slug, j):
         if not self.need_password(j):
@@ -5957,10 +6007,7 @@ class Handler(BaseHTTPRequestHandler):
         if status != 200 or data.get("ok") is False:
             return self.relay_fail(status, data, (j.get("password"),))
         audit(slug, "remove")
-        try:
-            forget_finish(slug)
-        except OSError:
-            pass  # the bot is already gone; a leftover finish row is not counted
+        forget_bot_admin(slug)  # 0.13.37: same per-slug forget as Dismiss
         _gone, failed = delete_bot_phrases(slug)
         body = {"ok": True}
         if failed:
@@ -5990,10 +6037,13 @@ class Handler(BaseHTTPRequestHandler):
         key = j.get("public_key") if isinstance(j, dict) else None
         if not box_pub_ok(key):
             return self.send(400, {"error": "That public key isn't valid."})
+        expect = expect_fp_clean(j.get("expect_old_fp") if isinstance(j, dict) else None)
+        if expect is None:
+            return self.send(400, {"error": "bad request"})
         if not self.need_password(j):
             return
         got = relay_call("PUT", "/admin/bots/" + slug + "/key",
-                         {"public_key": "".join(key.split()), "actor": RELAY_ACTOR})
+                         {"public_key": "".join(key.split()), "actor": RELAY_ACTOR, "expect_old_fp": expect})
         if got is None:
             return self.bots_unconfigured()
         status, data = got
@@ -6001,7 +6051,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data, (j.get("password"), key))
         audit(slug, "pair")
         note_setup(slug)
-        return self.send(200, {"ok": True})
+        # 0.13.37 re-pin: the relay logs old and new fingerprints and says whether the key changed.
+        fp_re = re.compile(r"[0-9a-f]{4}( [0-9a-f]{4}){3}")
+        fp = data.get("fingerprint") if isinstance(data.get("fingerprint"), str) and fp_re.fullmatch(data.get("fingerprint")) else ""
+        prev = data.get("previous_fingerprint")
+        prev = prev if isinstance(prev, str) and fp_re.fullmatch(prev) else ""
+        return self.send(200, {"ok": True, "fingerprint": fp, "previous_fingerprint": prev, "changed": data.get("changed") is True})
 
     def bots_key_delete(self, slug, j):
         """Drop one pinned key. Replies from this bot are rejected until it is paired again."""
@@ -6083,7 +6138,7 @@ class Handler(BaseHTTPRequestHandler):
             "elapsed_s": 0.0 if elapsed is None else elapsed,
             "answered_in_s": _num(data.get("answered_in_s")),
             "error": None if err in (None, "") else self.shown_error(data),
-            "limit_s": _num(data.get("limit_s")) or 30.0,  # 0.13.0: the relay's deadline, so the page counts to it
+            "limit_s": _num(data.get("limit_s")) or 180.0,  # 0.13.0: the relay's deadline, so the page counts to it
             "remaining_s": _num(data.get("remaining_s")),
         })
 

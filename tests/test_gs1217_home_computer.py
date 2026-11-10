@@ -48,7 +48,7 @@ def setup_output(mode):
     params = js.split("const SETUP_PARAMS = String.raw`", 1)[1].split("`;", 1)[0]  # 0.13.16: Copy instructions end
     owner_fn = js.split("function stationOwnerName()", 1)[1].split("\n}", 1)[0]
     prog = ("function stationOwnerName()" + owner_fn + "\n}\n" + "const SETUP_PARAMS = " + json.dumps(params) + ";\n"
-            "const BOT_ROUTINE = `x`, BOT_ROUTINE_HOME = `x`;\n"
+            "const BOT_ROUTINE_HOME = `x`;\n"
             "function deployScript(){return 'SCRIPT';}\nfunction stationAddress(){return %s;}\n"
             "function fillUpdateCommand(b){return b;}\n" % json.dumps(ST))
     prog = prog.replace(const + " = `x`", const + " = " + json.dumps(tmpl)) + fn
@@ -78,15 +78,10 @@ class HomeComputerParagraph(unittest.TestCase):
         self.assertEqual(setup_body(out).replace("{owner}", "your owner"), upd.replace(cmd, "<update command>"))
 
     def test_cloud_keeps_its_wording(self):
-        out, _ = setup_output("cloud")
-        upd = update_output("cloud")
-        cmd = re.search(r"^d=\$\(mktemp -d\).*$", upd, re.M).group(0)
-        body = setup_body(out)
-        self.assertEqual(body.replace("{owner}", "your owner"), upd.replace(cmd, "<update command>"))
-        self.assertIn("On the home machine", body)
-        self.assertNotIn("Run exactly this command, unchanged", body)
-        self.assertEqual(out.count(PARA), 1)
-        self.assertIn(PARA, upd)
+        # 0.13.37: there is no cloud routine to render, on setup or on update.
+        js = read("admin", "web", "app.js")
+        self.assertNotIn("const BOT_ROUTINE = String.raw`", js)
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "admin", "routine-cloud.txt")))
 
 
 if __name__ == "__main__":
@@ -98,7 +93,7 @@ class SetupReplyFieldLinks(unittest.TestCase):
     """0.12.17: the setup reply links the routine's own Webhook URL and key fields, never the Routines panel."""
 
     def test_setup_text_spells_out_field_links(self):
-        for mode in ("home", "cloud"):
+        for mode in ("home",):  # 0.13.37: home only
             out, _ = setup_output(mode)
             tail = out.split("Reply in this order:", 1)[1]
             self.assertIn("grokbot://app/v1/sidebar?target=webhook-url&automation=<routine folder id>", tail)

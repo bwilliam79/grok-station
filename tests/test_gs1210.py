@@ -118,7 +118,7 @@ class NoFalseBehind(_Rel):
         self.assertEqual((rows[-1]["update_commit"], rows[-1]["update_sha"]), upd.groups())
         script = subprocess.run(["git", "-C", ROOT, "show", upd.group(1) + ":scripts/gs-update.sh"],
                                 capture_output=True).stdout
-        for m in ("home", "cloud"):
+        for m in ("home",):  # 0.13.37: the cloud routine is gone; the table keeps the home fingerprint only
             want = bot_content.content_fp(open(os.path.join(ROOT, "admin", "routine-%s.txt" % m), "rb").read(), script,
                                           open(os.path.join(ROOT, bot_content.HELPER[m]), "rb").read())
             self.assertEqual(rows[-1]["fp"][m], want, m)
