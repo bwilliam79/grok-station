@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
 
+### 0.13.32
+A bot update status line is no longer refused when a 16-hex id happens to contain a 9-digit run that looks like a Social Security number. Secret checks on that line still run, and a free-text answer with an SSN or card number is still blocked. The home helper stays 0.13.30. Press Update on each bot after installing.
+
 ### 0.13.31
 A wake word that is not good enough now says which check failed, with the numbers. Recall short of 0.80 asks you to record 5 more clips, said clearly, somewhere quiet. Another sound that is too close asks for a longer or more distinct phrase, or a quieter room. Clear training and the next recording use the same clock, so those new clips are the ones that get scored. The home helper stays 0.13.30. Press Update on each bot after installing.
 

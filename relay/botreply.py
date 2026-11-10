@@ -410,11 +410,14 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=None):
     if pending.get("kind") in ("bot_list", "setup_relay"):
         raise Reject(403, "request", bot, rid)
     use = pii_for_check(pending, pii)
-    # A regex-shaped update status has no free text. Secret lint still runs. PII lint does not.
+    # A regex-shaped update status has no free text. Secret lint still runs. PII, SSN, and
+    # card lint do not: a 16-hex id can contain a 9-digit run that looks like an SSN.
+    digits = True
     if pending.get("kind") == "update_bot" and UPDATE_STATUS.match(cleaned):
         use = False
+        digits = False
     try:
-        why = handoff.lint_reply(cleaned, hosts, names, pii=use)
+        why = handoff.lint_reply(cleaned, hosts, names, pii=use, digits=digits)
     except Exception:
         why = "error"
     if why:

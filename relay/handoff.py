@@ -139,15 +139,16 @@ def strip_markup(t):
     return " ".join(re.sub(r"[*_`~#>|]+", "", t).split())
 
 
-def _lint(text, hosts, names, pii):
+def _lint(text, hosts, names, pii, digits=True):
     """Reason code, or None. Caller catches exceptions (fail closed)."""
     norm, flat = _norm_reply(text)
     if _PEM.search(norm) or _PREFIX.search(norm) or _SECRET_VALUE.search(norm) or _entropy_hit(norm):
         return "secret"
-    if _ssn(flat):
-        return "ssn"
-    if _card(flat):
-        return "card"
+    if digits:
+        if _ssn(flat):
+            return "ssn"
+        if _card(flat):
+            return "card"
     if not pii:
         return None
     if _EMAIL.search(norm):
@@ -171,15 +172,16 @@ def _lint(text, hosts, names, pii):
     return None
 
 
-def lint_reply(text, hosts=(), names=(), pii=None):
+def lint_reply(text, hosts=(), names=(), pii=None, digits=True):
     """Reason code if a reply must not be spoken, else None.
 
-    Secrets, SSNs and card numbers are always blocked. Email, phone, street address, IP, MAC,
-    private host names and household names are blocked only when pii is true (default).
-    An exception inside the checker blocks the reply. The code is safe to log. The reply text is not.
+    Secrets are always blocked. SSNs and card numbers are blocked when digits is true (default).
+    Email, phone, street address, IP, MAC, private host names and household names are blocked
+    only when pii is true (default). An exception inside the checker blocks the reply. The code
+    is safe to log. The reply text is not.
     """
     try:
-        return _lint(text, hosts, names, True if pii is None else bool(pii))
+        return _lint(text, hosts, names, True if pii is None else bool(pii), bool(digits))
     except Exception:
         return "error"
 
