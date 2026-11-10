@@ -80,7 +80,7 @@ class RecordedHelper(unittest.TestCase):
         def read(path):
             data = base(path)
             if path in ("admin/gs_routine.py", "admin/routine-home.txt") and data:
-                return data.replace(b"release 0.13.37.", b"release 0.13.38.")
+                return data.replace(b"Grok Station instructions, release ", b"Grok Station instructions, release 9.9.9 ", 1)
             return data
 
         self.assertIsNone(cv.helper_problem(read))

@@ -181,6 +181,18 @@ and exits 1 instead of an empty would_mark.
 `expect_old_fp`, the 16-hex fingerprint of the key the page showed as pinned, or `-` for none. When it no longer
 names the pinned key the relay answers 409 `KEY_CHANGED` and pins nothing [S].
 
+## Team list from a voice session
+
+Saying "update my team list" (or the `get_bot_list` tool) starts `relay.py:voice_ask_bot_list`. That runs
+`ask_bot_list` as its own task, tracked in `_run_tasks` the same way an admin Test is, and awaited with
+`asyncio.shield`. The session still speaks the result line when it is open (`voice_list_line`). The paid
+voice session is not held open for the reply: `MAX_SESSION` (60 s) ends the session ("max turn") and that
+cancel does not reach the list task, so `ask_bot_list`'s `finally` does not remove the pending file early.
+The pending file stays until the list arrives or `REPLY_WAIT` (180 s) ends. A list the main bot posts after
+the session has ended, and inside that wait, is accepted and applied (`merge_imported`), not refused with
+403 reason=request. The one-in-flight lock is unchanged (`Limits.take_list`, `Limits.release_list`). The
+admin rescan and import routes still await `ask_bot_list` on their own request.
+
 ## Invariants
 
 1. **The main bot is on exactly this release before any setup_relay.** `finish_rows(main=...)` skips both

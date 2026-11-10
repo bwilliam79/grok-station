@@ -1039,6 +1039,25 @@ async def ask_bot_list(http):
         _limits.release_list()
 
 
+def _track_run(task):
+    """Hold a detached task until it finishes, the same set an admin Test uses."""
+    _run_tasks.add(task)
+    task.add_done_callback(_run_tasks.discard)
+    return task
+
+
+async def voice_ask_bot_list(http):
+    """One list round trip started from a voice session.
+
+    The paid session ends at MAX_SESSION (60 s). The list wait is REPLY_WAIT (180 s). The wait runs
+    as its own task, so cancelling the session does not run ask_bot_list's finally early and drop
+    the pending file. shield keeps that cancel off the task. The caller still awaits the counts and
+    speaks them when the session is still open. The list lock stays one-in-flight until this task ends.
+    """
+    task = _track_run(asyncio.create_task(ask_bot_list(http)))
+    return await asyncio.shield(task)
+
+
 def limit_verdict(why):
     """0.12.11: only a real daily cap is "limit" (the "lot of questions today" line). One question
     already in flight is "busy"; the optional minimum gap is "too-soon"."""
@@ -3043,7 +3062,7 @@ async def session(req):
                                 slug = list_source_slug()
                                 name = (roster.get(slug) or {}).get("name") or slug
                                 await play_fixed(f"Asking {name} for your team.", voice_now, TTS_SHORT_S)
-                                summary, verdict = await ask_bot_list(http)
+                                summary, verdict = await voice_ask_bot_list(http)
                                 await play_fixed(voice_list_line(st.get("station"), name, summary, verdict),
                                                  voice_now, TTS_SHORT_S)
                             st["release_model"] = not persona_routed(st["persona"])
@@ -3160,7 +3179,7 @@ async def session(req):
                             try:
                                 slug = list_source_slug()
                                 name = (roster.get(slug) or {}).get("name") or slug
-                                summary, verdict = await ask_bot_list(http)
+                                summary, verdict = await voice_ask_bot_list(http)
                                 # Guest mode still gets this. The line is counts only, never the names.
                                 await play_fixed(voice_list_line(st.get("station"), name, summary, verdict), VOICE)
                                 end = await end_routed_turn()

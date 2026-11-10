@@ -907,6 +907,82 @@ class ImportTeamSession(PersonaRoute):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[0]["kind"], "bot_list")
 
+    async def test_list_posted_after_the_turn_cap_is_applied(self):
+        """The turn cap ends the paid session. The list wait does not.
+
+        Live station, 0.13.37: a voice "update team list" posted the handoff (HTTP 200), the session
+        ended "max turn" at 60.7 s, and the main bot's list arrived at 77 s, inside REPLY_WAIT. The
+        cancelled ask had already removed the pending file, so the list was 403 reason=request and
+        was not applied. This is that order on a short clock: the session ends at MAX_SESSION while
+        the ask is still open, then the sealed list is posted.
+        """
+        import base64
+        from nacl.public import SealedBox
+        from nacl.signing import SigningKey
+
+        self._mira_main()
+        self.mode = "silent"  # the bot does not answer during the session
+        signer = SigningKey.generate()
+        pub = base64.b64encode(bytes(signer.verify_key)).decode()
+        saved_pin = self._pin
+
+        def pin(slug="mira"):
+            botreply.pin_key(botreply.keys_path(self.tmp), slug, pub)
+
+        self._pin = pin
+        saved = (relay.MAX_SESSION, relay.NO_SPEECH, relay.SECRETS_DIR, set(relay._reply_seen))
+        relay.MAX_SESSION = 2.0
+        relay.NO_SPEECH = 30
+        relay.SECRETS_DIR = os.path.join(self.tmp, "secrets")
+        os.makedirs(relay.SECRETS_DIR, exist_ok=True)
+        before_tasks = set(relay._run_tasks)
+        try:
+            out = await self.drive("Hey Grok, update my team list", slug="mira", timeout=8)
+            self.assertEqual(out["events"][-1].get("type"), "timeout")
+            self.assertTrue(any(l.startswith("session end: max turn") for l in self.lines), self.lines[-6:])
+            self.assertEqual(self.calls[0]["kind"], "bot_list")
+            self.assertEqual(self.calls[0]["persona"], "mira")
+            rid = self.calls[0]["request_id"]
+            station = botreply.load_or_create_station(relay.SECRETS_DIR)
+            body = {"action_class": "bot_list", "bots": [{"name": "Kai"}, {"name": "Juniper"}],
+                    "kind": "bot_list", "request_id": rid, "tier": 0}
+            message = json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
+            sealed = SealedBox(station.public_key).encrypt(signer.sign(message))
+            raw = json.dumps({"v": 1, "bot": "mira", "sealed": base64.b64encode(sealed).decode()},
+                             separators=(",", ":")).encode()
+            app = web.Application()
+            app.router.add_post("/voice/reply", relay.voice_reply)
+            client = TestClient(TestServer(app))
+            await client.start_server()
+            try:
+                resp = await client.post("/voice/reply", data=raw)
+                text = await resp.text()
+            finally:
+                await client.close()
+            refused = [l for l in self.lines if "reason=request" in l]
+            self.assertEqual(resp.status, 200, (text, refused))
+            self.assertEqual(refused, [])
+            with open(relay.imported_path()) as fh:
+                stored = json.load(fh)
+            self.assertEqual(stored["rows"]["kai"]["state"], "new")
+            self.assertEqual(stored["rows"]["juniper"]["state"], "new")
+            for _ in range(40):
+                if not relay._limits.list_open():
+                    break
+                await asyncio.sleep(0.1)
+            self.assertEqual(relay._limits.list_open(), "")
+        finally:
+            relay.MAX_SESSION, relay.NO_SPEECH, relay.SECRETS_DIR = saved[0], saved[1], saved[2]
+            relay._reply_seen.clear()
+            relay._reply_seen.update(saved[3])
+            self._pin = saved_pin
+            self.mode = "reply"
+            extra = [t for t in list(relay._run_tasks) if t not in before_tasks]
+            for t in extra:
+                t.cancel()
+            if extra:
+                await asyncio.gather(*extra, return_exceptions=True)
+
 
 if __name__ == "__main__":
     unittest.main()

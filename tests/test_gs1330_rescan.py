@@ -264,7 +264,7 @@ class RelayRescan(unittest.IsolatedAsyncioTestCase):
     async def test_voice_import_path_unchanged(self):
         i = RELAY_SRC.index("if import_team_request(heard):")
         window = RELAY_SRC[i:i + 1400]
-        self.assertIn("await ask_bot_list(http)", window)
+        self.assertIn("await voice_ask_bot_list(http)", window)
         self.assertIn("voice_list_line", window)
         self.assertNotIn("rescan", window)
         self.assertTrue(self.relay.import_team_request("Hey Grok, update my team list."))
