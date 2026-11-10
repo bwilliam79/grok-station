@@ -104,7 +104,7 @@ expired), merged onto a Sent row by `grok_admin.py:setup_public`.
 | sent, past SETUP_RELAY_TTL_S (900 s), no ack | "No reply from {main}." | Send again allowed | n/a |
 | relayed (held path) | "{main} passed it to {bot} · waiting for {bot} to finish" | nothing | target installs from held literals |
 | awaiting_confirm (relayed, first path) | "… waiting for {bot} to confirm" | nothing | target's owner compares address and fingerprint |
-| review | "Action needed · {bot}'s key is waiting for you to accept", an **Accept key** button that focuses Accept in a panel headed "Accept the key from {bot}" | Accept needs the admin password (`bots_setup_pair`); a key that differs from the pinned one asks "Replace {bot}'s key?" first | fingerprint shown; a changed key shows old and new |
+| review | "Action needed · {bot}'s key is waiting for you to accept", an **Accept key** button that focuses Accept in a panel headed "Accept the key from {bot}" | Accept needs the admin password (`bots_setup_pair`); a key that differs from the pinned one asks "Replace {bot}'s key?" first | fingerprint shown for a listed bot and for a pending teammate; Accept stays off, and the relay refuses it, when the fingerprint is missing or not 16 hex (Reject still works); a changed key shows old and new |
 | accepted | "Paired", paste webhook URL and key | the paste saves the webhook and runs the Test | n/a |
 | accepted, Test running | "Testing · waiting for {bot}'s reply, up to 3:00" | nothing | Test waits TEST_LIMIT_S (180 s, the same as REPLY_WAIT) |
 | accepted, Test passed | "Connected" | `bots_setup_connected` needs the passing `test_id` (the relay's Test state "ok"); otherwise 409 | n/a |

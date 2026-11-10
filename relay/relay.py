@@ -7508,6 +7508,9 @@ def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
             doc[target] = base
             setup_state_save(doc)
             return {"ok": True, "state": "rejected", "slug": target}
+        # 0.13.39: Accept needs the fingerprint the owner compares. A review row with no 16-hex fp is not actionable.
+        if not isinstance(row.get("fp"), str) or re.fullmatch(r"[0-9a-f]{16}", row.get("fp")) is None:
+            return None
         if expect_old_fp is not None and not expect_old_ok(target, expect_old_fp):
             return {"ok": False, "changed": True, "slug": target}
         old_fp = pinned_fingerprint(target)

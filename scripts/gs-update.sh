@@ -365,7 +365,7 @@ from gs_render import (
 )
 
 TEMPLATES = {
-    "home": r'''Grok Station instructions, release 0.13.38.
+    "home": r'''Grok Station instructions, release 0.13.39.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
