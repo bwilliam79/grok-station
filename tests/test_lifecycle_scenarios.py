@@ -13,8 +13,9 @@ update status with long digit runs (0.13.32), the UTC clear stamp against a loca
 releases across bots, and Set up through a current main bot with pins equal to the main bot's literals.
 0.13.37: Remove then rescan and Dismiss then rescan are net-new rows with nothing left over, a second Set up retires
 the first request and its posted key, a Set up for a bot with no stored key location is home (never cloud), and a
-cloud-mode request left open by 0.13.36 is retired on upgrade and can't be accepted. GS1337-01: the first
-0.13.37 start marks pins of bots that were cloud (explicit key_mode cloud, or no key_mode and no home evidence) as
+cloud-mode request left open by 0.13.36 is retired on upgrade and can't be accepted. 0.13.39: Accept records
+the release the setup request was frozen for, so a bot with a webhook and no signed status is done, not copy.
+GS1337-01: the first 0.13.37 start marks pins of bots that were cloud (explicit key_mode cloud, or no key_mode and no home evidence) as
 needing Replace key, keeps pins with home evidence trusted, and logs one audit line per bot.
 
 No network: bot webhooks are a recorder. Needs `unshare -rm` (user and mount namespaces). Without it the module is
@@ -489,6 +490,29 @@ class ReSetupWhilePending(unittest.TestCase):
         pinned, original, posted = o["pinned"]
         self.assertEqual(pinned.replace(" ", ""), original)  # the key pinned before is still the one pinned
         self.assertNotEqual(original, posted)
+
+
+class AcceptNotesSetup(unittest.TestCase):
+    """0.13.39: Accept stamps the frozen release. A webhook bot with no status is done, not copy. Remove clears it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = scenario("accept_notes_setup")
+
+    def test_accept_is_done_on_the_frozen_release(self):
+        o = self.out
+        self.assertEqual(o["before"], "copy")
+        self.assertTrue(o["review"])
+        self.assertEqual(o["accept"], 200)
+        self.assertEqual(o["frozen_release"], REL)
+        self.assertEqual(o["stamp_release"], o["frozen_release"])
+        self.assertEqual(o["after"], "done")
+
+    def test_reject_records_nothing_and_remove_clears_the_stamp(self):
+        o = self.out
+        self.assertIsNone(o["kai_stamp"])
+        self.assertEqual(o["remove"], 200)
+        self.assertIsNone(o["stamp_after_remove"])
 
 
 class StaleCloudRequest(unittest.TestCase):

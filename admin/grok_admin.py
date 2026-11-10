@@ -5433,6 +5433,15 @@ class Handler(BaseHTTPRequestHandler):
         status, data = got[0], got[1] if isinstance(got[1], dict) else {}
         if status != 200:
             return self.relay_fail(status, data, (j.get("password"),))
+        if decision == "accept":
+            # Same record as a manual key pin. The release is the one frozen into the setup request when the
+            # relay returns it. The admin setup row does not store a release, so a response without one records
+            # version(), the file that request was frozen from.
+            audit(slug, "pair")
+            rel = data.get("release") if isinstance(data.get("release"), str) else ""
+            if not re.fullmatch(r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}", rel):
+                rel = None
+            note_setup(slug, rel)
         return self.send(200, {"ok": True, "state": data.get("state") if isinstance(data.get("state"), str) else "",
                                "setup": bots_setup_field()})
 

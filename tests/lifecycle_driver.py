@@ -637,6 +637,31 @@ elif SCENARIO == "utc_stamps":
     out.update({"clear_code": code, "cleared": cleared, "session": ses,
                 "kept": fs.current_training_set([(ses, "clip")], cleared, 20) == [(ses, "clip")],
                 "local_would_be": realtime.strftime("%Y%m%d-%H%M%S", clock.localtime())})
+elif SCENARIO == "accept_notes_setup":
+    # 0.13.39: Accept records the frozen release, so a webhook bot with no signed status is done, not copy.
+    # Reject records nothing. Remove drops the stamp, so the id is not carried as already set up.
+    no_password()
+    main_current()
+    out["before"] = page()["states"]["otto"]
+    posted = send_and_post_key("otto")
+    out["review"] = posted["review"]
+    rid = posted["rid"]
+    frozen_rel = None
+    if rid:
+        with open(os.path.join(r.PENDING_DIR, rid + ".json")) as fh:
+            frozen_rel = (json.load(fh).get("frozen") or {}).get("release")
+    out["frozen_release"] = frozen_rel
+    old_fp = r.botreply.key_fingerprint(KEY).replace(" ", "")
+    code, body = admin("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": old_fp})
+    out["accept"] = code
+    stamp = (ga.read_finish().get("setup") or {}).get("otto") or {}
+    out["stamp_release"] = stamp.get("release")
+    out["after"] = page()["states"].get("otto")
+    send_and_post_key("kai")
+    admin("bots_setup_pair", {"slug": "kai", "decision": "reject"})
+    out["kai_stamp"] = (ga.read_finish().get("setup") or {}).get("kai")
+    out["remove"] = admin("bots_remove", "otto", {})[0]
+    out["stamp_after_remove"] = (ga.read_finish().get("setup") or {}).get("otto")
 else:
     raise SystemExit("unknown scenario " + SCENARIO)
 
