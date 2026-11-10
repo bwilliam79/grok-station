@@ -575,7 +575,7 @@ class Station(unittest.TestCase):
                 sent.append((code, body)); return code
             def _finish_inputs(self):
                 return [_bot("jules", update={"release": "0.0.1", "instr": "1" * 16, "computer": "f" * 16})], \
-                    "https://st.example", FP, PUB
+                    "https://st.example", FP, PUB, ""
         saved = (ga.read_finish, ga.write_json, ga.relay_call, ga.deploy_pins, ga.audit)
         ga.read_finish = lambda: json.loads(json.dumps(doc))
         ga.write_json = lambda path, d: doc.update(d)

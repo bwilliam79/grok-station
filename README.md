@@ -123,6 +123,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
 
+### 0.13.35
+The main bot shows Update until it runs exactly this release. Before, a main bot one release behind with the same instructions apart from the release line counted as up to date, so its row had no Update button, and Set up on another bot failed with "couldn't pass it on" because the main bot checks this release's setup pins against the ones it holds. Now its row shows Update, the Bots page says to update it first, and Set up answers "Update the main bot first." until it has. Other bots keep the 0.12.10 rule: a release-line-only difference is not an update. The home helper stays 0.13.33. Press Update on the main bot first, then on the others.
+
 ### 0.13.34
 The admin page answers again after an install or Update. The 0.13.33 installer left out `admin/gs_render.py`, which the admin page needs at start, so the page kept restarting and never answered. The installer now copies it, and a test fails whenever a module the admin page imports is not installed. Bot updates were not affected. A bot Update that gets no reply now ends on time on the Bots page, even while the page can't reach the station: after 10 minutes the row shows "Update failed: No reply within 10 minutes." and the Update button again, instead of "Updating…". The home helper stays 0.13.33. Press Update on each bot after installing.
 

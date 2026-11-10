@@ -266,8 +266,11 @@ class PairingPost(unittest.TestCase):
                "computer": "kitchen", "pending_pub": pub, "fp": fp}
         with open(state, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"targets": {"otto": row}}))
+        paired = os.path.join(d, "paired.json")
         with mock.patch.object(relay, "SETUP_STATE_FILE", state), \
                 mock.patch.object(relay, "bot_keys_path", lambda: keyf), \
+                mock.patch.object(relay, "PAIRED_FILE", paired), \
+                mock.patch.object(relay, "station_release", lambda: "0.13.35"), \
                 mock.patch.object(relay, "load_overlay_doc", lambda: {"reply_host": {}, "added": {}, "renamed": {},
                                  "hidden": [], "voices": {}, "list_source": "", "key_mode": {}}), \
                 mock.patch.object(relay, "save_overlay", lambda doc: None), \
@@ -278,6 +281,7 @@ class PairingPost(unittest.TestCase):
                 saved = json.load(fh)["targets"]["otto"]
             self.assertNotIn("pending_pub", saved)
             self.assertFalse(os.path.exists(keyf))
+            self.assertEqual(relay.paired_releases(), {})  # 0.13.35: reject stamps nothing
             # A fresh review can be accepted. An expired one cannot.
             expired = dict(row, expires_ms=1)
             with open(state, "w", encoding="utf-8") as fh:
@@ -289,6 +293,7 @@ class PairingPost(unittest.TestCase):
             self.assertEqual(accepted["state"], "accepted")
             pinned = botreply.load_keys(keyf)
             self.assertEqual(pinned["keys"].get("otto"), pub)
+            self.assertEqual(relay.paired_releases(), {"otto": "0.13.35"})  # 0.13.35: accept stamps the release
             with open(state, encoding="utf-8") as fh:
                 saved = json.load(fh)["targets"]["otto"]
             self.assertNotIn("pending_pub", saved)

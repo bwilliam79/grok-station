@@ -96,7 +96,7 @@ class Station:
         self.tmp = tempfile.mkdtemp()
         self.snap = {k: getattr(r, k) for k in ("WEBHOOKS_FILE", "PERSONAS_FILE", "ADMIN_TOKEN", "PENDING_DIR",
                                                   "SETUP_STATE_FILE", "TLS_DIR", "VERSION_FILE", "SECRETS_DIR",
-                                                  "ClientSession")}
+                                                  "ClientSession", "UPDATES_FILE", "PAIRED_FILE")}
         self.voices = set(r.VOICES)
         self.personas = {k: (dict(v) if isinstance(v, dict) else v) for k, v in r._personas.items()}
         self.seen = set(r._reply_seen)
@@ -108,6 +108,11 @@ class Station:
         r.TLS_DIR = os.path.join(self.tmp, "tls")
         r.VERSION_FILE = os.path.join(self.tmp, "VERSION")
         r.SECRETS_DIR = os.path.join(self.tmp, "secrets")
+        # 0.13.35: the relay sends setup only through a main bot on this release. set_main stamps the main bot as
+        # paired while 0.13.18 was current, with no signed update status yet.
+        r.UPDATES_FILE = os.path.join(self.tmp, "updates.json")
+        r.PAIRED_FILE = os.path.join(self.tmp, "paired.json")
+        r._updates_reset_state()
         os.makedirs(r.TLS_DIR)
         os.makedirs(r.SECRETS_DIR)
         with open(os.path.join(r.TLS_DIR, "fingerprint"), "w") as f:
@@ -141,11 +146,16 @@ class Station:
     def set_main(self, slug):
         with open(self.r.overlay_path(), "w", encoding="utf-8") as f:
             json.dump({"list_source": slug}, f)
+        paired = self.r.paired_releases()
+        paired[slug] = "0.13.18"
+        with open(self.r.PAIRED_FILE, "w") as f:
+            json.dump(paired, f)
 
     def close(self):
         r = self.r
         for k, v in self.snap.items():
             setattr(r, k, v)
+        r._updates_reset_state()
         r.VOICES.clear()
         r.VOICES.update(self.voices)
         r._personas.clear()

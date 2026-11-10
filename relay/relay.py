@@ -5040,6 +5040,7 @@ async def admin_bots_patch(req):
             botreply.revoke_one(bot_keys_path(), slug)
         except OSError:
             return web.json_response({"error": "unavailable"}, status=500)
+        forget_paired(slug)
     try:
         save_overlay(ov)
     except OSError:
@@ -5808,6 +5809,7 @@ UPDATES_FILE = E("UPDATES_FILE", os.path.join(STATE_DIR, "bots", "updates.json")
 UPDATE_STATUS = botreply.UPDATE_STATUS
 _update_asked = {}
 _update_bad = {}  # slug -> when its last update reply was not a valid status line (shown as refused)
+PAIRED_FILE = E("PAIRED_FILE", os.path.join(STATE_DIR, "bots", "paired.json"))
 
 
 _us = {"mem": None, "retry_at": None, "logged": False}  # 0.12.15: signed update statuses the file did not take
@@ -5863,6 +5865,51 @@ def bot_updates():
     return out
 
 
+def paired_releases():
+    """{slug: release} stamped when the station pinned that bot's key (0.13.35). Unreadable reads as empty."""
+    doc = read_json_file(PAIRED_FILE)
+    if not isinstance(doc, dict):
+        return {}
+    return {k: v for k, v in doc.items() if isinstance(k, str) and handoff.setup_field_ok("release", v)}
+
+
+def _save_paired(doc):
+    try:
+        os.makedirs(os.path.dirname(PAIRED_FILE), exist_ok=True)
+        atomic_write(PAIRED_FILE, (json.dumps(doc, sort_keys=True) + "\n").encode())
+    except OSError as e:
+        log("paired release could not be saved (%s)" % type(e).__name__)
+
+
+def note_paired(slug):
+    """Stamp the release that was current when slug's key was pinned. Only read while slug has no signed status."""
+    doc = paired_releases()
+    rel = station_release()
+    if rel:
+        doc[slug] = rel
+    else:
+        doc.pop(slug, None)
+    _save_paired(doc)
+
+
+def forget_paired(slug=None):
+    """Drop slug's pairing stamp (all stamps when slug is None): its key is gone or replaced."""
+    doc = paired_releases()
+    if slug is None:
+        if doc:
+            _save_paired({})
+    elif slug in doc:
+        doc.pop(slug, None)
+        _save_paired(doc)
+
+
+def updates_unreadable():
+    """True when the update status file exists but does not read as a status map (and nothing is held in memory)."""
+    if _us["mem"] is not None or not os.path.lexists(UPDATES_FILE):
+        return False
+    return not isinstance(read_json_file(UPDATES_FILE), dict)
+
+
 def forget_bot_status(slug):
     """Drop the signed update status, helper release and refusal recorded for slug (delete or new pairing).
 
@@ -5880,6 +5927,7 @@ def forget_bot_status(slug):
     if _hs["mem"] is not None:
         _hs["known"].discard(slug)  # a deleted or re-paired bot is not re-added by a pending rebuild
         _hs["forgotten"].add(slug)
+    forget_paired(slug)
     doc = bot_updates()
     if slug in doc:
         doc.pop(slug, None)
@@ -5894,7 +5942,9 @@ def note_update(bot, text):
     doc = bot_updates()
     doc[bot] = {"release": m.group(1), "instr": m.group(2), "helper": m.group(3), "computer": m.group(4),
                 "at": int(time.time())}
-    return _commit_updates(doc)
+    ok = _commit_updates(doc)
+    forget_paired(bot)  # a signed status now speaks for this pairing; the pairing stamp is not read again
+    return ok
 
 
 async def admin_bot_update(req):
@@ -6195,6 +6245,7 @@ async def admin_key_put(req):
     if not ok:
         return web.json_response({"error": "bad request"}, status=400)
     forget_bot_status(slug)  # a new key is a new pairing: the old key's update and helper status are not this bot's
+    note_paired(slug)
     audit(body["actor"], slug, "pair", "-")
     return web.json_response({"ok": True})
 
@@ -6214,6 +6265,7 @@ async def admin_key_delete(req):
         botreply.revoke_one(bot_keys_path(), slug)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
+    forget_paired(slug)
     audit(body["actor"], slug, "revoke", "-")
     return web.json_response({"ok": True})
 
@@ -6231,6 +6283,7 @@ async def admin_revoke_all(req):
         botreply.revoke_all(bot_keys_path())
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
+    forget_paired()
     who = body["actor"]
     _write_audit_line(f"{_audit_stamp()} {who} - revoke-all -\n")
     for slug in sorted((before.get("keys") or {})):
@@ -6993,6 +7046,7 @@ def setup_pair_decide(target, decision):
             forget_bot_status(target)
         except Exception:
             pass
+        note_paired(target)
         base["state"] = "accepted"
         doc[target] = base
         setup_state_save(doc)
@@ -7038,6 +7092,24 @@ async def admin_setup_pair_post(req):
     return web.json_response({"ok": True, "state": result["state"]})
 
 
+def main_release_ok(main, release):
+    """0.13.35: may setup go through the main bot on this release? Fails closed.
+
+    The main bot checks the pins it is sent against the literals it holds from its own release, so it declines
+    every setup unless it runs this release. Yes only when its signed update status names this release, or it
+    has no signed status (a new pairing) and its key was pinned while this release was current. An unreadable
+    status file, no release, no stamp, or any other release is no.
+    """
+    if not release:
+        return False
+    held = bot_updates().get(main)
+    if held is not None:
+        return held.get("release") == release
+    if updates_unreadable():
+        return False
+    return paired_releases().get(main) == release
+
+
 async def admin_setup_relay_state(req):
     bad = await admin_gate(req)
     if _is_response(bad):
@@ -7078,6 +7150,8 @@ async def admin_setup_relay(req):
         return web.json_response({"error": "not configured"}, status=400)
     vals = setup_station_values()
     release = station_release()
+    if not main_release_ok(main, release):
+        return web.json_response({"error": "Update the main bot first."}, status=409)
     pin_c = pin_h = None
     if path == "first":
         pin_c, pin_h = setup_install_pins()

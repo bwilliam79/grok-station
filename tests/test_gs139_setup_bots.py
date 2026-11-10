@@ -423,6 +423,7 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             "personas": {k: (dict(v) if isinstance(v, dict) else v) for k, v in r._personas.items()},
             "ClientSession": r.ClientSession, "setup_station_values": r.setup_station_values,
             "station_release": r.station_release, "PENDING_DIR": r.PENDING_DIR, "SETUP_STATE_FILE": r.SETUP_STATE_FILE,
+            "UPDATES_FILE": r.UPDATES_FILE, "PAIRED_FILE": r.PAIRED_FILE,
         }
         calls = []
 
@@ -484,6 +485,11 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             r.station_release = lambda: "0.13.16"
             r.PENDING_DIR = os.path.join(tmp, "pending")
             r.SETUP_STATE_FILE = os.path.join(tmp, "setup-relay.json")
+            # 0.13.35: the main bot was paired on this release and has no signed status yet.
+            r.UPDATES_FILE = os.path.join(tmp, "updates.json")
+            r.PAIRED_FILE = os.path.join(tmp, "paired.json")
+            with open(r.PAIRED_FILE, "w") as f:
+                json.dump({"juniper": "0.13.16"}, f)
             body = {"actor": "admin", "target": "otto", "mode": "cloud"}
             ok = await client.post("/admin/bots/setup-relay", headers=headers,
                                    json=dict(body, slug="juniper"))
@@ -505,7 +511,8 @@ class Rev33RelayTarget(unittest.IsolatedAsyncioTestCase):
             if client is not None:
                 await client.close()
             r.ClientSession = snap["ClientSession"]
-            for k in ("setup_station_values", "station_release", "PENDING_DIR", "SETUP_STATE_FILE"):
+            for k in ("setup_station_values", "station_release", "PENDING_DIR", "SETUP_STATE_FILE", "UPDATES_FILE",
+                      "PAIRED_FILE"):
                 setattr(r, k, snap[k])
             r.WEBHOOKS_FILE = snap["WEBHOOKS_FILE"]
             r.PERSONAS_FILE = snap["PERSONAS_FILE"]

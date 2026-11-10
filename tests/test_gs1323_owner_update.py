@@ -83,7 +83,7 @@ class LegacyOwnerUpdate(unittest.TestCase):
                 return code
 
             def _finish_inputs(self):
-                return [self_bot], STATION, fin.FP, fin.PUB
+                return [self_bot], STATION, fin.FP, fin.PUB, ""
 
         self_bot = self._bot()
         saved = (self.ga.read_finish, self.ga.write_json, self.ga.relay_call, self.ga.deploy_pins, self.ga.audit)

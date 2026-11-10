@@ -2364,10 +2364,14 @@ def placeholder_owner_mismatch(text, have, owner):
     return have in (gs_routine.instr_hash(yours), gs_routine.instr_hash(bare))
 
 
-def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None):
+def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=None, main=None):
     """The Finish update dialog: computers, each with its bots, the exact text, and each row's state.
 
     E: a row is done only when the bot's signed status names this release and the hash of exactly this text.
+    main is the main bot's slug (list_source). 0.13.35: the main bot passes this release's routine, update and
+    install pins to other bots, and checks them against the literals it holds, so for the main bot the 0.12.10
+    same-content shortcuts do not count as done. It is done only on exactly this release with exactly this text
+    (or paired with this release's Add bot instructions and no status yet). Other bots are unchanged.
     """
     pins = deploy_pins() if pins is None else pins
     finish = read_finish() if finish is None else finish
@@ -2389,9 +2393,10 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             u = {}  # status from an earlier pairing of this id (deleted and re-added, or re-keyed): not this bot's
         fail = (finish.get("failed") or {}).get(b["slug"]) or {}
         wait_left, unconfirmed = 0, False
+        exact_only = bool(main) and b["slug"] == main  # 0.13.35: the main bot needs this exact release
         if u.get("release") == rel and want and u.get("instr") == want:
             state = "done"
-        elif want and u and not (home and (b.get("helper") or {}).get("out_of_date")) \
+        elif want and u and not exact_only and not (home and (b.get("helper") or {}).get("out_of_date")) \
                 and same_content(b, u.get("release"), u.get("instr"), station, fingerprint, pub):
             state = "done"  # 0.12.10: an older release with identical content apart from the release line
         elif b.get("update_refused_at") and not (setup and _setup_newer(setup, {"at": b.get("update_refused_at")})):
@@ -2405,7 +2410,7 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
             state = "waiting" if wait_left > 0 else "noreply"  # stored with its time, so a restart keeps it
         elif not u and setup.get("release") == rel:
             state = "done"  # paired with this release's Add bot instructions: nothing to update yet
-        elif not u and setup and want and not (home and (b.get("helper") or {}).get("out_of_date")) \
+        elif not u and setup and want and not exact_only and not (home and (b.get("helper") or {}).get("out_of_date")) \
                 and same_content(b, setup.get("release"), None, station, fingerprint, pub):
             state = "done"  # paired on an older release whose content is identical to this one
             unconfirmed = True  # Nix 0.12.10: table match only; cleared by the bot's first signed status
@@ -2462,6 +2467,14 @@ def finish_rows(bots, station, fingerprint, pub, pins=None, finish=None, now=Non
     notice = behind > 0 and finish.get("notice_dismissed") != rel
     return {"release": rel, "commit": pins.get("update_commit", ""), "behind": behind, "computers": order,
             "notice": notice}
+
+
+def finish_view(got):
+    """finish_rows for Handler._finish_inputs (bots, station, fingerprint, pub, main). /api/finish-update (the Bots
+    page rows, the Bots-menu dot, the main-bot callout) and Update use this; the setup gate passes the same main
+    bot, so the page and the gate agree on it (0.13.35)."""
+    bots, station, fingerprint, pub, main = got
+    return finish_rows(bots, station, fingerprint, pub, main=main)
 
 
 def enroll_live(st):
@@ -5355,13 +5368,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             pub = data.get("station_pub")
             pub = "".join(pub.split()) if box_pub_ok(pub) else ""
-            view = finish_rows(bots, station_base(), tls_info()["fingerprint"], pub)
+            view = finish_rows(bots, station_base(), tls_info()["fingerprint"], pub, main=src)
             if src:
-                for group in view.get("computers") or []:
-                    for row in group.get("bots") or []:
-                        if row.get("slug") == src and row.get("state") != "done":
-                            outdated = True
+                # 0.13.35: fail closed. The main bot counts as outdated unless its own row says done.
+                states = [row.get("state") for group in view.get("computers") or []
+                          for row in group.get("bots") or [] if row.get("slug") == src]
+                outdated = not states or any(st != "done" for st in states)
         except Exception:
+            outdated = bool(src)  # 0.13.35: a failed check is not a pass
             print("admin: setup finish check failed", flush=True)
         return {"known": known, "main": src, "main_name": names.get(src) or "", "outdated": outdated,
                 "names": names, "hosts": hosts, "configured": configured, "modes": modes}
@@ -5695,6 +5709,7 @@ class Handler(BaseHTTPRequestHandler):
         return station_base()
 
     def _finish_inputs(self):
+        """(bots, station, fingerprint, station_pub, main slug) for finish_rows, from one relay read."""
         got = relay_call("GET", "/admin/bots")
         if got is None or got[0] != 200:
             return None
@@ -5702,7 +5717,8 @@ class Handler(BaseHTTPRequestHandler):
         bots = [b for b in (safe_bot(x) for x in (data.get("bots") or [])) if b]
         pub = data.get("station_pub")
         pub = "".join(pub.split()) if box_pub_ok(pub) else ""
-        return bots, self._station_base(), tls_info()["fingerprint"], pub
+        main = data.get("list_source") if slug_ok(data.get("list_source")) else ""
+        return bots, self._station_base(), tls_info()["fingerprint"], pub, main
 
     def api_get_finish_update(self, p, q, j):
         if p != "/api/finish-update":
@@ -5710,7 +5726,7 @@ class Handler(BaseHTTPRequestHandler):
         got = self._finish_inputs()
         if got is None:
             return self.bots_unconfigured()
-        return self.send(200, finish_rows(*got))
+        return self.send(200, finish_view(got))
 
     def api_post_finish_update(self, p, q, j):
         if not isinstance(j, dict):
@@ -5735,7 +5751,7 @@ class Handler(BaseHTTPRequestHandler):
         got = self._finish_inputs()
         if got is None:
             return self.bots_unconfigured()
-        view = finish_rows(*got)
+        view = finish_view(got)
         row = next((r for g in view["computers"] for r in g["bots"] if r["slug"] == slug), None)
         if row is None:
             return self.send(404, {"error": "not found"})
