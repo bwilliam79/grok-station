@@ -163,6 +163,13 @@ class ScoreLineCopy(unittest.TestCase):
         out = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
         return out.stdout
 
+    def test_gate_sentence_does_not_look_like_a_try_count(self):
+        text = ("Not good enough yet (recall 0.60 of 0.80 needed, heard 3 of 5; "
+                "loudest other sound 0.71, weakest needed 0.70, gap 0.03 required). "
+                "Try a longer or more distinct phrase, or a quieter room. "
+                "60% of this set. False rejects 2. False accepts 0.")
+        self.assertEqual(self._line(text), "Last 5 tries: 60% recognized · 2 missed · 0 false wakes")
+
     def test_zero_tries(self):
         self.assertEqual(self._line({"count": 0, "success_pct": 0, "false_rejects": 0, "false_accepts": 0}), "No tries yet")
         self.assertEqual(self._line({}), "No tries yet")
@@ -207,6 +214,79 @@ class ErrorTextRow(unittest.TestCase):
         self.assertIn('id="wrem" type="button">Remove phrase</button>${clearAct}', wake)
         self.assertIn('class="btn sm q" id="wclear"', wake)
         self.assertNotIn('<div class="field"><button class="btn sm" id="wclear"', wake)
+
+
+class ClearClock(unittest.TestCase):
+    """A session recorded after Clear must be scored when local time is behind UTC.
+
+    Clear writes a UTC stamp. enroll names the directory with local time. On a clock
+    behind UTC the new id sorts before the stamp, and current_training_set drops it.
+    """
+
+    def test_session_after_clear_uses_the_clear_clock(self):
+        import time as realtime
+        clock = _BehindUTC(1_700_000_000)
+        tmp = tempfile.mkdtemp(prefix="gs-clock-")
+        old_time, old_dir = gw.time, gw.ENROLL_DIR
+        old_post = gw.post_state
+        old_last = gw.ENROLL_STATE.get("last")
+        old_busy = gw.ENROLL_STATE.get("busy")
+        gw.time = clock
+        gw.ENROLL_DIR = tmp
+        gw.post_state = lambda *a, **k: None
+        gw.ENROLL_STATE["busy"] = False
+        gw.ENROLL_STATE["last"] = None
+
+        def read16(raw=False):
+            raise EOFError("stop")
+
+        try:
+            self.assertIsNotNone(gw.train_flow)
+            try:
+                gw.enroll({"phrase": "hey_ash", "persona": "ash", "count": 5}, read16, "default")
+            except EOFError:
+                pass
+            ses = (gw.ENROLL_STATE.get("last") or {}).get("session")
+            stamp = gw.session_stamp()
+            self.assertEqual(ses, stamp, "session id %s is not the clear clock %s" % (ses, stamp))
+            clock.t -= 60
+            cutoff = gw.session_stamp()
+            clock.t += 60
+            self.assertGreater(ses, cutoff)
+            kept = fs.current_training_set([(ses, "clip")], cutoff, 20)
+            self.assertEqual(kept, [(ses, "clip")])
+        finally:
+            gw.time = old_time
+            gw.ENROLL_DIR = old_dir
+            gw.post_state = old_post
+            gw.ENROLL_STATE["last"] = old_last
+            gw.ENROLL_STATE["busy"] = old_busy
+            shutil.rmtree(tmp, ignore_errors=True)
+            realtime.time()  # the real clock is still the process clock
+
+
+def _BehindUTC(start):
+    import time as realtime
+
+    class Clock:
+        def __init__(self, t):
+            self.t = t
+
+        def time(self):
+            return self.t
+
+        def gmtime(self, t=None):
+            return realtime.gmtime(self.t if t is None else t)
+
+        def localtime(self, t=None):
+            return realtime.gmtime((self.t if t is None else t) - 8 * 3600)
+
+        def strftime(self, fmt, tt=None):
+            if tt is None:
+                tt = self.localtime()
+            return realtime.strftime(fmt, tt)
+
+    return Clock(start)
 
 
 if __name__ == "__main__":

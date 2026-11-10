@@ -154,6 +154,34 @@ def training_counts(heard_flags, neg_flags):
     }
 
 
+def failure_message(heard, n, floor, neg_max, counts):
+    """The sentence for a gate miss. Starts with Not good enough.
+
+    Names each failed check and one next step. A gap miss is named even when recall also missed,
+    because the threshold was raised to clear that other sound. Recall alone asks for 5 more clips.
+    The score tail stays so the admin score line can still read the counts. The admin keeps 240
+    characters of the listener message, so this stays inside that.
+    """
+    need = reps_needed(n) if n else 0
+    recall = (float(heard) / float(n)) if n else 0.0
+    recall_fail = bool(n) and heard < need
+    margin_fail = float(floor) < float(neg_max) + MARGIN
+    parts = []
+    if recall_fail:
+        parts.append("recall %.2f of 0.80 needed, heard %d of %d" % (recall, int(heard), int(n)))
+    if margin_fail:
+        parts.append("loudest other sound %.2f, weakest needed %.2f, gap %.2f required" % (
+            float(neg_max), float(floor), MARGIN))
+    if margin_fail:
+        step = "Try a longer or more distinct phrase, or a quieter room."
+    else:
+        step = "Record 5 more clips, said clearly, somewhere quiet."
+    if not parts:
+        parts.append("below the gate")
+    body = "Not good enough yet (" + "; ".join(parts) + "). " + step
+    return body + score_tail(counts)
+
+
 def score_tail(counts):
     """The sentence shown beside the heard/count line. Empty when the counts are not a current set."""
     if not isinstance(counts, dict):
@@ -245,7 +273,8 @@ def calibrate(word_frames, word_lens, negatives, others=()):
     tmpl = [clip_frames(f, s) for f, s in zip(word_frames, word_lens)]
     n = len(tmpl)
     if n < 3:
-        return {"ok": False, "message": "Not good enough yet. Too few recordings were kept.", "pos": [], "neg_max": 0.0}
+        return {"ok": False, "message": "Not good enough yet. Too few recordings were kept. Record 5 clips again.",
+                "pos": [], "neg_max": 0.0}
     pos = []
     for j in range(n):  # leave one out: can the other recordings hear this one?
         pos.append(peak(Matcher(tmpl[:j] + tmpl[j + 1:]), word_frames[j]))
@@ -273,8 +302,7 @@ def calibrate(word_frames, word_lens, negatives, others=()):
     elif ok:
         msg = f"Ready. It heard {heard} of {n} recordings." + tail
     else:
-        msg = (f"Not good enough yet. It heard {heard} of {n} recordings. "
-               "Train more to add 5 more recordings, somewhere quiet.") + tail
+        msg = failure_message(heard, n, floor, neg_max, counts)
     return {"ok": bool(ok), "threshold": round(thr, 3), "templates": [tmpl[i] for i in keep], "pos": [round(p, 3) for p in pos],
             "neg_max": round(neg_max, 3), "heard": heard, "count": n, "collide": collide, "pairs": pairs, "message": msg,
             "success_pct": counts["success_pct"], "false_rejects": counts["false_rejects"],

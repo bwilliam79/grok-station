@@ -12,7 +12,7 @@ upload.
 4. Say the phrase after each chime, 5 times, the way you would normally say it. A clip it can't use is asked again right away, so the word is built from 5 kept recordings.
 5. Then it shows one of these:
    - **Ready.** Say the phrase and the station starts that bot. It's on now.
-   - **Not good enough yet.** Press **Train more** to record 5 more. The recordings you already have are kept, including a word made from 10, and the word is rebuilt. You can do this more than once.
+   - **Not good enough yet.** The page names the check that failed (recall short of 0.80, or another sound too close) and what to do next. Press **Train more** to record 5 more. The recordings you already have are kept, including a word made from 10, and the word is rebuilt. You can do this more than once. Clear training drops the old recordings. A recording after that clear is scored.
    - Too close to Hey Grok, or already used by another bot. A word that already belongs to this bot, or to a bot that was deleted, can be used again. Otherwise pick a different phrase.
 6. **Remove wake word** stops listening and leaves the recordings under **Unused wake words** on the Bots page. **Delete** there removes every recording session, the trained model and the row. It still works when the recordings are already gone. Deleting the bot moves its wake word to Unused the same way; it does not delete the recordings. Adding that same bot id again reclaims the word. A word whose bot is gone, including one that was never finished or was switched off, is listed there too, and Delete works for it.
 
@@ -39,7 +39,7 @@ upload.
   - Hey Grok
   The threshold sits between the loudest of those and the recordings it must hear.
 - **The quality gate.** The word is ready when it hears at least 80% of the current set (4 of 5, or 8 of 10, and at most the 20 most recent since the last clear) and the
-  weakest of them still beats the loudest negative by 0.03. Otherwise the station shows "Not good enough yet". If
+  weakest of them still beats the loudest negative by 0.03. Otherwise the admin says which check failed and the numbers. If
   Hey Grok fires on your recordings, or another of your words does, the phrase is refused.
 - **Files on the Pi.**
   - Recordings and room noise: `/var/lib/grok-station/enroll/inbox/<phrase>/<session>/`

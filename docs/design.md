@@ -189,7 +189,7 @@ Rules:
   - Teal while live.
   - All bars full in **text** color means too loud.
   - Flat **faint** bars mean nothing was heard.
-- **Enrollment session:** 5 clips ("Clip 3 of 5", under a minute). Training gate: recall ≥ 0.80 on the kept recordings (4 of 5, or 8 of 10 for a word already built from 10) and ≤ 1.0 false wakes per hour. If recall fails, Train more records 5 more clips. The station shows only a short pass/fail notice ("Hey Finn is ready" / "Needs 5 more clips"); detailed numbers live in the admin. Words already enrolled with 10 clips keep working.
+- **Enrollment session:** 5 clips ("Clip 3 of 5", under a minute). Training gate: at least 80% of the kept recordings heard (4 of 5, or 8 of 10, and at most the 20 most recent since Clear training) and the weakest of those at least 0.03 above the loudest other sound. The admin names which check failed, with the numbers, and a next step for that check. The station shows only a short pass/fail notice ("Hey Finn is ready" / "Needs 5 more clips"). Words already enrolled with 10 clips keep working.
 - **Notices:** the avatar with a quiet ring, a headline, and a 2-line sub-line that says what to do next.
   - Example-data or meta info goes in a 56 px chip above the headline.
   - Notices hold for 4 s unless an action is pending.

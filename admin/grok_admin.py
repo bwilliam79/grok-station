@@ -1957,19 +1957,35 @@ def _status_row(phrase, state, message, now_ts, prev, persona=None, session=None
 
 
 def quality_message(scores=None):
-    """The sentence the Wake words page and the per-bot button show for a gate miss."""
+    """The sentence the Wake words page and the per-bot button show for a gate miss.
+
+    Names the check that failed and one next step. recall is compared with 0.80. fa_h and
+    fa_per_hour are false wakes per hour, compared with 1.0. A false_accepts count is not a rate.
+    """
     scores = scores if isinstance(scores, dict) else {}
     recall = scores.get("recall_real", scores.get("recall"))
-    fa = scores.get("fa_h", scores.get("false_accepts", scores.get("fa_per_hour")))
+    fa = scores.get("fa_h", scores.get("fa_per_hour"))
     if isinstance(recall, bool) or not isinstance(recall, (int, float)):
         recall = None
     if isinstance(fa, bool) or not isinstance(fa, (int, float)):
         fa = None
-    if recall is not None and fa is not None:
+    recall_fail = recall is not None and float(recall) < 0.80
+    fa_fail = fa is not None and float(fa) > 1.0
+    parts = []
+    if recall_fail:
+        parts.append(f"recall {float(recall):.2f} of 0.80 needed")
+    if fa_fail:
         fa_s = f"{float(fa):.3f}".rstrip("0").rstrip(".")
-        return (f"Not good enough yet (recall {float(recall):.2f} vs 0.80, false accepts {fa_s}/h vs 1.0/h). "
-                "Record more clips, 20-30, somewhere quiet.")
-    return "Not good enough yet (below the gate). Record more clips, 20-30, somewhere quiet."
+        parts.append(f"false wakes {fa_s} per hour of 1.0 allowed")
+    if not parts:
+        return "Not good enough yet (below the gate). Record more clips, somewhere quiet."
+    if fa_fail and recall_fail:
+        step = "Try a longer or more distinct phrase, or a quieter room, and record more clips."
+    elif fa_fail:
+        step = "Try a longer or more distinct phrase, or a quieter room."
+    else:
+        step = "Record more clips, said clearly, somewhere quiet."
+    return "Not good enough yet (" + "; ".join(parts) + "). " + step
 
 
 def map_train_state(state, log="", scores=None):

@@ -88,7 +88,44 @@ class Calibrate(Fresh):
             fs.clip_frames = fs_orig
         self.assertFalse(cal["ok"])
         self.assertTrue(cal["message"].startswith("Not good enough"))
-        self.assertIn("Train more to add 5 more recordings", cal["message"])
+        self.assertIn("recall", cal["message"])
+        self.assertIn("0.80 needed", cal["message"])
+        self.assertLessEqual(len(cal["message"]), 240)
+
+    def test_close_negative_names_the_gap(self):
+        fs_orig = fs.clip_frames
+        fs.clip_frames = lambda f, s, lead_s=fs.LEAD_S: f[14:-5]
+        try:
+            frames, lens = self._reps(WORD, n=5, noise=0.15)
+            near = say(WORD, 0.05)[0]
+            cal = fs.calibrate(frames, lens, [near])
+        finally:
+            fs.clip_frames = fs_orig
+        self.assertFalse(cal["ok"], cal["message"])
+        self.assertTrue(cal["message"].startswith("Not good enough"))
+        self.assertIn("recall", cal["message"])
+        self.assertIn("0.80 needed", cal["message"])
+        self.assertIn("loudest other sound", cal["message"])
+        self.assertIn("longer or more distinct phrase", cal["message"])
+        self.assertNotIn("Train more to add 5 more recordings", cal["message"])
+        self.assertLessEqual(len(cal["message"]), 240)
+        self.assertEqual(cal["false_accepts"], 0)
+
+    def test_quiet_gap_and_low_peaks_ask_for_more_clips(self):
+        fs_orig = fs.clip_frames
+        fs.clip_frames = lambda f, s, lead_s=fs.LEAD_S: f[14:-5]
+        try:
+            frames, lens = self._reps(WORD, n=5, noise=1.2)
+            quiet = [rng.standard_normal((30, 96)).astype(np.float32) for _ in range(3)]
+            cal = fs.calibrate(frames, lens, quiet)
+        finally:
+            fs.clip_frames = fs_orig
+        self.assertFalse(cal["ok"], cal["message"])
+        self.assertIn("recall", cal["message"])
+        self.assertIn("0.80 needed", cal["message"])
+        self.assertIn("Record 5 more clips", cal["message"])
+        self.assertNotIn("distinct phrase", cal["message"])
+        self.assertLessEqual(len(cal["message"]), 240)
 
     def test_reps_needed_is_eighty_percent(self):
         self.assertEqual(fs.reps_needed(5), 4)

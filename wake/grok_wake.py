@@ -1371,7 +1371,7 @@ def format_level_line(avg, peak_score, frames, peaks, sample_peak, clipped):
 
 
 def last_session(phrase):
-    """Newest earlier local session of this phrase, or None. Top-up merges those clips; voice is not tracked."""
+    """Newest session directory of this phrase, or None. Top-up merges those clips; voice is not tracked."""
     try:
         ses = sorted(x for x in os.listdir(os.path.join(ENROLL_DIR, phrase)) if re.fullmatch(r"\d{8}-\d{6}", x))
     except OSError:
@@ -2127,7 +2127,7 @@ def enroll(req, read16, play):
     phrase, persona, n = req["phrase"], req["persona"], req["count"]
     say = enroll_say_text(phrase, req.get("label"))
     prior = last_session(phrase) if req.get("topup") else None
-    ses = time.strftime("%Y%m%d-%H%M%S")
+    ses = session_stamp()  # same UTC clock as cleared.json; a local id sorts before that stamp
     d = os.path.join(ENROLL_DIR, phrase, ses)
     _mkdir_0700(os.path.join(ENROLL_DIR, phrase))
     _mkdir_0700(d)

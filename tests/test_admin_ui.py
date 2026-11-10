@@ -970,7 +970,7 @@ class Release0112UI(unittest.TestCase):
         self.assertIn('api("PUT", "/api/settings/time"', time)
 
     def test_version_notes_say_the_clocks_were_not_merged(self):
-        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30"))
+        self.assertIn(_read("VERSION").strip(), ("0.11.2", "0.11.3", "0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31"))
         notes = _read(os.path.join("docs", "versioning.md"))
         self.assertIn("## 0.11.2", notes)
         section = notes.split("## 0.11.2", 1)[1].split("\n## ", 1)[0]
@@ -1025,9 +1025,43 @@ class Release0113UI(unittest.TestCase):
         fn = self.js.split("function clipsNeeded", 1)[1].split("function clipSquares", 1)[0]
         self.assertIn("Math.ceil(0.8 * n)", fn)
         weak = self.js.split('state === "failed_quality"', 1)[1].split("if (state === \"failed\")", 1)[0]
-        self.assertIn("clipsNeeded(m[2])", weak)
-        self.assertIn("Five more recordings should help.", weak)
-        self.assertIn("isn't good enough yet. Five more recordings should help.", weak)
+        self.assertIn("trainFailCopy(", weak)
+        self.assertNotIn("Five more recordings should help.", weak)
+        copy = _fn(self.js, "trainFailCopy")
+        self.assertIn("clipsNeeded", copy)
+        pill = _fn(self.js, "trainFailPill")
+        script = (
+            "function clipsNeeded" + fn
+            + copy + "\n" + pill + "\n"
+            + "const named = 'Not good enough yet (recall 0.60 of 0.80 needed; loudest other sound 0.71, weakest needed 0.70, gap 0.03 required). Try a longer or more distinct phrase, or a quieter room. 60% of this set. False rejects 2. False accepts 0.';\n"
+            + "const bare = 'Not good enough yet. It heard 3 of 5 recordings.';\n"
+            + "const close = 'Not good enough yet. It sounds too much like Hey Twin. Try a different phrase.';\n"
+            + "process.stdout.write(JSON.stringify({\n"
+            + "  named: trainFailCopy(named, 'Hey Ash'),\n"
+            + "  bare: trainFailCopy(bare, 'Hey Ash'),\n"
+            + "  close: trainFailCopy(close, 'Hey Ash'),\n"
+            + "  pill: trainFailPill(named),\n"
+            + "  pillClose: trainFailPill(close)\n"
+            + "}));"
+        )
+        try:
+            out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=False)
+        except FileNotFoundError:
+            self.skipTest("node not installed")
+        if out.returncode != 0 and "not found" in (out.stderr or "").lower():
+            self.skipTest("node not installed")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        got = json.loads(out.stdout)
+        self.assertIn("recall 0.60 of 0.80 needed", got["named"])
+        self.assertIn("longer or more distinct phrase", got["named"])
+        self.assertNotIn("Five more recordings", got["named"])
+        self.assertNotIn("False accepts", got["named"])
+        self.assertIn("3 of 5", got["bare"])
+        self.assertIn("4", got["bare"])
+        self.assertIn("Try a different phrase", got["close"])
+        self.assertNotIn("Five more", got["close"])
+        self.assertIn("0.71", got["pill"])
+        self.assertIn("Not good enough", got["pillClose"])
         self.assertNotIn("It needs 8", weak)
         self.assertNotIn("needs 8 of 10", self.js)
         script = "function clipsNeeded" + fn + "\nprocess.stdout.write([10, 30, 40].map(clipsNeeded).join(','));"
@@ -1119,7 +1153,7 @@ class Release0113UI(unittest.TestCase):
 class Release0113Docs(unittest.TestCase):
     def test_version_and_notes(self):
         root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30"))
+        self.assertIn(open(os.path.join(root, "VERSION")).read().strip(), ("0.11.4", "0.11.5", "0.11.6", "0.11.7", "0.11.8", "0.11.9", "0.12.0", "0.12.1", "0.12.2", "0.12.3", "0.12.4", "0.12.5", "0.12.6", "0.12.7", "0.12.8", "0.12.9", "0.12.10", "0.12.11", "0.12.12", "0.12.13", "0.12.14", "0.12.15", "0.12.16", "0.12.17", "0.13.0", "0.13.1", "0.13.2", "0.13.3", "0.13.4", "0.13.5", "0.13.6", "0.13.7", "0.13.8", "0.13.9", "0.13.10", "0.13.11", "0.13.12", "0.13.13", "0.13.14", "0.13.15", "0.13.16", "0.13.17", "0.13.18", "0.13.19", "0.13.20", "0.13.21", "0.13.22", "0.13.23", "0.13.24", "0.13.25", "0.13.26", "0.13.27", "0.13.28", "0.13.29", "0.13.30", "0.13.31"))
         notes = open(os.path.join(root, "docs", "versioning.md")).read()
         self.assertIn("## 0.11.3", notes)
         self.assertIn("It needs 24", notes)
@@ -1472,7 +1506,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertNotIn(">Always on<", paint)
         self.assertIn("Built in, always on", paint)
         self.assertIn('class="phrase">“Hey Grok”</span>', paint)
-        self.assertIn("wakeControlHTML(b, word, st, true, el._botTrain)", paint)
+        self.assertIn("wakeControlHTML(b, word, st, true, el._botTrain, trow && trow.message)", paint)
         self.assertIn('class="ww none"></div>', paint)
         wake = _fn(self.js, "wakeControlHTML")
         self.assertIn('aria-label="No wake word">—</span>', wake)
