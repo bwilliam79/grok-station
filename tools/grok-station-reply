@@ -317,6 +317,8 @@ def build_avatar(bot, image, seed_b64, station_pub_b64, voice=None):
 # 0.13.29: content filter, rate limit, busy, could not show, and signature are named too.
 REFUSAL_LINES = {
     "pii": "refused: blocked by station PII filter (personal info in reply)",
+    "host": "refused: blocked by a private host name",
+    "name": "refused: blocked by a household name",
     "secret": "refused: looks like a secret",
     "unreachable": "refused: station unreachable",
     "expired": "refused: request expired",

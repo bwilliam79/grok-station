@@ -1009,7 +1009,7 @@ async def ask_bot_list(http):
     try:
         reply_by = datetime.datetime.fromtimestamp(reply_at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
-                              question=LIST_QUESTION, pii_mode=True, reply_by=reply_by, kind="bot_list")
+                              question=LIST_QUESTION, pii_mode=pii_mode(), reply_by=reply_by, kind="bot_list")
         hook = handoff.route(webhooks(), slug)
         if not hook:
             return None, "no-webhook"
@@ -1075,7 +1075,8 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
     hook overrides the saved route (an admin test of pasted, unsaved credentials). cancel is an asyncio.Event.
     detail, when given, receives rid, http status and the limit reason for the caller. It is not logged.
     test marks an admin Test: its own request id, counted on the same caps, and it cannot bind a different request.
-    pii_mode is captured once here and stored on the pending file. It is never sent on the webhook.
+    pii_mode is stored on the pending file and is never sent on the webhook.
+    A real ask is linted with the live setting when the reply arrives. A test ask keeps the stored flag.
     """
     pii = pii_mode()
     q = handoff.clean(question, handoff.Q_MAX)
@@ -1149,12 +1150,17 @@ async def ask_teammate(http, bot, question, on_wait=None, on_still=None, hook=No
                 return None, "cancelled"
             info = {}
             text, bad = handoff.take_reply(REPLIES_DIR, rid, bot, nonce, _personas["hosts"], _seen_rids,
-                                           note_ok=t1.ENABLED, names=_personas.get("names") or (), pii=pii, info=info)
+                                           note_ok=t1.ENABLED, names=_personas.get("names") or (),
+                                           pii=botreply.pii_for_check({"pii_mode": pii, "test": bool(test)}, pii_mode()),
+                                           info=info)
             blocked = _BLOCKED.pop(rid, None)
             if blocked and not text:
                 log(f"handoff {rid} agent={bot} verdict=blocked ({blocked})")  # the code only, never the text
                 _note_status(bot, error="Answer blocked (personal info)" if blocked == "pii"
-                             else "Answer blocked (looked like a secret)" if blocked == "secret" else "Reply rejected")
+                             else "Answer blocked (looked like a secret)" if blocked == "secret"
+                             else "Answer blocked (host name)" if blocked == "host"
+                             else "Answer blocked (household name)" if blocked == "name"
+                             else "Reply rejected")
                 return None, "blocked-" + blocked
             if text and info.get("interim"):
                 # 0.13.0: the bot acknowledged; keep waiting (still thinking) for its answer. The station's own
@@ -5799,8 +5805,7 @@ def note_helper(bot, req, signed=None):
 
 UPDATE_ASK = "Update your instructions for this station."
 UPDATES_FILE = E("UPDATES_FILE", os.path.join(STATE_DIR, "bots", "updates.json"))
-UPDATE_STATUS = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) instr=([0-9a-f]{16}) "
-                           r"helper=(-|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) computer=(-|[0-9a-f]{16})$")
+UPDATE_STATUS = botreply.UPDATE_STATUS
 _update_asked = {}
 _update_bad = {}  # slug -> when its last update reply was not a valid status line (shown as refused)
 
@@ -5932,7 +5937,7 @@ async def admin_bot_update(req):
         now + botreply.UPDATE_REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         handoff.write_pending(PENDING_DIR, rid, slug, secrets.token_urlsafe(24), int((now + max(botreply.UPDATE_REPLY_BY_S, botreply.SKEW_S)) * 1000),
-                              question=UPDATE_ASK, reply_by=reply_by, kind="update_bot")
+                              question=UPDATE_ASK, pii_mode=pii_mode(), reply_by=reply_by, kind="update_bot")
     except OSError:
         _update_asked.pop(slug, None)
         return web.json_response({"error": "unavailable"}, status=500)
@@ -5984,7 +5989,7 @@ async def admin_helper_update(req):
         now + botreply.REPLY_BY_S, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         handoff.write_pending(PENDING_DIR, rid, slug, nonce, int((now + max(botreply.REPLY_BY_S, botreply.SKEW_S)) * 1000),
-                              question=HELPER_ASK, reply_by=reply_by, kind="update_helper")
+                              question=HELPER_ASK, pii_mode=pii_mode(), reply_by=reply_by, kind="update_helper")
     except OSError:
         _helper_asked.pop(slug, None)
         return web.json_response({"error": "unavailable"}, status=500)
@@ -6146,7 +6151,7 @@ def _reply_error(status, reason=None):
 
 
 # 0.13.0: content-free reason codes for a refused reply from a signed bot with a known request.
-REPLY_REASONS = ("pii", "secret", "schema", "expired", "duplicate")
+REPLY_REASONS = ("pii", "secret", "schema", "expired", "duplicate", "host", "name", "lint")
 # Pairing refusals (open_signed, before unseal). The HTTP body uses one of them for all three.
 PAIR_REASONS = ("revoked", "killed", "unknown")
 PAIR_CLIENT_REASON = "revoked"
@@ -6166,7 +6171,7 @@ def reply_reason(rej):
     if not isinstance(pend, dict) or pend.get("request_id") != rej.rid or pend.get("persona") != rej.bot:
         return None
     if rej.verdict == "lint":
-        return rej.reason if rej.reason in ("pii", "secret") else "pii"
+        return rej.reason if rej.reason in ("pii", "secret", "host", "name", "lint") else "pii"
     return rej.verdict if rej.verdict in ("schema", "expired", "duplicate") else None
 
 
@@ -6289,14 +6294,14 @@ async def voice_reply(req):
     try:
         reply = botreply.ingest(raw, station, botreply.load_keys(bot_keys_path()), known_bot_slugs(),
                                 _pending_doc, _reply_seen, reply_limiter(), hosts=_personas.get("hosts") or (),
-                                names=_personas.get("names") or (), source=list_source_slug)
+                                names=_personas.get("names") or (), source=list_source_slug, pii=pii_mode())
     except botreply.Reject as rej:
         audit_reply(rej.bot, rej.rid, rej.verdict, len(raw))
         log_reply_reject(rej)
         reason = reply_reason(rej)
         if reason is None and rej.verdict in PAIR_REASONS:
             reason = PAIR_CLIENT_REASON
-        if reason in ("pii", "secret", "schema"):
+        if reason in ("pii", "secret", "schema", "host", "name", "lint"):
             _BLOCKED[rej.rid] = reason  # the waiting handoff (if any) ends with a message, not a 3-minute hang
             while len(_BLOCKED) > 64:
                 _BLOCKED.pop(next(iter(_BLOCKED)))

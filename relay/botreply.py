@@ -28,6 +28,41 @@ LIST_MAX = 24
 _NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 SHOW_SEEN_MAX = 1024
 
+# Same shape as relay.UPDATE_STATUS. A line that matches is an update status, not free text.
+UPDATE_STATUS = re.compile(r"^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) instr=([0-9a-f]{16}) "
+                           r"helper=(-|[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) computer=(-|[0-9a-f]{16})$")
+
+
+def pii_for_check(pending, live):
+    """Whether this reply is checked for personal info.
+
+    A test pending keeps the flag stored when the ask was issued.
+    A real request uses the live setting: turning the filter off is honored,
+    and turning it on while the ask is in flight is honored too.
+    """
+    stored = pending.get("pii_mode") if isinstance(pending, dict) else None
+    if not isinstance(stored, bool):
+        stored = True
+    if isinstance(pending, dict) and pending.get("test") is True:
+        return stored
+    if live is None:
+        return stored
+    return bool(live)
+
+
+def _lint_client_reason(why):
+    """Client code for a lint hit. Host and name are not folded into pii. An exception is not pii either."""
+    if why in ("secret", "ssn", "card"):
+        return "secret"
+    if why in ("host", "name", "lint"):
+        return why
+    if why == "error":
+        return "lint"
+    if why:
+        return "pii"
+    return None
+
+
 class Reject(Exception):
     """A reply the relay must not accept. status is the HTTP code. verdict is safe to log."""
 
@@ -335,7 +370,7 @@ def _pending_open(pending_for, rid, bot, now_ms):
     return pending, None
 
 
-def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
+def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=None):
     """Answer schema. Order: schema, duplicate, pending, lint.
 
     kind "reply" is the signed binding. An answer that omits kind is still an answer
@@ -374,16 +409,17 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms):
         raise bad
     if pending.get("kind") in ("bot_list", "setup_relay"):
         raise Reject(403, "request", bot, rid)
-    pii = pending.get("pii_mode")
-    if not isinstance(pii, bool):
-        pii = True
+    use = pii_for_check(pending, pii)
+    # A regex-shaped update status has no free text. Secret lint still runs. PII lint does not.
+    if pending.get("kind") == "update_bot" and UPDATE_STATUS.match(cleaned):
+        use = False
     try:
-        why = handoff.lint_reply(cleaned, hosts, names, pii=pii)
+        why = handoff.lint_reply(cleaned, hosts, names, pii=use)
     except Exception:
         why = "error"
     if why:
         rej = Reject(400, "lint", bot, rid)
-        rej.reason = "secret" if why == "secret" else "pii"
+        rej.reason = _lint_client_reason(why)
         raise rej
     nonce = pending.get("nonce")
     out = {"request_id": rid, "text": cleaned, "tier": 0, "action_class": "answer", "bot": bot,
@@ -414,7 +450,7 @@ def ack_like(text):
     return 0 < len(t) <= ACK_MAX and bool(_ACK_LIKE.fullmatch(t))
 
 
-def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
+def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source, pii=None):
     """List schema. Order: exact keys, names, lint, duplicate, pending kind, list source."""
     if not isinstance(doc, dict) or set(doc) != _LIST_KEYS:
         raise Reject(400, "schema", bot)
@@ -439,13 +475,16 @@ def _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source):
             raise Reject(400, "schema", bot, rid)
         folded.add(key)
         names_out.append(cleaned)
+    use = True if pii is None else bool(pii)
     for cleaned in names_out:
         try:
-            why = handoff.lint_reply(cleaned, hosts, names, pii=True)
+            why = handoff.lint_reply(cleaned, hosts, names, pii=use)
         except Exception:
             why = "error"
         if why:
-            raise Reject(400, "lint", bot, rid)
+            rej = Reject(400, "lint", bot, rid)
+            rej.reason = _lint_client_reason(why)
+            raise rej
     if isinstance(seen, set) and rid in seen:
         raise Reject(409, "duplicate", bot, rid)
     pending, bad = _pending_open(pending_for, rid, bot, now_ms)
@@ -642,7 +681,7 @@ def _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source):
 
 
 def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(), names=(), now_ms=None,
-           rate_now=None, source=None):
+           rate_now=None, source=None, pii=None):
     """Check one POST body. Returns the reply to hand to the waiter, or raises Reject.
 
     Shared prefix is open_signed. Dispatch is on the signed kind. A list (kind bot_list) is
@@ -658,13 +697,13 @@ def ingest(raw, station_sk, keys_doc, known, pending_for, seen, limiter, hosts=(
     except ValueError:
         raise Reject(400, "schema", bot)
     if isinstance(doc, dict) and doc.get("kind") == "bot_list":
-        return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source)
+        return _accept_list(doc, bot, pending_for, seen, hosts, names, now_ms, source, pii=pii)
     if isinstance(doc, dict) and doc.get("kind") == "setup_relay_ack":
         return _accept_setup_ack(doc, bot, pending_for, seen, now_ms, source)
     if isinstance(doc, dict) and "kind" in doc and doc.get("kind") != "reply":
         rid = doc.get("request_id") if isinstance(doc.get("request_id"), str) else "-"
         raise Reject(400, "schema", bot, rid)
-    return _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms)
+    return _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=pii)
 
 
 def ingest_show(raw, station_sk, keys_doc, known, limiter, parse_show, rate_now=None, seen=None, now_ms=None):

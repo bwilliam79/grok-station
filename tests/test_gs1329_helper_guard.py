@@ -58,10 +58,10 @@ class RecordedHelper(unittest.TestCase):
         last = [ln for ln in last if ln and not ln.startswith("#")][-1].split()
         self.assertEqual(last[0], _helper_version())
 
-    def test_helper_version_is_0_13_29_everywhere(self):
-        self.assertEqual(_helper_version(), "0.13.29")
+    def test_helper_version_is_0_13_30_everywhere(self):
+        self.assertEqual(_helper_version(), "0.13.30")
         admin = open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8").read()
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.29"  #')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.30"  #')
 
     def test_a_changed_helper_file_without_a_bump_fails(self):
         for path in ("scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/gs-seal-setup",

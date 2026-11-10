@@ -4,3 +4,4 @@
 # A helper change bumps HELPER_VERSION (scripts/gs_seal_common.py, admin HELPER_RELEASE) and adds a line.
 # Started at 0.13.29; earlier helper releases are not listed.
 0.13.29 a20d7900a6556654c2d62bc1027c95d1b923a1a95d3041863f737e48daf94790
+0.13.30 48e9e7b8c8a7a6e143b5de34613c610152d84cf0d634a58adcf879cadf6f54da
