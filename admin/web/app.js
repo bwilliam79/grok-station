@@ -2576,6 +2576,9 @@ function wirePair(root, bot, el) {
   if (rev) rev.onclick = revokeOne;
 }
 
+/* "Not while I'm signed in" opens a window far past any minute setting (it lasts until logout), so it gets no label or countdown. */
+const GRACE_MAX_S = 120 * 60;
+
 function stepupLeft() { return Number(S.stepupUntil) - Date.now() / 1000; }
 function stepupText() {
   const left = stepupLeft();
