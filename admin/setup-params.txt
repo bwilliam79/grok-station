@@ -6,11 +6,11 @@ Grok Station setup parameters. When the designated main bot (id/slug from your s
 T=$(mktemp) && curl -fsS --proto '=https' --max-redirs 0 -o "$T" 'https://raw.githubusercontent.com/bwilliam79/grok-station/9ab23cbf4cd7829a17b5aaaac8cfa8354eb4d8b2/scripts/install-home.sh' && printf '%s  %s\n' '083783a23b702c99e3dddc0367b36e95ed4bd40cd65461265610cf3d34fd9dcd' "$T" | sha256sum -c - && sh "$T" --persona '<target>' --station '<station>' --pin-sha256 '<pin_sha256>' --station-pub '<station_pub>'; rc=$?; rm -f "$T"; (exit $rc)
 On macOS, the same command with shasum -a 256 -c - in place of sha256sum -c -.
 (9ab23cbf4cd7829a17b5aaaac8cfa8354eb4d8b2 and 083783a23b702c99e3dddc0367b36e95ed4bd40cd65461265610cf3d34fd9dcd are literal in this Station setup text for 0.13.35; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem.)
-ROUTINE_COMMIT eef29badc06469f0b043f73c2e2792f19abbc07b
-HASH_ROUTINE_HOME 5e387747ff1141e23ebbff748002886321d7fab9bfb23e2e0204c2e9a10d90d2
-HASH_ROUTINE_CLOUD 7e5daa3f29130ffdcc75c15c1d1d13bae35b8768c950eeec41596a6840fb6887
-UPDATE_COMMIT 41258795b7616a15166d67e8681f0211b743111f
-HASH_UPDATE 19d8755b4d2e38fb2621be26cda1ffb6ed57439d72048b3f9f81e27b595f9c46
+ROUTINE_COMMIT 35430d5c77973bb8f19fa8afa678d0a48c560309
+HASH_ROUTINE_HOME 654385cb09f5a38bf4d652f406aa7805fd46831b78a725a94885ffea8ea31bdf
+HASH_ROUTINE_CLOUD fece827e8003ae90ed2df194cfdd09267bdd05fec29247f9a220e9e4f24ba97a
+UPDATE_COMMIT 28b98d6d66a80ee10cf5238bb62a0c8e4dd4dfd1
+HASH_UPDATE 623f6e50c2b640f36fc5540fd869ce156e326db9789aad138f723d4752fab845
 RELEASE 0.13.35
 5. Save this setup parameters text, from its first line through step 7, as gs-setup-params.txt next to the installed helper. Then run exactly this command and no other. <mode> is home or cloud. <your slug> is your own slug. Pass the frozen or held confirmed values on the command line. The command checks the file against those values before it fetches or appends. Any mismatch prints refused.
 gs-seal-reply render-routine --persona '<your slug>' --mode <mode> --params gs-setup-params.txt --routine-commit '<routine_commit>' --routine-sha256 '<routine_sha256>' --update-commit '<update_commit>' --update-sha256 '<update_sha256>' --install-commit '<template_commit>' --install-sha256 '<template_sha256>' --release '<release>'
