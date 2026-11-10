@@ -851,8 +851,8 @@ class RowStates(unittest.TestCase):
     def test_list_rows_carry_the_relay_state(self):
         # Found by the frames: setupListRows copied fields one by one and dropped relay, so rows stayed "sent".
         from test_gs1311_bots_merge import _run
-        names = ("setupRelayState", "setupListRows", "setupMainComputer", "setupComputerSuggestions", "pendingTeammates",
-                 "botIdFromName")
+        names = ("setupRelayState", "setupRelayFields", "setupListRows", "setupMainComputer", "setupComputerSuggestions",
+                 "pendingTeammates", "botIdFromName")
         el = {"_bots": [{"slug": "otto", "name": "Otto", "webhook": {"configured": False}}],
               "_setup": {"rows": {"otto": {"status": "sent", "sent_at": 5, "relay": "relayed"}}}}
         rows = _run(names, "setupListRows(%s)" % json.dumps(el))

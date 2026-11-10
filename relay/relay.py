@@ -7508,6 +7508,9 @@ def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
             doc[target] = base
             setup_state_save(doc)
             return {"ok": True, "state": "rejected", "slug": target}
+        # 0.13.39: Accept needs the fingerprint the owner compares. A review row with no 16-hex fp is not actionable.
+        if not isinstance(row.get("fp"), str) or re.fullmatch(r"[0-9a-f]{16}", row.get("fp")) is None:
+            return None
         if expect_old_fp is not None and not expect_old_ok(target, expect_old_fp):
             return {"ok": False, "changed": True, "slug": target}
         old_fp = pinned_fingerprint(target)
@@ -7534,7 +7537,20 @@ def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
         base["state"] = "accepted"
         doc[target] = base
         setup_state_save(doc)
-    return {"ok": True, "state": "accepted", "slug": target}
+    out = {"ok": True, "state": "accepted", "slug": target}
+    # The release frozen into the setup request, when that pending file is still readable. The admin records it.
+    rel = _frozen_setup_release(base["rid"])
+    if rel:
+        out["release"] = rel
+    return out
+
+
+def _frozen_setup_release(rid):
+    """The release field frozen into this setup_relay request, or "" when the pending file has none."""
+    doc = _pending_doc(rid) if isinstance(rid, str) else None
+    frozen = doc.get("frozen") if isinstance(doc, dict) else None
+    rel = frozen.get("release") if isinstance(frozen, dict) else None
+    return rel if handoff.setup_field_ok("release", rel) else ""
 
 
 def _retire_setup_pending(target, keep=""):
@@ -7578,7 +7594,10 @@ async def admin_setup_pair_post(req):
     if result.get("changed"):
         return web.json_response({"error": KEY_CHANGED}, status=409)
     audit(body.get("actor"), slug, "setup-pair-" + decision, "-")
-    return web.json_response({"ok": True, "state": result["state"]})
+    out = {"ok": True, "state": result["state"]}
+    if result.get("state") == "accepted" and handoff.setup_field_ok("release", result.get("release")):
+        out["release"] = result["release"]
+    return web.json_response(out)
 
 
 def main_release_ok(main, release):
