@@ -127,6 +127,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
 
+### 0.13.39
+Accept on Set up records that the bot was paired with this release, so Finish update no longer says Set up before 0.11.8 and offers Copy instructions for a bot that was just accepted and has not sent a signed status yet. Reject does not record anything. Remove still clears that record, so a removed bot comes back as new. The Accept key panel shows the fingerprint for a teammate that is not on the Bots list yet, for example after Remove and Set up again. If the station has no fingerprint for that key, Accept stays off and the station refuses it. Reject still works. The home helper stays 0.13.37. Press Update on the main bot first.
+
 ### 0.13.38
 The Bots page buttons work again: Refresh avatars, Rescan bots, Add bot, and Revoke all bots. A team list asked for by voice is no longer refused when the main bot answers after the voice turn ends. The home helper stays 0.13.37. Press Update on the main bot first.
 
