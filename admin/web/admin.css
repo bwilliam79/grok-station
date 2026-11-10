@@ -377,6 +377,10 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .bmsg .tx{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .bmsg:hover .tx{text-decoration:underline;text-underline-offset:2px}
 .bmsg:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
+/* 0.13.34: a failure line wraps to a second line instead of an ellipsis. Other status lines keep one line. */
+.botrow .l2:has(>.bmsg.is-fail){height:auto}
+.bmsg.is-fail{height:auto;min-height:20px;align-items:flex-start}
+.bmsg.is-fail .tx{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 #bmsgpop{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
 #bmsgpop .pop,#bmsgpop .scrim{pointer-events:auto}
 #pendpop{position:absolute;left:0;top:0;z-index:6;pointer-events:none}
@@ -1048,13 +1052,20 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 #blist .botrow.sentrow .l2{height:auto}
 .sthrottle{color:var(--gs-text);line-height:18px;margin-top:2px}
 .rowupd:empty{display:none}
+/* 0.13.34: a row with Update gives the button its own grid column, so the status text ends a column gap
+   before it and wraps instead of running under it. Wake, Updates and Configure keep their x. */
+@media (min-width:768px){
+  #blist .botrow:has(>.rowupd){grid-template-columns:[bot] minmax(216px,1fr) [ru] auto [wake] 200px [upd] 144px [act] 120px}
+  #blist .botrow>.rowupd{grid-column:ru;justify-self:start}
+}
 @media (max-width:767px){
   #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 l2" "ww ww us" "ru ru ru" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}
   #blist .botrow>:first-child{grid-area:av}
   #blist .botrow>div:nth-child(2){display:contents}
   #blist .botrow .lbl{grid-area:nm}
   #blist .botrow .l2{grid-area:l2;height:auto}
-  #blist .botrow>.rowupd{grid-area:ru}
+  #blist .botrow>.rowupd{grid-area:ru;margin-bottom:4px}  /* 0.13.34: 4 px row gap + 4 px = 8 px above Configure */
+  #blist .botrow>.rowupd .btn{min-height:44px;height:44px}
   #blist .botrow>.ww{grid-area:ww;min-height:44px;align-items:center;flex-wrap:nowrap;overflow:hidden;min-width:0}
   #blist .botrow>.ww>.phrase{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #blist .botrow>.ww.none:empty{display:none}

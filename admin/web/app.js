@@ -713,13 +713,35 @@ function paintFinishButtons() {
   paintBotDot(finishBehind(FINISH.view));
   paintUpdNotice(FINISH.view);
 }
+// 0.13.34: a waiting row also ends on this page's clock. The server answers noreply FINISH_WAIT_S after the send,
+// and that holds across an admin restart because it is computed on read. When the page can't re-read the station
+// (it is restarting, or a poll failed), the row still stops "Updating…" when its wait_left runs out.
+const FINISH_NOREPLY = "No reply within 10 minutes.";
+function finishAdopt(view) {  // stamp each waiting row with its local deadline from the server's wait_left
+  const now = Date.now();
+  finishComputers(view).forEach(g => (g.bots || []).forEach(b => {
+    if (b && b.state === "waiting") b._until = now + Math.max(0, Number(b.wait_left) || 0) * 1000;
+  }));
+  return view;
+}
+function finishExpire(view) {  // a waiting row past its deadline reads as the server's noreply. True when one changed.
+  const now = Date.now();
+  let changed = false;
+  finishComputers(view).forEach(g => (g.bots || []).forEach(b => {
+    if (b && b.state === "waiting" && typeof b._until === "number" && now >= b._until) {
+      b.state = "noreply"; b.wait_left = 0; b.fail = FINISH_NOREPLY; changed = true;
+    }
+  }));
+  return changed;
+}
 async function refreshFinishChrome() {
   const gen = (refreshFinishChrome.gen = (refreshFinishChrome.gen || 0) + 1);
   const r = await api("GET", "/api/finish-update");
   if (gen !== refreshFinishChrome.gen) return;
-  if (r.ok && r.data) FINISH.view = r.data;
+  if (r.ok && r.data) FINISH.view = finishAdopt(r.data);
+  const expired = finishExpire(FINISH.view);
   paintFinishButtons();
-  if (!(r.ok && r.data)) return;
+  if (!(r.ok && r.data) && !expired) return;
   const pg = document.getElementById("pg");
   if (pg && Array.isArray(pg._bots) && document.getElementById("blist") && !pg._holdPaint) paintBots(pg, pg._bots);
 }
@@ -924,9 +946,9 @@ async function finishReload(d) {
     const r = await api("GET", "/api/finish-update");
     if (!d.isConnected || d._gen !== gen) return;
     if (r.ok && r.data) {
-      d._view = r.data;
+      d._view = finishAdopt(r.data);
       d._loadErr = "";
-      FINISH.view = r.data;
+      FINISH.view = d._view;
       paintFinishButtons();
     } else d._loadErr = (r.data && r.data.error) || "Can't load Finish update.";
     finishRender(d);
@@ -3108,10 +3130,11 @@ function finishNeedsUpdate(b) {  // the bot is listed and its Finish update row 
 const ROW_SENDING = {};  // slug -> true only between the click and the server's answer
 function rowUpdating(b) {
   const row = b && b.slug ? finishFind(FINISH.view, b.slug) : null;
-  return !!(ROW_SENDING[b && b.slug] || (row && row.state === "waiting"));
+  return !!(ROW_SENDING[b && b.slug] || (row && row.state === "waiting" && !(row._until <= Date.now())));
 }
 function rowFailLine(b) {
   const row = b && b.slug ? finishFind(FINISH.view, b.slug) : null;
+  if (row && row.state === "waiting" && row._until <= Date.now()) return "Update failed: No reply within 10 minutes.";
   return row && row.state !== "done" && row.state !== "waiting" && row.fail ? "Update failed: " + row.fail : "";
 }
 function updateRowBtnHTML(b) {
@@ -3130,8 +3153,12 @@ async function rowUpdateSend(slug) {  // the same server-side Finish update send
 }
 function rowUpdatePoll() {  // while any row is waiting, re-read the server state; the row clears itself on success
   clearTimeout(rowUpdatePoll.t);
-  const waiting = finishComputers(FINISH.view).some(g => (g.bots || []).some(b => b && b.state === "waiting"));
-  if (waiting) rowUpdatePoll.t = setTimeout(async () => { await refreshFinishChrome(); rowUpdatePoll(); }, 15000);
+  const waiting = [];
+  finishComputers(FINISH.view).forEach(g => (g.bots || []).forEach(b => { if (b && b.state === "waiting") waiting.push(b); }));
+  if (!waiting.length) return;
+  // Every 15 s, and once just after the earliest deadline, so the row ends on time even if that read fails.
+  const next = Math.min(15000, ...waiting.map(b => typeof b._until === "number" ? Math.max(0, b._until - Date.now()) + 250 : 15000));
+  rowUpdatePoll.t = setTimeout(async () => { await refreshFinishChrome(); rowUpdatePoll(); }, next);
 }
 async function rowUpdateStart(slugs) {
   const pg = document.getElementById("pg");
@@ -4355,16 +4382,17 @@ function botMessageAnnounce(said, slug, message) {
   next[key] = msg;
   return {announce: true, said: next};
 }
-function botMessageLineHTML(message, announce, slug) {
+function botMessageLineHTML(message, announce, slug, fail) {
   const msg = String(message || "");
   if (!msg) return "";
   const live = announce ? `<span class="sr" role="alert">${esc(msg)}</span>` : "";
-  return `<button class="bmsg" type="button" data-bmsg="${esc(slug || "")}" aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(msg)}, show details"><span class="gl" aria-hidden="true">⚠&#xFE0E;</span><span class="tx">${esc(msg)}</span></button>${live}`;
+  // 0.13.34: a failure line (is-fail) wraps instead of truncating; other status lines stay one line.
+  return `<button class="bmsg${fail ? " is-fail" : ""}" type="button" data-bmsg="${esc(slug || "")}" aria-haspopup="dialog" aria-expanded="false" aria-label="${esc(msg)}, show details"><span class="gl" aria-hidden="true">⚠&#xFE0E;</span><span class="tx">${esc(msg)}</span></button>${live}`;
 }
-function botRowL2HTML(replies, title, message, announce, extra, slug) {
+function botRowL2HTML(replies, title, message, announce, extra, slug, fail) {
   const msg = String(message || "");
   const off = msg ? "" : (extra || "");
-  return `<div class="l2"><div class="help" title="${esc(title || "")}">${esc(replies || "")}</div>${off}${botMessageLineHTML(msg, announce, slug)}</div>`;
+  return `<div class="l2"><div class="help" title="${esc(title || "")}">${esc(replies || "")}</div>${off}${botMessageLineHTML(msg, announce, slug, fail)}</div>`;
 }
 function botMessageDetail(name, replies, message) {
   const who = String(name || "Bot");
@@ -4498,6 +4526,7 @@ function paintBots(el, bots) {
     const trainOff = st !== "training" && st !== "weak" && !(word && word.has_model) && gate.can && !gate.on;
     const tip = trainOff ? trainOfflineTip() : [check || ring.word, warn].filter(Boolean).join(" · ");
     const note = finishNotes(b);
+    const noteFail = !!note && note === rowFailLine(b);
     const heard = botMessageAnnounce(el._msgSaid, b.slug, note);
     el._msgSaid = heard.said;
     const su = b.main ? null : setupBits(setupRows[b.slug]);
@@ -4505,7 +4534,7 @@ function paintBots(el, bots) {
     const upd = updateRowBtnHTML(b);
     return `<div class="botrow${note ? " hasmsg" : ""}${sentRow ? " sentrow" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}<span class="nm">${esc(b.name)}</span>${pill}</div>
-        ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug)}</div>
+        ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug, noteFail)}</div>
       ${upd ? `<div class="rowupd">${upd}</div>` : ""}${wakeControlHTML(b, word, st, true, el._botTrain, trow && trow.message)}
       <div class="updcol">${su ? su.action : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}</div>
       <div class="cfg"><span class="chev" aria-hidden="true">${ICO_CHEV}</span><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div></div>${su ? su.panel : ""}`;
