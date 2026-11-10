@@ -6,7 +6,7 @@ covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the r
 `admin/routine-cloud.txt`, `scripts/gs-update.sh`, `admin/setup-params.txt`). Every rule names the function that
 enforces it. If code and this file disagree, the code is wrong or this file is stale: fix one in the same change.
 `tests/test_lifecycle_scenarios.py` checks the rules marked [S] on a tree installed by `tools/install-files.sh`, and
-`tools/release-check.sh` runs it before every push (the clone's pre-push hook, `tools/install-release-hook`).
+`tools/release-check.sh` runs it before every push to `main` (the clone's pre-push hook, `tools/install-release-hook`).
 
 ## Words
 
@@ -157,8 +157,14 @@ enforces the order through invariant 1.
 
 `sh tools/release-check.sh` on the exact commit you will push: ritual checks (`tools/check-version.py`,
 `tools/check-deploy-pins.py` with no pending re-pin), the installed-tree import checks, and the scenarios in
-`tests/test_lifecycle_scenarios.py`. It fails when a scenario could not run. No push unless it passes.
+`tests/test_lifecycle_scenarios.py`. It fails when a scenario could not run. No push to `main` unless it passes.
 `sh tools/install-release-hook` chains `tools/release-check-pre-push` into the clone's local pre-push hook, which
-the global hooks dispatcher runs after pii-guard and the leak scan. The hook blocks a push unless every pushed
-commit is the checked-out commit and `tools/release-check.sh` ends with `release-check: PASS`. The dispatcher must pass
+the global hooks dispatcher runs after pii-guard and the leak scan. It gates only pre-push lines whose remote ref
+is `refs/heads/main`: the pushed commit must be the checked-out commit and `tools/release-check.sh` must end with
+`release-check: PASS`, and a delete of `main` is refused. Other refs (pull request branches, new branches, deletes
+of other branches, tags) pass; in a mixed push the `main` line decides. A last line with no newline is read, a
+trailing CR is dropped, and a line that is not four fields is refused. The installed stub reads the refs first:
+a push with no `main` line passes even from a checkout whose tree has no `tools/release-check-pre-push`, and a
+`main` push from such a checkout is refused (`tests/test_gs1335_release_hook.py`). After `install-release-hook`
+changes, rerun it once from a checkout of the new `main`; it replaces its own earlier stub. The dispatcher must pass
 the local hook's exit status back to git for the block to hold.

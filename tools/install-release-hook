@@ -1,11 +1,13 @@
 #!/bin/sh
 # Chain tools/release-check-pre-push into this clone's local pre-push hook (<git-common-dir>/hooks/pre-push).
 # The global hooks dispatcher (core.hooksPath, see tools/install-pii-hooks) runs pii-guard and the leak scan on
-# every push first, then chains to that local hook, so pii-guard stays first and a push is also blocked unless
-# tools/release-check.sh prints "release-check: PASS" on the pushed commit. Never writes through the dispatcher's
+# every push first, then chains to that local hook, so pii-guard stays first and a push to refs/heads/main is also
+# blocked unless tools/release-check.sh prints "release-check: PASS" on the pushed commit. The stub decides scope
+# before it looks for the body: pushes with no main line pass even from checkouts that lack the body. Never writes through the dispatcher's
 # symlinks. Refuses to replace a local pre-push hook it did not write.
 set -eu
-mark="# grok-station release-check pre-push (tools/install-release-hook)"
+mark="# grok-station release-check pre-push v2 (tools/install-release-hook)"
+old_mark="# grok-station release-check pre-push (tools/install-release-hook)"  # the 0.13.35 stub, replaced in place
 global=$(git config --global core.hooksPath 2>/dev/null || true)
 if [ -z "$global" ] || [ -n "$(git config --local core.hooksPath 2>/dev/null || true)" ]; then
   echo "install-release-hook: no global hooks dispatcher (core.hooksPath) here; nothing installed" >&2
@@ -18,17 +20,42 @@ if [ ! -x "$global/pre-push" ]; then
 fi
 common=$(cd "$(git rev-parse --git-common-dir)" && pwd)
 hook="$common/hooks/pre-push"
-if [ -L "$hook" ] || { [ -e "$hook" ] && ! grep -qxF "$mark" "$hook"; }; then
+if [ -L "$hook" ] || { [ -e "$hook" ] && ! grep -qxF -e "$mark" -e "$old_mark" "$hook"; }; then
   echo "install-release-hook: $hook exists and is not ours; not replaced" >&2
   exit 1
 fi
 mkdir -p "$common/hooks"
-cat >"$hook.tmp" <<HOOK
+cat >"$hook.tmp" <<'HOOK'
 #!/bin/sh
-$mark
-body="\$(git rev-parse --show-toplevel)/tools/release-check-pre-push"
-if [ ! -f "\$body" ]; then echo "pre-push: \$body is missing; push blocked" >&2; exit 1; fi
-exec sh "\$body" "\$@"
+# grok-station release-check pre-push v2 (tools/install-release-hook)
+# Scope first: read the refs; a push with no line for refs/heads/main passes without looking for the body, so
+# checkouts from before the body existed can still push branches and tags. A main line (or a line that is not
+# four fields) needs this checkout's tools/release-check-pre-push, which gets the same stdin.
+set -u
+in=$(cat; printf x)
+in=${in%x}
+cr=$(printf '\r')
+if printf '%s' "$in" | {
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%"$cr"}
+    set -f
+    # shellcheck disable=SC2086
+    set -- $line
+    set +f
+    [ "$#" -eq 0 ] && continue
+    [ "$#" -eq 4 ] || exit 1
+    [ "$3" = refs/heads/main ] && exit 1
+  done
+  exit 0
+}; then
+  exit 0
+fi
+body="$(git rev-parse --show-toplevel)/tools/release-check-pre-push"
+if [ ! -f "$body" ]; then
+  echo "pre-push: a push to refs/heads/main needs $body, which this checkout lacks; push blocked" >&2
+  exit 1
+fi
+printf '%s' "$in" | exec sh "$body" "$@"
 HOOK
 chmod 755 "$hook.tmp"
 mv "$hook.tmp" "$hook"
