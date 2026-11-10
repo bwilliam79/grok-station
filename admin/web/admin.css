@@ -294,6 +294,30 @@ pre.static-val{white-space:pre-wrap;flex:1;min-width:240px;margin:0}
 .menu li button.act{background:var(--gs-surface-3);box-shadow:inset 0 0 0 2px var(--gs-teal)}
 .menu li.sep{height:1px;background:var(--gs-rule-2);margin:6px 4px;list-style:none}
 .menu li button.danger{color:var(--gs-amber)}
+#botmenu [role=menuitem]:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
+@media (min-width:768px){#botmenu [role=menuitem]{min-height:36px}}
+#botmenu #rescan{flex-wrap:wrap;height:auto;align-items:center}
+#botmenu #rescan .rescanspin{display:none;margin:0}
+#botmenu #rescan.is-busy .rescanspin{display:inline-block}
+#botmenu #rescan.is-busy .rescanico{display:none}
+#botmenu #rescan .rescanhint{flex-basis:100%;margin:0 0 2px 26px;font:500 var(--fs-label)/1.3 var(--body);color:var(--gs-muted)}
+#botmenu #rescan.is-off{opacity:.55}
+#botmore[aria-busy=true]{position:relative}
+#botmore[aria-busy=true]::after{content:"";position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--gs-teal)}
+.botscan{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px;padding:8px 0;width:100%;color:var(--gs-muted);font:500 var(--fs-label)/1.4 var(--body)}
+/* .body is a column with an 18px gap. Pull the following card back by that gap so the row's 12px margin is the space above the card. */
+.botscan + .card{margin-top:-18px}
+.botscan .g{width:16px;height:16px;flex:none;display:flex;align-items:center;justify-content:center;color:var(--gs-teal)}
+.botscan .g .vnspin{margin:0}
+.botscan .tx{flex:1 1 12em;min-width:0;margin:0}
+.botscan.is-err{color:var(--gs-amber)}
+.botscan.is-err .g{color:var(--gs-amber)}
+.botscan .botscanx{margin-left:auto;min-height:24px;min-width:24px;padding:0 4px;display:inline-flex;align-items:center;justify-content:flex-end;background:none;border:0;color:var(--gs-text);font:500 var(--fs-label) var(--body);cursor:pointer}
+.botscan .botscanx:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px}
+@media (max-width:767px){
+  #botmenu #rescan .rescanlab{font-size:var(--fs-body)}
+  .botscan .botscanx{flex-grow:1;flex-shrink:0;flex-basis:100%;min-height:44px;display:flex;align-items:center;justify-content:flex-end}
+}
 #botcall:empty{display:none}
 .callout{display:flex;align-items:center;gap:14px;padding:14px 18px;border-radius:14px;border:1px solid var(--gs-rule-2);background:var(--gs-surface)}
 .callout .ic{width:20px;height:20px;flex:none}

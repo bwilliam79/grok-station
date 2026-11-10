@@ -3529,7 +3529,7 @@ def _last4(token):
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 _AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-seeded", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
-                  "update-reply", "update-bad", "setup-ask", "setup-fail"}
+                  "update-reply", "update-bad", "setup-ask", "setup-fail", "rescan"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
 _REPLY_HTTP = {400: "bad request", 403: "forbidden", 409: "conflict", 413: "too large",
                415: "unsupported media type", 422: "lint", 429: "too many"}
@@ -6412,6 +6412,64 @@ async def admin_imported_get(req):
     return web.json_response({"list_source": list_source_slug(), "imported": imported_public(), "routed": routed_bots()})
 
 
+_rescan_busy = False
+
+
+def _rescan_tally(before_new, summary):
+    """added is Not set up rows this scan created. known is every other name on the list."""
+    doc = _load_imported()
+    after_new = {k for k, row in doc["rows"].items() if row.get("state") == "new"}
+    added = len(after_new - set(before_new))
+    n = summary.get("n") if isinstance(summary, dict) and type(summary.get("n")) is int else 0
+    known = n - added
+    if known < 0:
+        known = 0
+    return added, known
+
+
+def _rescan_error(reason, status):
+    return web.json_response({"error": "rescan", "reason": reason}, status=status)
+
+
+async def admin_rescan_post(req):
+    """One list ask, the same path and lock as the voice import. Counts only. One scan at a time."""
+    global _rescan_busy
+    bad = await admin_gate(req)
+    if _is_response(bad):
+        return bad
+    body = await admin_json(req)
+    if not body or not actor_ok(body.get("actor")):
+        return web.json_response({"error": "bad request"}, status=400)
+    if _rescan_busy:
+        return _rescan_error("busy", 409)
+    _clear_stale_list_lock()
+    if _limits.list_open():
+        return _rescan_error("busy", 409)
+    before = {k for k, row in _load_imported()["rows"].items() if row.get("state") == "new"}
+    _rescan_busy = True
+    summary, verdict = None, "unavailable"
+    try:
+        async with ClientSession() as http:
+            summary, verdict = await ask_bot_list(http)
+    except Exception:
+        summary, verdict = None, "unavailable"
+    finally:
+        _rescan_busy = False
+    if verdict == "ok" and isinstance(summary, dict):
+        added, known = _rescan_tally(before, summary)
+        log("rescan added=%d known=%d" % (added, known))
+        slug = list_source_slug()
+        if handoff.bot_slug_ok(slug):
+            audit(body["actor"], slug, "rescan", "-")
+        return web.json_response({"ok": True, "added": added, "known": known})
+    reason = {"no-source": "no-source", "no-webhook": "no-webhook", "too soon": "rate-limited",
+              "outstanding": "busy", "timeout": "timeout"}.get(verdict, "unavailable")
+    status = {"no-source": 409, "no-webhook": 409, "rate-limited": 429, "busy": 409,
+              "timeout": 504, "unavailable": 503}[reason]
+    log("rescan " + reason)
+    return _rescan_error(reason, status)
+
+
 async def admin_import_post(req):
     """Fetch the list now. Same path as the voice tool. Counts only; no names in the response."""
     bad = await admin_gate(req)
@@ -6838,6 +6896,7 @@ ADMIN_ROUTES = [
     web.get("/admin/bots/setup-relay", admin_setup_relay_state),
     web.get("/admin/bots/imported", admin_imported_get),
     web.post("/admin/bots/import", admin_import_post),
+    web.post("/admin/bots/rescan", admin_rescan_post),
     web.delete("/admin/bots/imported/{key}", admin_imported_delete),
     web.put("/admin/bots/list-source", admin_list_source_put),
     web.patch("/admin/bots/{slug}", admin_bots_patch), web.delete("/admin/bots/{slug}", admin_bots_delete),

@@ -5211,6 +5211,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_post_bots(self, p, q, j):
         if p == "/api/bots/import":
             return self.bots_import()
+        if p == "/api/bots/rescan":
+            return self.bots_rescan()
         if p == "/api/bots/setup-send":
             return self.bots_setup_send(j)
         if p == "/api/bots/setup-draft":
@@ -5510,6 +5512,43 @@ class Handler(BaseHTTPRequestHandler):
         src = data.get("list_source") if isinstance(data, dict) and slug_ok(data.get("list_source")) else ""
         return self.send(200, {"list_source": src, "routed": safe_routed(data.get("routed") if isinstance(data, dict) else None),
                                "imported": safe_imported(data.get("imported") if isinstance(data, dict) else None)})
+
+    # 0.13.30: the relay waits REPLY_WAIT, 180 s, after a webhook post capped at 10 s.
+    # ClientSession's own total is 300 s, so the relay is not the early cut.
+    # This server sets the accepted socket to 60 s after the TLS handshake (idle
+    # keep-alive). The admin handler lifts that socket to 225 s for this call:
+    # 210 s for the relay wait (180 s plus a margin) plus 15 s, then puts 60 s back.
+    # Browser fetch (api()) has no timeout.
+    RESCAN_WAIT_S = 210
+    RESCAN_REASONS = frozenset(("no-source", "no-webhook", "rate-limited", "timeout", "unavailable", "busy"))
+
+    def bots_rescan(self):
+        """Ask the main bot for its team list. No password. Counts only, never names or URLs."""
+        sock = getattr(self, "connection", None)
+        prev = None
+        if sock is not None:
+            try:
+                prev = sock.gettimeout()
+                sock.settimeout(self.RESCAN_WAIT_S + 15)
+            except Exception:
+                prev = None
+        try:
+            got = relay_call("POST", "/admin/bots/rescan", {"actor": RELAY_ACTOR}, timeout=self.RESCAN_WAIT_S)
+        finally:
+            if sock is not None and prev is not None:
+                try:
+                    sock.settimeout(prev)
+                except Exception:
+                    pass
+        if got is None:
+            return self.bots_unconfigured()
+        status, data = got
+        data = data if isinstance(data, dict) else {}
+        if status == 200 and data.get("ok") is True:
+            return self.send(200, {"ok": True, "added": _count(data, "added"), "known": _count(data, "known")})
+        reason = data.get("reason") if data.get("reason") in self.RESCAN_REASONS else "unavailable"
+        code = status if status in (400, 409, 429, 502, 503, 504) else 502
+        return self.send(code, {"error": "Could not rescan bots.", "reason": reason})
 
     def bots_import(self):
         got = relay_call("POST", "/admin/bots/import", {"actor": RELAY_ACTOR}, timeout=40)
