@@ -5700,7 +5700,7 @@ function bindVoiceTip() {
     }
   };
 }
-const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.41.
+const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.42.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 

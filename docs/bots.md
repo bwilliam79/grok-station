@@ -169,7 +169,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 The routine (gs-seal-setup once, then one reply command on the home computer):
 
 ```text
-Grok Station instructions, release 0.13.41.
+Grok Station instructions, release 0.13.42.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
