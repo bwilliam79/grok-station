@@ -261,7 +261,7 @@ class N05Fixture(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_version_file(self):
-        self.assertEqual(_read("VERSION").strip(), "0.13.38")
+        self.assertEqual(_read("VERSION").strip(), "0.13.39")
 
 
 if __name__ == "__main__":
@@ -314,7 +314,7 @@ class PanelNoorQaR2(unittest.TestCase):
             self.assertEqual(_run(("setupRelayState",),
                                  "setupRelayState({relay:%s})" % json.dumps(state)), state)
         js = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
-        rows = js.split("function setupListRows(", 1)[1].split("function ", 1)[0]
+        rows = js.split("function setupRelayFields(", 1)[1].split("function ", 1)[0]
         self.assertIn('relay_path: draft.relay_path', rows)
         self.assertIn('relay_reason: draft.relay_reason', rows)
 
