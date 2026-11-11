@@ -103,6 +103,10 @@ def tile_step(tile, prev_state, state, now, hold_s):
     if tile.pop("step_cmd", None):
         tile.pop("stale", None)
         return "keep"
+    # A voice ask that brought an existing deck card forward must not mark it stale.
+    # The next spoken reply would otherwise delete that card from the deck.
+    if tile.get("focused"):
+        return "keep"
     if state == "listening" and prev_state is not None:
         tile["stale"] = True
     if now >= float(tile.get("shown", now)) + float(hold_s):
@@ -3721,7 +3725,7 @@ def focus_content_tile(kind, now=None):
         return False
     TILE.clear()
     TILE.update({"bot": page["bot"], "id": page["id"], "card": page["card"],
-                 "expires": deck().expiry(page["bot"], page["id"])}, shown=now)
+                 "expires": deck().expiry(page["bot"], page["id"]), "focused": True}, shown=now)
     return True
 
 
@@ -6534,7 +6538,12 @@ def main():
                 text_hold = None
                 if tele is not None:
                     tele.settle(time.time())
-                if msg and TILE:
+                if msg and TILE and TILE.get("focused"):
+                    # The ask only showed a card that was already in the deck. Leave that card there.
+                    TILE.clear()
+                    msg, anim_started, card_hold = None, None, False
+                    paint()
+                elif msg and TILE:
                     now_s = time.time()
                     msg = turn_over(msg)  # the corner badge stops showing listening/thinking
                     anim_started = None
@@ -6622,7 +6631,10 @@ def main():
                     paint()
             elif msg and time.time() >= until:
                 if TILE:
-                    deck().clear(TILE.get("bot"), TILE.get("id"))  # do not leave the tile up on the idle feed
+                    # A card posted during the conversation leaves the idle feed.
+                    # A card the voice ask only brought forward stays in the deck.
+                    if not TILE.get("focused"):
+                        deck().clear(TILE.get("bot"), TILE.get("id"))
                     TILE.clear()
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)
