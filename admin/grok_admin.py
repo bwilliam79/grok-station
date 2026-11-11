@@ -4074,7 +4074,7 @@ def _setup_row(doc, slug):
 
 _SETUP_RELAY_VIEW = ("sent", "relayed", "failed", "expired", "awaiting_confirm", "needs_details",
                       "review", "accepted", "rejected")
-_SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
+_SETUP_RELAY_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent", "no_key")
 
 
 def setup_relay_view(raw):

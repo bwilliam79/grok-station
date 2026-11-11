@@ -665,6 +665,43 @@ elif SCENARIO == "accept_notes_setup":
     out["kai_stamp"] = (ga.read_finish().get("setup") or {}).get("kai")
     out["remove"] = admin("bots_remove", "otto", {})[0]
     out["stamp_after_remove"] = (ga.read_finish().get("setup") or {}).get("otto")
+elif SCENARIO == "missing_key_postback":
+    # 0.13.41: a setup request that times out with no key post-back fails out loud.
+    import contextlib
+    import io
+    now = time.time()
+    now_ms = int(now * 1000)
+    rid = r.handoff.new_request_id()
+    r.setup_state_save({
+        "otto": {"state": "relayed", "rid": rid, "at": int(now - 1000), "expires_ms": now_ms - 1000, "path": "held"},
+        "kai": {"state": "review", "rid": r.handoff.new_request_id(), "at": int(now - 1000),
+                "expires_ms": now_ms - 1000, "path": "first", "computer": "Den iMac",
+                "pending_pub": PAIR_KEY, "fp": r._pubkey_fp(PAIR_KEY)},
+        "pip": {"state": "relayed", "rid": r.handoff.new_request_id(), "at": int(now),
+                "expires_ms": now_ms + 600000, "path": "held"},
+    })
+    doc = ga.setup_load()
+    doc.setdefault("rows", {})
+    for slug, name in (("otto", "Otto"), ("kai", "Kai"), ("pip", "Pip")):
+        doc["rows"][slug] = {"name": name, "wake": "Hey " + name, "computer": "", "status": "sent",
+                             "sent_at": int(now - 1000), "fails": 0, "message": "", "unknown": False}
+    ga.setup_store(doc)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        public = r.setup_state_public(now_ms=now_ms)
+    with contextlib.redirect_stdout(io.StringIO()):
+        again = r.setup_state_public(now_ms=now_ms)
+    out["otto"] = public.get("otto")
+    out["kai"] = public.get("kai")
+    out["pip"] = public.get("pip")
+    out["log"] = buf.getvalue()
+    out["again_state"] = (again.get("otto") or {}).get("state")
+    view = ga.setup_public(ga.setup_load(), now, public)
+    out["row"] = (view.get("rows") or {}).get("otto")
+    params = open(os.path.join(OPT, "admin", "setup-params.txt"), encoding="utf-8").read()
+    js = open(os.path.join(OPT, "admin", "web", "app.js"), encoding="utf-8").read()
+    out["step"] = "6. Required: post your public key back to this open setup request." in params
+    out["page"] = "did not post its key back. Setup timed out." in js
 else:
     raise SystemExit("unknown scenario " + SCENARIO)
 

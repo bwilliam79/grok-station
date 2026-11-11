@@ -545,5 +545,31 @@ class StaleCloudRequest(unittest.TestCase):
         _assert_home_setup(self, self.out["fresh"])
 
 
+class MissingKeyPostback(unittest.TestCase):
+    """0.13.41: a setup request that times out without the key post-back fails out loud."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = scenario("missing_key_postback")
+
+    def test_timeout_without_a_key_is_a_visible_failure(self):
+        o = self.out
+        self.assertEqual(o["otto"]["state"], "failed")
+        self.assertEqual(o["otto"]["reason"], "no_key")
+        self.assertIn("setup timeout without key post-back target=otto", o["log"])
+        self.assertEqual(o["log"].count("setup timeout without key post-back"), 1)
+        self.assertEqual(o["again_state"], "failed")
+        self.assertEqual(o["row"]["relay"], "failed")
+        self.assertEqual(o["row"]["relay_reason"], "no_key")
+        self.assertTrue(o["step"])
+        self.assertTrue(o["page"])
+
+    def test_a_posted_key_and_an_open_request_are_not_this_failure(self):
+        o = self.out
+        self.assertEqual(o["kai"]["state"], "expired")
+        self.assertNotEqual(o["kai"].get("reason"), "no_key")
+        self.assertEqual(o["pip"]["state"], "relayed")
+
+
 if __name__ == "__main__":
     unittest.main()

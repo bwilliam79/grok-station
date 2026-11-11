@@ -212,9 +212,9 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(f["zone"]["tile"]["type"], "sports")
         z = f["zone_rect"]
         L = gs.Layout(2560, 1706)
-        self.assertEqual((z.left, z.width), (128, 2304))       # spec x 128-2432
-        self.assertTrue(780 <= z.top <= 830, z)                # spec y 800 (date bottom + L(80))
-        self.assertEqual(z.bottom, gs.content_limit(L))        # spec: bottom is content_limit()
+        panel = gs.bottom_panel_rect(L)
+        self.assertEqual(z, panel)
+        self.assertEqual((z.left, z.width), (panel.left, panel.width))
         self.assert_clear_of_top(f)
         self.assertIsNone(f["badge"])
 

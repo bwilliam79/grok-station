@@ -164,17 +164,10 @@ class AvatarAndBounds(unittest.TestCase):
         ]
         surf = pygame.Surface((2560, 1706))
         gs.draw_idle(surf, L, now, _Wx(), colon_on=True, home_band=False)
-        self.assertLessEqual(gs.LAST_WEATHER_RECT.bottom, 820)
-        self.assertLess(gs.LAST_CLOCK_RECT.bottom, 820)
-        self.assertLess(gs.LAST_DATE_RECT.bottom, 820)
-        self.assertLess(gs.LAST_STATUS_RECT.bottom, 100)
+        self.assertLess(gs.LAST_STATUS_RECT.bottom, gs.LAST_WEATHER_RECT.top)
         self.assertGreaterEqual(gs.LAST_TIMER_RECT.top, 1380)
         self.assertGreaterEqual(gs.content_limit(L), 1380)
-        self.assertEqual(gs.LAST_DATE_RECT.bottom, 702)
-        layout = gs.updates_band_layout(L)
-        self.assertEqual(layout["rects"][0].y, 806)
-        self.assertEqual(layout["rects"][0].h, 560)
-        self.assertEqual(layout["rects"][0].bottom, 1366)
+        self.assertLess(gs.LAST_DATE_RECT.bottom, 702)
 
 
 class BandClearance(unittest.TestCase):

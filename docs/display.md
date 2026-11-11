@@ -90,7 +90,7 @@ While Brightness is Schedule, Sunrise and sunset, or Light sensor, and the night
 
 ## Bottom zone (0.12.16)
 
-Only a recipe takes the whole screen. A sports or calendar tile, and the bot's listening, thinking, replying and error states, use the bottom zone: the band under the clock, date and weather, which never move or shrink. At 2560x1706 the zone runs x 128 to 2432 and from about y 800 down to the safe area; it scales with the layout on other screens (`zone_rect` in `app/grok_station.py`). When timer chips show on those screens, the zone's bottom moves up above them (`content_limit`). Home cards under the date are hidden while the zone is in use.
+Only a recipe takes the whole screen. A sports or calendar tile, the update card, the training panel, and the bot's listening, thinking, replying and error states share one bottom panel (`bottom_panel_rect` in `app/grok_station.py`). The time and weather block sits high enough that the margin from the top of the screen to that block equals the margin from the panel to the bottom of the screen. When timer chips show, the panel's bottom moves up above them (`content_limit`). A conversation replaces the update card until the conversation ends.
 
 A recipe does not use that strip. At 2560×1706 the ingredients card, step card, and timer rail are fixed (y 216, h 1246): ingredients x 128 w 560, step x 712 w 1168, rail x 1904 w 528. The rail is three slots of 400 px with a 23 px gap. Timers do not shrink the step card. The banner slot (x 780, y 56, w 1130, h 104) holds the sports and calendar chips, right-aligned, until a timer rings.
 

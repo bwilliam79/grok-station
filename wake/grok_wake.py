@@ -3183,6 +3183,11 @@ class Session:
                         sec = float(sec) if not isinstance(sec, bool) and isinstance(sec, (int, float)) and sec > 0 else 0
                         post_state(recipe_caption=text, recipe_caption_s=sec)
                         print("recipe caption", flush=True)
+                    elif t == "show_tile":
+                        kind = str(ev.get("tile") or "")
+                        if kind in ("sports", "recipe", "calendar", "home"):
+                            post_state(focus=kind)
+                            print("relay: show " + kind, flush=True)
                     elif t == "card":
                         card = take_card(ev)
                         if not card:

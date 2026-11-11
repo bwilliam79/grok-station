@@ -15,15 +15,15 @@ import shutil
 import tempfile
 import unittest
 
-from chrome_harness import find_chrome, run_chrome
+from chrome_harness import find_chrome, quiet_css, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSS = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
 
 PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<link rel="stylesheet" href="{css}">
-<style>html,body{{overflow:auto;width:{width}px}} #blist{{width:{inner}px}}</style>
+<html><head><meta charset="utf-8"><link rel=icon href="data:,">
+<style>__CSS__
+html,body{overflow:auto;width:__WIDTH__px} #blist{width:__INNER__px}</style>
 </head><body>
 <div id="blist">
   <div class="botrow"><div class="avwrap"></div>
@@ -38,14 +38,14 @@ PAGE = """<!DOCTYPE html>
     <div class="cfg"><button class="btn sm" type="button">Configure</button></div></div>
 </div>
 <script>
-function mid(el) {{ const r = el.getBoundingClientRect(); return (r.top + r.bottom) / 2; }}
-const rows = [...document.querySelectorAll("#blist .botrow")].map(row => {{
+function mid(el) { const r = el.getBoundingClientRect(); return (r.top + r.bottom) / 2; }
+const rows = [...document.querySelectorAll("#blist .botrow")].map(row => {
   const wake = row.querySelector(":scope > .ww .tog");
   const upd = row.querySelector(":scope > .updcol .tog");
   const cap = row.querySelector(".updrule");
-  return {{wake: mid(wake), upd: mid(upd), d: mid(upd) - mid(wake),
-    h: row.getBoundingClientRect().height, cap: cap ? cap.textContent : ""}};
-}});
+  return {wake: mid(wake), upd: mid(upd), d: mid(upd) - mid(wake),
+    h: row.getBoundingClientRect().height, cap: cap ? cap.textContent : ""};
+});
 document.documentElement.setAttribute("data-measure", JSON.stringify(rows));
 </script>
 </body></html>
@@ -97,12 +97,11 @@ def measure(width, inner):
     try:
         html = os.path.join(tmp, "row.html")
         with open(html, "w", encoding="utf-8") as fh:
-            fh.write(PAGE.format(css=os.path.join(ROOT, "admin", "web", "admin.css"), width=width, inner=inner))
+            fh.write(PAGE.replace("__CSS__", quiet_css(CSS)).replace("__WIDTH__", str(width)).replace("__INNER__", str(inner)))
         text = run_chrome(
             [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-             "--disable-dev-shm-usage", "--user-data-dir=" + os.path.join(tmp, "chrome"),
-             "--window-size=%d,900" % width, "--virtual-time-budget=1500", "--dump-dom",
-             "file://" + html])
+             "--disable-dev-shm-usage", "--disable-background-networking",
+             "--window-size=%d,900" % width, "--dump-dom", "file://" + html])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r'data-measure="([^"]+)"', text)

@@ -496,7 +496,7 @@ SETUP_FIELD_RE = {
     "update_sha256": (r"[0-9a-f]{64}", 64),
 }
 SETUP_ACK_STATUS = ("relayed", "failed", "needs_details")
-SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent")
+SETUP_ACK_REASONS = ("target_unreachable", "declined", "unknown", "standing_absent", "no_key")
 SETUP_PATHS = ("first", "held")
 
 

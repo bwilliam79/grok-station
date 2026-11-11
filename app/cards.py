@@ -1075,6 +1075,120 @@ def fold_utterance(text):
     return t
 
 
+# Whole-utterance asks that should put a content tile on the station.
+# sports, recipe, calendar, and home are deck cards. weather, time, and convert are station tool cards.
+CONTENT_TILES = ("sports", "recipe", "calendar", "home", "weather", "time", "convert")
+DECK_TILES = ("sports", "recipe", "calendar", "home")
+TOOL_TILES = ("weather", "time", "convert")
+_CONTENT_PHRASES = {
+    "sports update": "sports",
+    "sports updates": "sports",
+    "sports score": "sports",
+    "sports scores": "sports",
+    "the score": "sports",
+    "the scores": "sports",
+    "score update": "sports",
+    "show the score": "sports",
+    "show the scores": "sports",
+    "show sports": "sports",
+    "sports": "sports",
+    "what's the score": "sports",
+    "whats the score": "sports",
+    "what is the score": "sports",
+    "game update": "sports",
+    "the game": "sports",
+    "show the recipe": "recipe",
+    "the recipe": "recipe",
+    "open the recipe": "recipe",
+    "recipe update": "recipe",
+    "recipe": "recipe",
+    "calendar": "calendar",
+    "show the calendar": "calendar",
+    "my calendar": "calendar",
+    "show my calendar": "calendar",
+    "calendar update": "calendar",
+    "what's on today": "calendar",
+    "whats on today": "calendar",
+    "what is on today": "calendar",
+    "what's on the calendar": "calendar",
+    "whats on the calendar": "calendar",
+    "home update": "home",
+    "home updates": "home",
+    "home readings": "home",
+    "show home": "home",
+    "the home card": "home",
+    "home card": "home",
+    "weather": "weather",
+    "the weather": "weather",
+    "weather update": "weather",
+    "what's the weather": "weather",
+    "whats the weather": "weather",
+    "what is the weather": "weather",
+    "how's the weather": "weather",
+    "hows the weather": "weather",
+    "what's the weather like": "weather",
+    "whats the weather like": "weather",
+    "weather today": "weather",
+    "weather tomorrow": "weather",
+    "what's the weather today": "weather",
+    "what's the weather tomorrow": "weather",
+    "whats the weather today": "weather",
+    "whats the weather tomorrow": "weather",
+    "what's the weather like today": "weather",
+    "what's the weather like tomorrow": "weather",
+    "what time is it": "time",
+    "what's the time": "time",
+    "whats the time": "time",
+    "what is the time": "time",
+    "the time": "time",
+    "current time": "time",
+    "time update": "time",
+}
+_CONVERT_RE = re.compile(r"^convert\s+(-?\d+(?:\.\d+)?)\s+(.+?)\s+to\s+(.+)$")
+
+
+def content_tile_intent(text):
+    """The content tile a whole utterance asks to see, or None.
+
+    sports, recipe, calendar, home, weather, time, or convert. A question that only
+    contains one of these words does not match. Folding matches a recipe command:
+    case, a leading hey-name, and a trailing please.
+    """
+    folded = fold_utterance(text)
+    if not folded:
+        return None
+    kind = _CONTENT_PHRASES.get(folded)
+    if kind:
+        return kind
+    if _CONVERT_RE.match(folded):
+        return "convert"
+    return None
+
+
+def content_tile_args(text):
+    """Arguments for a weather, time, or convert ask. None for a deck tile or a non-ask."""
+    kind = content_tile_intent(text)
+    folded = fold_utterance(text)
+    if kind == "weather":
+        if "tomorrow" in folded:
+            day = "tomorrow"
+        elif re.search(r"\btoday\b", folded):
+            day = "today"
+        else:
+            day = "now"
+        return {"day": day}
+    if kind == "time":
+        return {}
+    if kind == "convert":
+        match = _CONVERT_RE.match(folded)
+        if not match:
+            return None
+        raw = match.group(1)
+        value = float(raw) if "." in raw else int(raw)
+        return {"value": value, "from_unit": match.group(2), "to_unit": match.group(3)}
+    return None
+
+
 def recipe_utterance(text):
     """A recipe-card command, or None.
 
@@ -1354,6 +1468,17 @@ class Deck:
     def current(self, now):
         with self._lock:
             return self._current(now)
+
+    def find_type(self, kind, now):
+        """The live card of this type, recipe first when several conversation cards exist, else the first in order."""
+        if kind not in ("recipe", "sports", "calendar", "home"):
+            return None
+        with self._lock:
+            self._drop(now)
+            hits = [it for it in self._ordered() if it["card"].get("type") == kind]
+            if not hits:
+                return None
+            return self._view(hits[0])
 
     def home_row(self, now, n=3, stable=False):
         """Up to n home cards. If the card in the rotation slot is a home card, it is first.
@@ -1673,7 +1798,8 @@ def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
 
     One Needs you: "Needs you · others 3 of 6". Several: "Needs you 1 of 3 · others 2 of 4".
     No Needs you: "3–4 of 6". Only Needs you: "Needs you 1–2 of 3". One ordinary item, or an
-    empty secondary queue, has no counter. "Paused · " is prefixed while rotation is held.
+    empty secondary queue, has no counter. The display does not show this counter, and it
+    never says Paused.
     """
     step = max(0, int(step))
     needs, others = list(needs), list(others)
@@ -1695,9 +1821,8 @@ def update_marker(needs, others, step, paused=False, slots=UPD_SLOTS):
     elif len(others) > slots:
         pos = _band_positions(others, slots, step, 2)
         text = _marker_range(pos, len(others))
-    if not text:
-        return "Paused" if paused else ""
-    return ("Paused \u00b7 " + text) if paused else text
+    del paused
+    return text
 
 
 def update_band_state(feed, now, step, *, night=False, bot_talking=False, timer_ringing=False, paused=False):
@@ -1713,6 +1838,18 @@ def update_band_state(feed, now, step, *, night=False, bot_talking=False, timer_
     tiles = update_slots(needs, rest, step)
     return {"visible": bool(tiles), "paused": hold, "tiles": tiles,
             "marker": update_marker(needs, rest, step, paused=hold)}
+
+
+def one_update(needs, others, step):
+    """The single card for this step. Needs you come first, then the other updates and home cards.
+
+    One item at a time. The step wraps. An empty pair of queues is None.
+    """
+    rows = list(needs) + list(others)
+    if not rows:
+        return None
+    step = max(0, int(step))
+    return rows[step % len(rows)]
 
 
 def update_next_step(step, elapsed_s, paused, interval=None):
