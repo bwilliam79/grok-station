@@ -6666,6 +6666,7 @@ def reply_reason(rej):
 
 EXPECT_OLD_FP = re.compile(r"^([0-9a-f]{16}|-)$")
 KEY_CHANGED = "The paired key changed since this page loaded. Reload and compare the fingerprint again."
+FP_NOT_THE_KEY = "The fingerprint on this page is not the key waiting to be accepted. Reload and compare it again."
 
 
 def expect_old_ok(slug, expect):
@@ -7480,10 +7481,25 @@ def setup_note_review(rid, target, public_key, computer):
     return True
 
 
-def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
+def _expect_new_matches(pending_pub, expect):
+    """Nix N1: Accept names the fingerprint the page displayed. True only when it equals this pending key.
+
+    Computed from pending_pub, not from the stored fp field. Spaces are ignored so the grouped form matches.
+    """
+    if not isinstance(expect, str):
+        return False
+    want = re.sub(r"\s+", "", expect.lower())
+    if re.fullmatch(r"[0-9a-f]{16}", want) is None:
+        return False
+    return want == _pubkey_fp(pending_pub)
+
+
+def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None, expect_new_fp=None):
     """Accept pins the posted key. Reject discards it. Neither sets Connected. None on a bad row.
     expect_old_fp (GS1337-03): when given, Accept returns {"ok": False, "changed": True} unless it still names
-    the key pinned now. The admin route always gives it."""
+    the key pinned now. The admin route always gives it.
+    expect_new_fp (0.13.40, Nix N1): Accept returns {"ok": False, "fp_stale": True} unless it equals
+    _pubkey_fp(pending_pub) under this lock. Reject does not read it."""
     if decision not in ("accept", "reject") or not handoff.setup_field_ok("target", target):
         return None
     with _SETUP_STATE_LOCK:
@@ -7511,6 +7527,9 @@ def setup_pair_decide(target, decision, actor="admin", expect_old_fp=None):
         # 0.13.39: Accept needs the fingerprint the owner compares. A review row with no 16-hex fp is not actionable.
         if not isinstance(row.get("fp"), str) or re.fullmatch(r"[0-9a-f]{16}", row.get("fp")) is None:
             return None
+        # 0.13.40 Nix N1: the value the page showed must be this pending key, computed here under the lock.
+        if not _expect_new_matches(pub, expect_new_fp):
+            return {"ok": False, "fp_stale": True, "slug": target}
         if expect_old_fp is not None and not expect_old_ok(target, expect_old_fp):
             return {"ok": False, "changed": True, "slug": target}
         old_fp = pinned_fingerprint(target)
@@ -7577,7 +7596,7 @@ async def admin_setup_pair_post(req):
         return bad
     body = await admin_json(req)
     if (not isinstance(body, dict) or not actor_ok(body.get("actor"))
-            or set(body) - {"expect_old_fp"} != {"actor", "slug", "decision"}):
+            or set(body) - {"expect_old_fp", "expect_new_fp"} != {"actor", "slug", "decision"}):
         return web.json_response({"error": "bad request"}, status=400)
     slug, decision = body.get("slug"), body.get("decision")
     if not handoff.setup_field_ok("target", slug) or decision not in ("accept", "reject"):
@@ -7586,13 +7605,16 @@ async def admin_setup_pair_post(req):
         return web.json_response({"error": "bad request"}, status=400)  # GS1337-03: Accept names the old key
     try:
         result = setup_pair_decide(slug, decision, body["actor"],
-                                   body.get("expect_old_fp") if decision == "accept" else None)
+                                   expect_old_fp=body.get("expect_old_fp") if decision == "accept" else None,
+                                   expect_new_fp=body.get("expect_new_fp") if decision == "accept" else None)
     except OSError:
         return web.json_response({"error": "unavailable"}, status=500)
     if not result:
         return web.json_response({"error": "not found"}, status=404)
     if result.get("changed"):
         return web.json_response({"error": KEY_CHANGED}, status=409)
+    if result.get("fp_stale"):
+        return web.json_response({"error": FP_NOT_THE_KEY}, status=409)
     audit(body.get("actor"), slug, "setup-pair-" + decision, "-")
     out = {"ok": True, "state": result["state"]}
     if result.get("state") == "accepted" and handoff.setup_field_ok("release", result.get("release")):

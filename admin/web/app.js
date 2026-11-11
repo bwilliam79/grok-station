@@ -3608,16 +3608,25 @@ function setupKeyReviewEl(row, pairedFp) {
   const h = document.createElement("h3");
   h.className = "lbl";
   h.textContent = "Accept the key from " + botName;
+  const fpOk = /^[0-9a-f]{16}$/.test(String((row && row.relay_fp) || ""));
   const help = document.createElement("p");
   help.className = "help";
-  help.textContent = "Compare this fingerprint with the one " + botName + " printed in its chat. If they match, press Accept key. Nothing connects until you do.";
+  help.textContent = fpOk
+    ? ("Compare this fingerprint with the one " + botName + " printed in its chat. If they match, press Accept key. Nothing connects until you do.")
+    : (botName + "'s key arrived without a fingerprint, so Accept key is off. Reload, or press Set up again.");
   const fpLab = document.createElement("p");
   fpLab.className = "pairlab";
   fpLab.textContent = "Fingerprint";
-  const fpOk = /^[0-9a-f]{16}$/.test(String((row && row.relay_fp) || ""));
   const fp = document.createElement("p");
-  fp.className = "mono";
-  fp.textContent = fpOk ? formatKeyFp(row.relay_fp) : "The station has no fingerprint for this key yet. Reload, or press Set up again.";
+  if (fpOk) {
+    fp.className = "mono";
+    fp.textContent = formatKeyFp(row.relay_fp);
+  } else {
+    // Ordinary text, not .mono. tabindex -1 is what the row's Accept key button focuses.
+    fp.textContent = "No fingerprint yet";
+    fp.setAttribute("tabindex", "-1");
+    fp.setAttribute("data-fpmissing", "1");
+  }
   // The Computer block shows only when the bot named its computer; an empty label reads as missing data.
   const computer = (row && row.paired_computer) || "";
   let nameLab = null, name = null;
@@ -3632,7 +3641,7 @@ function setupKeyReviewEl(row, pairedFp) {
   const now = String(pairedFp || "").replace(/\s+/g, "");
   const posted = formatKeyFp(row && row.relay_fp).replace(/\s+/g, "");
   let differs = null;
-  if (now && posted && now !== posted) {
+  if (fpOk && now && posted && now !== posted) {
     differs = document.createElement("p");
     differs.className = "seterr repinwarn";
     differs.setAttribute("role", "alert");
@@ -3647,10 +3656,8 @@ function setupKeyReviewEl(row, pairedFp) {
   accept.setAttribute("data-pair", "accept");
   accept.setAttribute("data-slug", (row && row.slug) || "");
   if (!fpOk) {
-    accept.disabled = true;
+    // Not .disabled: a disabled button cannot take focus. aria-disabled keeps it focusable, and the click handler sends nothing.
     accept.setAttribute("aria-disabled", "true");
-    fp.setAttribute("tabindex", "-1");
-    fp.setAttribute("data-fpmissing", "1");
   }
   const reject = document.createElement("button");
   reject.type = "button";
@@ -3804,6 +3811,7 @@ async function decideSetupPair(row, el, decision) {
   const send = async pw => {
     const body = {slug: row.slug, decision: decision};
     if (decision === "accept") body.expect_old_fp = expectOldFp(botBySlug(el, row.slug));
+    if (decision === "accept") body.expect_new_fp = String((row && row.relay_fp) || "").replace(/\s+/g, "").toLowerCase();
     if (pw) body.password = pw;
     const r = await api("POST", "/api/bots/setup-pair", body);
     body.password = "";

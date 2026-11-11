@@ -16,10 +16,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_gs139_setup_bots as base  # noqa: E402
+from chrome_harness import find_chrome, run_chrome  # noqa: E402
 
 JS = base.JS
 CSS = base.CSS
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 NOW = 100000
 ROWS = [
     {"slug": "otto", "name": "Otto", "status": "sent", "sent_at": NOW - 60},
@@ -67,9 +68,8 @@ const res = {width: innerWidth};
                 'height:700px"></iframe><pre id=res></pre><script>document.getElementById("f").onload=()=>{setTimeout('
                 '()=>{document.getElementById("res").textContent=document.getElementById("f").contentDocument.'
                 'getElementById("out").textContent;},500)};</script></body>' % width)
-    out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
-                          "--window-size=1400,900", "--virtual-time-budget=4000", "--dump-dom", "file://" + outer],
-                         capture_output=True, text=True, timeout=120).stdout
+    out = run_chrome([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+                      "--window-size=1400,900", "--virtual-time-budget=4000", "--dump-dom", "file://" + outer])
     shutil.rmtree(d, ignore_errors=True)
     m = re.search(r'<pre id="res">(.*?)</pre>', out, re.S)
     assert m and m.group(1).strip(), "no result from Chrome"

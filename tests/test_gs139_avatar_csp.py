@@ -11,8 +11,9 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
+
+from chrome_harness import find_chrome, run_chrome
 import tempfile
 import unittest
 
@@ -21,7 +22,7 @@ import test_gs139_setup_bots as base  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS = base.JS
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 INLINE = re.compile(r"<[a-zA-Z][^<>]*?\son[a-z]+\s*=", re.S)
 
 
@@ -78,9 +79,8 @@ def _run_page():
     page = os.path.join(d, "p.html")
     with open(page, "w") as fh:
         fh.write(PAGE % (src, install))
-    out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
-                          "--virtual-time-budget=4000", "--dump-dom", "file://" + page],
-                         capture_output=True, text=True, timeout=120).stdout
+    out = run_chrome([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+                      "--virtual-time-budget=4000", "--dump-dom", "file://" + page])
     shutil.rmtree(d, ignore_errors=True)
     m = re.search(r'<pre id="out">(.*?)</pre>', out, re.S)
     assert m and m.group(1).strip(), "no result from Chrome"

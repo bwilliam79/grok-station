@@ -289,7 +289,7 @@ class PairingPost(unittest.TestCase):
             self.assertIsNone(relay.setup_pair_decide("otto", "accept"))
             with open(state, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({"targets": {"otto": row}}))
-            accepted = relay.setup_pair_decide("otto", "accept")
+            accepted = relay.setup_pair_decide("otto", "accept", expect_new_fp=fp)
             self.assertEqual(accepted["state"], "accepted")
             pinned = botreply.load_keys(keyf)
             self.assertEqual(pinned["keys"].get("otto"), pub)
@@ -769,7 +769,7 @@ class VoiceReplyHttp(unittest.IsolatedAsyncioTestCase):
                                                                    "hidden": [], "voices": {}, "list_source": "", "key_mode": {}}), \
                 mock.patch.object(relay, "save_overlay", lambda doc: None), \
                 mock.patch.object(relay, "forget_bot_status", lambda slug: None):
-            decided = relay.setup_pair_decide("otto", "accept")
+            decided = relay.setup_pair_decide("otto", "accept", expect_new_fp=relay._pubkey_fp(_b64(bytes(self.sk.verify_key))))
         self.assertEqual(decided["state"], "accepted")
         self.assertTrue(os.path.exists(self.keys))
         import test_admin  # noqa: F401

@@ -1321,19 +1321,20 @@ class StepUp(unittest.TestCase):
             self.assertEqual(calls[-1]["decision"], "reject")
             before = len(calls)
             fails = len(ga.AUTH.fails)
-            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "expect_old_fp": "-"})
+            shown = {"expect_old_fp": "-", "expect_new_fp": "0123456789abcdef"}
+            st, j = self.c.req("POST", "/api/bots/setup-pair", dict(shown, slug="kai", decision="accept"))
             self.assertEqual(st, 403, j)
             self.assertEqual(len(calls), before)
-            st, j = self.c.req("POST", "/api/bots/setup-pair", {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": "nope"})
+            st, j = self.c.req("POST", "/api/bots/setup-pair", dict(shown, slug="kai", decision="accept", password="nope"))
             self.assertEqual(st, 403, j)
             self.assertEqual(len(calls), before)
             self.assertGreater(len(ga.AUTH.fails), fails)
             st, j = self.c.req("POST", "/api/bots/setup-pair",
-                               {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": GOOD})
+                               dict(shown, slug="kai", decision="accept", password=GOOD))
             self.assertEqual(st, 400, j)
             self.assertNotIn(GOOD, json.dumps(j))
             st, j = self.c.req("POST", "/api/bots/setup-pair",
-                               {"slug": "kai", "decision": "accept", "expect_old_fp": "-", "password": GOOD})
+                               dict(shown, slug="kai", decision="accept", password=GOOD))
             self.assertEqual(st, 200, j)
             self.assertEqual(calls[-1]["decision"], "accept")
         finally:
