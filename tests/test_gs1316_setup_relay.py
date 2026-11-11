@@ -424,7 +424,7 @@ class Acks(unittest.IsolatedAsyncioTestCase):
         st = json.load(open(self.st.r.SETUP_STATE_FILE))
         st["targets"]["otto"]["expires_ms"] = int(time.time() * 1000) - 1
         open(self.st.r.SETUP_STATE_FILE, "w").write(json.dumps(st))
-        self.assertEqual(self._state(), "failed")
+        self.assertEqual(self._state(), "expired")
 
     async def test_t8_retired_rid_is_refused(self):
         old = await self._open()
