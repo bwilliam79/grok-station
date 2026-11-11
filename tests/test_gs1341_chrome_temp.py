@@ -27,12 +27,15 @@ def _leaks(before):
 class ChromeTemp(unittest.TestCase):
     def test_a_finished_run_and_a_killed_run_leave_no_temp_dirs(self):
         before = set(os.listdir("/tmp"))
-        dump_dir, dump = _script("printf '<html>ok</html>\\n'")
+        # A real Chrome writes scoped_dir under TMPDIR. The stand-in does the same,
+        # so a harness that leaves TMPDIR as /tmp fails this test.
+        write = 'd="${TMPDIR:-/tmp}"; mkdir -p "$d/scoped_dir$$"\n'
+        dump_dir, dump = _script(write + "printf '<html>ok</html>\\n'")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", dump_dir], check=False))
         out = H.run_chrome([dump, "--dump-dom", "file:///none"])
         self.assertIn("ok", out)
         self.assertEqual(_leaks(before), [])
-        sleep_dir, sleeper = _script("sleep 30")
+        sleep_dir, sleeper = _script(write + "sleep 30")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", sleep_dir], check=False))
         with self.assertRaises(unittest.SkipTest):
             H.run_chrome([sleeper, "--dump-dom", "file:///none"], timeout=1)

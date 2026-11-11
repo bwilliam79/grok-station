@@ -679,10 +679,14 @@ elif SCENARIO == "missing_key_postback":
                 "pending_pub": PAIR_KEY, "fp": r._pubkey_fp(PAIR_KEY)},
         "pip": {"state": "relayed", "rid": r.handoff.new_request_id(), "at": int(now),
                 "expires_ms": now_ms + 600000, "path": "held"},
+        "wren": {"state": "sent", "rid": r.handoff.new_request_id(), "at": int(now - 1000),
+                 "expires_ms": now_ms - 1000, "path": "first"},
+        "noor": {"state": "sent", "rid": r.handoff.new_request_id(), "at": int(now - 1000),
+                 "expires_ms": 0, "path": "first"},
     })
     doc = ga.setup_load()
     doc.setdefault("rows", {})
-    for slug, name in (("otto", "Otto"), ("kai", "Kai"), ("pip", "Pip")):
+    for slug, name in (("otto", "Otto"), ("kai", "Kai"), ("pip", "Pip"), ("wren", "Wren"), ("noor", "Noor")):
         doc["rows"][slug] = {"name": name, "wake": "Hey " + name, "computer": "", "status": "sent",
                              "sent_at": int(now - 1000), "fails": 0, "message": "", "unknown": False}
     ga.setup_store(doc)
@@ -694,6 +698,8 @@ elif SCENARIO == "missing_key_postback":
     out["otto"] = public.get("otto")
     out["kai"] = public.get("kai")
     out["pip"] = public.get("pip")
+    out["wren"] = public.get("wren")
+    out["noor"] = public.get("noor")
     out["log"] = buf.getvalue()
     out["again_state"] = (again.get("otto") or {}).get("state")
     view = ga.setup_public(ga.setup_load(), now, public)

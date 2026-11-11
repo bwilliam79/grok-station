@@ -144,16 +144,27 @@ class EqualMargins(unittest.TestCase):
     def setUp(self):
         gs.TIMER_CHIPS[:] = []
 
+    def _ink_top(self, surf):
+        """First painted row of the clock and weather, ignoring the status icons at the right edge."""
+        bg = surf.get_at((0, 0))
+        limit = gs.LAST_STATUS_RECT.left if gs.LAST_STATUS_RECT else surf.get_width()
+        w, h = surf.get_size()
+        for y in range(h):
+            for x in range(0, limit):
+                if surf.get_at((x, y)) != bg:
+                    return y
+        self.fail("the idle screen has no clock or weather ink")
+
     def test_top_margin_matches_the_bottom_margin(self):
         for size in (PHONE, NATIVE):
             L = gs.Layout(*size)
             surf = pygame.Surface(size)
             gs.draw_idle(surf, L, time.localtime(), _Wx(True), home_band=False)
-            block_top = min(gs.LAST_CLOCK_RECT.top, gs.LAST_DATE_RECT.top, gs.LAST_WEATHER_RECT.top)
+            ink = self._ink_top(surf)
             panel = gs.bottom_panel_rect(L)
-            self.assertEqual(block_top, size[1] - panel.bottom, size)
+            self.assertEqual(ink, size[1] - panel.bottom, size)
             self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L), size)
-            self.assertLess(gs.LAST_STATUS_RECT.bottom, gs.LAST_WEATHER_RECT.top, size)
+            self.assertLess(gs.LAST_STATUS_RECT.bottom, ink, size)
             self.assertEqual(panel, gs.enroll_tile_rect(L), size)
 
 

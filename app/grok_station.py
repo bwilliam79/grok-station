@@ -3115,7 +3115,7 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     LAST_ENROLL_HINT = LAST_ENROLL_PROGRESS = LAST_ENROLL_HEADLINE = None
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
-    top = idle_clock_top(L)
+    top = idle_clock_top(L, hhmm)
     clock_px = L(300)  # design.md §13 refresh: idle clock 300 px @1080
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
     x = L.m - L(8)
@@ -3742,6 +3742,31 @@ def release_focused_tile(now=None):
         span = cards.RECIPE_IDLE_S if kind == "recipe" else cards.CONVO_IDLE_S
         deck().rearm_idle(bot, cid, now, span)
     return True
+
+
+def release_or_clear_tile(now=None):
+    """The main-loop deck delete when a voice state or the hold ends.
+
+    A focused card stays in the deck. On a hold timeout it also gets a fresh idle window.
+    Returns True when a conversation card was removed from the deck.
+    """
+    if not TILE:
+        return False
+    if TILE.get("focused"):
+        return False
+    deck().clear(TILE.get("bot"), TILE.get("id"))
+    TILE.clear()
+    return True
+
+
+def apply_speaking_clear(prev_state, state, now, hold_s):
+    """What the STATE handler does when a new voice state would drop the on-screen tile.
+
+    Returns True when that tile's deck card was deleted.
+    """
+    if not TILE or tile_step(TILE, prev_state, state, now, hold_s) != "clear":
+        return False
+    return release_or_clear_tile(now)
 
 
 def draw_next_up(surf, L, now, talking=False):
@@ -5315,26 +5340,40 @@ PANEL_W = 2304
 PANEL_GAP = 12
 
 
-def idle_block_offsets(L):
+def _glyph_ink_dy(img):
+    """Rows of empty pixels above the first painted pixel. 0 when the surface is blank."""
+    bound = img.get_bounding_rect()
+    return bound.y if bound.h else 0
+
+
+def idle_block_offsets(L, hhmm="10:08"):
     """(top, bottom) of the time and weather block, relative to draw_idle's clock top.
 
-    top is at or above 0 when the weather rises over the clock. The numbers match draw_idle
-    and draw_weather, including a weather label, so the block does not jump when weather arrives.
+    top is the first painted pixel of this time or the weather, not the font box.
+    The numbers match draw_idle and draw_weather, including a weather label, so the
+    block does not jump when weather arrives.
     """
     clock_px = L(300)
     cf = font("display", clock_px)
     base = int(cf.get_ascent() * 0.98)
-    clock_top = base - cf.get_ascent()
-    clock_bottom = clock_top + cf.get_height()
+    clock_box = base - cf.get_ascent()
+    hour, minute = hhmm.split(":", 1)
+    ink = min(_glyph_ink_dy(cf.render(part, True, TEXT)) for part in (hour, minute))
+    clock_top = clock_box + ink
+    clock_bottom = clock_box + cf.get_height()
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
     date_bottom = base + L(40) + font("body", L(60)).get_height()
     tb = base - L(80)
     temp_f = font("display", L(180))
-    temp_top = tb - temp_f.get_ascent()
-    temp_bottom = temp_top + temp_f.get_height()
-    icon_top = tb - L(140)
-    icon_bottom = icon_top + L(150)
+    temp_box = tb - temp_f.get_ascent()
+    temp_top = temp_box + _glyph_ink_dy(temp_f.render("72°", True, TEXT))
+    temp_bottom = temp_box + temp_f.get_height()
+    icon_px = L(150)
+    icon_box = tb - L(140)
+    icon = weather_icon("partly", True, icon_px, max(2, L(7)))
+    icon_top = icon_box + _glyph_ink_dy(icon)
+    icon_bottom = icon_box + icon_px
     label_top = tb + L(36)
     hl_bottom = label_top + font("body", L(56)).get_height() + L(4) + font("body", L(48)).get_height()
     weather_top = min(temp_top, icon_top)
@@ -5342,23 +5381,29 @@ def idle_block_offsets(L):
     return min(clock_top, weather_top), max(clock_bottom, ampm_bottom, date_bottom, weather_bottom)
 
 
-def idle_clock_top(L):
-    """Y of the idle clock's top variable. The time and weather block sits as high as the status icons allow."""
-    top_off, _bottom_off = idle_block_offsets(L)
+def idle_clock_top(L, hhmm=None):
+    """Y of the idle clock's top variable.
+
+    The font box sits just below the status icons, which keeps the digits below the
+    conversation badge. The visible ink is lower; the panel margin uses that ink.
+    """
+    cf = font("display", L(300))
+    box = int(cf.get_ascent() * 0.98) - cf.get_ascent()
     icon_bottom = max(4, int(round(8 * L.s))) + status_icon_px(L.s)
     pad = max(2, int(round(4 * L.s)))
-    return max(0, icon_bottom + pad - top_off)
+    return max(0, icon_bottom + pad - box)
 
 
 def bottom_panel_rect(L):
     """The shared bottom panel.
 
-    Its bottom leaves the same margin the time and weather block leaves at the top.
+    Its bottom leaves the same margin as the first painted pixel of the time and weather.
     A timer strip lifts the bottom to content_limit and the panel gets shorter.
     """
     global LAST_PANEL_RECT
-    clock_top = idle_clock_top(L)
-    top_off, bot_off = idle_block_offsets(L)
+    hhmm, _ampm = clock_parts(time.localtime())
+    clock_top = idle_clock_top(L, hhmm)
+    top_off, bot_off = idle_block_offsets(L, hhmm)
     block_top = clock_top + top_off
     block_bottom = clock_top + bot_off
     panel_top = block_bottom + zpx(L, PANEL_GAP)
@@ -5733,7 +5778,20 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     surf.blit(hf.render(shown, True, TEXT), head_slot.topleft)
     # Lines under the headline start at its bottom, so a descender is not covered.
     shift = max(0, head_slot.bottom - (tile.y + zpx(L, 321)))
-    sub_slot = pygame.Rect(col_x, tile.y + zpx(L, 321) + shift, col_w, max(1, zpx(L, 170)))
+    # The visible clock margin can shorten this tile. Keep the lower column inside it,
+    # under the headline, so the quiet hint is not drawn past the tile.
+    act_h = max(1, zpx(L, 104))
+    prog_h = max(1, zpx(L, 88))
+    sub_h = max(1, zpx(L, 170))
+    overflow = max(0, (tile.y + zpx(L, 641) + shift + act_h) - (tile.bottom - border))
+    sub_y = max(head_slot.bottom, tile.y + zpx(L, 321) + shift - overflow)
+    limit = tile.bottom - border
+    if sub_y + sub_h + prog_h + act_h > limit:
+        room = max(3, limit - sub_y)
+        sub_h = max(1, room // 2)
+        prog_h = max(1, room // 4)
+        act_h = max(1, room - sub_h - prog_h)
+    sub_slot = pygame.Rect(col_x, sub_y, col_w, sub_h)
     surf.set_clip(sub_slot.clip(tile))
     if sub:
         sf, lines, step = _fit_wrapped("body", sub, col_w, sub_slot.h, zpx(L, 72), zpx(L, 60), zpx(L, 4), 2, 1.18)
@@ -5743,14 +5801,14 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
                 break
             surf.blit(sf.render(ln, True, scolor), (col_x, y))
             y += step
-    prog = pygame.Rect(col_x, tile.y + zpx(L, 521) + shift, col_w, max(1, zpx(L, 88)))
+    prog = pygame.Rect(col_x, sub_slot.bottom if overflow else tile.y + zpx(L, 521) + shift, col_w, prog_h)
     LAST_ENROLL_PROGRESS = pygame.Rect(prog)
     surf.set_clip(prog.clip(tile))
     # The success tile (last clip saved) shows only its line: no progress, no quiet hint (rev1.3 copy deck).
     success = stage == "saved" and n and i >= n and extra != "next"
     if not success:
         _draw_progress(surf, L, prog, col_w, stage, i, status)
-    act = pygame.Rect(col_x, tile.y + zpx(L, 641) + shift, col_w, max(1, zpx(L, 104)))
+    act = pygame.Rect(col_x, prog.bottom if overflow else tile.y + zpx(L, 641) + shift, col_w, act_h)
     # Focus ring sits 6 px outside the button, so this clip is the tile, not the slot.
     surf.set_clip(tile)
     _draw_actions(surf, L, tile, act, col_w, stage, spoken)
@@ -6527,9 +6585,8 @@ def main():
                 now_s = time.time()
                 if ev.state == "enroll" and TILE:
                     park_tile_for_enroll(TILE, now_s)  # training takes the zone; the tile becomes a chip
-                elif TILE and tile_step(TILE, prev_state, ev.state, now_s, SCORE_HOLD) == "clear":
-                    deck().clear(TILE.get("bot"), TILE.get("id"))
-                    TILE.clear()  # back to the full-screen status as the response starts
+                elif apply_speaking_clear(prev_state, ev.state, now_s, SCORE_HOLD):
+                    pass  # an unfocused conversation card left the deck as the response started
                 had = msg is not None
                 live_card = bool(TILE)  # a card already up wins; a stale one was cleared just above
                 if ev.state == "speaking" and not ev.done:
@@ -6652,8 +6709,7 @@ def main():
                     if TILE.get("focused"):
                         release_focused_tile(time.time())
                     else:
-                        deck().clear(TILE.get("bot"), TILE.get("id"))
-                        TILE.clear()
+                        release_or_clear_tile(time.time())
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)
                     print("back to idle", flush=True)
