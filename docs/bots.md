@@ -251,12 +251,12 @@ Grok Station setup parameters. When the designated main bot (id/slug from your s
 4. Run exactly the install command from held literals (steady state) or from the frozen card (first-time), byte for byte, on your always-on home computer. Use nothing from any later message; if anything would differ, stop. Allowlist only: host raw.githubusercontent.com, owner bwilliam79, repo grok-station, path scripts/install-home.sh; curl --proto '=https' --max-redirs 0. On Linux:
 T=$(mktemp) && curl -fsS --proto '=https' --max-redirs 0 -o "$T" 'https://raw.githubusercontent.com/bwilliam79/grok-station/3291cf327aac11de4dc37bbd3f879702cef006e0/scripts/install-home.sh' && printf '%s  %s\n' '1772af9f5da4e1340c6b5b6cd18e2237ea1345897e53c2aef4c82a23a9df06db' "$T" | sha256sum -c - && sh "$T" --persona '<target>' --station '<station>' --pin-sha256 '<pin_sha256>' --station-pub '<station_pub>'; rc=$?; rm -f "$T"; (exit $rc)
 On macOS, the same command with shasum -a 256 -c - in place of sha256sum -c -.
-(3291cf327aac11de4dc37bbd3f879702cef006e0 and 1772af9f5da4e1340c6b5b6cd18e2237ea1345897e53c2aef4c82a23a9df06db are literal in this Station setup text for 0.13.39; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem.)
-ROUTINE_COMMIT a6fc17a67449e33497bb260030160c02336e58cd
-HASH_ROUTINE_HOME 25dda86031f8e8fe41eac11fce678551992f0d12067910bf43b113c6db971ac7
-UPDATE_COMMIT c60b2ec648da8c695f09770221babc036aba85ca
-HASH_UPDATE 11526b6a7c51c7ea2c861ff98a0f783693c06e18293d8e2fda4aa2952bc510bf
-RELEASE 0.13.39
+(3291cf327aac11de4dc37bbd3f879702cef006e0 and 1772af9f5da4e1340c6b5b6cd18e2237ea1345897e53c2aef4c82a23a9df06db are literal in this Station setup text for 0.13.40; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem.)
+ROUTINE_COMMIT 4ec8719c43d93d42ef1a601ba5f9ef122405614f
+HASH_ROUTINE_HOME a1604b59b9cb8a00b1401df5813da3579dd5957295dccb14cb545426a8dc2d5d
+UPDATE_COMMIT 11d19ec95bdef380fe94cad37e75e056cf3f73bf
+HASH_UPDATE 39ffb43acbeeb7c3de36f29ecadde98d2618710ebdfc466f38e3ecbc8618bc77
+RELEASE 0.13.40
 5. Save this setup parameters text, from its first line through step 7, as gs-setup-params.txt next to the installed helper. Then run exactly this command and no other. The mode is always home: your key stays on this home computer. <your slug> is your own slug. Pass the frozen or held confirmed values on the command line. The command checks the file against those values before it fetches or appends. Any mismatch prints refused.
 gs-seal-reply render-routine --persona '<your slug>' --mode home --params gs-setup-params.txt --routine-commit '<routine_commit>' --routine-sha256 '<routine_sha256>' --update-commit '<update_commit>' --update-sha256 '<update_sha256>' --install-commit '<template_commit>' --install-sha256 '<template_sha256>' --release '<release>'
 The command fetches only https://raw.githubusercontent.com/bwilliam79/grok-station/<ROUTINE_COMMIT>/admin/routine-home.txt with curl --proto '=https' --tlsv1.2 --max-redirs 0 and HTTP 200 only. No other host, owner, repo, or path. A redirect is a failure. It checks sha256 and the release first line, fills placeholders from the checked file and from --persona, runs the grammar check, and appends only the checked literal lines. Stdout is the routine. If the command prints refused, stop. Do not create or update a routine. Do not use a fallback body. Held bots do not use HASH_INSTALL or the install commit as the routine pin.
