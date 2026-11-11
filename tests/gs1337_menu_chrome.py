@@ -69,9 +69,9 @@ window.fetch = (url, opt) => {
   if (path.indexOf('/api/portrait/') === 0) return Promise.resolve(new Response('', {status: 404}));
   return json(200, {});
 };
-// The Bots page polls every 3 s, 10 s and 15 s. A repeating timer keeps the page from going idle
-// on some Chrome builds, so virtual time never expires and --dump-dom never writes. The first
-// call still runs (every() calls fn() itself). One-shot waits under a second stay, for the probe.
+// A repeating timer or a font fetch keeps virtual time from advancing on some Chrome
+// builds, so --dump-dom never writes. Intervals are dropped. Waits over a second are
+// dropped. The short waits the probe needs still run, under a virtual-time budget.
 window.setInterval = function () { return 0; };
 const _setTimeout = window.setTimeout;
 window.setTimeout = function (fn, ms) {
@@ -116,10 +116,10 @@ const tick = ms => new Promise(r => setTimeout(r, ms));
         with open(path, "w", encoding="utf-8") as f:
             f.write(page)
         out = run_chrome(
-            [CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+            [CHROME, "--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
              "--disable-background-networking", "--disable-component-update", "--disable-sync",
              "--disable-default-apps", "--disable-extensions", "--no-first-run",
-             "--allow-file-access-from-files", "--user-data-dir=" + os.path.join(d, "profile"),
+             "--allow-file-access-from-files",
              "--window-size=1280,900", "--virtual-time-budget=%d" % budget, "--dump-dom",
              "file://" + path])
     finally:

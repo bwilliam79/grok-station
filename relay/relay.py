@@ -2990,6 +2990,9 @@ async def session(req):
                             if end:
                                 return end
                             continue
+                        # A content-tile ask shows its tile. The question still goes on to the bot or the model,
+                        # so a fresh card can replace the one already on screen.
+                        await dispatch_content_tile(heard, pi, http, st.get("timers"), timer_clock.now())
                         # Home is station-local, before "heard" (that would show thinking). A tone, not speech.
                         intent = home.home_match(heard, home.load_registry())
                         if intent:
@@ -4109,6 +4112,49 @@ class _ShowAudit:
 
 # "dismiss" (or "clear that") drops a chip on the recipe (0.12.16); the station says ok only when one is up.
 RECIPE_CMDS = ("next", "prev", "repeat", "start", "close", "dismiss")
+
+
+def content_tile_plan(heard):
+    """The content tile this utterance asks for, or None.
+
+    show: a deck tile (sports, recipe, calendar, home). The question still goes to the bot.
+    tool: a station tool card (weather, time, convert). That ask is finished here.
+    """
+    try:
+        mod = load_cards()
+        kind = mod.content_tile_intent(heard)
+    except Exception:
+        return None
+    if kind in ("sports", "recipe", "calendar", "home"):
+        return {"show": kind, "tile": kind}
+    if kind not in ("weather", "time", "convert"):
+        return None
+    args = mod.content_tile_args(heard)
+    if kind == "convert" and not args:
+        return None
+    tool = {"weather": "get_weather", "time": "get_time", "convert": "convert_units"}[kind]
+    return {"tool": tool, "args": args or {}, "tile": kind}
+
+
+async def dispatch_content_tile(heard, pi, http, timers, now):
+    """Send the tile this ask names.
+
+    A deck tile is a show_tile message. A tool tile sends its card. The caller does not end the
+    turn: the question still goes to the bot or the model. Returns the plan when a tile was sent,
+    else None.
+    """
+    plan = content_tile_plan(heard)
+    if not plan:
+        return None
+    if plan.get("show"):
+        await pi.send_json({"type": "show_tile", "tile": plan["show"]})
+        return None
+    out, to_pi = await station_tools.run(plan["tool"], plan.get("args") or {}, http, timers, now)
+    del out
+    if isinstance(to_pi, dict) and to_pi.get("type") == "card":
+        await pi.send_json(to_pi)
+        return plan
+    return None
 
 
 def recipe_match(text):
@@ -7397,10 +7443,43 @@ def setup_state_save(doc):
     atomic_write(SETUP_STATE_FILE, json.dumps({"targets": doc}).encode())
 
 
+def expire_setup_without_key(now_ms=None):
+    """An open setup request that times out with no key post-back fails out loud.
+
+    sent, relayed, and awaiting_confirm past expires_ms, with no posted key, become failed
+    reason no_key. A review row already has the key, so it is left for the owner. One log line
+    per target, written with the state so a later read does not log it again.
+    """
+    now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    with _SETUP_STATE_LOCK:
+        doc = setup_state_load()
+        changed = False
+        for target, row in doc.items():
+            if not isinstance(row, dict):
+                continue
+            if row.get("state") not in ("sent", "relayed", "awaiting_confirm"):
+                continue
+            if row.get("pending_pub"):
+                continue
+            exp = row.get("expires_ms")
+            # expires_ms 0 is a retired request (it already shows as expired). A real timeout is a past stamp.
+            if type(exp) is not int or exp <= 0 or exp >= now_ms:
+                continue
+            row["state"] = "failed"
+            row["reason"] = "no_key"
+            changed = True
+            log("setup timeout without key post-back target=%s rid=%s" % (target, row.get("rid")))
+        if changed:
+            setup_state_save(doc)
+    return changed
+
+
 def setup_state_public(now_ms=None):
     """Display state per target for the admin page. sent past its TTL with no ack shows expired.
-    relayed + path=first is shown as awaiting_confirm (no-paste design; inferred, not a new ack)."""
+    relayed + path=first is shown as awaiting_confirm (no-paste design; inferred, not a new ack).
+    A timeout with no key post-back is failed, reason no_key, and is logged."""
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    expire_setup_without_key(now_ms)
     out = {}
     for target, row in setup_state_load().items():
         st = row["state"]

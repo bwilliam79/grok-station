@@ -12,16 +12,16 @@ import shutil
 import tempfile
 import unittest
 
-from chrome_harness import find_chrome, run_chrome
+from chrome_harness import find_chrome, quiet_css, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSS_PATH = os.path.join(ROOT, "admin", "web", "admin.css")
 CSS = open(CSS_PATH, encoding="utf-8").read()
 
 PAGE = """<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<link rel="stylesheet" href="{css}">
-<style>html,body{{overflow:auto;width:1280px}} #blist{{width:1100px}}</style>
+<html><head><meta charset="utf-8"><link rel=icon href="data:,">
+<style>__CSS__
+html,body{overflow:auto;width:1280px} #blist{width:1100px}</style>
 </head><body>
 <div id="blist">
   <div class="botrow"><div class="avwrap"></div>
@@ -46,18 +46,18 @@ PAGE = """<!DOCTYPE html>
     <div class="cfg"><button class="btn sm" type="button">Configure</button></div></div>
 </div>
 <script>
-function box(el) {{ const r = el.getBoundingClientRect(); return {{l: r.left, r: r.right}}; }}
-const rows = [...document.querySelectorAll("#blist .botrow")].map(row => {{
+function box(el) { const r = el.getBoundingClientRect(); return {l: r.left, r: r.right}; }
+const rows = [...document.querySelectorAll("#blist .botrow")].map(row => {
   const ww = row.querySelector(":scope > .ww");
   const upd = row.querySelector(":scope > .updcol");
   const wake = ww.querySelector(".tog") || ww.querySelector(".wwtrain");
   const phrase = ww.querySelector(".phrase");
-  return {{
+  return {
     ww: box(ww), wake: box(wake),
     phrase: phrase ? box(phrase) : null,
     upd: box(upd), us: box(upd.querySelector(".tog"))
-  }};
-}});
+  };
+});
 document.documentElement.setAttribute("data-measure", JSON.stringify(rows));
 </script>
 </body></html>
@@ -72,12 +72,11 @@ def measure_rows():
     try:
         html = os.path.join(tmp, "row.html")
         with open(html, "w", encoding="utf-8") as fh:
-            fh.write(PAGE.format(css=CSS_PATH))
-        udd = os.path.join(tmp, "chrome")
+            fh.write(PAGE.replace("__CSS__", quiet_css(CSS)))
         text = run_chrome(
             [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-             "--disable-dev-shm-usage", "--user-data-dir=" + udd, "--window-size=1280,900",
-             "--virtual-time-budget=1500", "--dump-dom", "file://" + html])
+             "--disable-dev-shm-usage", "--disable-background-networking",
+             "--window-size=1280,900", "--dump-dom", "file://" + html])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r'data-measure="([^"]+)"', text)

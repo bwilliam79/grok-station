@@ -327,7 +327,7 @@ class StationBand(unittest.TestCase):
         first = [r["id"] for r in gs.LAST_UPDATE_BAND["tiles"]]
         self.assertNotEqual(gs.feed_identity(now + 21), ident)  # a repaint is due at 20 s
         rows = gs.idle_band_rows(now + 21)
-        self.assertEqual(rows[0]["id"], "n")
+        self.assertEqual(rows[0]["id"], "u0")
         self.assertNotEqual([r["id"] for r in rows], first)
 
     def test_night_and_pause(self):

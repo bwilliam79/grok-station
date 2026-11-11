@@ -2435,6 +2435,7 @@ def state_event(j):
     card = clean_card(j.get("card")) if has_card else None
     timers = clean_timers(j.get("timers")) if "timers" in j else None
     speech = speech_progress(j.get("speech"))
+    focus = j.get("focus") if j.get("focus") in ("sports", "recipe", "calendar", "home") else None
     has_caption = "recipe_caption" in j
     caption, caption_s = "", 0
     if has_caption:
@@ -2442,7 +2443,7 @@ def state_event(j):
         raw_s = j.get("recipe_caption_s")
         if not isinstance(raw_s, bool) and isinstance(raw_s, (int, float)) and raw_s > 0:
             caption_s = float(raw_s)
-    if not has_state and card is None and timers is None and speech is None and not has_caption:
+    if not has_state and card is None and timers is None and speech is None and not has_caption and not focus:
         raise ValueError("nothing to apply")
     heard = " ".join(str(j.get("heard") or "").split())[:MAX_HEARD]
     text = str(j.get("text") or "").strip()[:MAX_TEXT]
@@ -2452,7 +2453,8 @@ def state_event(j):
     hold_s = 4 if (not isinstance(raw_hold, bool) and isinstance(raw_hold, (int, float)) and raw_hold == 4) else None
     return {"state": raw_state if has_state else None, "heard": heard, "text": text, "done": bool(j.get("done")),
             "who": who, "has_card": has_card, "card": card, "has_timers": timers is not None, "timers": timers,
-            "speech": speech, "hold_s": hold_s, "has_caption": has_caption, "caption": caption, "caption_s": caption_s}
+            "speech": speech, "hold_s": hold_s, "has_caption": has_caption, "caption": caption, "caption_s": caption_s,
+            "focus": focus}
 
 
 def speech_progress(raw):
@@ -3109,7 +3111,7 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     LAST_ENROLL_HINT = LAST_ENROLL_PROGRESS = LAST_ENROLL_HEADLINE = None
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
-    top = L(70) + int(L.extra_y * 0.3)
+    top = idle_clock_top(L)
     clock_px = L(300)  # design.md §13 refresh: idle clock 300 px @1080
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
     x = L.m - L(8)
@@ -3437,15 +3439,15 @@ def update_rotation_step(now, paused=False):
 
 
 def idle_band_rows(now, night=False, paused=False):
-    """Two band slots. Needs you rotates in slot 1; slot 2 rotates the other updates and home cards.
+    """One update card. Needs you come first, then the other updates and home cards, one at a time.
 
-    Night hides the row, Needs you included. Home cards use the same step, so the two decks do not drift.
+    Night hides the card, Needs you included. The step is the only rotation. There is no count.
     """
     global LAST_UPDATE_BAND
     updates_night_edge(night)
     homes = [dict(h, kind="home") for h in deck().home_row(now, n=cards.MAX_CARDS, stable=True)]
     needs, rest = updates_feed().ordered(now)
-    if night and (needs or rest):
+    if night and (needs or rest or homes):
         LAST_UPDATE_BAND = {"visible": False, "tiles": [], "marker": ""}
         return []
     if not needs and not rest and not homes:
@@ -3454,9 +3456,9 @@ def idle_band_rows(now, night=False, paused=False):
     step = update_rotation_step(now, paused)
     need_rows = [dict(r, kind="update") for r in needs]
     others = [dict(r, kind="update") for r in rest] + homes
-    tiles = cards.update_slots(need_rows, others, step)
-    LAST_UPDATE_BAND = {"visible": bool(tiles), "paused": bool(paused), "tiles": tiles,
-                        "marker": cards.update_marker(needs, others, step, paused=paused)}
+    item = cards.one_update(need_rows, others, step)
+    tiles = [item] if item else []
+    LAST_UPDATE_BAND = {"visible": bool(tiles), "paused": False, "tiles": tiles, "marker": ""}
     return tiles
 
 
@@ -3695,6 +3697,34 @@ def has_updates(now):
     return bool(needs or rest)
 
 
+def focus_content_tile(kind, now=None):
+    """Bring the named content tile forward. False when that card is not on the station."""
+    now = time.time() if now is None else now
+    if kind == "home":
+        homes = deck().home_row(now, n=cards.MAX_CARDS, stable=True)
+        if not homes:
+            return False
+        needs, rest = updates_feed().ordered(now)
+        rows = [dict(r, kind="update") for r in needs]
+        rows += [dict(r, kind="update") for r in rest]
+        rows += [dict(h, kind="home") for h in homes]
+        for i, row in enumerate(rows):
+            if row.get("kind") == "home":
+                UPD_ROT["step"] = i
+                UPD_ROT["at"] = now
+                return True
+        return False
+    if kind not in ("sports", "recipe", "calendar"):
+        return False
+    page = deck().find_type(kind, now)
+    if not page:
+        return False
+    TILE.clear()
+    TILE.update({"bot": page["bot"], "id": page["id"], "card": page["card"],
+                 "expires": deck().expiry(page["bot"], page["id"])}, shown=now)
+    return True
+
+
 def draw_next_up(surf, L, now, talking=False):
     """Home cards and bot updates in the lower band. Empty: nothing, so the idle clock stays where it is."""
     wall = time.time()
@@ -3724,35 +3754,136 @@ def _band_signature(rows):
     return tuple((r.get("kind"), r.get("id"), r.get("bot"), r.get("type")) for r in rows)
 
 
+LAST_UPDATE_LINES = []
+
+
+def update_full_lines(kind, text, width, max_h, start, floor):
+    """Wrap `text` so the joined lines are the whole string. Shrink until the block fits max_h."""
+    text = " ".join(str(text or "").split())
+    floor = max(8, int(floor))
+    px = max(floor, int(start))
+    width = max(8, int(width))
+    max_h = max(1, int(max_h))
+    while True:
+        f = font(kind, px)
+        lines = wrap(f, text, width) if text else []
+        step = max(1, f.get_height())
+        fits = (not text) or (lines and step * len(lines) <= max_h and all(f.size(ln)[0] <= width for ln in lines))
+        if fits and " ".join(lines) == text:
+            return f, lines, step
+        if px <= floor:
+            return f, lines, step
+        nxt = px - max(1, px // 10)
+        px = floor if nxt < floor else nxt
+
+
+def _paint_update_card(surf, L, rect, row, now):
+    """One large update card: the bot's avatar and name, and the full line and detail."""
+    global LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS, LAST_UPDATE_LINES
+    t = row["type"]
+    needs = t == "needs_you"
+    aged = bool(row.get("aged"))
+    pygame.draw.rect(surf, BG if aged else SURFACE, rect, border_radius=zpx(L, 37))
+    edge = AMBER if needs else RULE
+    pygame.draw.rect(surf, edge, rect, width=max(1, zpx(L, 3)), border_radius=zpx(L, 37))
+    inset = zpx(L, 36)
+    d = max(zpx(L, 96), min(zpx(L, 220), rect.h // 3))
+    ring_w = max(2, zpx(L, 6 if needs else 4))
+    photo_d = max(8, d - 2 * ring_w)
+    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(d * 0.46)))
+    if aged:
+        avatar.set_alpha(153)
+    ax, ay = rect.left + inset, rect.top + inset
+    cx, cy = ax + d // 2, ay + d // 2
+    surf.blit(avatar, (cx - photo_d // 2, cy - photo_d // 2))
+    ring = AMBER if needs else (MUTED if aged else RULE2)
+    pygame.draw.circle(surf, ring, (cx, cy), max(1, d // 2 - ring_w // 2), max(1, ring_w))
+    LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
+                                "rect": pygame.Rect(ax, ay, d, d)})
+    tx = ax + d + zpx(L, 28)
+    text_w = max(40, rect.right - inset - tx)
+    name = (row.get("bot") or "?").capitalize()
+    age = update_age(now - row["time"]) if isinstance(row.get("time"), (int, float)) else ""
+    name_px = zpx(L, 48)
+    name_img = font("display", name_px).render(name, True, MUTED if aged else TEXT)
+    age_img = font("body", name_px).render((" \u00b7 " + age) if age else "", True, MUTED)
+    if name_img.get_width() + age_img.get_width() > text_w:
+        name_img = font("display", name_px).render(
+            ellipsize(font("display", name_px), name, max(8, text_w - age_img.get_width())), True, MUTED if aged else TEXT)
+    if needs:
+        pill_fill, pill_ink, pill_edge, dashed = AMBER, AMBER_INK, None, False
+        word, icon = "NEEDS YOU", _bang_icon
+    elif t == "heads_up":
+        pill_fill, pill_ink, pill_edge, dashed = None, AMBER, AMBER, False
+        word, icon = UPDATE_PILL[t], _bell_icon
+    elif t == "working_on":
+        pill_fill, pill_ink, pill_edge, dashed = None, MUTED, MUTED, True
+        word, icon = UPDATE_PILL[t], _clock_icon
+    else:
+        ink = MUTED if aged else LISTENING
+        pill_fill, pill_ink, pill_edge, dashed = None, ink, ink, False
+        word, icon = UPDATE_PILL.get(t, "Update"), _check_icon
+    pill_px = zpx(L, 28)
+    surf.blit(name_img, (tx, ay))
+    surf.blit(age_img, (tx + name_img.get_width(), ay + name_img.get_height() - age_img.get_height()))
+    _update_pill(surf, L, word, icon, tx, ay + name_img.get_height() + zpx(L, 8), text_w,
+                 pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
+    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": 1.0})
+    body_top = max(ay + d, ay + name_img.get_height() + zpx(L, 80)) + zpx(L, 16)
+    body_h = max(zpx(L, 40), rect.bottom - inset - body_top)
+    line = " ".join(str(row.get("line") or "").split())
+    detail = " ".join(str(row.get("detail") or "").split())
+    if needs:
+        detail = needs_you_detail(detail)
+    line_h = int(body_h * (0.62 if detail else 1))
+    kind = "display" if needs else "body"
+    color = MUTED if aged else TEXT
+    lf, lines, step = update_full_lines(kind, line, rect.w - 2 * inset, line_h, zpx(L, 64), zpx(L, 28))
+    ly = body_top
+    shown = []
+    for text in lines:
+        img = lf.render(text, True, color)
+        if ly + img.get_height() <= rect.bottom - inset:
+            surf.blit(img, (rect.left + inset, ly))
+        shown.append(text)
+        ly += step
+    dlines = []
+    if detail:
+        df, dlines, dstep = update_full_lines("body", detail, rect.w - 2 * inset, max(zpx(L, 24), rect.bottom - inset - ly),
+                                              zpx(L, 36), zpx(L, 22))
+        for text in dlines:
+            img = df.render(text, True, MUTED)
+            if ly + img.get_height() <= rect.bottom - inset:
+                surf.blit(img, (rect.left + inset, ly))
+            ly += dstep
+    LAST_UPDATE_LINES = {"line": shown, "detail": dlines, "text": " ".join(shown), "detail_text": " ".join(dlines)}
+
+
 def _render_band_layer(surf, L, rows, now, layout):
-    """Opaque layer of the marker plus the two slots. Painted at absolute coordinates, then cropped."""
-    marker = layout["marker"]
-    tiles = layout["rects"]
-    box = marker.union(tiles[0]).union(tiles[1])
+    """Opaque layer of the one update card. Painted at absolute coordinates, then cropped."""
+    rect = layout["rect"]
+    box = pygame.Rect(rect)
     canvas = pygame.Surface((surf.get_width(), surf.get_height()))
     canvas.fill(BG)
-    for row, rect in zip(rows, tiles):
-        if row.get("kind") == "update":
-            _paint_update_tile(canvas, L, rect, row, now, layout.get("scale", 1.0))
-        else:
-            _paint_home_tile(canvas, L, rect, row, layout.get("scale", 1.0))
-    mark = (LAST_UPDATE_BAND or {}).get("marker")
-    if mark:
-        m = _line(canvas, "body", L(30), mark, MUTED, marker.w)
-        canvas.blit(m, (marker.right - m.get_width(), marker.top + max(0, (marker.h - m.get_height()) // 2)))
+    row = rows[0]
+    if row.get("kind") == "update":
+        _paint_update_card(canvas, L, rect, row, now)
+    else:
+        _paint_home_tile(canvas, L, rect, row, 1.0)
     layer = pygame.Surface((box.w, box.h))
     layer.blit(canvas, (0, 0), box)
     return layer, box
 
 
 def _draw_updates_band(surf, L, rows, now):
-    """Two fixed slots. A changed set cross-fades in place, 8 steps, unless motion is reduced."""
+    """One card, the same rect as the wake-word panel and the training panel. No count."""
     global LAST_BAND_GEOM, LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS, LAST_BAND_FADE, _BAND_PREV
     LAST_UPDATE_AVATARS = []
     LAST_UPDATE_PILLS = []
-    layout = updates_band_layout(L)
+    rect = bottom_panel_rect(L)
+    layout = {"rect": rect, "rects": (rect,), "marker": None, "scale": 1.0}
     LAST_BAND_GEOM = layout
-    if not rows or layout is None:
+    if not rows:
         _BAND_PREV = None
         LAST_BAND_FADE = {"steps": 0, "alphas": []}
         return
@@ -4678,12 +4809,10 @@ def draw_tile_badge(surf, L, msg, state, t=1.0):
     return LAST_BADGE_RECT.right
 
 
-def zone_rect(L, top_of):
-    """The bottom zone: under the clock, date and weather (top_of is their lowest y) and above the safe area,
-    or the timer strip when it shows (content_limit). Full width inside the side margins."""
-    top = int(top_of) + L(80)
-    bottom = content_limit(L)
-    return pygame.Rect(L.m, top, L.w - 2 * L.m, max(L(120), bottom - top))
+def zone_rect(L, top_of=None):
+    """The wake-word conversation panel. Same rect as the update card and the training panel."""
+    del top_of
+    return bottom_panel_rect(L)
 
 
 def ZONE_PAD(L):
@@ -4849,12 +4978,9 @@ def draw_zone(surf, L, now, wx, colon_on=True, zone=None, t=1.0, tele=None, now_
     zone = zone or {}
     busy = bool(zone.get("tile") or zone.get("voice"))
     LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
-    if zone.get("voice") and not zone.get("tile") and has_updates(time.time()):
-        # SPEC rev3/rev4 (u-04): while a bot talks the updates row stays up, paused, and the reply is one
-        # line under it instead of the full bottom zone.
-        draw_idle(surf, L, now, wx, colon_on, home_band=True, talking=True)
-        draw_reply_line(surf, L, zone["voice"], zone.get("state"))
-        return
+    if zone.get("voice") and not zone.get("tile"):
+        # The conversation replaces the update card. Hold the rotation step, with no Paused label.
+        update_rotation_step(time.time(), paused=True)
     top_of = draw_idle(surf, L, now, wx, colon_on, home_band=not busy)
     if not busy:
         return
@@ -5163,9 +5289,76 @@ _SOLID_RING = {"prompt": MUTED, "error": MUTED, "custom": MUTED}
 _ENROLL_SQUARES = 5
 
 
+# One size for the update card, the wake-word conversation panel, and the training panel.
+# Design pixels at 2560x1706, scaled by zpx. Do not copy these numbers into another rect.
+PANEL_X = 128
+PANEL_W = 2304
+PANEL_GAP = 12
+
+
+def idle_block_offsets(L):
+    """(top, bottom) of the time and weather block, relative to draw_idle's clock top.
+
+    top is at or above 0 when the weather rises over the clock. The numbers match draw_idle
+    and draw_weather, including a weather label, so the block does not jump when weather arrives.
+    """
+    clock_px = L(300)
+    cf = font("display", clock_px)
+    base = int(cf.get_ascent() * 0.98)
+    clock_top = base - cf.get_ascent()
+    clock_bottom = clock_top + cf.get_height()
+    af = font("display", L(84))
+    ampm_bottom = base - af.get_ascent() + af.get_height()
+    date_bottom = base + L(40) + font("body", L(60)).get_height()
+    tb = base - L(80)
+    temp_f = font("display", L(180))
+    temp_top = tb - temp_f.get_ascent()
+    temp_bottom = temp_top + temp_f.get_height()
+    icon_top = tb - L(140)
+    icon_bottom = icon_top + L(150)
+    label_top = tb + L(36)
+    hl_bottom = label_top + font("body", L(56)).get_height() + L(4) + font("body", L(48)).get_height()
+    weather_top = min(temp_top, icon_top)
+    weather_bottom = max(temp_bottom, icon_bottom, hl_bottom)
+    return min(clock_top, weather_top), max(clock_bottom, ampm_bottom, date_bottom, weather_bottom)
+
+
+def idle_clock_top(L):
+    """Y of the idle clock's top variable. The time and weather block sits as high as the status icons allow."""
+    top_off, _bottom_off = idle_block_offsets(L)
+    icon_bottom = max(4, int(round(8 * L.s))) + status_icon_px(L.s)
+    pad = max(2, int(round(4 * L.s)))
+    return max(0, icon_bottom + pad - top_off)
+
+
+def bottom_panel_rect(L):
+    """The shared bottom panel.
+
+    Its bottom leaves the same margin the time and weather block leaves at the top.
+    A timer strip lifts the bottom to content_limit and the panel gets shorter.
+    """
+    global LAST_PANEL_RECT
+    clock_top = idle_clock_top(L)
+    top_off, bot_off = idle_block_offsets(L)
+    block_top = clock_top + top_off
+    block_bottom = clock_top + bot_off
+    panel_top = block_bottom + zpx(L, PANEL_GAP)
+    panel_bottom = L.h - block_top
+    if TIMER_CHIPS:
+        panel_bottom = min(panel_bottom, content_limit(L))
+    x, w = zpx(L, PANEL_X), zpx(L, PANEL_W)
+    if x + w > L.w - zpx(L, 16):
+        x, w = L.m, max(1, L.w - 2 * L.m)
+    if panel_top > panel_bottom - 1:
+        panel_top = max(0, panel_bottom - max(1, zpx(L, 120)))
+    rect = pygame.Rect(int(x), int(panel_top), int(w), max(1, int(panel_bottom) - int(panel_top)))
+    LAST_PANEL_RECT = rect
+    return rect
+
+
 def clock_date_bottom(L):
     """Bottom of the idle clock and date. Same y as draw_idle when there is no weather."""
-    top = L(70) + int(L.extra_y * 0.3)
+    top = idle_clock_top(L)
     cf = font("display", L(300))
     base = top + int(cf.get_ascent() * 0.98)
     clock_bottom = base - cf.get_ascent() + cf.get_height()
@@ -5176,24 +5369,8 @@ def clock_date_bottom(L):
 
 
 def enroll_tile_rect(L):
-    """Bottom-zone training tile. It stays under the clock and date and shrinks if that gap is short.
-
-    Inner offsets stay tile-relative when timers push the cap up.
-    """
-    x, y, w, h = zpx(L, 128), zpx(L, 800), zpx(L, 2304), zpx(L, 794)
-    if x + w > L.w - zpx(L, 16):
-        x, w = L.m, max(1, L.w - 2 * L.m)
-    cap = L.h - L(40)
-    if TIMER_CHIPS:
-        cap = min(cap, content_limit(L))
-    floor = clock_date_bottom(L)
-    # Design y when it is already clear. Otherwise sit as low as the date allows, then shrink.
-    y = max(int(y), int(floor))
-    if y + h > cap:
-        y = max(int(floor), cap - h)
-    if y + h > cap:
-        h = max(1, cap - y)
-    return pygame.Rect(int(x), int(y), int(w), int(h))
+    """Training panel. The same rect as the update card and the wake-word conversation panel."""
+    return bottom_panel_rect(L)
 
 
 def _fit_px_step(kind, text, width, start, floor, step):
@@ -6305,6 +6482,10 @@ def main():
         if setup["doc"] and ev.type in (STATE, SHOW, FEED):
             continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
+            if getattr(ev, "focus", None) and not ev.state:
+                focus_content_tile(ev.focus)
+                paint()
+                continue
             if getattr(ev, "has_caption", False):
                 apply_recipe_caption(getattr(ev, "caption", ""), getattr(ev, "caption_s", 0))
             if getattr(ev, "speech", None) is not None and tele is not None:

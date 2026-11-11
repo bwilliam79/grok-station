@@ -173,7 +173,8 @@ class BandRev2(unittest.TestCase):
         self.assertEqual(cards.update_marker(many, [], 0), "Needs you 1\u20132 of 3")
         self.assertEqual(cards.update_marker([], others[:1], 0), "")
         self.assertEqual(cards.update_marker(needs, [], 0), "Needs you")
-        self.assertEqual(cards.update_marker(needs, others, 2, paused=True), "Paused \u00b7 Needs you \u00b7 others 3 of 6")
+        self.assertEqual(cards.update_marker(needs, others, 2, paused=True), "Needs you \u00b7 others 3 of 6")
+        self.assertNotIn("Paused", cards.update_marker(needs, others, 2, paused=True))
 
     def test_cards_are_the_rev6_band_height(self):
         L = gs.Layout(2560, 1706)
@@ -194,20 +195,28 @@ class TalkingKeepsTheRowPaused(unittest.TestCase):
     def tearDown(self):
         gs.UPDATES = self.old
 
-    def test_row_stays_visible_and_paused_while_a_bot_talks(self):
+    def test_conversation_replaces_the_update_card_and_rotation_resumes(self):
         now = time.time()
         for i in range(5):
             gs.apply_update(dict(self.uf.upd("u%d" % i, "done", "Line %d" % i, now - i), bot="otto"), gs.UPDATES)
+        L = gs.Layout(2560, 1706)
+        surf = pygame.Surface((2560, 1706))
+        gs.draw_idle(surf, L, time.localtime(), _Wx(), home_band=True)
+        self.assertTrue(gs.LAST_UPDATE_BAND["visible"])
+        self.assertEqual(gs.LAST_UPDATE_BAND["marker"], "")
+        self.assertNotIn("Paused", gs.LAST_UPDATE_BAND["marker"])
+        held = gs.UPD_ROT["step"]
         zone = gs.zone_view({"voice": True, "state": "speaking", "from": "Juniper", "text": "Your list has 14 items."},
                             None)
-        surf = pygame.Surface((2560, 1706))
-        gs.draw_zone(surf, gs.Layout(2560, 1706), time.localtime(), gs.WX if hasattr(gs, "WX") else _Wx(), zone=zone)
+        gs.draw_zone(surf, L, time.localtime(), _Wx(), zone=zone)
+        self.assertIsNotNone(gs.LAST_ZONE_RECT)
+        self.assertEqual(gs.LAST_ZONE_RECT, gs.bottom_panel_rect(L))
+        self.assertIsNone(gs.LAST_REPLY_LINE)
+        self.assertEqual(gs.UPD_ROT["step"], held)
+        self.assertEqual(gs.update_rotation_step(now + 60, paused=True), held)
+        gs.draw_idle(surf, L, time.localtime(), _Wx(), home_band=True)
         self.assertTrue(gs.LAST_UPDATE_BAND["visible"])
-        self.assertTrue(gs.LAST_UPDATE_BAND["paused"])
-        self.assertTrue(gs.LAST_UPDATE_BAND["marker"].startswith("Paused \u00b7 "))
-        self.assertEqual(gs.LAST_REPLY_LINE["who"], "Juniper")
-        step = gs.UPD_ROT["step"]
-        self.assertEqual(gs.update_rotation_step(now + 60, paused=True), step)
+        self.assertEqual(gs.LAST_UPDATE_BAND["marker"], "")
 
     def test_voice_pause_op_holds_for_10_minutes(self):
         f = cards.UpdateFeed()
