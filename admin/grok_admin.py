@@ -4025,6 +4025,15 @@ def expect_fp_clean(raw):
     return v if re.fullmatch(r"[0-9a-f]{16}|-", v) else None
 
 
+FP_NOT_THE_KEY = "The fingerprint on this page is not the key waiting to be accepted. Reload and compare it again."
+
+
+def expect_new_fp_clean(raw):
+    """0.13.40: the fingerprint the Accept panel showed. 16 hex only. None when missing, "-", or malformed."""
+    v = expect_fp_clean(raw)
+    return None if not v or v == "-" else v
+
+
 def setup_check_body(j, allowed):
     """None when j is an object whose keys are all allowed. Rejects unknown fields."""
     if not isinstance(j, dict) or set(j) - set(allowed):
@@ -5413,20 +5422,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def bots_setup_pair(self, j):
         """Accept or reject the posted key. Same admin session and CSRF gate as the other bot writes."""
-        if setup_check_body(j, ("slug", "decision", "password", "expect_old_fp")):
+        if setup_check_body(j, ("slug", "decision", "password", "expect_old_fp", "expect_new_fp")):
             return self.send(400, {"error": "bad request"})
         slug, decision = j.get("slug"), j.get("decision")
         if not slug_ok(slug) or decision not in ("accept", "reject"):
             return self.send(400, {"error": "bad request"})
         expect = expect_fp_clean(j.get("expect_old_fp"))
+        shown = expect_new_fp_clean(j.get("expect_new_fp"))
         if decision == "accept" and expect is None:
             return self.send(400, {"error": "bad request"})  # GS1337-03: Accept names the key it replaces
+        if decision == "accept" and shown is None:
+            return self.send(409, {"error": FP_NOT_THE_KEY})  # Nix N1: Accept names the fingerprint it showed
         # Accept pins the posted key. Same password gate as bots_key_put. Reject only needs the session.
         if decision == "accept" and not self.need_password(j):
             return
         rbody = {"actor": RELAY_ACTOR, "slug": slug, "decision": decision}
         if decision == "accept":
             rbody["expect_old_fp"] = expect
+            rbody["expect_new_fp"] = shown
         got = relay_call("POST", "/admin/bots/setup-pair", rbody, timeout=15)
         if not got:
             return self.send(422, {"error": "not configured"})

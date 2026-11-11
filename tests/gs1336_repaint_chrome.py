@@ -8,11 +8,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 
+from chrome_harness import find_chrome, run_chrome
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 
 
 def chrome(scenario, root=ROOT, budget=4000):
@@ -50,9 +51,8 @@ const tick = ms => new Promise(r => setTimeout(r, ms || 0));
         inner = os.path.join(d, "inner.html")
         with open(inner, "w", encoding="utf-8") as f:
             f.write(page)
-        out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
-                              "--window-size=1200,900", "--virtual-time-budget=%d" % budget, "--dump-dom", "file://" + inner],
-                             capture_output=True, text=True, timeout=120).stdout
+        out = run_chrome([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+                          "--window-size=1200,900", "--virtual-time-budget=%d" % budget, "--dump-dom", "file://" + inner])
     finally:
         shutil.rmtree(d, ignore_errors=True)
     m = re.search(r'<pre id="out">(.*?)</pre>', out, re.S)

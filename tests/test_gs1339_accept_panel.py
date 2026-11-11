@@ -14,7 +14,7 @@ from test_gs1311_bots_merge import FAKE_DOM, _fn, _icons  # noqa: E402
 
 FP = "0123456789abcdef"
 GROUPED = "0123 4567 89ab cdef"
-NO_FP = "The station has no fingerprint for this key yet. Reload, or press Set up again."
+NO_FP = "No fingerprint yet"
 def _names():
     # setupRelayFields is the shared helper added with the fix. The old list inlined the fields
     # (and skipped them on a pending teammate), so the before run must still load.

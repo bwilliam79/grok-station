@@ -87,7 +87,7 @@ A key exists on only one machine. Configure has no key-location choice (0.13.37 
 
 If `bots/key-migration.json` is later damaged, or the check fails when the relay starts, the station distrusts every bot key until the file reads again, logs "KEY CHECK FAILED CLOSED" and every Bots row says "Replies refused for all bots: the station's key check file is damaged. Setting up again won't fix it." The page has no way to restore that file. Restore the file from a backup, or delete it so the next relay start runs the check again from what the station holds.
 
-**Stale pages (0.13.37).** Replace key and Accept key send the fingerprint of the key the page showed as paired (or none). If another tab or a Set up changed the pin since, the station refuses with "The paired key changed since this page loaded" and nothing is pinned.
+**Stale pages (0.13.37).** Replace key and Accept key send the fingerprint of the key the page showed as paired (or none). If another tab or a Set up changed the pin since, the station refuses with "The paired key changed since this page loaded" and nothing is pinned. Accept also sends the fingerprint it displayed for the key waiting to be accepted. If that is missing or no longer the pending key, the station refuses with "The fingerprint on this page is not the key waiting to be accepted. Reload and compare it again." Reject is unchanged.
 
 The station public key (standard base64, 32 bytes) is on the Bots page, with a copy button. The bot public key must be standard base64 of 32 bytes.
 

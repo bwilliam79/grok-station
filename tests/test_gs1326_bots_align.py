@@ -9,9 +9,10 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import unittest
+
+from chrome_harness import find_chrome, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSS_PATH = os.path.join(ROOT, "admin", "web", "admin.css")
@@ -64,7 +65,7 @@ document.documentElement.setAttribute("data-measure", JSON.stringify(rows));
 
 
 def measure_rows():
-    chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable")
+    chrome = find_chrome()
     if not chrome:
         raise unittest.SkipTest("google-chrome is not installed")
     tmp = tempfile.mkdtemp(prefix="gs-bots-align-")
@@ -72,16 +73,11 @@ def measure_rows():
         html = os.path.join(tmp, "row.html")
         with open(html, "w", encoding="utf-8") as fh:
             fh.write(PAGE.format(css=CSS_PATH))
-        out = os.path.join(tmp, "dom.html")
         udd = os.path.join(tmp, "chrome")
-        with open(out, "w", encoding="utf-8") as fh:
-            subprocess.run(
-                ["timeout", "12", chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-                 "--disable-dev-shm-usage", "--user-data-dir=" + udd, "--window-size=1280,900",
-                 "--virtual-time-budget=1500", "--dump-dom", "file://" + html],
-                stdout=fh, stderr=subprocess.DEVNULL, check=False)
-        with open(out, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
+        text = run_chrome(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--disable-dev-shm-usage", "--user-data-dir=" + udd, "--window-size=1280,900",
+             "--virtual-time-budget=1500", "--dump-dom", "file://" + html])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r'data-measure="([^"]+)"', text)

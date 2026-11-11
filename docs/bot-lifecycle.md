@@ -104,7 +104,7 @@ expired), merged onto a Sent row by `grok_admin.py:setup_public`.
 | sent, past SETUP_RELAY_TTL_S (900 s), no ack | "No reply from {main}." | Send again allowed | n/a |
 | relayed (held path) | "{main} passed it to {bot} · waiting for {bot} to finish" | nothing | target installs from held literals |
 | awaiting_confirm (relayed, first path) | "… waiting for {bot} to confirm" | nothing | target's owner compares address and fingerprint |
-| review | "Action needed · {bot}'s key is waiting for you to accept", an **Accept key** button that focuses Accept in a panel headed "Accept the key from {bot}" | Accept needs the admin password (`bots_setup_pair`); a key that differs from the pinned one asks "Replace {bot}'s key?" first | fingerprint shown for a listed bot and for a pending teammate; Accept stays off, and the relay refuses it, when the fingerprint is missing or not 16 hex (Reject still works); a changed key shows old and new |
+| review | "Action needed · {bot}'s key is waiting for you to accept", an **Accept key** button that focuses Accept in a panel headed "Accept the key from {bot}" | Accept needs the admin password (`bots_setup_pair`); a key that differs from the pinned one asks "Replace {bot}'s key?" first | fingerprint shown for a listed bot and for a pending teammate; when it is not 16 hex the help line is "{bot}'s key arrived without a fingerprint, so Accept key is off. Reload, or press Set up again.", the fingerprint line is "No fingerprint yet" (ordinary text, tabindex -1, the focus target), and Accept stays focusable with aria-disabled and sends no request (Reject still works); a changed key shows old and new |
 | accepted | "Paired", paste webhook URL and key | the paste saves the webhook and runs the Test | n/a |
 | accepted, Test running | "Testing · waiting for {bot}'s reply, up to 3:00" | nothing | Test waits TEST_LIMIT_S (180 s, the same as REPLY_WAIT) |
 | accepted, Test passed | "Connected" | `bots_setup_connected` needs the passing `test_id` (the relay's Test state "ok"); otherwise 409 | n/a |
@@ -183,6 +183,13 @@ and exits 1 instead of an empty would_mark.
 `expect_old_fp`, the 16-hex fingerprint of the key the page showed as pinned, or `-` for none. When it no longer
 names the pinned key the relay answers 409 `KEY_CHANGED` and pins nothing [S].
 
+**Stale Accept (0.13.40, Nix N1).** Accept also sends `expect_new_fp`, the fingerprint the panel displayed
+(`app.js:decideSetupPair`). The admin forwards it (`grok_admin.py:bots_setup_pair`). `relay.py:setup_pair_decide`
+refuses Accept unless that value equals `_pubkey_fp(pending_pub)` of the stored pending key, computed under
+`_SETUP_STATE_LOCK`. A missing or different value is refused with "The fingerprint on this page is not the key
+waiting to be accepted. Reload and compare it again." and nothing is pinned. The page shows that reason. Reject
+does not send `expect_new_fp` and is unchanged.
+
 ## Team list from a voice session
 
 Saying "update my team list" (or the `get_bot_list` tool) starts `relay.py:voice_ask_bot_list`. That runs
@@ -251,6 +258,13 @@ enforces the order through invariant 1.
 `sh tools/release-check.sh` on the exact commit you will push: ritual checks (`tools/check-version.py`,
 `tools/check-deploy-pins.py` with no pending re-pin), the installed-tree import checks, and the scenarios in
 `tests/test_lifecycle_scenarios.py`. It fails when a scenario could not run. No push to `main` unless it passes.
+Headless Chrome tests (`--dump-dom` / `--virtual-time-budget`, including `tests/test_gs1337_bots_menu.py` and
+`tests/test_gs1326_bots_align.py`) call `tests/chrome_harness.py:run_chrome`. It waits 20 seconds of wall-clock
+time, then kills the Chrome process group. A timeout raises SkipTest "headless Chrome hung after 20s". Empty
+stdout raises SkipTest "Chrome produced no render". Neither is a pass. `GS_REQUIRE_CHROME=1` turns those skips
+into failures. When `google-chrome`, `google-chrome-stable`, `chromium`, or `chromium-browser` is on PATH,
+`tools/release-check.sh` sets that variable and runs the Chrome tests, so a release machine with working Chrome
+must render them. A machine without Chrome leaves those tests skipped and the release check does not fail for that.
 `sh tools/install-release-hook` chains `tools/release-check-pre-push` into the clone's local pre-push hook, which
 the global hooks dispatcher runs after pii-guard and the leak scan. It gates only pre-push lines whose remote ref
 is `refs/heads/main`: the pushed commit must be the checked-out commit and `tools/release-check.sh` must end with

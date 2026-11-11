@@ -689,12 +689,16 @@ class AdminSide(unittest.TestCase):
         self.assertEqual(call("bots_setup_pair", {"slug": "otto", "decision": "accept"})[0], 400)
         self.reply = (200, {"ok": True, "state": "accepted"})
         pair = lambda: [c[2] for c in self.calls if c[1] == "/admin/bots/setup-pair"][-1]
-        self.assertEqual(call("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": "-"})[0], 200)
+        self.assertEqual(call("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": "-",
+                                                   "expect_new_fp": "0123456789abcdef"})[0], 200)
         self.assertEqual(pair()["expect_old_fp"], "-")
+        self.assertEqual(pair()["expect_new_fp"], "0123456789abcdef")
         self.assertEqual(call("bots_setup_pair", {"slug": "otto", "decision": "reject"})[0], 200)
         self.assertNotIn("expect_old_fp", pair())
+        self.assertNotIn("expect_new_fp", pair())
         self.reply = (409, {"error": "The paired key changed since this page loaded. Reload and compare the fingerprint again."})
-        code, body = call("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": "-"})
+        code, body = call("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": "-",
+                                               "expect_new_fp": "0123456789abcdef"})
         self.assertEqual(code, 409)
         self.assertIn("changed since this page loaded", body["error"])
 
@@ -733,7 +737,7 @@ class ExpectOldFpRelay(_Relay):
         self.pin("jules", a)
         seen = []
 
-        def decide(target, decision, actor="admin", expect_old_fp=None):
+        def decide(target, decision, actor="admin", expect_old_fp=None, expect_new_fp=None):
             seen.append(expect_old_fp)
             if decision == "accept" and not r.expect_old_ok(target, expect_old_fp):
                 return {"ok": False, "changed": True}

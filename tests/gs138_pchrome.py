@@ -8,15 +8,16 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
+
+from chrome_harness import find_chrome, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 with open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8") as _f:
     JS = _f.read()
 with open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8") as _f:
     CSS = _f.read()
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 FNS = ("trapTab", "closePendingSheet", "openPendingSheet")
 
 
@@ -60,9 +61,8 @@ const res = {width: innerWidth};
                 'height:700px"></iframe><pre id=res></pre><script>document.getElementById("f").onload=()=>{setTimeout('
                 '()=>{document.getElementById("res").textContent=document.getElementById("f").contentDocument.'
                 'getElementById("out").textContent;},500)};</script></body>' % width)
-    out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
-                          "--window-size=1400,900", "--virtual-time-budget=4000", "--dump-dom", "file://" + outer],
-                         capture_output=True, text=True, timeout=120).stdout
+    out = run_chrome([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+                      "--window-size=1400,900", "--virtual-time-budget=4000", "--dump-dom", "file://" + outer])
     shutil.rmtree(d, ignore_errors=True)
     m = re.search(r'<pre id="res">(.*?)</pre>', out, re.S)
     assert m and m.group(1).strip(), "no result from Chrome"

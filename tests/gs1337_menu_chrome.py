@@ -5,18 +5,19 @@ Loads the real admin/web/app.js and boots the Bots page against a stubbed admin 
 while a load is still open. A font or picture that never finishes, or a poll that keeps a task
 pending, means the dump never starts. The page below resolves every fetch, does not schedule
 polls, and does not ask for a file or a network picture, so the page goes idle and Chrome exits.
-Same shape as tests/gs1336_repaint_chrome.py: subprocess.run, capture_output, timeout 120.
+Same shape as tests/gs1336_repaint_chrome.py. The Chrome process goes through chrome_harness.run_chrome.
 """
 import html as _html
 import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 
+from chrome_harness import find_chrome, run_chrome
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 
 # A 1x1 gif. Image loads use this instead of /api/portrait or /assets, which are files this page
 # does not have. A file read that never finishes holds virtual time open forever.
@@ -114,17 +115,13 @@ const tick = ms => new Promise(r => setTimeout(r, ms));
         path = os.path.join(d, "page.html")
         with open(path, "w", encoding="utf-8") as f:
             f.write(page)
-        try:
-            out = subprocess.run(
-                [CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                 "--disable-background-networking", "--disable-component-update", "--disable-sync",
-                 "--disable-default-apps", "--disable-extensions", "--no-first-run",
-                 "--allow-file-access-from-files", "--user-data-dir=" + os.path.join(d, "profile"),
-                 "--window-size=1280,900", "--virtual-time-budget=%d" % budget, "--dump-dom",
-                 "file://" + path],
-                capture_output=True, text=True, timeout=120).stdout
-        except subprocess.TimeoutExpired:
-            out = ""
+        out = run_chrome(
+            [CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+             "--disable-background-networking", "--disable-component-update", "--disable-sync",
+             "--disable-default-apps", "--disable-extensions", "--no-first-run",
+             "--allow-file-access-from-files", "--user-data-dir=" + os.path.join(d, "profile"),
+             "--window-size=1280,900", "--virtual-time-budget=%d" % budget, "--dump-dom",
+             "file://" + path])
     finally:
         shutil.rmtree(d, ignore_errors=True)
     m = re.search(r'<pre id="gsprobe">(.*?)</pre>', out, re.S)

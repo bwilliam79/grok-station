@@ -515,7 +515,8 @@ elif SCENARIO == "stale_cloud_request":
                     "view": setup_view("otto"), "pending_pub": "pending_pub" in (r.setup_state_load().get("otto") or {})}
     out["accept"] = r.setup_pair_decide("otto", "accept")
     out["accept_admin"] = admin("bots_setup_pair", {"slug": "otto", "decision": "accept",
-                                                  "expect_old_fp": r.botreply.key_fingerprint(KEY).replace(" ", "")})[0]
+                                                  "expect_old_fp": r.botreply.key_fingerprint(KEY).replace(" ", ""),
+                                                  "expect_new_fp": r._pubkey_fp(PAIR_KEY)})[0]
     out["late_post"] = r.setup_note_review(rid_otto, "otto", PAIR_KEY, "Den iMac")
     # A stale request that appears without a restart is refused when it is read.
     rid_kai = old_cloud_pending("kai")
@@ -584,7 +585,8 @@ elif SCENARIO == "key_migration":
     out["kai_replace"] = admin("bots_key_put", "kai", {"public_key": new_key, "expect_old_fp": old_fp})[0]
     # pip: Set up again; its home helper posts a key and the admin accepts it.
     out["pip_setup"] = send_and_post_key("pip")
-    out["pip_accept"] = admin("bots_setup_pair", {"slug": "pip", "decision": "accept", "expect_old_fp": old_fp})
+    out["pip_accept"] = admin("bots_setup_pair", {"slug": "pip", "decision": "accept", "expect_old_fp": old_fp,
+                                                "expect_new_fp": r._pubkey_fp(PAIR_KEY)})
     out["trusted_end"] = trust()
     out["listed_end"] = listed()
     out["audit_end"] = mig_audit()[len(out["audit"]):]
@@ -652,7 +654,8 @@ elif SCENARIO == "accept_notes_setup":
             frozen_rel = (json.load(fh).get("frozen") or {}).get("release")
     out["frozen_release"] = frozen_rel
     old_fp = r.botreply.key_fingerprint(KEY).replace(" ", "")
-    code, body = admin("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": old_fp})
+    code, body = admin("bots_setup_pair", {"slug": "otto", "decision": "accept", "expect_old_fp": old_fp,
+                                         "expect_new_fp": r._pubkey_fp(PAIR_KEY)})
     out["accept"] = code
     stamp = (ga.read_finish().get("setup") or {}).get("otto") or {}
     out["stamp_release"] = stamp.get("release")
