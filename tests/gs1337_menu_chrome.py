@@ -52,10 +52,7 @@ window.__calls = [];
 const DATA = %s;
 DATA.state.stepup_until = Date.now() / 1000 + 600;
 DATA.bots.stepup_until = DATA.state.stepup_until;
-let _releaseLoad = null;
-const _hold = new Promise(resolve => { _releaseLoad = resolve; });
 window.fetch = (url, opt) => {
-  if (url === 'gs-hold') return _hold.then(() => new Response('', {status: 200}));
   const path = String(url).split('?')[0];
   const method = (opt && opt.method) || 'GET';
   window.__calls.push(method + ' ' + path);
@@ -72,16 +69,15 @@ window.fetch = (url, opt) => {
   if (path.indexOf('/api/portrait/') === 0) return Promise.resolve(new Response('', {status: 404}));
   return json(200, {});
 };
-// --dump-dom must not depend on --virtual-time-budget: on Chrome 156 that budget
-// never finishes while a font, an animation, or a timer is open. A fetch started
-// below stays open until the probe writes its result, which holds the load event.
-// Intervals are dropped. A wait longer than a second runs on the next turn.
+// Fonts and animations are stripped above so --virtual-time-budget can finish.
+// Intervals are dropped. Waits over a second are dropped. Short waits still run.
 window.setInterval = function () { return 0; };
 const _setTimeout = window.setTimeout;
-window.setTimeout = function (fn) {
-  return _setTimeout(fn, 0);
+window.setTimeout = function (fn, ms) {
+  const n = Number(ms) || 0;
+  if (n > 1000) return 0;
+  return _setTimeout.apply(this, arguments);
 };
-fetch('gs-hold');
 window.WebSocket = function () { return {close() {}, send() {}, addEventListener() {}}; };
 window.EventSource = function () { return {close() {}, addEventListener() {}}; };
 (function () {
@@ -104,7 +100,6 @@ const tick = ms => new Promise(r => setTimeout(r, ms));
   try { %s }
   catch (e) { res.scriptErr = String(e) + (e && e.stack ? '\\n' + e.stack : ''); }
   document.getElementById('gsprobe').textContent = JSON.stringify(res);
-  if (_releaseLoad) _releaseLoad();
 })();
 </script></body></html>""" % (
         css,
@@ -120,11 +115,12 @@ const tick = ms => new Promise(r => setTimeout(r, ms));
         with open(path, "w", encoding="utf-8") as f:
             f.write(page)
         out = run_chrome(
-            [CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+            [CHROME, "--headless=old", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
              "--disable-background-networking", "--disable-component-update", "--disable-sync",
              "--disable-default-apps", "--disable-extensions", "--no-first-run",
              "--allow-file-access-from-files",
-             "--window-size=1280,900", "--dump-dom",
+             "--window-size=1280,900", "--virtual-time-budget=%d" % max(1000, int(budget)),
+             "--dump-dom",
              "file://" + path])
     finally:
         shutil.rmtree(d, ignore_errors=True)

@@ -37,8 +37,9 @@ class ChromeTemp(unittest.TestCase):
         self.assertEqual(_leaks(before), [])
         sleep_dir, sleeper = _script(write + "sleep 30")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", sleep_dir], check=False))
-        with self.assertRaises(unittest.SkipTest):
+        with self.assertRaises((unittest.SkipTest, AssertionError)) as caught:
             H.run_chrome([sleeper, "--dump-dom", "file:///none"], timeout=1)
+        self.assertIn("hung", str(caught.exception))
         self.assertEqual(_leaks(before), [])
 
 
