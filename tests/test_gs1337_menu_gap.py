@@ -5,10 +5,12 @@ The menu's Revoke button has class "danger", and the Settings danger-zone rule `
 phone) applied to it, so the divider sat 24px above it instead of the menu's normal 6px. Real app.js and admin.css
 in headless Chrome, at 1280 and 390, idle and Rescanning.
 """
-import html, json, os, re, shutil, subprocess, tempfile, unittest
+import html, json, os, re, shutil, tempfile, unittest
+
+from chrome_harness import find_chrome, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CHROME = shutil.which("google-chrome") or shutil.which("chromium")
+CHROME = find_chrome()
 
 
 def measure(width, busy):
@@ -34,8 +36,8 @@ document.getElementById('out').textContent = JSON.stringify(res);
     try:
         p = os.path.join(d, "m.html")
         open(p, "w", encoding="utf-8").write(page)
-        out = subprocess.run([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--window-size=%d,900" % width,
-                              "--dump-dom", "file://" + p], capture_output=True, text=True, timeout=120).stdout
+        out = run_chrome([CHROME, "--headless=new", "--no-sandbox", "--disable-gpu", "--window-size=%d,900" % width,
+                          "--dump-dom", "file://" + p])
     finally:
         shutil.rmtree(d, ignore_errors=True)
     return json.loads(html.unescape(re.search(r'<pre id="out">(.*?)</pre>', out, re.S).group(1)))

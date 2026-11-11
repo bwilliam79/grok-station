@@ -69,6 +69,7 @@ class AcceptRecordsSetup(unittest.TestCase):
         body = {"slug": slug, "decision": decision, "password": "secret-secret-1"}
         if decision == "accept":
             body["expect_old_fp"] = "-"
+            body["expect_new_fp"] = "0123456789abcdef"
         # Bind the real method so a subclass is not required. need_password is on the instance.
         code = self.ga.Handler.bots_setup_pair(h, body)
         return code, (h.out[-1][1] if h.out else None)
@@ -151,7 +152,7 @@ class RelayAcceptRelease(unittest.TestCase):
             self.assertFalse(os.path.exists(keyf))
             rejected = relay.setup_pair_decide("kai", "reject")
             self.assertEqual(rejected["state"], "rejected")
-            got = relay.setup_pair_decide("otto", "accept", expect_old_fp="-")
+            got = relay.setup_pair_decide("otto", "accept", expect_old_fp="-", expect_new_fp=fp)
         self.assertEqual(got["state"], "accepted")
         self.assertEqual(got.get("release"), "0.13.20")
         self.assertNotEqual(got.get("release"), "0.13.38")
