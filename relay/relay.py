@@ -3152,7 +3152,10 @@ async def session(req):
                                 await pi.send_json({"type": "timer_cancel", "id": tid})
                             if ev.get("name") == "set_timer":
                                 args = recipe_timer_args(args, st)
-                            out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
+                            if ev.get("name") in ("get_weather", "get_time", "convert_units"):
+                                out, to_pi = await take_tool_card(ev["name"], args, http, st["timers"], now_t)
+                            else:
+                                out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
                             if ev.get("name") == "set_timer" and out.get("ok") and step_timer_say(args):
                                 out["say"] = step_timer_say(args)  # the model says exactly this (R2-2)
                             # card or timer message; a failed tool sends nothing. stop-all is one message per timer.
@@ -4118,7 +4121,9 @@ def content_tile_plan(heard):
     """The content tile this utterance asks for, or None.
 
     show: a deck tile (sports, recipe, calendar, home). The question still goes to the bot.
-    tool: a station tool card (weather, time, convert). That ask is finished here.
+    tool: a station tool card (weather, time, convert). The card is sent without waiting
+    on the fetch, and the question still goes to the model. The model's tool call shares
+    that one fetch and does not send a second card.
     """
     try:
         mod = load_cards()
@@ -4136,12 +4141,64 @@ def content_tile_plan(heard):
     return {"tool": tool, "args": args or {}, "tile": kind}
 
 
+_tool_flight = None
+
+
+def _tool_key(name, args):
+    args = dict(args or {})
+    if name == "get_weather":
+        args["day"] = args.get("day") or "now"
+    try:
+        blob = json.dumps(args, sort_keys=True, default=str)
+    except TypeError:
+        blob = repr(args)
+    return str(name) + "\n" + blob
+
+
+def start_tool_flight(name, args, http, timers, now):
+    """Begin one fetch for a voice tool card. A later take of the same key shares it."""
+    global _tool_flight
+    _tool_flight = {
+        "key": _tool_key(name, args),
+        "task": asyncio.create_task(station_tools.run(name, args, http, timers, now)),
+        "card": False,
+    }
+    return _tool_flight
+
+
+async def take_tool_card(name, args, http, timers, now):
+    """The model's tool call. Join the voice fetch when it is the same call, and do not send a second card.
+
+    Returns (output, card or None). The card is None when the voice path already claimed it.
+    """
+    flight = _tool_flight
+    key = _tool_key(name, args)
+    if flight is None or flight["key"] != key:
+        out, to_pi = await station_tools.run(name, args, http, timers, now)
+        if isinstance(to_pi, dict) and to_pi.get("type") == "card":
+            return out, to_pi
+        return out, None
+    out, to_pi = await flight["task"]
+    if isinstance(to_pi, dict) and to_pi.get("type") == "card" and not flight["card"]:
+        flight["card"] = True
+        return out, to_pi
+    return out, None
+
+
+async def _send_tool_card(flight, pi):
+    out, to_pi = await flight["task"]
+    del out
+    if isinstance(to_pi, dict) and to_pi.get("type") == "card" and not flight["card"]:
+        flight["card"] = True
+        await pi.send_json(to_pi)
+
+
 async def dispatch_content_tile(heard, pi, http, timers, now):
     """Send the tile this ask names.
 
-    A deck tile is a show_tile message. A tool tile sends its card. The caller does not end the
-    turn: the question still goes to the bot or the model. Returns the plan when a tile was sent,
-    else None.
+    A deck tile is a show_tile message. A tool tile starts its fetch and returns without
+    waiting, so the question reaches the bot immediately. The card is sent when the fetch
+    finishes. The model's later call of the same tool shares that fetch. Returns None.
     """
     plan = content_tile_plan(heard)
     if not plan:
@@ -4149,11 +4206,8 @@ async def dispatch_content_tile(heard, pi, http, timers, now):
     if plan.get("show"):
         await pi.send_json({"type": "show_tile", "tile": plan["show"]})
         return None
-    out, to_pi = await station_tools.run(plan["tool"], plan.get("args") or {}, http, timers, now)
-    del out
-    if isinstance(to_pi, dict) and to_pi.get("type") == "card":
-        await pi.send_json(to_pi)
-        return plan
+    flight = start_tool_flight(plan["tool"], plan.get("args") or {}, http, timers, now)
+    asyncio.create_task(_send_tool_card(flight, pi))
     return None
 
 
@@ -7446,9 +7500,11 @@ def setup_state_save(doc):
 def expire_setup_without_key(now_ms=None):
     """An open setup request that times out with no key post-back fails out loud.
 
-    sent, relayed, and awaiting_confirm past expires_ms, with no posted key, become failed
-    reason no_key. A review row already has the key, so it is left for the owner. One log line
-    per target, written with the state so a later read does not log it again.
+    relayed and awaiting_confirm past expires_ms, with no posted key, become failed
+    reason no_key. A request still in sent was never delivered to the bot, so it keeps
+    the old "no reply from the main bot" timeout instead of blaming the bot. A review
+    row already has the key, so it is left for the owner. One log line per target,
+    written with the state so a later read does not log it again.
     """
     now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
     with _SETUP_STATE_LOCK:
@@ -7457,7 +7513,7 @@ def expire_setup_without_key(now_ms=None):
         for target, row in doc.items():
             if not isinstance(row, dict):
                 continue
-            if row.get("state") not in ("sent", "relayed", "awaiting_confirm"):
+            if row.get("state") not in ("relayed", "awaiting_confirm"):
                 continue
             if row.get("pending_pub"):
                 continue

@@ -130,13 +130,16 @@ class Routing(unittest.TestCase):
         self._put("sports", _sports())
         self.assertTrue(gs.focus_content_tile("sports", now))
         self.assertTrue(gs.TILE.get("focused"))
-        self.assertEqual(gs.tile_step(gs.TILE, "listening", "speaking", later, gs.SCORE_HOLD), "keep")
+        self.assertFalse(gs.apply_speaking_clear("listening", "speaking", later, gs.SCORE_HOLD))
+        self.assertIsNotNone(gs.deck().get("wren", "sports1"))
+        self.assertTrue(gs.TILE)
+        self.assertFalse(gs.release_or_clear_tile(later))
         self.assertIsNotNone(gs.deck().get("wren", "sports1"))
         gs.TILE.clear()
         self.deck._items = []
         self._put("recipe", _recipe())
         self.assertTrue(gs.focus_content_tile("recipe", now))
-        self.assertEqual(gs.tile_step(gs.TILE, "thinking", "speaking", later, gs.SCORE_HOLD), "keep")
+        self.assertFalse(gs.apply_speaking_clear("thinking", "speaking", later, gs.SCORE_HOLD))
         self.assertIsNotNone(gs.deck().get("wren", "recipe1"))
 
     def test_focused_card_survives_a_nearly_spent_idle_clock(self):
@@ -207,22 +210,70 @@ class Routing(unittest.TestCase):
 
     def test_weather_time_and_convert_send_their_cards(self):
         import json
+
+        async def ask(phrase, http):
+            pi = Pi()
+            relay._tool_flight = None
+            await relay.dispatch_content_tile(phrase, pi, http, {}, time.time())
+            for _ in range(8):
+                await asyncio.sleep(0)
+            return pi
+
         http = Http(200, json.dumps(SAMPLE).encode())
         asks = (("what's the weather", "weather"),
                 ("what time is it", "time"),
                 ("convert 2 cups to tablespoons", "convert"))
         for phrase, kind in asks:
-            pi = Pi()
-            plan = asyncio.run(relay.dispatch_content_tile(phrase, pi, http, {}, time.time()))
-            self.assertEqual(plan["tile"], kind, phrase)
-            self.assertEqual(pi.msgs[-1]["type"], "card")
-            self.assertEqual(pi.msgs[-1]["kind"], kind)
+            pi = asyncio.run(ask(phrase, http))
+            self.assertEqual(pi.msgs[-1]["type"], "card", phrase)
+            self.assertEqual(pi.msgs[-1]["kind"], kind, phrase)
             L = gs.Layout(1280, 800)
             surf = pygame.Surface((1280, 800))
             msg = {"from": "Grok", "voice": True, "heard": phrase, "text": "Here.", "state": "speaking",
                    "card": pi.msgs[-1]}
             gs.draw_session(surf, L, time.localtime(), msg)
             self.assertIsNotNone(gs.LAST_CARD_RECT, phrase)
+
+    def test_weather_does_not_block_the_turn_or_fetch_twice(self):
+        import json
+
+        class Slow(Http):
+            def __init__(self):
+                super().__init__(200, json.dumps(SAMPLE).encode())
+                self.gets = 0
+                self.entered = asyncio.Event()
+
+            def get(self, url, timeout=None):
+                self.gets += 1
+                self.entered.set()
+                return self
+
+            async def read(self):
+                await asyncio.sleep(0.4)
+                return self.body
+
+        async def run():
+            http = Slow()
+            pi = Pi()
+            relay._tool_flight = None
+            started = time.monotonic()
+            await relay.dispatch_content_tile("what's the weather", pi, http, {}, time.time())
+            self.assertLess(time.monotonic() - started, 0.2)
+            await http.entered.wait()
+            out, card = await relay.take_tool_card("get_weather", {}, http, {}, time.time())
+            self.assertTrue(out.get("ok"))
+            for _ in range(20):
+                if any(m.get("type") == "card" for m in pi.msgs):
+                    break
+                await asyncio.sleep(0.05)
+            cards_sent = [m for m in pi.msgs if m.get("type") == "card"]
+            if card:
+                cards_sent.append(card)
+            self.assertEqual(http.gets, 1)
+            self.assertEqual(len(cards_sent), 1)
+            self.assertEqual(cards_sent[0]["kind"], "weather")
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

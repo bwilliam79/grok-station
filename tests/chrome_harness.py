@@ -11,9 +11,10 @@ SkipTest "Chrome produced no render". Neither result is a pass. GS_REQUIRE_CHROM
 turns those skips into failures, which tools/release-check.sh sets when Chrome is
 on PATH.
 
-Each run gets its own --user-data-dir and its own TMPDIR. Both are removed on a
-normal exit, a timeout, and a kill, so scoped_dir and Chromium profile dirs do not
-stay in /tmp.
+Each Chrome child gets its own TMPDIR (and TMP and TEMP). scoped_dir and
+.org.chromium dirs land there. The directory is removed on a normal exit, a
+timeout, and a kill. A fresh --user-data-dir hangs Chrome 156 on the station, so
+this helper does not pass one.
 """
 import os
 import re
@@ -35,9 +36,9 @@ def quiet_css(text):
     open on some builds, so --dump-dom never writes. Inlining this CSS lets the dump
     happen when the document loads.
     """
-    text = re.sub(r"@font-face\{.*?\}", "", text)
+    text = re.sub(r"@font-face\{.*?\}", "", text, flags=re.S)
     text = re.sub(r"url\((?!data:)[^)]*\)", "url(data:,)", text)
-    return text + "\n*{animation:none!important;transition:none!important}\n"
+    return text + "\n*{animation:none!important;transition:none!important;font-family:sans-serif!important}\n"
 
 
 def find_chrome():
@@ -82,22 +83,13 @@ def _kill_group(proc):
             pass
 
 
-def _chrome_argv(argv, profile):
-    """Use this run's profile. A caller's --user-data-dir is replaced, not added beside it.
+def _chrome_argv(argv):
+    """Drop --user-data-dir. A new profile directory hangs Chrome 156 before --dump-dom.
 
     --headless=new does not advance --virtual-time-budget while a timer or a load is open,
-    so those runs use --headless=old, which does. A shell stand-in ignores the flag.
+    so a run that still passes that flag uses --headless=old. A shell stand-in ignores it.
     """
-    out = []
-    replaced = False
-    for arg in argv:
-        if arg.startswith("--user-data-dir="):
-            out.append("--user-data-dir=" + profile)
-            replaced = True
-        else:
-            out.append(arg)
-    if not replaced:
-        out.append("--user-data-dir=" + profile)
+    out = [arg for arg in argv if not arg.startswith("--user-data-dir=")]
     base = os.path.basename(out[0]) if out else ""
     if ("chrome" in base or "chromium" in base) and any(a.startswith("--virtual-time-budget") for a in out):
         out = ["--headless=old" if a == "--headless=new" else a for a in out]
@@ -108,18 +100,14 @@ def run_chrome(argv, timeout=TIMEOUT_S):
     """Run argv and return stdout text. timeout is wall-clock seconds, default 20.
 
     The child is a session leader so the kill covers Chrome and the processes it spawned.
-    TMPDIR, TMP, and TEMP point at a directory this function deletes with the profile.
+    TMPDIR, TMP, and TEMP point at a directory this function deletes, including on a kill.
     """
-    root = tempfile.mkdtemp(prefix="gs-chrome-run-")
-    profile = os.path.join(root, "profile")
-    tmp = os.path.join(root, "tmp")
-    os.makedirs(profile)
-    os.makedirs(tmp)
+    tmp = tempfile.mkdtemp(prefix="gs-chrome-run-")
     env = os.environ.copy()
     env["TMPDIR"] = tmp
     env["TMP"] = tmp
     env["TEMP"] = tmp
-    cmd = _chrome_argv(list(argv), profile)
+    cmd = _chrome_argv(list(argv))
     proc = None
     try:
         proc = subprocess.Popen(
@@ -142,4 +130,4 @@ def run_chrome(argv, timeout=TIMEOUT_S):
     finally:
         if proc is not None and proc.poll() is None:
             _kill_group(proc)
-        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)

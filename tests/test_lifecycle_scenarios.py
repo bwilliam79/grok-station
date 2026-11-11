@@ -564,6 +564,18 @@ class MissingKeyPostback(unittest.TestCase):
         self.assertTrue(o["step"])
         self.assertTrue(o["page"])
 
+    def test_a_never_relayed_request_keeps_the_main_bot_timeout(self):
+        o = self.out
+        self.assertEqual(o["wren"]["state"], "expired")
+        self.assertNotEqual(o["wren"].get("reason"), "no_key")
+        self.assertNotIn("target=wren", o["log"])
+
+    def test_a_retired_request_is_not_a_missing_key(self):
+        o = self.out
+        self.assertNotEqual(o["noor"].get("reason"), "no_key")
+        self.assertNotEqual(o["noor"]["state"], "failed")
+        self.assertNotIn("target=noor", o["log"])
+
     def test_a_posted_key_and_an_open_request_are_not_this_failure(self):
         o = self.out
         self.assertEqual(o["kai"]["state"], "expired")

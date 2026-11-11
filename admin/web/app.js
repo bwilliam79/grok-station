@@ -3501,9 +3501,11 @@ function setupRowStatus(row, opts) {
               helper: setupSentHelper(row, opts)};
     }
     if (row.relay === "failed" && row.relay_reason === "no_key") {
+      // The request reached the bot (relayed or awaiting_confirm). A never-relayed timeout
+      // is relay "expired" below: "No reply from {main}."
       return {icon: "none", colour: "amb", wrap: true,
               text: "\u26a0 " + bot + " did not post its key back. Setup timed out.",
-              helper: "The row is not paired. Press Set up again."};
+              helper: "The request reached " + bot + ". The row is not paired. Press Set up again."};
     }
     if (row.relay === "failed" && row.relay_reason === "standing_absent") {
       return {icon: "none", colour: "mut", text: "\u26a0 " + bot + " isn\u2019t ready for first-time setup",
