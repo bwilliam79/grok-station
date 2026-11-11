@@ -3614,9 +3614,10 @@ function setupKeyReviewEl(row, pairedFp) {
   const fpLab = document.createElement("p");
   fpLab.className = "pairlab";
   fpLab.textContent = "Fingerprint";
+  const fpOk = /^[0-9a-f]{16}$/.test(String((row && row.relay_fp) || ""));
   const fp = document.createElement("p");
   fp.className = "mono";
-  fp.textContent = formatKeyFp(row && row.relay_fp);
+  fp.textContent = fpOk ? formatKeyFp(row.relay_fp) : "The station has no fingerprint for this key yet. Reload, or press Set up again.";
   // The Computer block shows only when the bot named its computer; an empty label reads as missing data.
   const computer = (row && row.paired_computer) || "";
   let nameLab = null, name = null;
@@ -3645,6 +3646,12 @@ function setupKeyReviewEl(row, pairedFp) {
   accept.setAttribute("aria-label", "Accept " + botName + "\u2019s key");
   accept.setAttribute("data-pair", "accept");
   accept.setAttribute("data-slug", (row && row.slug) || "");
+  if (!fpOk) {
+    accept.disabled = true;
+    accept.setAttribute("aria-disabled", "true");
+    fp.setAttribute("tabindex", "-1");
+    fp.setAttribute("data-fpmissing", "1");
+  }
   const reject = document.createElement("button");
   reject.type = "button";
   reject.className = "btn g sm";
@@ -3877,11 +3884,16 @@ function bindSetupRows(list, el, rows) {
   });
   list.querySelectorAll("[data-pair]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
+    if (btn.disabled || btn.getAttribute("aria-disabled") === "true") return;
     decideSetupPair(rows[btn.getAttribute("data-slug")], el, btn.getAttribute("data-pair"));
   });
   list.querySelectorAll("[data-gotoaccept]").forEach(btn => btn.onclick = ev => {
     ev.stopPropagation();
-    const go = list.querySelector('[data-pair="accept"][data-slug="' + btn.getAttribute("data-gotoaccept").replace(/[^a-z0-9-]/g, "") + '"]');
+    const slug = btn.getAttribute("data-gotoaccept").replace(/[^a-z0-9-]/g, "");
+    const panel = list.querySelector('.setpanel[data-slug="' + slug + '"]') || list;
+    const accept = panel.querySelector('[data-pair="accept"][data-slug="' + slug + '"]');
+    const blocked = !accept || accept.disabled || accept.getAttribute("aria-disabled") === "true";
+    const go = blocked ? (panel.querySelector("[data-fpmissing]") || panel.querySelector('[data-pair="reject"][data-slug="' + slug + '"]')) : accept;
     if (go) { if (go.scrollIntoView) go.scrollIntoView({block: "center"}); go.focus(); }
   });
   list.querySelectorAll("[data-setuphand]").forEach(btn => btn.onclick = ev => {
@@ -4008,6 +4020,18 @@ function setupRelayState(draft) {
   const v = draft && draft.relay;
   return ["relayed", "failed", "expired", "awaiting_confirm", "needs_details", "review", "accepted", "rejected"].includes(v) ? v : "";
 }
+function setupRelayFields(draft) {
+  // Both list branches share this, so a pending teammate cannot drop the fingerprint Accept compares.
+  draft = draft || {};
+  return {
+    relay: setupRelayState(draft),
+    relay_path: draft.relay_path || "",
+    relay_reason: draft.relay_reason || "",
+    relay_fp: draft.relay_fp || "",
+    paired_computer: draft.paired_computer || "",
+    holds_setup: draft.holds_setup === true
+  };
+}
 function setupListRows(el) {
   const bots = (el && el._bots) || [];
   const stored = (el && el._setup && el._setup.rows) || {};
@@ -4027,17 +4051,14 @@ function setupListRows(el) {
     const name = draft.name || b.name || b.slug;
     const ownComputer = b.reply_host || "";
     const suggestions = setupComputerSuggestions(ownComputer, mainComputer);
-    out.push({
+    out.push(Object.assign({
       slug: b.slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || suggestions[0] || "",
       ownComputer: ownComputer, mainComputer: mainComputer,
       status: (configured && !inflow && !keyMove) ? "already" : st, key_move: keyMove,
       sent_at: draft.sent_at || 0, fails: draft.fails || 0, configured: configured, owner: owner,
-      unknown: !!draft.unknown, relay: setupRelayState(draft), relay_path: draft.relay_path || "", relay_reason: draft.relay_reason || "",
-      relay_fp: draft.relay_fp || "", paired_computer: draft.paired_computer || "",
-      relay_fp: draft.relay_fp || "", paired_computer: draft.paired_computer || "",
-      holds_setup: draft.holds_setup === true
-    });
+      unknown: !!draft.unknown
+    }, setupRelayFields(draft)));
   });
   pendingTeammates(el).forEach(row => {
     const slug = botIdFromName(row.name);
@@ -4046,13 +4067,13 @@ function setupListRows(el) {
     const draft = stored[slug] || {};
     const name = draft.name || row.name;
     const pendingSuggestions = setupComputerSuggestions("", mainComputer);
-    out.push({
+    out.push(Object.assign({
       slug: slug, name: name, wake: draft.wake || ("Hey " + name),
       computer: draft.computer || pendingSuggestions[0] || "",
       ownComputer: "", mainComputer: mainComputer,
       status: draft.status || "not_set_up", sent_at: draft.sent_at || 0, fails: draft.fails || 0,
-      configured: false, pending: true, owner: owner, unknown: !!draft.unknown, relay: setupRelayState(draft), relay_path: draft.relay_path || "", relay_reason: draft.relay_reason || ""
-    });
+      configured: false, pending: true, owner: owner, unknown: !!draft.unknown
+    }, setupRelayFields(draft)));
   });
   return out;
 }
@@ -5666,7 +5687,7 @@ function bindVoiceTip() {
     }
   };
 }
-const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.38.
+const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.39.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 

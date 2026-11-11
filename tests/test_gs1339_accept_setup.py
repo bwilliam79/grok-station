@@ -4,7 +4,8 @@ A bot paired through Set up then Accept, with a webhook and no signed update sta
 through to state "copy" ("Set up before 0.11.8") because bots_setup_pair never called note_setup.
 Reject records nothing. Remove clears the stamp, so the same id comes back with no pairing record.
 """
-import hashlib, os, sys, unittest
+import base64, hashlib, json, os, shutil, sys, tempfile, time, unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -106,6 +107,54 @@ class AcceptRecordsSetup(unittest.TestCase):
         self.ga.forget_bot_admin("pip")
         self.assertNotIn("pip", self.ga.read_finish().get("setup") or {})
         self.assertEqual(self.row("pip")["state"], "copy")
+
+
+class RelayAcceptRelease(unittest.TestCase):
+    """The relay returns the frozen release, and refuses Accept when the review row has no fingerprint."""
+
+    def test_missing_fp_is_refused_and_a_frozen_release_is_returned(self):
+        sys.path.insert(0, os.path.join(ROOT, "relay"))
+        import relay
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        state = os.path.join(d, "setup-relay.json")
+        pending = os.path.join(d, "pending")
+        os.makedirs(pending)
+        keyf = os.path.join(d, "keys.json")
+        paired = os.path.join(d, "paired.json")
+        pub = base64.b64encode(bytes(range(1, 33))).decode()
+        fp = relay._pubkey_fp(pub)
+        self.assertEqual(len(fp), 16)
+        rid = "vs_" + "c" * 22
+        exp = int(time.time() * 1000) + 60000
+        row = {"state": "review", "rid": rid, "at": 1, "expires_ms": exp,
+               "computer": "kitchen", "pending_pub": pub, "fp": fp, "path": "first"}
+        bare = "vs_" + "d" * 22
+        nofp = {"state": "review", "rid": bare, "at": 1, "expires_ms": exp,
+                "computer": "kitchen", "pending_pub": pub, "path": "first"}
+        with open(state, "w", encoding="utf-8") as fh:
+            json.dump({"targets": {"otto": row, "kai": nofp}}, fh)
+        with open(os.path.join(pending, rid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump({"request_id": rid, "kind": "setup_relay", "target": "otto",
+                       "frozen": {"release": "0.13.20", "mode": "home", "target": "otto", "request_id": rid}}, fh)
+        overlay = {"reply_host": {}, "added": {}, "renamed": {}, "hidden": [], "voices": {},
+                   "list_source": "", "key_mode": {}}
+        with mock.patch.object(relay, "SETUP_STATE_FILE", state), \
+                mock.patch.object(relay, "PENDING_DIR", pending), \
+                mock.patch.object(relay, "bot_keys_path", lambda: keyf), \
+                mock.patch.object(relay, "PAIRED_FILE", paired), \
+                mock.patch.object(relay, "station_release", lambda: "0.13.38"), \
+                mock.patch.object(relay, "load_overlay_doc", lambda: overlay), \
+                mock.patch.object(relay, "save_overlay", lambda doc: None), \
+                mock.patch.object(relay, "forget_bot_status", lambda slug: None):
+            self.assertIsNone(relay.setup_pair_decide("kai", "accept", expect_old_fp="-"))
+            self.assertFalse(os.path.exists(keyf))
+            rejected = relay.setup_pair_decide("kai", "reject")
+            self.assertEqual(rejected["state"], "rejected")
+            got = relay.setup_pair_decide("otto", "accept", expect_old_fp="-")
+        self.assertEqual(got["state"], "accepted")
+        self.assertEqual(got.get("release"), "0.13.20")
+        self.assertNotEqual(got.get("release"), "0.13.38")
 
 
 if __name__ == "__main__":
