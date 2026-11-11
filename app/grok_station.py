@@ -3723,9 +3723,24 @@ def focus_content_tile(kind, now=None):
     page = deck().find_type(kind, now)
     if not page:
         return False
+    deck().suspend_idle(page["bot"], page["id"])
     TILE.clear()
     TILE.update({"bot": page["bot"], "id": page["id"], "card": page["card"],
                  "expires": deck().expiry(page["bot"], page["id"]), "focused": True}, shown=now)
+    return True
+
+
+def release_focused_tile(now=None):
+    """Drop the screen copy of a voice-focused deck card and start a fresh idle window."""
+    if not TILE.get("focused"):
+        return False
+    now = time.time() if now is None else now
+    bot, cid = TILE.get("bot"), TILE.get("id")
+    kind = (TILE.get("card") or {}).get("type")
+    TILE.clear()
+    if bot and cid:
+        span = cards.RECIPE_IDLE_S if kind == "recipe" else cards.CONVO_IDLE_S
+        deck().rearm_idle(bot, cid, now, span)
     return True
 
 
@@ -6539,8 +6554,9 @@ def main():
                 if tele is not None:
                     tele.settle(time.time())
                 if msg and TILE and TILE.get("focused"):
-                    # The ask only showed a card that was already in the deck. Leave that card there.
-                    TILE.clear()
+                    # The ask only showed a card that was already in the deck. Leave that card there
+                    # and start its idle window from this moment.
+                    release_focused_tile(time.time())
                     msg, anim_started, card_hold = None, None, False
                     paint()
                 elif msg and TILE:
@@ -6632,10 +6648,12 @@ def main():
             elif msg and time.time() >= until:
                 if TILE:
                     # A card posted during the conversation leaves the idle feed.
-                    # A card the voice ask only brought forward stays in the deck.
-                    if not TILE.get("focused"):
+                    # A card the voice ask only brought forward stays in the deck, on a fresh idle window.
+                    if TILE.get("focused"):
+                        release_focused_tile(time.time())
+                    else:
                         deck().clear(TILE.get("bot"), TILE.get("id"))
-                    TILE.clear()
+                        TILE.clear()
                     msg, anim_started, card_hold = None, None, False
                     paint(fade=True)
                     print("back to idle", flush=True)

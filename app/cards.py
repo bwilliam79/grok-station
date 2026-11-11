@@ -1496,6 +1496,31 @@ class Deck:
                     homes = homes[i:] + homes[:i]
             return [self._view(it) for it in homes[:n]]
 
+    def suspend_idle(self, bot, card_id):
+        """Drop the idle deadline so only ttl can remove this card. False when it is not here."""
+        with self._lock:
+            for it in self._items:
+                if it["bot"] == bot and it["id"] == card_id:
+                    it["idle_at"] = None
+                    return True
+            return False
+
+    def rearm_idle(self, bot, card_id, now, span):
+        """Start a fresh idle window from now. ttl still caps it. None when the card is gone."""
+        if type(now) not in (int, float) or type(now) is bool:
+            return None
+        if type(span) not in (int, float) or type(span) is bool or span < 0:
+            return None
+        with self._lock:
+            for it in self._items:
+                if it["bot"] != bot or it["id"] != card_id:
+                    continue
+                if it["card"]["type"] not in CONVO_TYPES:
+                    return None
+                it["idle_at"] = min(it["expires"], float(now) + float(span))
+                return it["idle_at"]
+            return None
+
     def arm_idle(self, bot, card_id, now, sports_idle=CONVO_IDLE_S, recipe_idle=RECIPE_IDLE_S):
         """Start the idle clock for one conversation card. None when that card is not here.
 

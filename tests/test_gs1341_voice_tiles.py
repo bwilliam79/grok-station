@@ -139,6 +139,29 @@ class Routing(unittest.TestCase):
         self.assertEqual(gs.tile_step(gs.TILE, "thinking", "speaking", later, gs.SCORE_HOLD), "keep")
         self.assertIsNotNone(gs.deck().get("wren", "recipe1"))
 
+    def test_focused_card_survives_a_nearly_spent_idle_clock(self):
+        now = 1700000000.0
+        self.deck.put("wren", "sports1", 10, 3600, _sports(), now)
+        self.assertEqual(self.deck.arm_idle("wren", "sports1", now, sports_idle=1), now + 1)
+        self.assertTrue(gs.focus_content_tile("sports", now + 0.5))
+        later = now + 30
+        self.assertEqual(gs.tile_step(gs.TILE, "listening", "speaking", later, gs.SCORE_HOLD), "keep")
+        self.assertIsNotNone(gs.deck().current(later))
+        self.assertIsNotNone(gs.deck().get("wren", "sports1"))
+        self.assertTrue(gs.release_focused_tile(later))
+        self.assertFalse(gs.TILE)
+        self.assertIsNotNone(gs.deck().current(later + 1))
+        self.assertIsNone(gs.deck().current(later + cards.CONVO_IDLE_S + 1))
+        self.deck._items = []
+        self.deck.put("wren", "recipe1", 10, 7200, _recipe(), now)
+        self.deck._items[0]["step_at"] = now - 100000
+        self.deck._items[0]["idle_at"] = now + 1
+        self.assertTrue(gs.focus_content_tile("recipe", now + 0.5))
+        self.assertIsNotNone(gs.deck().current(later))
+        self.assertTrue(gs.release_focused_tile(later))
+        self.assertIsNotNone(gs.deck().get("wren", "recipe1"))
+        self.assertIsNotNone(gs.deck().current(later + 1))
+
     def test_sports_update_shows_the_sports_tile_over_the_update_card(self):
         now = time.time()
         gs.UPDATES.put("juniper", "u1", {"type": "done", "line": "Filed the list", "time": now})
