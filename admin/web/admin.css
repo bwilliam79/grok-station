@@ -1036,8 +1036,12 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow>.ww.none{display:flex}
   /* 0.13.26: the switch stays on the column's trailing edge, whatever the label width. */
   #blist .botrow>.ww>.tog,#blist .botrow>.ww>.wwtrain{margin-left:auto;flex:none}
-  #blist .botrow>.updcol{grid-column:upd;grid-row:1;min-width:0}
+  #blist .botrow>.updcol{grid-column:upd;grid-row:1;min-width:0;display:flex;align-items:center;align-self:stretch}
+  #blist .botrow>.updcol .updslot{display:flex;align-items:center;width:100%;height:100%}
+  #blist .botrow>.updcol .updsw{width:100%;height:100%;grid-template-rows:minmax(0,1fr) auto minmax(0,1fr);align-items:center}
   #blist .botrow>.updcol .updbtn{flex-direction:row-reverse;width:100%;padding-right:0;margin-left:0;margin-right:0}
+  #blist .botrow>.updcol .updbtn{grid-row:2;align-self:center}
+  #blist .botrow>.updcol .updrule{grid-row:3;align-self:start}
   #blist .botrow>.cfg{grid-column:act;grid-row:1;justify-self:end;display:flex;align-items:center;justify-content:flex-end;gap:8px;order:0}
   #blist .botrow>.cfg .chev{display:none}
   #blist .botrow.sentrow>.ww{display:none!important}
@@ -1049,7 +1053,7 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
 #blist .botrow .ww .tog{flex:none}
 .updcol .updslot{display:block;width:auto}
 .updcol .updslot:empty{height:48px}
-.updcol .updsw{display:grid;grid-template-rows:32px 16px}
+.updcol .updsw{display:grid;grid-template-rows:minmax(0,1fr) auto minmax(0,1fr);align-items:center;width:100%}
 .updcol .updsw .updrule{height:16px;line-height:16px;font-size:var(--fs-caps)}
 .updcol .updsw .updrule:empty{visibility:hidden}
 #blist .botrow .l2 .shelp,.shelp{color:var(--gs-muted);line-height:18px;margin-top:2px;white-space:normal;overflow:visible;text-overflow:clip}
