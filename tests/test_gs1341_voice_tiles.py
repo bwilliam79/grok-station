@@ -124,6 +124,21 @@ class Routing(unittest.TestCase):
         self.deck.put("wren", kind + "1", 10, 600, card, now)
         return now
 
+    def test_focus_does_not_delete_the_deck_card_when_the_reply_starts(self):
+        now = time.time()
+        later = now + gs.SCORE_HOLD + 5
+        self._put("sports", _sports())
+        self.assertTrue(gs.focus_content_tile("sports", now))
+        self.assertTrue(gs.TILE.get("focused"))
+        self.assertEqual(gs.tile_step(gs.TILE, "listening", "speaking", later, gs.SCORE_HOLD), "keep")
+        self.assertIsNotNone(gs.deck().get("wren", "sports1"))
+        gs.TILE.clear()
+        self.deck._items = []
+        self._put("recipe", _recipe())
+        self.assertTrue(gs.focus_content_tile("recipe", now))
+        self.assertEqual(gs.tile_step(gs.TILE, "thinking", "speaking", later, gs.SCORE_HOLD), "keep")
+        self.assertIsNotNone(gs.deck().get("wren", "recipe1"))
+
     def test_sports_update_shows_the_sports_tile_over_the_update_card(self):
         now = time.time()
         gs.UPDATES.put("juniper", "u1", {"type": "done", "line": "Filed the list", "time": now})
