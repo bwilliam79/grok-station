@@ -6666,7 +6666,8 @@ def reply_reason(rej):
 
 EXPECT_OLD_FP = re.compile(r"^([0-9a-f]{16}|-)$")
 KEY_CHANGED = "The paired key changed since this page loaded. Reload and compare the fingerprint again."
-FP_NOT_THE_KEY = "The fingerprint on this page is not the key waiting to be accepted. Reload and compare it again."
+import setup_text
+FP_NOT_THE_KEY = setup_text.FP_NOT_THE_KEY
 
 
 def expect_old_ok(slug, expect):

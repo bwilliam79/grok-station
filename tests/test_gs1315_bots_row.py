@@ -22,8 +22,8 @@ class Rev3(unittest.TestCase):
         self.assertIn("#blist .botrow{display:grid;grid-template-columns:[bot] minmax(240px,1fr) [wake] 200px [upd] 144px [act] 120px;", CSS)
         self.assertIn("#blist .botrow>.cfg{grid-column:act;grid-row:1;justify-self:end;", CSS)
         self.assertIn("#blist .botrow .ww .phrase{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}", CSS)
-        # 0.13.40: the caption is not a fixed row under the switch. That stack lifted the switch 8px.
-        self.assertIn('.updcol .updsw{display:grid;grid-template-rows:minmax(0,1fr) auto minmax(0,1fr);align-items:center;width:100%}', CSS)
+        # 0.13.40: the shared rule stays 32px over 16px. Desktop centers the switch inside the 768px query.
+        self.assertIn('.updcol .updsw{display:grid;grid-template-rows:32px 16px;align-items:center;width:100%}', CSS)
         self.assertIn('#blist .botrow>.updcol{grid-column:upd;grid-row:1;min-width:0;display:flex;align-items:center;align-self:stretch}', CSS)
 
     def test_truncated_wake_has_tooltip(self):

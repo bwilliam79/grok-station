@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # NIX-1313-05: the one shared safe_io (relay/safe_io.py). Repo: ../relay; installed: /opt/grok-station/relay, root 0755.
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "relay"))
 import safe_io  # noqa: E402
+import setup_text  # noqa: E402  (one copy of FP_NOT_THE_KEY, shared with the relay)
 
 E = os.environ.get
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -4025,7 +4026,7 @@ def expect_fp_clean(raw):
     return v if re.fullmatch(r"[0-9a-f]{16}|-", v) else None
 
 
-FP_NOT_THE_KEY = "The fingerprint on this page is not the key waiting to be accepted. Reload and compare it again."
+FP_NOT_THE_KEY = setup_text.FP_NOT_THE_KEY
 
 
 def expect_new_fp_clean(raw):

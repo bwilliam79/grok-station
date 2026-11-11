@@ -50,12 +50,17 @@ if [ -n "$chrome_bin" ]; then
     test_gs139_avatar_csp \
     test_gs139_recheck \
     test_gs139_voice_tip \
+    test_gs1340_updates_align \
     test_gs1340_chrome_timeout) >"$out" 2>&1; rc=$?
   grep -v 'ResourceWarning\|tracemalloc' "$out"
   if [ "$rc" -ne 0 ]; then echo "FAIL: chrome render"; fail=1
   else echo "ok: chrome render"; fi
 else
-  echo "ok: chrome render (chrome not installed)"
+  echo "chrome not installed; running the timeout stand-in"
+  (cd tests && python3 -m unittest -v test_gs1340_chrome_timeout) >"$out" 2>&1; rc=$?
+  grep -v 'ResourceWarning\|tracemalloc' "$out"
+  if [ "$rc" -ne 0 ]; then echo "FAIL: chrome timeout"; fail=1
+  else echo "ok: chrome timeout (chrome not installed)"; fi
 fi
 
 echo "## installed tree and lifecycle scenarios"

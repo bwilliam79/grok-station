@@ -11,6 +11,9 @@ import subprocess
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CSS = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
+# Same declarations as .btn:disabled, including :hover, so the look does not change on hover.
+DISABLED_LOOK = '.btn[aria-disabled="true"],.btn[aria-disabled="true"]:hover{opacity:.45;cursor:not-allowed}'
 sys_path = os.path.dirname(os.path.abspath(__file__))
 import sys
 sys.path.insert(0, sys_path)
@@ -111,6 +114,7 @@ def _panel(row):
         " return {help: helps, fpText: fp ? fp.textContent : null, fpClass: fp ? fp.className : null,"
         " fpTab: fp ? fp.getAttribute('tabindex') : null,"
         " acceptDisabled: !!(acc && acc.disabled), aria: acc ? acc.getAttribute('aria-disabled') : null,"
+        " acceptClass: acc ? acc.className : '',"
         " acceptTab: acc ? acc.getAttribute('tabindex') : null,"
         " mono: nodes.filter(x => x.className==='mono').map(x => x.textContent)}; })()"
         % json.dumps(row)
@@ -130,6 +134,14 @@ class MissingFingerprintCopy(unittest.TestCase):
             self.assertIsNone(got["acceptTab"], raw)
             self.assertEqual(got["mono"], [], raw)
             self.assertNotIn("Compare this fingerprint", " ".join(got["help"]), raw)
+            self.assertTrue(DISABLED_LOOK in CSS,
+                            "admin.css has no .btn[aria-disabled=true] rule matching .btn:disabled")
+            self.assertTrue(self._rule_matches_accept(got), raw)
+
+    def _rule_matches_accept(self, got):
+        """The Accept button in this state is a .btn with aria-disabled=true, which is the new rule."""
+        classes = (got.get("acceptClass") or "").split()
+        return "btn" in classes and got.get("aria") == "true" and got.get("acceptDisabled") is False
 
     def test_unnamed_bot_uses_this_bot(self):
         got = _panel({"slug": "nix", "relay_fp": ""})
