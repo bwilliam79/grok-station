@@ -63,7 +63,7 @@ Row state is `grok_admin.py:finish_rows`, computed on every read from the relay'
 | Update sent, no reply after 600 s [S] | noreply | "Update failed: No reply within 10 minutes.", Update again | update_bot again (relay allows one ask per HELPER_ASK_GAP_S, 600 s) | same |
 | Update could not be delivered (bot's computer off, webhook error) [S] | keeps its state, reason kept in `finish-update.json` "failed" | "Couldn't reach the bot." (502) or "Asked a few minutes ago." (429) | nothing (relay frees the ask slot) | n/a |
 | Reply was not a valid status line | refused (`update_refused_at`) | "The bot refused the update." | Update allowed | n/a |
-| Set up before 0.11.8 (no update_bot in its instructions) | copy | Copy instructions | nothing until copied | n/a |
+| Set up before 0.11.8: no signed status, no setup record, nothing copied or sent | copy | Copy instructions | nothing until copied | n/a |
 | Home bot whose helper is out of date | needs, even when otherwise done | Update (reinstalls the helper) | update_bot; helper ask via `admin_helper_update` | pinned `install-home.sh` sha256 |
 | Station can't render the instructions | error | the render error | nothing | n/a |
 | Bot set up with its key on a bot computer before 0.13.37 | as above (treated as home) | Update | update_bot | `gs-update.sh` refuses the cloud routine (CLOUD_GONE): use Set up or Replace key on the home computer |
@@ -113,6 +113,8 @@ expired), merged onto a Sent row by `grok_admin.py:setup_public`.
 | failed / declined | "{main} couldn't pass it on." | Send again or enter details yourself | (0.13.34 incident: main bot on 0.13.33 declined 0.13.34 pins) |
 | failed / standing_absent | "{bot} isn't ready for first-time setup" | ask the main bot in chat | target lacks the setup steps |
 | connected | "Connected" | n/a | n/a |
+
+**Accept records the setup (0.13.39).** A successful Accept (the relay returned 200) writes the same pairing record as pinning a key by hand (`audit` action `pair`, then `note_setup`). The release is the one frozen into that setup request when the relay response includes it (`setup_pair_decide` reads the pending file's `frozen.release`). The admin setup row does not store a release, so a response without one records `version()`, the same file the request was frozen from unless the station was updated while the request was open. Reject writes nothing. With a webhook and no signed status yet, that record makes the Finish update row `done`, not `copy`. Remove and Dismiss still clear `finish["setup"][slug]` through `forget_bot_admin` / `forget_finish`. `setup_forget` clears the Set up row, and `forget_bot_traces` clears the relay's setup-relay row, pending requests, and pairing stamp. A removed bot has no pairing record, so it comes back with nothing carried over [S].
 
 A new Set up press replaces the pending request for that target (`relay.py:_retire_setup_pending`), so a reply to
 the old one is refused. Since 0.13.37 the page asks "Replace the pending request?" first while a request is open
