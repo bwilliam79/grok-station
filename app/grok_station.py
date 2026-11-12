@@ -477,6 +477,53 @@ RED = hexc("FF5A52")  # mic off, and a stock-down arrow. Problems use text on a 
 GREEN = hexc("4ADE80")  # stock up only
 TEAL_BG = hexc("12302A")  # the next calendar row
 SUN = hexc("F2C46A")
+PAINT_MARKS = None  # a list while a tile test records painted ink; otherwise unused
+
+
+def _paint_text(img):
+    """True for a glyph surface: most of its pixels are transparent."""
+    w, h = img.get_size()
+    if w < 1 or h < 1:
+        return False
+    step_x, step_y = max(1, w // 12), max(1, h // 12)
+    trans = total = 0
+    for y in range(0, h, step_y):
+        for x in range(0, w, step_x):
+            total += 1
+            if img.get_at((x, y)).a < 40:
+                trans += 1
+    return total > 0 and trans / total > 0.25
+
+
+def show(surf, img, dest, area=None, special_flags=0):
+    """Blit, and record the painted ink when a tile test is watching."""
+    if img is None:
+        return None
+    if area is None:
+        result = surf.blit(img, dest, special_flags=special_flags)
+        sample = img
+    else:
+        result = surf.blit(img, dest, area, special_flags)
+        try:
+            sample = img.subsurface(pygame.Rect(area))
+        except (ValueError, pygame.error):
+            sample = img
+    if PAINT_MARKS is not None and sample.get_width() and sample.get_height():
+        if isinstance(dest, pygame.Rect):
+            dx, dy = dest.x, dest.y
+        else:
+            dx, dy = int(dest[0]), int(dest[1])
+        try:
+            box = sample.get_bounding_rect()
+        except pygame.error:
+            box = sample.get_rect()
+        rect = pygame.Rect(dx + box.x, dy + box.y, max(0, box.w), max(0, box.h))
+        visible = rect.clip(surf.get_clip())
+        if visible.w > 0 and visible.h > 0:
+            PAINT_MARKS.append((visible, _paint_text(sample)))
+    return result
+
+
 NIGHT_TEXT, NIGHT_DIM, BLACK = hexc("9A7752"), hexc("5E4934"), hexc("000000")
 
 _fonts = {}
@@ -843,6 +890,9 @@ def apply_update(doc, feed, now=None):
     if upd["op"] == "update_clear":
         feed.clear(bot, upd["id"])
         return "clear", bot, upd["id"]
+    if upd["update"].get("null"):
+        feed.clear_type_updates(bot, upd["update"].get("feed_rule"))
+        return "null", bot, upd["id"]
     feed.put(bot, upd["id"], upd["update"])
     return "put", bot, upd["id"]
 
@@ -1854,7 +1904,7 @@ def draw_status_icons(surf, L, status=None, right=None, cy=None):
     for name in names:
         x -= px
         rect = pygame.Rect(x, y, px, px)
-        surf.blit(load_status_icon(name, px), rect.topleft)
+        show(surf, load_status_icon(name, px), rect.topleft)
         rects.append(rect)
         x -= gap
     LAST_STATUS_RECT = rects[0].unionall(rects[1:]) if len(rects) > 1 else rects[0]
@@ -1876,7 +1926,7 @@ def draw_mic_notice(surf, L, status):
     img = font("body", px).render(mic_usb.POWER_CYCLE, True, AMBER)
     x = L.m
     y = max(4, int(round(8 * L.s)))
-    surf.blit(img, (x, y))
+    show(surf, img, (x, y))
     LAST_MIC_NOTICE = pygame.Rect(x, y, img.get_width(), img.get_height())
     return LAST_MIC_NOTICE
 
@@ -1885,7 +1935,7 @@ def draw_mic_notice(surf, L, status):
 def text_at(surf, kind, px, s, color, pos, anchor="topleft"):
     img = font(kind, px).render(s, True, color)
     r = img.get_rect(**{anchor: pos})
-    surf.blit(img, r)
+    show(surf, img, r)
     return r
 
 
@@ -1893,7 +1943,7 @@ def baseline_text(surf, kind, px, s, color, x, baseline, align="left"):
     f = font(kind, px)
     img = f.render(s, True, color)
     left = x if align == "left" else x - img.get_width()
-    surf.blit(img, (left, baseline - f.get_ascent()))
+    show(surf, img, (left, baseline - f.get_ascent()))
     return pygame.Rect(left, baseline - f.get_ascent(), img.get_width(), img.get_height())
 
 
@@ -1939,7 +1989,7 @@ def fit_text(kind, text, width, height, start, minimum, lh=1.22, max_lines=None)
 def draw_lines(surf, f, lines, step, color, x, y, align="left", width=0):
     for l in lines:
         img = f.render(l, True, color)
-        surf.blit(img, (x + (width - img.get_width()) // 2 if align == "center" else x, y))
+        show(surf, img, (x + (width - img.get_width()) // 2 if align == "center" else x, y))
         y += step
     return y
 
@@ -2415,9 +2465,9 @@ def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True, lift=0):
     ci = hhmm.index(":")
     hour_img, min_img = f.render(hour, True, color), f.render(minute, True, color)
     col_img = f.render(":", True, color)
-    surf.blit(hour_img, (x, top))
+    show(surf, hour_img, (x, top))
     min_x = x + pens[ci + 1]
-    surf.blit(min_img, (min_x, top))
+    show(surf, min_img, (min_x, top))
     hbr, mbr, cbr = hour_img.get_bounding_rect(), min_img.get_bounding_rect(), col_img.get_bounding_rect()
     gap_cx = (x + hbr.right + min_x + mbr.left) / 2.0
     ref = f.render("0123456789", True, color).get_bounding_rect()
@@ -2426,7 +2476,7 @@ def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True, lift=0):
     # line, so it is put back by the same amount and does not stick up above it.
     col_y = int(round(top + int(lift) + ref.y + ref.h / 2.0 - (cbr.y + cbr.h / 2.0)))
     if colon_on:
-        surf.blit(col_img, (col_x, col_y))
+        show(surf, col_img, (col_x, col_y))
     colon_rect = pygame.Rect(col_x + cbr.x, col_y + cbr.y, max(1, cbr.w), max(1, cbr.h))
     digits = pygame.Rect(x, top, f.size(hhmm)[0], f.get_height())
     digits = digits.union(pygame.Rect(x + hbr.x, top + hbr.y, hbr.w, hbr.h))
@@ -2864,14 +2914,14 @@ def draw_timer_chips(surf, rect, timers, epoch):
         if _shown_ringing(t, chip_left(t, epoch)):
             pygame.draw.rect(surf, AMBER, box, max(2, round(0.002 * se)), border_radius=rad)
         li, ni = fl.render(lab, True, lc), fn.render(tim, True, fg)
-        surf.blit(li, (x + pad_x, rect.y + (rect.h - li.get_height()) // 2))
-        surf.blit(ni, (x + w - pad_x - ni.get_width(), rect.y + (rect.h - ni.get_height()) // 2))
+        show(surf, li, (x + pad_x, rect.y + (rect.h - li.get_height()) // 2))
+        show(surf, ni, (x + w - pad_x - ni.get_width(), rect.y + (rect.h - ni.get_height()) // 2))
         x += w + gap
     if plus:
         box = pygame.Rect(x, rect.y, plus_w, rect.h)
         pygame.draw.rect(surf, SURFACE2, box, border_radius=min(box.w, box.h) // 2)
         pi = fl.render(plus, True, MUTED)
-        surf.blit(pi, (x + (plus_w - pi.get_width()) // 2, rect.y + (rect.h - pi.get_height()) // 2))
+        show(surf, pi, (x + (plus_w - pi.get_width()) // 2, rect.y + (rect.h - pi.get_height()) // 2))
     surf.set_clip(prev)
 
 
@@ -2937,7 +2987,7 @@ def _blit_ring_block(surf, ring, cx, cy, row):
     """Center a countdown ring on (cx, cy). Returns the ring's rect."""
     img, _pad = ring
     rect = img.get_rect(center=(cx, cy))
-    surf.blit(img, rect.topleft)
+    show(surf, img, rect.topleft)
     time_px = max(14, int(rect.w * 0.20))
     name_px = max(14, int(rect.w * 0.08))
     color = AMBER if row.get("color") == "amber" else TEXT
@@ -3117,7 +3167,7 @@ def draw_card(surf, card, x, y, max_w, max_h):
     if beside:
         ic = card_icon(card["icon"], icon_px)
         if ic:
-            surf.blit(ic, (rect.left + pad, rect.top + (rect.h - icon_px) // 2))
+            show(surf, ic, (rect.left + pad, rect.top + (rect.h - icon_px) // 2))
         tx = rect.left + pad + icon_px + gap
         ty = rect.top + max(pad, (rect.h - th) // 2)
         anchor = "left"
@@ -3126,7 +3176,7 @@ def draw_card(surf, card, x, y, max_w, max_h):
         if icon_px:
             ic = card_icon(card["icon"], icon_px)
             if ic:
-                surf.blit(ic, (rect.centerx - icon_px // 2, ty))
+                show(surf, ic, (rect.centerx - icon_px // 2, ty))
             ty += icon_px + gap
         tx = rect.centerx
         anchor = "center"
@@ -3135,7 +3185,7 @@ def draw_card(surf, card, x, y, max_w, max_h):
         f = font(kind, px)
         shown = text if f.size(text)[0] <= col_w else ellipsize(f, text, col_w)
         img = f.render(shown, True, TEXT if role in ("hero", "sub") else MUTED)
-        surf.blit(img, (tx if anchor == "left" else tx - img.get_width() // 2, ty))
+        show(surf, img, (tx if anchor == "left" else tx - img.get_width() // 2, ty))
         ty += img.get_height() + gap
     surf.set_clip(prev)
     return rect
@@ -3169,7 +3219,7 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     dbr = dimg.get_bounding_rect()
     bx = int(round(digits.x + digits.w / 2.0 - (dbr.x + dbr.w / 2.0)))
     date_y = base + L(IDLE_DATE_GAP)
-    surf.blit(dimg, (bx, date_y))
+    show(surf, dimg, (bx, date_y))
     LAST_DATE_RECT = pygame.Rect(bx, date_y, dimg.get_width(), dimg.get_height())
     if wx.offline():
         draw_offline_badge(surf, L, base)
@@ -3192,7 +3242,7 @@ def draw_weather(surf, L, d, clock_base):
     icon_px = L(150)
     icon = weather_icon(kind, d["day"], icon_px, max(2, L(7)))
     icon_at = (r.left - icon_px - L(12), tb - L(140))
-    surf.blit(icon, icon_at)
+    show(surf, icon, icon_at)
     marks = [r, pygame.Rect(icon_at, (icon_px, icon_px))]
     y = tb + L(36)
     if label:
@@ -3210,7 +3260,7 @@ def draw_offline_badge(surf, L, clock_base):
     rect = pygame.Rect(right - well, clock_base - L(250), well, well)
     pygame.draw.rect(surf, SURFACE2, rect, border_radius=L(28))
     ic = offline_icon(L(104), max(2, L(7)))
-    surf.blit(ic, ic.get_rect(center=rect.center))
+    show(surf, ic, ic.get_rect(center=rect.center))
     tr = text_at(surf, "body", L(44), "Weather offline", MUTED, (right, rect.bottom + L(20)), "topright")
     LAST_OFFLINE_RECT = rect.union(tr)
 
@@ -3242,7 +3292,7 @@ def draw_voice_hint(surf, segments, x, y, px=36, max_w=None):
     rects = []
     for text, color in spans:
         img = f.render(text, True, color)
-        surf.blit(img, (cx, top))
+        show(surf, img, (cx, top))
         rects.append(pygame.Rect(cx, top, img.get_width(), img.get_height()))
         cx += img.get_width()
     return rects[0].unionall(rects[1:]) if len(rects) > 1 else rects[0]
@@ -3339,6 +3389,77 @@ def team_face(team, px):
     return None
 
 
+def _team_has_face(team):
+    """True when the score column will draw a logo or a badge, so the stack reserves that height."""
+    if not isinstance(team, dict):
+        return False
+    if team.get("logo_badge") is True:
+        return True
+    lid = team.get("logo_id")
+    if not isinstance(lid, str):
+        return False
+    path = logo_cache().path_for(lid)
+    return bool(path and os.path.isfile(path))
+
+
+def _sports_column_px(L, avail, col_w, scores, face):
+    """Logo, name, and score sizes whose font boxes fit in avail, including the gaps.
+
+    The preferred sizes are the 1920x1080 caps. A short panel scales them down together
+    until the stack ends at or above the next-game row. Width still caps the score.
+    """
+    gap = max(1, L(8))
+    avail = max(0, int(avail))
+    mark_cap = L(110) if face else 0
+    name_cap = max(8, L(48))
+    score_cap = min(
+        _fit_px("display", str(scores[0]), L(180), max(8, col_w), 8),
+        _fit_px("display", str(scores[1]), L(180), max(8, col_w), 8),
+    )
+
+    def pack(scale):
+        mark = int(round(mark_cap * scale)) if face else 0
+        name_px = max(8, int(round(name_cap * scale)))
+        score_px = max(8, int(round(score_cap * scale)))
+        guard = 0
+        while score_px > 8 and guard < 40 and (
+            font("display", score_px).size(str(scores[0]))[0] > col_w
+            or font("display", score_px).size(str(scores[1]))[0] > col_w
+        ):
+            score_px -= 1
+            guard += 1
+        name_h = font("display", name_px).get_height()
+        score_h = max(font("display", score_px).size(str(s))[1] for s in scores)
+        block = name_h + gap + score_h
+        if mark > 0:
+            block += mark + gap
+        return block, mark, name_px, score_px
+
+    block, mark, name_px, score_px = pack(1.0)
+    if block > avail:
+        lo, hi, best = 0.0, 1.0, pack(0.0)
+        for _ in range(18):
+            mid = (lo + hi) / 2.0
+            trial = pack(mid)
+            if trial[0] <= avail:
+                best = trial
+                lo = mid
+            else:
+                hi = mid
+        block, mark, name_px, score_px = best
+        while block > avail and (score_px > 8 or name_px > 8 or mark > 0):
+            if score_px > 8:
+                score_px -= 1
+            elif name_px > 8:
+                name_px -= 1
+            else:
+                mark -= 1
+            name_h = font("display", name_px).get_height()
+            score_h = max(font("display", score_px).size(str(s))[1] for s in scores)
+            block = name_h + gap + score_h + ((mark + gap) if mark else 0)
+    return mark, name_px, score_px, gap
+
+
 def sports_stack(top, bottom, face_h, name_h, score_h, gap):
     """Y positions for one team column, centered in [top, bottom].
 
@@ -3427,7 +3548,7 @@ def _paint_home_tile(surf, L, rect, row, scale=1.0):
     inset = _band_px(L, 30, scale)
     y = rect.top + inset
     title = _line(surf, "display", _band_px(L, 36, scale), card["title"].upper(), MUTED, rect.w - 2 * inset)
-    surf.blit(title, (rect.left + inset, y))
+    show(surf, title, (rect.left + inset, y))
     y += title.get_height() + _band_px(L, 18, scale)
     for item in card["items"]:
         trend = item.get("trend")
@@ -3438,11 +3559,11 @@ def _paint_home_tile(surf, L, rect, row, scale=1.0):
         row_h = max(label.get_height(), value.get_height())
         if y + row_h > rect.bottom - _band_px(L, 8, scale):
             break
-        surf.blit(label, (rect.left + inset, y + max(0, (value.get_height() - label.get_height()) // 2)))
+        show(surf, label, (rect.left + inset, y + max(0, (value.get_height() - label.get_height()) // 2)))
         vx = rect.right - inset - value.get_width()
         if trend in ("up", "down"):
             _trend(surf, vx - arrow - _band_px(L, 8, scale), y + max(0, (value.get_height() - arrow) // 2), arrow, trend)
-        surf.blit(value, (vx, y))
+        show(surf, value, (vx, y))
         y += row_h + _band_px(L, 18, scale)
 
 
@@ -3657,12 +3778,12 @@ def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=Fa
     cx = rect.left + inset_x
     room = rect.right - inset_x - cx
     if glyph and room > glyph.get_width():
-        surf.blit(glyph, (cx, rect.centery - glyph.get_height() // 2))
+        show(surf, glyph, (cx, rect.centery - glyph.get_height() // 2))
         cx += glyph.get_width() + gap
         room = rect.right - inset_x - cx
     shown = label if label.get_width() <= room else face.render(
         ellipsize(face, word, max(8, room)), True, ink)
-    surf.blit(shown, (cx, rect.centery - shown.get_height() // 2))
+    show(surf, shown, (cx, rect.centery - shown.get_height() // 2))
     return rect
 
 
@@ -3687,7 +3808,7 @@ def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
         avatar.set_alpha(153)
     ax, ay = rect.left + inset, rect.top + inset
     cx, cy = ax + d // 2, ay + d // 2
-    surf.blit(avatar, (cx - photo_d // 2, cy - photo_d // 2))
+    show(surf, avatar, (cx - photo_d // 2, cy - photo_d // 2))
     ring = AMBER if needs else (MUTED if aged else RULE2)
     pygame.draw.circle(surf, ring, (cx, cy), max(1, d // 2 - ring_w // 2), max(1, ring_w))
     LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
@@ -3720,8 +3841,8 @@ def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
     pill_h = _band_px(L, 10, scale) * 2 + max(font("display", pill_px).get_height(), max(12, int(pill_px * 0.72)))
     block_h = name_img.get_height() + _band_px(L, 8, scale) + pill_h
     block_y = ay + max(0, (d - block_h) // 2)
-    surf.blit(name_img, (tx, block_y))
-    surf.blit(age_img, (tx + name_img.get_width(), block_y + name_img.get_height() - age_img.get_height()))
+    show(surf, name_img, (tx, block_y))
+    show(surf, age_img, (tx + name_img.get_width(), block_y + name_img.get_height() - age_img.get_height()))
     _update_pill(surf, L, word, icon, tx, block_y + name_img.get_height() + _band_px(L, 8, scale), text_w,
                  pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
     LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": scale})
@@ -3734,7 +3855,7 @@ def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
     for text in update_title_lines(L, row.get("line") or "", rect.w - 2 * inset, kind, px=head_px):
         img = font(kind, head_px).render(text, True, color)
         if ly + img.get_height() <= rect.bottom - inset:
-            surf.blit(img, (rect.left + inset, ly))
+            show(surf, img, (rect.left + inset, ly))
         ly += line_h
     detail = " ".join(str(row.get("detail") or "").split())
     if needs:
@@ -3749,7 +3870,7 @@ def _paint_update_tile(surf, L, rect, row, now, scale=1.0):
             img = df.render(text, True, MUTED)
             if dy + img.get_height() > rect.bottom - _band_px(L, 8, scale):
                 break
-            surf.blit(img, (rect.left + inset, dy))
+            show(surf, img, (rect.left + inset, dy))
             dy += img.get_height()
 
 
@@ -3915,7 +4036,7 @@ def _paint_update_card(surf, L, rect, row, now):
     avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(photo_d * 0.46)))
     if aged:
         avatar.set_alpha(153)
-    surf.blit(avatar, (cx - photo_d // 2, cy - photo_d // 2))
+    show(surf, avatar, (cx - photo_d // 2, cy - photo_d // 2))
     pygame.draw.circle(surf, RULE2, (cx, cy), max(1, outer // 2 - ring_w // 2), ring_w)
     av = pygame.Rect(cx - outer // 2, cy - outer // 2, outer, outer)
     LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
@@ -3982,9 +4103,9 @@ def _paint_update_card(surf, L, rect, row, now):
         block_h += gap + detail_step * len(dlines)
     top = cy - block_h // 2
     name_y = top - row_top
-    surf.blit(name_img, (tx, name_y))
+    show(surf, name_img, (tx, name_y))
     age_x = tx + name_img.get_width()
-    surf.blit(age_img, (age_x, name_y + (name_img.get_height() - age_img.get_height()) // 2))
+    show(surf, age_img, (age_x, name_y + (name_img.get_height() - age_img.get_height()) // 2))
     if on_name:
         pill_x = age_x + age_img.get_width() + gap_row
         pill_y = name_y + pill_top_rel
@@ -4002,12 +4123,12 @@ def _paint_update_card(surf, L, rect, row, now):
         cursor += gap
         line_y = cursor
         for text in lines:
-            surf.blit(lf.render(text, True, TEXT), (tx, cursor))
+            show(surf, lf.render(text, True, TEXT), (tx, cursor))
             cursor += line_step
     if dlines:
         cursor += gap
         for text in dlines:
-            surf.blit(df.render(text, True, UPDATE_DETAIL), (tx, cursor))
+            show(surf, df.render(text, True, UPDATE_DETAIL), (tx, cursor))
             cursor += detail_step
     LAST_UPDATE_LINES = {
         "line": lines, "detail": dlines, "text": " ".join(lines), "detail_text": " ".join(dlines),
@@ -4050,12 +4171,12 @@ def _draw_updates_band(surf, L, rows, now):
     if prev and prev.get("box") == (box.x, box.y, box.w, box.h) and prev.get("sig") != sig:
         alphas = band_fade_alphas()
         for alpha in alphas:
-            surf.blit(blend_band_frame(prev["layer"], layer, alpha), box.topleft)
+            show(surf, blend_band_frame(prev["layer"], layer, alpha), box.topleft)
             if alpha != 255 and os.path.exists(FB):
                 time.sleep(0.2 / 8)
     else:
         alphas = (255,)
-        surf.blit(layer, box.topleft)
+        show(surf, layer, box.topleft)
     _BAND_PREV = {"sig": sig, "box": (box.x, box.y, box.w, box.h), "layer": layer}
     LAST_BAND_FADE = {"steps": len(alphas), "alphas": list(alphas)}
 
@@ -4473,7 +4594,7 @@ def _pulse_glow(surf, rect, pulse):
     alpha = int(round(255 * 0.33 * pulse))
     rad = min(rect.w, rect.h) // 2
     pygame.draw.rect(shade, (AMBER.r, AMBER.g, AMBER.b, alpha), shade.get_rect(), border_radius=rad)
-    surf.blit(shade, (rect.left - spread, rect.top - spread))
+    show(surf, shade, (rect.left - spread, rect.top - spread))
 
 
 def _ringing_done_line(title, width, face):
@@ -4543,8 +4664,8 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
             label = font("body", recipe_px(L, 40)).render("No timers", True, RECIPE_FAINT)
             block = icon.get_height() + recipe_px(L, 12) + label.get_height()
             y = rect.top + max(0, (rect.h - block) // 2)
-            surf.blit(icon, (rect.centerx - icon.get_width() // 2, y))
-            surf.blit(label, (rect.centerx - label.get_width() // 2, y + icon.get_height() + recipe_px(L, 12)))
+            show(surf, icon, (rect.centerx - icon.get_width() // 2, y))
+            show(surf, label, (rect.centerx - label.get_width() // 2, y + icon.get_height() + recipe_px(L, 12)))
         return
     if slot.get("kind") == "more":
         ringing_style = slot.get("treatment") == "ringing"
@@ -4559,7 +4680,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
         y = rect.top + recipe_px(L, 34)
         head = font("display", recipe_px(L, 52)).render(slot.get("label") or "", True, head_color)
         LAST_RECIPE_COPY.append(slot.get("label") or "")
-        surf.blit(head, (rect.left + recipe_px(L, 28), y))
+        show(surf, head, (rect.left + recipe_px(L, 28), y))
         y += head.get_height() + recipe_px(L, 16)
         name_f = font("body", recipe_px(L, 36))
         for row in slot.get("rows") or []:
@@ -4570,8 +4691,8 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
                 LAST_RECIPE_COPY.append(done)
                 if y + max(line.get_height(), bell.get_height()) > rect.bottom - recipe_px(L, 16):
                     break
-                surf.blit(bell, (rect.left + recipe_px(L, 28), y + max(0, (line.get_height() - bell.get_height()) // 2)))
-                surf.blit(line, (rect.left + recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10), y))
+                show(surf, bell, (rect.left + recipe_px(L, 28), y + max(0, (line.get_height() - bell.get_height()) // 2)))
+                show(surf, line, (rect.left + recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10), y))
                 LAST_RECIPE_TARGETS.append({"id": row.get("id"), "text": done, "h": max(line.get_height(), bell.get_height()),
                                             "fits": recipe_px(L, 28) + bell.get_width() + recipe_px(L, 10)
                                             + line.get_width() <= rect.w - recipe_px(L, 16)})
@@ -4580,7 +4701,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
             line = name_f.render(f"{row['title']}  {row['text']}", True, MUTED)
             if y + line.get_height() > rect.bottom - recipe_px(L, 16):
                 break
-            surf.blit(line, (rect.left + recipe_px(L, 28), y))
+            show(surf, line, (rect.left + recipe_px(L, 28), y))
             y += line.get_height() + recipe_px(L, 8)
         return
     ringing = slot.get("kind") == "ringing"
@@ -4596,15 +4717,15 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
         d = recipe_px(L, 200)
         ring, _pad = _paint_countdown_ring(d, 1.0, AMBER, 0.0 if reduced else pulse)
         ring_at = ring.get_rect(midtop=(rect.centerx, rect.top + recipe_px(L, 16)))
-        surf.blit(ring, ring_at)
+        show(surf, ring, ring_at)
         bell = _bell_icon(recipe_px(L, 72), AMBER)
-        surf.blit(bell, bell.get_rect(center=ring_at.center))
+        show(surf, bell, bell.get_rect(center=ring_at.center))
         done_px = recipe_px(L, 46)
         done_font = font("display", done_px)
         done_text = _ringing_done_line(slot.get("title") or "", rect.w - recipe_px(L, 48), done_font)
         done = done_font.render(done_text, True, AMBER)
         LAST_RECIPE_COPY.append(done_text)
-        surf.blit(done, (rect.centerx - done.get_width() // 2, ring_at.bottom + recipe_px(L, 8)))
+        show(surf, done, (rect.centerx - done.get_width() // 2, ring_at.bottom + recipe_px(L, 8)))
         hint_px = recipe_px(L, 48)
         draw_voice_hint(surf, SLOT_STOP_SEGMENTS, rect.left + recipe_px(L, 28),
                         rect.bottom - recipe_px(L, 28) - font("body", hint_px).get_height(),
@@ -4617,7 +4738,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     ring_at = ring.get_rect(midtop=(rect.centerx, rect.top + recipe_px(L, 28)))
     prev = surf.get_clip()
     surf.set_clip(rect.clip(prev if prev else rect))
-    surf.blit(ring, ring_at)
+    show(surf, ring, ring_at)
     title = font("display", recipe_px(L, 40)).render(slot.get("title") or "", True, TEXT)
     digits = font("display", recipe_px(L, 64)).render(slot.get("text") or "", True, TEXT)
     source = font("body", recipe_px(L, 32)).render(slot.get("source") or "", True, MUTED)
@@ -4626,7 +4747,7 @@ def _paint_recipe_slot(surf, L, rect, slot, index, epoch, reduced):
     for img in (title, digits, source):
         if y + img.get_height() > rect.bottom - recipe_px(L, 12):
             break
-        surf.blit(img, (rect.centerx - img.get_width() // 2, y))
+        show(surf, img, (rect.centerx - img.get_width() // 2, y))
         y += img.get_height() + recipe_px(L, 4)
     surf.set_clip(prev)
 
@@ -4671,7 +4792,7 @@ def _paint_recipe_banner(surf, L, rect, parts):
     rad = rect.h // 2
     pygame.draw.rect(surf, AMBER, rect, border_radius=rad)
     bell = _bell_icon(recipe_px(L, 64), AMBER_INK)
-    surf.blit(bell, (rect.left + recipe_px(L, 40), rect.centery - bell.get_height() // 2))
+    show(surf, bell, (rect.left + recipe_px(L, 40), rect.centery - bell.get_height() // 2))
     f = font("display", max(14, recipe_px(L, 54)))
     text = parts["text"]
     room = rect.w - recipe_px(L, 64) - recipe_px(L, 24) - recipe_px(L, 80)
@@ -4683,11 +4804,11 @@ def _paint_recipe_banner(surf, L, rect, parts):
         tail_img = f.render(" " + parts["suffix"], True, AMBER_INK)
         x = rect.left + recipe_px(L, 40) + bell.get_width() + recipe_px(L, 24)
         y = rect.centery - head_img.get_height() // 2
-        surf.blit(head_img, (x, y))
-        surf.blit(tail_img, (x + head_img.get_width(), y))
+        show(surf, head_img, (x, y))
+        show(surf, tail_img, (x + head_img.get_width(), y))
         return
     x = rect.left + recipe_px(L, 40) + bell.get_width() + recipe_px(L, 24)
-    surf.blit(img, (x, rect.centery - img.get_height() // 2))
+    show(surf, img, (x, rect.centery - img.get_height() // 2))
 
 
 def draw_recipe(surf, L, card):
@@ -4709,10 +4830,10 @@ def draw_recipe(surf, L, card):
     pad = recipe_px(L, 40)
     x, y = ing.left + pad, ing.top + pad
     cap = _line(surf, "display", recipe_px(L, 28), "INGREDIENTS", MUTED, ing.w - 2 * pad)
-    surf.blit(cap, (x, y))
+    show(surf, cap, (x, y))
     y += cap.get_height() + recipe_px(L, 8)
     meta = _line(surf, "body", recipe_px(L, 28), f"Serves {card['servings']}", RECIPE_FAINT, ing.w - 2 * pad)
-    surf.blit(meta, (x, y))
+    show(surf, meta, (x, y))
     y += meta.get_height() + recipe_px(L, 16)
     prev = surf.get_clip()
     surf.set_clip(ing)
@@ -4720,7 +4841,7 @@ def draw_recipe(surf, L, card):
         if y > ing.bottom - recipe_px(L, 28):
             break
         line = _line(surf, "body", recipe_px(L, 42), item, TEXT, ing.w - 2 * pad)
-        surf.blit(line, (x, y))
+        show(surf, line, (x, y))
         y += line.get_height() + recipe_px(L, 10)
     surf.set_clip(prev)
     sx = stp.left + recipe_px(L, 64)
@@ -4728,7 +4849,7 @@ def draw_recipe(surf, L, card):
     step_n, total = card["step"], len(card["steps"])
     col = stp.w - recipe_px(L, 128)
     label = _line(surf, "display", recipe_px(L, 52), f"Step {step_n} of {total}", LISTENING, col)
-    surf.blit(label, (sx, sy))
+    show(surf, label, (sx, sy))
     sy += label.get_height() + recipe_px(L, 18)
     track = pygame.Rect(sx, sy, col, max(6, recipe_px(L, 12)))
     pygame.draw.rect(surf, SURFACE2, track, border_radius=recipe_px(L, 8))
@@ -4750,7 +4871,7 @@ def draw_recipe(surf, L, card):
         img = f.render(line, True, TEXT)
         if ty + img.get_height() > text_box.bottom:
             break
-        surf.blit(img, (sx, ty))
+        show(surf, img, (sx, ty))
         if hit and line == step_body[a:b]:
             lo, hi = max(hit["start"], a), min(hit["end"], b)
             if lo < hi:
@@ -4758,7 +4879,7 @@ def draw_recipe(surf, L, card):
                 frag = line[frag_at:frag_at + (hi - lo)]
                 if frag:
                     ox = f.size(line[:frag_at])[0]
-                    surf.blit(f.render(frag, True, mark), (sx + ox, ty))
+                    show(surf, f.render(frag, True, mark), (sx + ox, ty))
                     thick = max(1, recipe_px(L, 6))
                     _dotted_hline(surf, mark, sx + ox, ty + img.get_height() - thick, f.size(frag)[0], thick, thick)
         ty += img.get_height() + gap
@@ -4770,7 +4891,7 @@ def draw_recipe(surf, L, card):
     if caption:
         cap = font("body", hint_px).render(caption, True, TEXT)
         surf.set_clip(hint)
-        surf.blit(cap, (hint.left, hy))
+        show(surf, cap, (hint.left, hy))
         surf.set_clip(prev)
     else:
         draw_voice_hint(surf, RECIPE_HINT_SEGMENTS, hint.left, hy, px=hint_px, max_w=hint.w)
@@ -4795,26 +4916,24 @@ def draw_sports(surf, L, card, rect):
     st = _line(surf, "display", L(44), label, LISTENING if live else MUTED, max(40, rect.w // 3))
     if live:
         pygame.draw.circle(surf, LISTENING, (rect.left + pad + L(8), head + st.get_height() // 2), max(4, L(10)))
-        surf.blit(st, (rect.left + pad + L(28), head))
+        show(surf, st, (rect.left + pad + L(28), head))
     else:
-        surf.blit(st, (rect.left + pad, head))
+        show(surf, st, (rect.left + pad, head))
     period = _line(surf, "display", L(44), card["period"], MUTED, max(40, rect.w // 3))
-    surf.blit(period, (rect.right - pad - period.get_width(), head))
+    show(surf, period, (rect.right - pad - period.get_width(), head))
     # MUTED, not FAINT: FAINT on SURFACE is 3.24:1 and fails AA for small text (Noor's contrast table).
     league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
-    surf.blit(league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
+    show(surf, league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
     strip_top = rect.bottom - strip_h
     col_top = head + st.get_height() + L(12)
-    col_bot = (strip_top if strip_h else rect.bottom) - L(16)
+    # A schedule that does not get its own band still needs a line under the scores.
+    tail_h = 0 if strip_h or not games else font("body", L(28)).get_height() + L(8)
+    col_bot = (strip_top if strip_h else rect.bottom) - L(16) - tail_h
     col_w = max(40, rect.w // 2 - L(72))
-    avail = max(L(48), col_bot - col_top)
-    mark = min(L(110), max(L(40), avail // 3))
-    name_px = min(L(48), max(L(22), avail // 6))
-    score_px = min(
-        _fit_px("display", card["home_score"], L(180), col_w, L(36)),
-        _fit_px("display", card["away_score"], L(180), col_w, L(36)),
-        max(L(36), avail * 2 // 3))
-    gap = L(8)
+    avail = max(0, col_bot - col_top)
+    face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
+    mark, name_px, score_px, gap = _sports_column_px(
+        L, avail, col_w, (card["home_score"], card["away_score"]), face)
     score_mids = []
 
     def paint_side(team, score, cx):
@@ -4824,30 +4943,43 @@ def draw_sports(surf, L, card, rect):
         face_h = face.get_height() if face is not None else 0
         face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), sc.get_height(), gap)
         if face is not None and face_y is not None:
-            surf.blit(face, (cx - face.get_width() // 2, face_y))
-        surf.blit(name, (cx - name.get_width() // 2, name_y))
-        surf.blit(sc, (cx - sc.get_width() // 2, score_y))
+            show(surf, face, (cx - face.get_width() // 2, face_y))
+        show(surf, name, (cx - name.get_width() // 2, name_y))
+        show(surf, sc, (cx - sc.get_width() // 2, score_y))
         score_mids.append(score_y + sc.get_height() // 2)
 
     paint_side(card["home"], card["home_score"], rect.left + rect.w // 4)
     paint_side(card["away"], card["away_score"], rect.right - rect.w // 4)
-    dash = font("display", min(L(60), max(16, score_px // 3))).render("–", True, MUTED)
+    dash_px = min(L(60), max(8, score_px // 3))
+    dash = font("display", dash_px).render("\u2013", True, MUTED)
     mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
-    surf.blit(dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
+    show(surf, dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
     if strip_h:
-        pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), max(2, L(2)))
-        cap = _line(surf, "display", L(28), "NEXT GAME", MUTED, L(240))
+        rule_h = max(2, L(2))
+        pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), rule_h)
+        room = max(8, strip_h - rule_h)
+        cap_px, row_px = L(28), L(44)
+        while cap_px > 8 or row_px > 8:
+            text_h = max(font("display", cap_px).get_height(), font("display", row_px).get_height())
+            if text_h <= room:
+                break
+            if row_px > 8:
+                row_px -= 1
+            if cap_px > 8:
+                cap_px -= 1
+        cap = _line(surf, "display", cap_px, "NEXT GAME", MUTED, L(240))
         game = games[0]
-        when = _line(surf, "display", L(44), game["when"], LISTENING, max(40, rect.w // 4))
+        when = _line(surf, "display", row_px, game["when"], LISTENING, max(40, rect.w // 4))
         label_w = max(40, rect.w - cap.get_width() - when.get_width() - L(180))
-        name = _line(surf, "display", L(44), game["label"], TEXT, label_w)
-        row_y = strip_top + (strip_h - max(cap.get_height(), name.get_height(), when.get_height())) // 2
-        surf.blit(cap, (rect.left + pad, row_y + (name.get_height() - cap.get_height()) // 2))
-        surf.blit(name, (rect.left + pad + cap.get_width() + L(32), row_y))
-        surf.blit(when, (rect.right - pad - when.get_width(), row_y))
+        name = _line(surf, "display", row_px, game["label"], TEXT, label_w)
+        text_h = max(cap.get_height(), name.get_height(), when.get_height())
+        row_y = strip_top + rule_h + max(0, (room - text_h) // 2)
+        show(surf, cap, (rect.left + pad, row_y + (name.get_height() - cap.get_height()) // 2))
+        show(surf, name, (rect.left + pad + cap.get_width() + L(32), row_y))
+        show(surf, when, (rect.right - pad - when.get_width(), row_y))
     elif games:
         line = _line(surf, "body", L(28), f"{games[0]['when']}  {games[0]['label']}", MUTED, rect.w - 2 * pad)
-        surf.blit(line, (rect.left + pad, rect.bottom - L(16) - line.get_height()))
+        show(surf, line, (rect.left + pad, rect.bottom - L(16) - line.get_height()))
 
 
 def friendly_date(iso):
@@ -4880,8 +5012,8 @@ def draw_calendar(surf, L, card, rect):
         bar.centery = row.centery
         pygame.draw.rect(surf, LISTENING if i == 0 else RULE, bar, border_radius=L(4))
         name = _line(surf, "display", px, ev["title"], TEXT, max(40, row.right - bar.right - L(36)))
-        surf.blit(when, (row.left + time_col - L(20) - when.get_width(), row.centery - when.get_height() // 2))
-        surf.blit(name, (bar.right + L(28), row.centery - name.get_height() // 2))
+        show(surf, when, (row.left + time_col - L(20) - when.get_width(), row.centery - when.get_height() // 2))
+        show(surf, name, (bar.right + L(28), row.centery - name.get_height() // 2))
         y += row_h
     if shown:
         segments = [("Next:", "muted"), (" %s · %s" % (shown[0]["title"], shown[0]["time"]), "text")]
@@ -4938,7 +5070,7 @@ def draw_state_label(surf, L, state, px, x, cy, align="left"):
     left = x if align == "left" else x - total
     g = draw_state_glyph(surf, state, left, cy, gh, color)
     tr = img.get_rect(midleft=(g.right + gap, cy))
-    surf.blit(img, tr)
+    show(surf, img, tr)
     return g.union(tr)
 
 
@@ -4952,13 +5084,13 @@ def draw_tile_badge(surf, L, msg, state, t=1.0):
     photo_ok = bool(msg.get("voice"))
     img, pad = portrait(who, d, ring_w, state, t, photo_ok=photo_ok)
     origin = (L.m - pad, cy - d // 2 - pad)
-    surf.blit(img, origin)
+    show(surf, img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
     LAST_PORTRAIT_BG = BG
     name = _line(surf, "body", L(40), who, TEXT, max(40, L.w // 3))
     x = L.m + d + L(24)
-    nr = surf.blit(name, (x, cy - name.get_height() // 2))
+    nr = show(surf, name, (x, cy - name.get_height() // 2))
     LAST_BADGE_RECT = LAST_PORTRAIT_RECT.union(nr)
     lr = draw_state_label(surf, L, state, L(40), nr.right + L(24), cy)
     if lr:
@@ -5105,11 +5237,11 @@ def draw_reply_line(surf, L, msg, state):
     lead = font("body", L(36)).render(f"{who}, replying to you", True, MUTED)
     y = content_limit(L) - lead.get_height() - L(8)
     x = L.m + L(28)
-    surf.blit(lead, (x, y))
+    show(surf, lead, (x, y))
     quote = f"\u201c{' '.join(text.split())}\u201d" if text.strip() else ""
     body = _line(surf, "body", L(40), quote, TEXT, L.w - 2 * L.m - lead.get_width() - L(56)) if quote else None
     if body:
-        surf.blit(body, (x + lead.get_width() + L(20), y - (body.get_height() - lead.get_height()) // 2))
+        show(surf, body, (x + lead.get_width() + L(20), y - (body.get_height() - lead.get_height()) // 2))
     LAST_REPLY_LINE = {"who": who, "text": quote, "y": y}
 
 
@@ -5148,7 +5280,7 @@ def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     photo_ok = bool(msg.get("voice"))
     img, ppad = portrait(who, d, ring_w, state, t, photo_ok=photo_ok)
     origin = (rect.left + L(WAKE_AVATAR_LEFT) - ppad, rect.centery - d // 2 - ppad)
-    surf.blit(img, origin)
+    show(surf, img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
     LAST_PORTRAIT_BG = SURFACE
@@ -5159,7 +5291,7 @@ def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     y = rect.top + pad
     name_w = width
     nm = _line(surf, "display", name_px, who, TEXT, max(40, name_w))
-    surf.blit(nm, (x, y))
+    show(surf, nm, (x, y))
     y += nm.get_height() + L(12)
     now = now_s if now_s is not None else time.time()
     if heard_px and heard_lines:
@@ -5213,7 +5345,7 @@ def _paint_one_tele(surf, st, now_s):
     rect, full, tele = st["rect"], st["text"], st["tele"]
     surf.fill(SURFACE, rect)
     if tele is None or not tele.scrolls:
-        surf.blit(full, rect.topleft, pygame.Rect(0, 0, rect.w, rect.h))
+        show(surf, full, rect.topleft, pygame.Rect(0, 0, rect.w, rect.h))
         return rect
     offset = tele.step(now_s)
     win = _window_at(full, offset, rect.w, rect.h)
@@ -5222,11 +5354,11 @@ def _paint_one_tele(surf, st, now_s):
         old = _window_at(full, fade[0], rect.w, rect.h)
         old.fill((255, 255, 255, int(255 * (1 - fade[1]))), special_flags=pygame.BLEND_RGBA_MULT)
         win.fill((255, 255, 255, int(255 * fade[1])), special_flags=pygame.BLEND_RGBA_MULT)
-        surf.blit(old, rect.topleft)
+        show(surf, old, rect.topleft)
     top, bottom = tele.fades()
     if not tele.reduced:
         _fade_edges(win, st["fade"], top, bottom)
-    surf.blit(win, rect.topleft)
+    show(surf, win, rect.topleft)
     return rect
 
 
@@ -5325,7 +5457,7 @@ def draw_tile_chip(surf, L, card, right_x, cy):
         pygame.draw.circle(surf, LISTENING, (x + dot, cy), dot)
         x += 2 * dot + gap
     for _, img in parts:
-        surf.blit(img, (x, cy - img.get_height() // 2))
+        show(surf, img, (x, cy - img.get_height() // 2))
         x += img.get_width() + gap
     return rect
 
@@ -5355,7 +5487,7 @@ def draw_feed(surf, L, now, card, colon_on=True, msg=None, state=None, t=1.0, ch
         if caption:
             title = _line(surf, "body", max(14, recipe_px(L, 60)), caption, MUTED, frame["title"].w)
             y = frame["title"].top + max(0, (frame["title"].h - title.get_height()) // 2)
-            surf.blit(title, (frame["title"].left, y))
+            show(surf, title, (frame["title"].left, y))
     pinned = _pinned_epoch(None)
     now_e = pinned if pinned is not None else time.time()
     ringing = bool(TIMER_CHIPS) and any(_shown_ringing(t, chip_left(t, pinned)) for t in TIMER_CHIPS)
@@ -5891,7 +6023,7 @@ def _draw_progress(surf, L, slot, col_w, stage, i, status):
             stext = ellipsize(f, stext, room)
         img = f.render(stext, True, TEXT)
         y = slot.y + max(0, (slot.h - img.get_height()) // 2)
-        surf.blit(img, (slot.x, y))
+        show(surf, img, (slot.x, y))
         x = slot.x + img.get_width() + zpx(L, 16)
         if check:
             u = max(6, zpx(L, 28))
@@ -5922,7 +6054,7 @@ def _draw_quiet_hint(surf, L, slot, col_w):
     text = QUIET_HINT if f.size(QUIET_HINT)[0] <= col_w else ellipsize(f, QUIET_HINT, col_w)
     img = f.render(text, True, MUTED)
     y = slot.y + max(0, (slot.h - img.get_height()) // 2)
-    surf.blit(img, (slot.x, y))
+    show(surf, img, (slot.x, y))
     LAST_ENROLL_HINT = pygame.Rect(slot.x, y, img.get_width(), img.get_height())
 
 
@@ -5936,7 +6068,7 @@ def _draw_actions(surf, L, tile, slot, col_w, stage, who=""):
     if note and not actions:
         nf = font("body", px)
         img = nf.render(note if nf.size(note)[0] <= col_w else ellipsize(nf, note, col_w), True, MUTED)
-        surf.blit(img, (slot.x, slot.y + max(0, (slot.h - img.get_height()) // 2)))
+        show(surf, img, (slot.x, slot.y + max(0, (slot.h - img.get_height()) // 2)))
     bh = min(slot.h, max(44, zpx(L, 104)))
     by = slot.y + max(0, (slot.h - bh) // 2)
     pad = zpx(L, 52)
@@ -5963,7 +6095,7 @@ def _draw_actions(surf, L, tile, slot, col_w, stage, who=""):
             pygame.draw.rect(surf, RULE, rect, max(1, zpx(L, 3)), border_radius=rad)
             color = TEXT
         img = f.render(label, True, color)
-        surf.blit(img, (rect.x + (rect.w - img.get_width()) // 2, rect.y + (rect.h - img.get_height()) // 2))
+        show(surf, img, (rect.x + (rect.w - img.get_width()) // 2, rect.y + (rect.h - img.get_height()) // 2))
         buttons.append((bid, pygame.Rect(rect)))
         x = rect.right + gap
     LAST_ENROLL_BUTTONS = buttons
@@ -6052,7 +6184,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     d = max(8, av.w - 2 * ring_w)
     img, pad = portrait(who, d, ring_w, ENROLL_RING.get(stage, "none"), t, photo_ok=True)
     origin = (av.x + (av.w - d) // 2 - pad, av.y + (av.h - d) // 2 - pad)
-    surf.blit(img, origin)
+    show(surf, img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, True)
     LAST_PORTRAIT_BG = SURFACE
@@ -6066,7 +6198,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     eye_slot = pygame.Rect(col_x, tile.y + zpx(L, 61), col_w, max(1, zpx(L, 60)))
     surf.set_clip(eye_slot.clip(tile))
     ef = font("body", zpx(L, 44))
-    surf.blit(ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
+    show(surf, ef.render(eye if ef.size(eye)[0] <= col_w else ellipsize(ef, eye, col_w), True, MUTED), eye_slot.topleft)
     head, sub, scolor, status, _bar = enroll_copy(phrase, i, n, stage, extra)
     if stage == "stopped":
         sub = f"Say 'Hey Grok, train my wake word for {spoken}' to try again."
@@ -6077,7 +6209,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
     LAST_ENROLL_HEADLINE = pygame.Rect(head_slot)
     surf.set_clip(head_slot.clip(tile))
     shown = _ellipsize_quoted(hf, head, col_w)
-    surf.blit(hf.render(shown, True, TEXT), head_slot.topleft)
+    show(surf, hf.render(shown, True, TEXT), head_slot.topleft)
     # Lines under the headline start at its bottom, so a descender is not covered.
     shift = max(0, head_slot.bottom - (tile.y + zpx(L, 321)))
     # The visible clock margin can shorten this tile. Keep the lower column inside it,
@@ -6101,7 +6233,7 @@ def draw_enroll(surf, L, now, msg, t=1.0, wx=None):
         for ln in lines:
             if y >= sub_slot.bottom:
                 break
-            surf.blit(sf.render(ln, True, scolor), (col_x, y))
+            show(surf, sf.render(ln, True, scolor), (col_x, y))
             y += step
     prog = pygame.Rect(col_x, sub_slot.bottom if overflow else tile.y + zpx(L, 521) + shift, col_w, prog_h)
     LAST_ENROLL_PROGRESS = pygame.Rect(prog)
@@ -6138,7 +6270,7 @@ def draw_confirm(surf, L, now, msg):
     head = f"{who} will {verb} {where}:".replace("  ", " ") if verb != "undo" else f"{who} will undo the note:"
     y = round(0.17 * se)
     hr = font("display", round(0.0627 * se)).render(head, True, MUTED)
-    surf.blit(hr, (m, y))
+    show(surf, hr, (m, y))
     y += hr.get_height() + round(0.03 * se)
     box = pygame.Rect(m, y, w - 2 * m, round(0.36 * se))
     pygame.draw.rect(surf, SURFACE, box, border_radius=round(0.0188 * se))
@@ -6149,9 +6281,9 @@ def draw_confirm(surf, L, now, msg):
     y = box.bottom + round(0.04 * se)
     how = "Press the call button on the speaker to save." if tap == "1" else "Say “yes, save it”, or press the call button."
     hw = font("display", round(0.0563 * se)).render(how, True, LISTENING)
-    surf.blit(hw, (m, y))
+    show(surf, hw, (m, y))
     foot = font("body", round(0.0328 * se)).render("Anything else cancels. Nothing is saved until you confirm.", True, MUTED)
-    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+    show(surf, foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
 def thinking_body(text):
@@ -6207,7 +6339,7 @@ def _draw_voice_column(surf, L, who, heard, text, x, width, top_min, bottom, pho
     y = top_min if stack else max(top_min, min(photo_top + d // 2 - block // 2, bottom - block))
     if stack:
         img = fn.render(name, True, TEXT)
-        surf.blit(img, (x + (width - img.get_width()) // 2, y))
+        show(surf, img, (x + (width - img.get_width()) // 2, y))
     else:
         baseline_text(surf, "display", L(120), name, TEXT, x - L(4), y + int(fn.get_ascent() * 0.78))
     y += name_h + L(20)
@@ -6287,7 +6419,7 @@ def draw_session(surf, L, now, msg, state="speaking", t=1.0):
         bottom = min(bottom, content_limit(L))
     img, pad = portrait(who, d, ring_w, state, t, photo_ok=bool(msg.get("voice")))
     origin = (left - pad, photo_top - pad)
-    surf.blit(img, origin)
+    show(surf, img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, bool(msg.get("voice")))
     label_bottom = photo_top + d
@@ -6348,8 +6480,8 @@ def code_box(surf, se, code, x, y, code_px=0.0938, align="left"):
         r.left = x
     pygame.draw.rect(surf, SURFACE, r, border_radius=round(0.0188 * se))
     pygame.draw.rect(surf, AMBER, r, max(2, round(0.0018 * se)), border_radius=round(0.0188 * se))
-    surf.blit(lab, (r.centerx - lab.get_width() // 2, r.top + pady))
-    surf.blit(txt, (r.centerx - txt.get_width() // 2, r.top + pady + lab.get_height() + gap))
+    show(surf, lab, (r.centerx - lab.get_width() // 2, r.top + pady))
+    show(surf, txt, (r.centerx - txt.get_width() // 2, r.top + pady + lab.get_height() + gap))
     return r
 
 
@@ -6360,12 +6492,12 @@ def topbar(surf, se, label, now):
     hhmm, ampm = clock_parts(now)
     clk = font("display", round(0.0563 * se)).render(f"{hhmm} {ampm}", True, hexc("D9CFC2"))
     hgt = max(lab.get_height(), clk.get_height())
-    surf.blit(lab, (m, y + (hgt - lab.get_height()) // 2))
+    show(surf, lab, (m, y + (hgt - lab.get_height()) // 2))
     clk_y = y + (hgt - clk.get_height()) // 2
     lay = Layout(surf.get_width(), surf.get_height())
     icons = draw_status_icons(surf, lay)
     clk_x = icons.left - max(1, int(round(24 * lay.s))) - clk.get_width()
-    surf.blit(clk, (clk_x, clk_y))
+    show(surf, clk, (clk_x, clk_y))
 
 
 def draw_setup(surf, L, now, d):
@@ -6407,7 +6539,7 @@ def draw_setup(surf, L, now, d):
         x, y, align = w // 2, y0 + ring_d + round(0.03 * se), "center"
     for r, g in rend:
         y += g
-        surf.blit(r, (x if align == "left" else x - r.get_width() // 2, y))
+        show(surf, r, (x if align == "left" else x - r.get_width() // 2, y))
         y += r.get_height()
     if not key:
         code_box(surf, se, d["code"], x, y + round(0.0141 * se), align=align)
@@ -6435,7 +6567,7 @@ def draw_hotspot(surf, L, now, d):
     topbar(surf, se, "No network · Setup hotspot on", now)
     head = font("display", round(0.0762 * se)).render("Connect to set me up", True, TEXT)
     hy = round(0.1524 * se)
-    surf.blit(head, ((w - head.get_width()) // 2, hy))
+    show(surf, head, ((w - head.get_width()) // 2, hy))
     cols = 3
     col_w = (w - 2 * m) // cols
     qr = min(round(0.276 * se), col_w - round(0.02 * se))
@@ -6454,8 +6586,8 @@ def draw_hotspot(surf, L, now, d):
         rowx = cx - (num_d + round(0.015 * se) + t.get_width()) // 2
         pygame.draw.circle(surf, SPEAKING, (rowx + num_d // 2, y0 + num_d // 2), num_d // 2)
         n = font("display", round(num_d * 0.6)).render(str(i + 1), True, BG)
-        surf.blit(n, (rowx + (num_d - n.get_width()) // 2, y0 + (num_d - n.get_height()) // 2))
-        surf.blit(t, (rowx + num_d + round(0.015 * se), y0 + (num_d - t.get_height()) // 2))
+        show(surf, n, (rowx + (num_d - n.get_width()) // 2, y0 + (num_d - n.get_height()) // 2))
+        show(surf, t, (rowx + num_d + round(0.015 * se), y0 + (num_d - t.get_height()) // 2))
         y = y0 + num_d + round(0.03 * se)
         if i < 2:
             if matrix:
@@ -6467,12 +6599,12 @@ def draw_hotspot(surf, L, now, d):
             for text, color in sub:
                 f = font("mono", round(0.0352 * se))
                 r = f.render(text, True, color)
-                surf.blit(r, (cx - r.get_width() // 2, y))
+                show(surf, r, (cx - r.get_width() // 2, y))
                 y += r.get_height()
         else:
             code_box(surf, se, d["code"], cx, y + qr // 4, code_px=min(0.0692, 0.0692 * col_w / (0.42 * se)), align="center")
     foot = font("body", round(0.0328 * se)).render("Plug in a network cable instead and this goes away", True, MUTED)
-    surf.blit(foot, (m, h - round(0.0657 * se) - foot.get_height()))
+    show(surf, foot, (m, h - round(0.0657 * se) - foot.get_height()))
 
 
 def screen_for(setup_doc, busy, msg, night, feed=None, timers=False, tile=None):

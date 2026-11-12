@@ -414,9 +414,12 @@ Read voiceId from your own Grok Bot settings.json (your own agent's settings fil
 "$HOME/.local/share/grok-station/bin/gs-seal-reply" avatar --persona <slug> < "$HOME/.local/share/grok-station/avatar-<slug>.png"
 The station takes at most 6 pictures an hour.
 
-Station updates. When you email your owner, also post a short version here: your email's name as the kind, then its lead sentence (60 characters max). When you need your owner to decide or do something, post it as Needs you and clear it once it's handled. Don't post progress or "working on" updates. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
+Station updates. When you email your owner, also post a short version here: your email's name as the kind, then its lead sentence (60 characters max). When you need your owner to decide or do something, post it as Needs you and clear it once it's handled. Don't post progress or "working on" updates. If you have nothing of value, post a null update instead of filler text. Write one JSON object (no kind, nonce or exp_ms; the tool adds them):
 {"v":1,"op":"update","id":"<a-z0-9_- id>","update":{"type":"update|needs_you","kind":(18),"line":(60),"detail":(90),"time":"<ISO 8601 time with zone>"}}
 For type update, kind is the email name (18 characters max), line is its lead sentence (60 max), and detail is optional (90 max). The same bot and kind replaces the previous update, and that latest update stays until the bot replaces or clears it. Needs you is one pinned item per bot until cleared. Optional feed_rule:(60) keeps the rule set by voice. To clear: {"v":1,"op":"update_clear","id":"<same id>"}. Unknown fields are rejected.
+A null update has type update, line null, and no kind. It clears your current update, and you stay out of the rotation until you post a real one:
+{"v":1,"op":"update","id":"<a-z0-9_- id>","update":{"type":"update","line":null,"time":"<ISO 8601 time with zone>"}}
+Do not post a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear". The station treats that line as a null update.
 Send it with:
 printf '%s' "$UPDATE_JSON" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" show --persona <slug>
 If it prints "refused: switch off", the Updates switch is off. "refused: no key" or "refused: not paired" means no key or not paired. "refused: station unreachable" means the station did not answer. Any other refused line was not accepted. Stop, and do not retry or reword it.

@@ -1648,6 +1648,15 @@ FEED_FILE_MAX = 65536
 SEQ_MAX = 2 ** 53
 _ROW_KEYS = ("bot", "id", "type", "line", "time", "seq", "kind", "detail", "expires_at")
 UPDATE_OPS = ("update", "update_clear")
+# A line that is only one of these phrases (plus punctuation) is a null update.
+# Documented and exact: no other wording is guessed. Case and extra spaces do not matter.
+NULL_UPDATE_PREFIXES = (
+    "nothing open",
+    "nothing new",
+    "no updates",
+    "nothing to report",
+    "all clear",
+)
 
 
 def _upd_iso(value):
@@ -1661,6 +1670,23 @@ def _upd_iso(value):
     if t.tzinfo is None:
         raise CardError("schema")
     return t.timestamp()
+
+
+def null_update_line(text):
+    """True when text is only a known empty phrase, with no further words.
+
+    The phrase is matched at the start, case-insensitive, after whitespace is collapsed.
+    Punctuation after it is still empty. Any letter or digit after it is a real update.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    folded = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+    for prefix in NULL_UPDATE_PREFIXES:
+        if folded == prefix:
+            return True
+        if folded.startswith(prefix) and not any(ch.isalnum() for ch in folded[len(prefix):]):
+            return True
+    return False
 
 
 def clip_line(text):
@@ -1694,9 +1720,30 @@ def validate_update(doc):
         raise CardError("schema")
     if body.get("type") not in UPDATE_TYPES:
         raise CardError("schema")
-    if not isinstance(body.get("line"), str) or len(unicodedata.normalize("NFKC", body["line"])) > UPD_RAW_MAX:
+    raw_line = body.get("line")
+    explicit_null = raw_line is None
+    if explicit_null or (isinstance(raw_line, str) and null_update_line(raw_line)):
+        # line null is only the standing "update" clear. A filler line on any type is the same clear.
+        if explicit_null and body.get("type") != "update":
+            raise CardError("schema")
+        if not explicit_null and len(unicodedata.normalize("NFKC", raw_line)) > UPD_RAW_MAX:
+            raise CardError("schema")
+        if "detail" in body or "expires_at" in body:
+            raise CardError("schema")
+        if "kind" in body:
+            kind = body.get("kind")
+            if not isinstance(kind, str) or not kind or len(kind) > 18:
+                raise CardError("schema")
+        out = {"type": "update", "line": None, "null": True, "time": _upd_iso(body.get("time"))}
+        if "feed_rule" in body:
+            rule = escape_text(body.get("feed_rule"), RULE_MAX) if isinstance(body.get("feed_rule"), str) else None
+            if rule is None:
+                raise CardError("schema")
+            out["feed_rule"] = " ".join(rule.split())
+        return {"v": 1, "op": op, "id": doc["id"], "update": out, **replay}
+    if not isinstance(raw_line, str) or len(unicodedata.normalize("NFKC", raw_line)) > UPD_RAW_MAX:
         raise CardError("schema")  # Nix L2: an over-long raw line is refused, not silently clipped
-    out = {"type": body["type"], "line": clip_line(body.get("line")), "time": _upd_iso(body.get("time"))}
+    out = {"type": body["type"], "line": clip_line(raw_line), "time": _upd_iso(body.get("time"))}
     if body["type"] == "update" or "kind" in body or "detail" in body:
         for field, cap in (("kind", 18), ("line", 60), ("detail", 90)):
             value = body.get(field, "")
@@ -1874,8 +1921,29 @@ class UpdateFeed:
     def put(self, bot, uid, update):
         if not bot_slug_ok(bot):
             raise CardError("schema")
+        line = update.get("line") if isinstance(update, dict) else None
+        if isinstance(update, dict) and (update.get("null") or line is None
+                                          or (isinstance(line, str) and null_update_line(line))):
+            self.clear_type_updates(bot, update.get("feed_rule") if isinstance(update.get("feed_rule"), str) else None)
+            return None
         with self._lock:
             return self._put(bot, uid, update)
+
+    def clear_type_updates(self, bot, rule=None):
+        """Drop this bot's standing type "update" rows. The file is rewritten, so a restart stays clear.
+
+        needs_you, heads_up, working_on, and done are left alone. A feed rule, when given, is kept.
+        """
+        if not bot_slug_ok(bot):
+            raise CardError("schema")
+        with self._lock:
+            if isinstance(rule, str):
+                self.rules[bot] = rule
+            keys = [k for k, row in self.items.items() if k[0] == bot and row.get("type") == "update"]
+            for key in keys:
+                del self.items[key]
+            self._save()
+            return len(keys)
 
     def _put(self, bot, uid, update):
         if "feed_rule" in update:

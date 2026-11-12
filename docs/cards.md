@@ -83,6 +83,14 @@ Put (signed JSON, before `gs-seal-reply show` adds `kind`, `nonce` and `exp_ms`)
 
 Clear: `{"v":1,"op":"update_clear","id":"table"}`.
 
+A null update clears that bot's current type `update` and drops the bot from the rotation until it posts a real one. If you have nothing of value, post this instead of filler text. `line` is JSON null, the type is `update`, and there is no kind:
+
+```json
+{"v":1,"op":"update","id":"none","update":{"type":"update","line":null,"time":"2026-11-12T21:00:00Z"}}
+```
+
+The station also treats a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" (any case, and punctuation only after the phrase) as that same clear. A line with more words, such as "Nothing open on the calendar until Friday", stays a real update.
+
 | Field | Rule |
 |---|---|
 | `type` | `working_on`, `done`, `needs_you` or `heads_up` |

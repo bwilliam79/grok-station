@@ -145,7 +145,7 @@ sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
 
-import base64, hashlib, http.client, json, math, re, secrets, ssl, time, unicodedata
+import base64, datetime, hashlib, http.client, json, math, re, secrets, ssl, time, unicodedata
 from urllib.parse import urlsplit
 
 try:
@@ -821,6 +821,63 @@ def cmd_avatar(slug, voice=None):
         del seed
 
 
+_SHOW_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_UPDATE_TYPES = ("update", "needs_you", "heads_up", "working_on", "done")
+_UPDATE_BODY = frozenset(("type", "line", "time", "expires_at", "feed_rule", "kind", "detail"))
+
+
+def _iso_zone(value):
+    """True when value is a short ISO 8601 timestamp with a zone."""
+    if not isinstance(value, str) or len(value) > 40:
+        return False
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def update_show_ok(doc):
+    """True when an update show body is one the station accepts, including a null line.
+
+    A null update is op update, type update, and line null. That clears the bot's current
+    update. A missing time, a null line on any other type, a non-string line, or an unknown
+    field is refused here, before the post.
+    """
+    if not isinstance(doc, dict) or doc.get("v") != 1 or type(doc.get("v")) is not int:
+        return False
+    if doc.get("op") != "update" or set(doc) != {"v", "op", "id", "update"}:
+        return False
+    if not isinstance(doc.get("id"), str) or _SHOW_ID.fullmatch(doc["id"]) is None:
+        return False
+    body = doc.get("update")
+    if not isinstance(body, dict) or not {"type", "line", "time"} <= set(body) <= _UPDATE_BODY:
+        return False
+    if body.get("type") not in _UPDATE_TYPES or not _iso_zone(body.get("time")):
+        return False
+    line = body.get("line")
+    if line is None:
+        if body.get("type") != "update" or "detail" in body or "expires_at" in body:
+            return False
+    elif not isinstance(line, str) or not line.strip() or len(line) > 320:
+        return False
+    elif body.get("type") == "update" and "kind" not in body:
+        return False
+    for key, cap in (("kind", 18), ("detail", 90)):
+        if key not in body:
+            continue
+        value = body.get(key)
+        if not isinstance(value, str) or not value.strip() or len(value) > cap:
+            return False
+    if "feed_rule" in body:
+        rule = body.get("feed_rule")
+        if not isinstance(rule, str) or len(rule) > 60:
+            return False
+    if "expires_at" in body and not _iso_zone(body.get("expires_at")):
+        return False
+    return True
+
+
 def cmd_show(slug):
     """Seal the card JSON on stdin and post it once to /voice/show. The station checks the card itself."""
     if not slug_ok(slug):
@@ -833,6 +890,8 @@ def cmd_show(slug):
     except ValueError:
         raise Refused()
     if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear", "update", "update_clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
+        raise Refused()
+    if doc.get("op") == "update" and not update_show_ok(doc):
         raise Refused()
     _reject_if_secret(text)
     _check_tree()
