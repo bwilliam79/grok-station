@@ -58,6 +58,7 @@ class Harness:
     def __init__(self):
         self.clock = FakeTime(T0)
         self.script = []
+        self.frames = []
 
     def state(self, st=None, **kw):
         body = dict(kw)
@@ -113,6 +114,14 @@ class Harness:
 
             def show(self, painter, *args, fade=False, snapshot=True):
                 painter(self.screen, self.L, *args)
+                shown = None
+                for arg in args:
+                    if not isinstance(arg, dict):
+                        continue
+                    tile = arg.get("tile") if isinstance(arg.get("tile"), dict) else arg
+                    if isinstance(tile, dict) and tile.get("type") in ("sports", "recipe", "calendar", "home"):
+                        shown = tile["type"]
+                h.frames.append(shown)
 
         class Wx:
             data = {"temp": 64, "code": 2, "day": True, "hi": 71, "lo": 52}
@@ -225,6 +234,19 @@ class FocusIdle(unittest.TestCase):
         )
         self.assertIsNotNone(h.deck.get("wren", "sports1"))
         self.assertEqual(h.deck.idle_deadline("wren", "sports1"), T0 + 10 + cards.CONVO_IDLE_S)
+
+    def test_focus_during_the_card_hold_paints_the_score_at_once(self):
+        h = Harness()
+        h.run(
+            h.put("wren", "sports1", SPORTS),
+            h.state("speaking", heard="what's the score", text="Harbor leads."),
+            h.put("wren", "sports1", SPORTS),
+            h.state("idle"),
+            h.focus("sports"),
+        )
+        self.assertEqual(h.frames[-1], "sports")
+        self.assertIsNotNone(h.deck.get("wren", "sports1"))
+        self.assertEqual(h.deck.idle_deadline("wren", "sports1"), T0 + cards.CONVO_IDLE_S)
 
 
 if __name__ == "__main__":
