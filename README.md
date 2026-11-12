@@ -68,6 +68,10 @@ When a fresh install finishes, it asks you to press Enter to reboot. After that,
 
 No push to `main` unless `sh tools/release-check.sh` prints `release-check: PASS` on the exact commit being pushed. The clone's pre-push hook enforces it: run `sh tools/install-release-hook` once in the release clone, and every `git push` then runs pii-guard and the leak scan (the global hooks dispatcher) and then `tools/release-check-pre-push`. That hook gates only a push whose remote ref is `refs/heads/main`: the pushed commit must be the checked-out commit and `tools/release-check.sh` must end with `release-check: PASS`, and deleting `main` is refused. Every other ref passes (pull request branches, new branches, deletes of other branches, tags), also from a checkout too old to have the hook body; in a push of several refs the `main` line decides. After a release that changes `tools/install-release-hook`, run it again once from a checkout of the new `main`. This relies on the dispatcher passing the local hook's exit status back to git; check it once with a push to `main` of a commit that is not checked out, which must be refused. It runs the version and deploy-pin checks (no pending re-pin), installs the tree for real with `tools/install-files.sh` into a temporary root, checks the installed admin page imports from that tree alone, and runs the bot Update and Set up scenarios in `tests/test_lifecycle_scenarios.py` against it. A scenario that can't run is a failure. How bot Update and Set up must behave, state by state, is in [docs/bot-lifecycle.md](docs/bot-lifecycle.md).
 
+## Contributing
+
+See [AGENTS.md](AGENTS.md) for how to work on this repo.
+
 ## More detail
 
 - [What runs on the Pi](docs/architecture.md)
