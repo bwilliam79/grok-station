@@ -174,5 +174,27 @@ class FeedPersistence(unittest.TestCase):
             self.assertEqual(set(again.items), set(feed.items))
 
 
+class FeedBots(unittest.TestCase):
+    def test_bots_is_a_locked_snapshot_used_by_updates_only(self):
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+        import grok_station as gs
+        feed = cards.UpdateFeed()
+        feed.put("otto", "a", _row())
+        feed.put("ivy", "c", _row(kind="Mail", line="Hello", when=1100))
+        self.assertEqual(feed.bots(), {"otto", "ivy"})
+        seen = []
+        real = feed.bots
+
+        def wrapped():
+            seen.append(True)
+            return real()
+
+        feed.bots = wrapped
+        gs.apply_update({"v": 1, "op": "updates_only", "bots": ["otto"]}, feed)
+        self.assertEqual(seen, [True])
+        self.assertEqual(feed.bots(), {"otto"})
+
+
 if __name__ == "__main__":
     unittest.main()

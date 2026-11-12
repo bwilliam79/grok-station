@@ -3417,7 +3417,7 @@ def run_usb_reset(card, run=None):
         return "refused: bad helper"
     if run is None:
         def run(argv):
-            return subprocess.run(argv, capture_output=True, text=True, timeout=8)
+            return subprocess.run(argv, capture_output=True, text=True, timeout=USB_RESET_CLIENT_S)
     try:
         got = run(["sudo", "-n", helper, card])
     except Exception:
@@ -3435,6 +3435,10 @@ def run_usb_reset(card, run=None):
 # same 10 s grace it uses for a reopen. Kept within the 30 s stall window plus that grace so a
 # bad deadline cannot hide an unplug for longer than a planned reopen.
 MIC_RESET_ICON_HOLD_S = 20.0
+# The helper verifies for VERIFY_S (8 s) and can use almost all of it. The client wait is
+# that long plus a few seconds, so a stuck configuration comes back as "refused: config failed"
+# instead of the client timing out first and reporting "refused: reset failed".
+USB_RESET_CLIENT_S = 15.0
 
 
 def kick_capture():
@@ -3846,8 +3850,11 @@ class MicRecovery:
             LIVE["reset_until"] = None
             self.log(f"mic reset failed: {err} ({reason})")
             # A failed configuration does not come back from another port reset.
-            # Wait for the device, and do not schedule another night attempt.
-            if err == "refused: config failed":
+            # The same is true when the helper does not answer in time: the client
+            # reports "refused: reset failed", and another port reset that night
+            # will not bring the device back. Wait for it, and do not schedule
+            # another night attempt.
+            if err in ("refused: config failed", "refused: reset failed"):
                 self._wait_card = True
                 self.last_night = self.local(self.now()).date()
             self._backoff(reason)

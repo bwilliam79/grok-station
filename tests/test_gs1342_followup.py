@@ -45,6 +45,16 @@ class FollowupScore(unittest.TestCase):
         self.assertEqual(kept["home_score"], 10)
         self.assertEqual(kept["away_score"], 9)
 
+    def test_listening_refresh_keeps_the_tile_and_a_later_turn_clears_it(self):
+        """tile_step itself: a second listening post keeps the tile; a real turn still clears it."""
+        import grok_station as station
+        tile = {"shown": 0.0, "card": {"type": "sports", "home_score": 3}}
+        self.assertEqual(station.tile_step(tile, "listening", "listening", 1.0, 30.0), "keep")
+        self.assertNotIn("stale", tile)
+        self.assertEqual(station.tile_step(tile, "speaking", "listening", 2.0, 30.0), "keep")
+        self.assertTrue(tile.get("stale"))
+        self.assertEqual(station.tile_step(tile, "listening", "speaking", 3.0, 30.0), "clear")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -40,7 +40,7 @@ RECIPE_IDLE_S = 30 * 60    # a recipe stays while someone is cooking; refreshed 
 LOGO_WAIT_S = 0.0          # 0.12.11: show the card now; logos fill in when their download lands
 ESPN_LOGO_HOST = "a.espncdn.com"
 # Documented team-logo file. The /combiner/ resize URL is a different path and is not fetched here.
-_ESPN_TEAMLOGO = re.compile(r"^/i/teamlogos/[a-z0-9][a-z0-9-]{0,31}/\d{2,4}/[a-z0-9]{1,16}\.png$")
+_ESPN_TEAMLOGO = re.compile(r"^/i/teamlogos/[a-z0-9][a-z0-9-]{0,31}/[0-9]{2,4}/[a-z0-9]{1,16}\.png$")
 _PUT_KEYS = frozenset(("v", "op", "id", "priority", "ttl_s", "card", "kind", "nonce", "exp_ms"))
 _CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 _NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
@@ -303,7 +303,12 @@ def _espn_logo_path(url):
         return None
     if parts.query or (parts.port and parts.port != 443):
         return None
-    path = (parts.path or "").lower()
+    path = parts.path or ""
+    # lower() can turn a non-ASCII letter into an ASCII path that matches.
+    # Reject that before folding case. The fetched URL stays the lowercase file.
+    if not path.isascii():
+        return None
+    path = path.lower()
     if _ESPN_TEAMLOGO.fullmatch(path) is None:
         return None
     return path
@@ -950,7 +955,7 @@ def sports_idle_span(shown_at, now, hold_s=SPORTS_TILE_S):
         return float(hold_s)
 
 
-_NCAA_PATH = re.compile(r"^/i/teamlogos/ncaa[a-z0-9-]*/\d{2,4}/([a-z0-9]{1,16})\.png$")
+_NCAA_PATH = re.compile(r"^/i/teamlogos/ncaa[a-z0-9-]*/[0-9]{2,4}/([a-z0-9]{1,16})\.png$")
 
 
 def logo_known_missing(url):
@@ -1897,6 +1902,11 @@ class UpdateFeed:
             if removed:
                 self._save()
             return removed
+
+    def bots(self):
+        """Bot slugs that have a row. The set is copied under the lock."""
+        with self._lock:
+            return {row["bot"] for row in self.items.values()}
 
     def drop_bot(self, bot):
         """Updates switched off (or bot removed): its rows leave the station now."""

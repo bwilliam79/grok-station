@@ -88,19 +88,34 @@ class PanelGap(unittest.TestCase):
                 shutil.rmtree(tmp, ignore_errors=True)
 
 
-class ClockWeatherHeight(unittest.TestCase):
-    def test_clock_date_block_matches_weather_height(self):
-        """The time and date block is the weather block's height, within 2 px.
+def _ink_rect(surf, rect):
+    """Painted pixels inside rect. The font box includes empty rows; this does not."""
+    sub = surf.subsurface(rect).copy()
+    sub.set_colorkey(gs.BG)
+    box = sub.get_bounding_rect()
+    return pygame.Rect(rect.x + box.x, rect.y + box.y, box.w, box.h)
 
-        1280x800 and a 2560-wide 2.5K frame. The weather block is not enlarged.
+
+class ClockWeatherHeight(unittest.TestCase):
+    def test_clock_date_ink_matches_weather_ink(self):
+        """Painted ink of the clock digits and the date matches the weather ink.
+
+        Top, bottom, and height, each within 2 px. 1280x800 and 2560x1706.
+        The comparison is get_bounding_rect of the painted pixels, not the font box.
         """
         now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
-        for size in ((1280, 800), (2560, 1600)):
+        for size in ((1280, 800), (2560, 1706)):
             surf = pygame.Surface(size)
-            gs.draw_idle(surf, gs.Layout(*size), now, _Wx())
-            block = gs.LAST_DATE_RECT.bottom - gs.LAST_CLOCK_RECT.top
-            weather = gs.LAST_WEATHER_RECT.height
-            self.assertLessEqual(abs(block - weather), 2, (size, block, weather))
+            gs.draw_idle(surf, gs.Layout(*size), now, _Wx(), home_band=False)
+            clock = _ink_rect(surf, gs.LAST_CLOCK_RECT)
+            date = _ink_rect(surf, gs.LAST_DATE_RECT)
+            block = clock.union(date)
+            weather = _ink_rect(surf, gs.LAST_WEATHER_RECT)
+            self.assertLessEqual(abs(block.top - weather.top), 2, (size, "top", block, weather))
+            self.assertLessEqual(abs(block.bottom - weather.bottom), 2, (size, "bottom", block, weather))
+            self.assertLessEqual(abs(block.h - weather.h), 2, (size, "height", block, weather))
+            self.assertLessEqual(gs.IDLE_CLOCK_PX, 238)
+            self.assertLessEqual(gs.IDLE_DATE_PX, 60)
 
 
 if __name__ == "__main__":

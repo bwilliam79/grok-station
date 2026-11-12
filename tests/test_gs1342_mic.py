@@ -8,8 +8,11 @@ import datetime
 import importlib.machinery
 import importlib.util
 import os
+import re
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -112,7 +115,7 @@ class UsbResetPort(unittest.TestCase):
                 self.assertEqual(mod.devfs_root(euid=0), "/dev/bus/usb")
                 os.environ["GS_USB_RESET_DEVFS"] = "/tmp/not-usbfs"
                 self.assertEqual(mod.devfs_root(euid=0), "/dev/bus/usb")
-                self.assertEqual(mod.verify_limit(euid=0), mod.VERIFY_S)
+                self.assertEqual(mod.verify_limit(euid=0), 8.0)
         finally:
             os.open = real_open
             os.environ.pop("GS_USB_RESET_SYSFS", None)
@@ -213,6 +216,100 @@ class NightAndStuck(unittest.TestCase):
         # Seeing the ALSA card is not the capture reopen. That line is logged
         # by run_capture_rounds when it opens the device.
         self.assertFalse(any("mic back: capture resumes" in line for line in logs), logs)
+
+    def test_root_verify_is_eight_seconds_and_returns_when_the_card_appears(self):
+        """Root waits the literal 8 s, and reset_card returns as soon as the card is back."""
+        mod = load_helper()
+        os.environ["GS_USB_RESET_VERIFY_S"] = "0"
+        try:
+            self.assertEqual(mod.verify_limit(euid=0), 8.0)
+        finally:
+            os.environ.pop("GS_USB_RESET_VERIFY_S", None)
+        with open(HELPER, encoding="utf-8") as fh:
+            text = fh.read()
+        found = re.search(r"^VERIFY_S = ([0-9]+(?:\.[0-9]+)?)\s*$", text, re.M)
+        self.assertIsNotNone(found)
+        self.assertEqual(float(found.group(1)), 8.0)
+        checks = {"n": 0}
+        real_config = mod._config_ok
+        real_sleep = time.sleep
+
+        def config(_usb):
+            checks["n"] += 1
+            return checks["n"] >= 2
+
+        slept = []
+
+        def sleep(seconds):
+            slept.append(seconds)
+
+        mod._config_ok = config
+        time.sleep = sleep
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                make_mic(root)
+                os.environ["GS_USB_RESET_SYSFS"] = os.path.join(root, "sys")
+                os.environ["GS_USB_RESET_DEVFS"] = os.path.join(root, "devfs")
+                os.environ.pop("GS_USB_RESET_VERIFY_S", None)
+                started = time.monotonic()
+                mod.reset_card("Plus", os.path.join(root, "sys"))
+                self.assertLess(time.monotonic() - started, 2.0)
+                self.assertEqual(slept, [0.05])
+                self.assertEqual(mod.verify_limit(), 8.0)
+        finally:
+            mod._config_ok = real_config
+            time.sleep = real_sleep
+            os.environ.pop("GS_USB_RESET_SYSFS", None)
+            os.environ.pop("GS_USB_RESET_DEVFS", None)
+            os.environ.pop("GS_USB_RESET_VERIFY_S", None)
+
+    def test_client_timeout_is_longer_than_the_helper_verify(self):
+        import grok_wake as gw
+        with open(HELPER, encoding="utf-8") as fh:
+            text = fh.read()
+        found = re.search(r"^VERIFY_S = ([0-9]+(?:\.[0-9]+)?)\s*$", text, re.M)
+        self.assertIsNotNone(found)
+        self.assertGreaterEqual(gw.USB_RESET_CLIENT_S, float(found.group(1)) + 5)
+        self.assertEqual(gw.USB_RESET_CLIENT_S, 15.0)
+        with open(os.path.join(ROOT, "wake", "grok_wake.py"), encoding="utf-8") as fh:
+            wake = fh.read()
+        self.assertIn("timeout=USB_RESET_CLIENT_S", wake)
+
+    def test_reset_timeout_waits_for_the_card_and_skips_the_night(self):
+        import grok_wake as gw
+        logs, resets = [], []
+        clock = {"t": 1000.0}
+        base = datetime.datetime(2026, 11, 12, 3, 30)
+
+        def local(_ts):
+            return base + datetime.timedelta(seconds=clock["t"] - 1000.0)
+
+        def run(argv):
+            raise subprocess.TimeoutExpired(argv, 15)
+
+        def reset(name):
+            resets.append(name)
+            return gw.run_usb_reset(name, run=run)
+
+        rec = gw.MicRecovery(
+            reset,
+            now=lambda: clock["t"],
+            local=local,
+            flags=lambda: {"button": True, "night": True, "drought": True},
+            card=lambda: "Plus",
+            busy=lambda: False,
+            kick=lambda: None,
+            log=logs.append,
+        )
+        rec.poll()
+        self.assertEqual(resets, ["Plus"])
+        self.assertEqual(gw.run_usb_reset("Plus", run=run), "refused: reset failed")
+        self.assertTrue(rec._wait_card)
+        self.assertEqual(rec.last_night, base.date())
+        for i in range(1, 12):
+            clock["t"] = 1000.0 + i * 60
+            rec.poll()
+        self.assertEqual(resets, ["Plus"], logs)
 
     def test_config_failed_does_not_schedule_another_night(self):
         import grok_wake as gw

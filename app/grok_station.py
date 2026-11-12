@@ -823,7 +823,7 @@ def apply_update(doc, feed, now=None):
         if (bot is not None or set(body) != {"v", "op", "bots"} or body.get("v") != 1 or not isinstance(keep, list)
                 or len(keep) > 64 or not all(cards.bot_slug_ok(b) for b in keep)):
             raise cards.CardError("schema")
-        for b in {r["bot"] for r in feed.items.values()} - set(keep):
+        for b in feed.bots() - set(keep):
             feed.drop_bot(b)
         return "only", "-", "-"
     if body.get("op") == "updates_pause":
@@ -3174,7 +3174,7 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     if wx.offline():
         draw_offline_badge(surf, L, base)
     elif wx.data:
-        draw_weather(surf, L, wx.data, base)
+        draw_weather(surf, L, wx.data, base + L(IDLE_WEATHER_DROP))
     if home_band:
         draw_next_up(surf, L, now, talking=talking)
     draw_timer_strip(surf, L)
@@ -5077,6 +5077,17 @@ def zone_reply_metrics(L, rect, heard):
 
 LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = LAST_HEARD = None
 _HEARD_SCROLL = {"text": None, "lines": 0, "tele": None}
+
+
+def reset_heard_scroll():
+    """Drop the question scroller so the next voice session starts at the top.
+
+    heard_window keeps the window across paints of the same session. A new
+    session must not resume the previous offset when the question text matches.
+    """
+    _HEARD_SCROLL["text"] = None
+    _HEARD_SCROLL["lines"] = 0
+    _HEARD_SCROLL["tele"] = None
 LAST_PORTRAIT_BG = None
 LAST_CHIP_RECTS = []
 
@@ -5569,11 +5580,16 @@ PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a c
 # Idle time and date, sized so that block matches the weather block. Weather sizes stay put.
 IDLE_CLOCK_PX = 238
 IDLE_DATE_PX = 60
-IDLE_DATE_GAP = 36
+# Date gap sized so the date's painted bottom meets the weather high/low ink.
+IDLE_DATE_GAP = 52
 # The smaller clock's digit ink sits higher in the font box. This drop keeps the
 # weather below the status icons and the digits below the conversation badge.
-# Weather sizes are unchanged.
+# Weather sizes are unchanged. The clock is not raised: the badge sits just above it.
 IDLE_CLOCK_DROP = 30
+# The weather icon's painted ink starts above the clock digits. This extra drop
+# is added only to the weather anchor, so the painted blocks share a top.
+# 38 design px is 25 px at 1280x800 and 50 px at 2560x1706.
+IDLE_WEATHER_DROP = 38
 
 
 def _glyph_ink_dy(img):
@@ -5627,7 +5643,7 @@ def idle_block_offsets(L, hhmm=None):
     del hhmm
     clock_px = L(IDLE_CLOCK_PX)
     cf = font("display", clock_px)
-    key = (L.w, L.h, clock_px, L(IDLE_DATE_GAP), L(IDLE_DATE_PX))
+    key = (L.w, L.h, clock_px, L(IDLE_DATE_GAP), L(IDLE_DATE_PX), L(IDLE_WEATHER_DROP))
     hit = _BLOCK_OFFSETS.get(key)
     if hit is not None:
         return hit
@@ -5638,7 +5654,7 @@ def idle_block_offsets(L, hhmm=None):
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
     date_bottom = base + L(IDLE_DATE_GAP) + font("body", L(IDLE_DATE_PX)).get_height()
-    tb = base - L(80)
+    tb = base + L(IDLE_WEATHER_DROP) - L(80)
     temp_px = L(180)
     temp_f = font("display", temp_px)
     temp_box = tb - temp_f.get_ascent()
@@ -6611,6 +6627,7 @@ def main():
     wx = Weather()
     print(f"display {disp.screen.get_size()} fb={FB} assets={ASSETS}", flush=True)
     msg, until, last_key, anim_started = None, 0.0, None, None
+    voice_session = False
     text_hold = None    # {"until", "pending", "who"} while a reply waits to see if a card follows
     card_hold = False   # the card hold after a session that showed a card has started
     strip_at = 0.0      # last time the timer strip was painted; ticks are at least 0.9 s apart
@@ -6859,6 +6876,7 @@ def main():
                 if focused and not live:
                     release_focused_tile(time.time())
                     msg, anim_started, card_hold, text_hold = None, None, False, None
+                    voice_session = False
                 paint()
                 continue
             if getattr(ev, "has_caption", False):
@@ -6867,6 +6885,9 @@ def main():
                 tele.feed(ev.speech, time.time())  # the window's own 30 fps tick draws it
             chips_changed = apply_chips(ev)
             if ev.state in VOICE_HOLDS:
+                if not voice_session:
+                    reset_heard_scroll()
+                voice_session = True
                 hold = state_hold(ev.state, bool(ev.done), getattr(ev, "heard", "") or "", getattr(ev, "hold_s", None))
                 new = {"from": ev.who, "heard": ev.heard, "text": ev.text or VOICE_TEXT[ev.state], "state": ev.state, "voice": True}
                 kept = merge_card(msg.get("card") if msg else None, getattr(ev, "has_card", False), getattr(ev, "card", None), bool(ev.done))
@@ -6906,6 +6927,7 @@ def main():
                 paint()
             elif ev.state == "idle":
                 # session end: a conversation card returns on its idle clock (ttl is only the cap)
+                voice_session = False
                 text_hold = None
                 if tele is not None:
                     tele.settle(time.time())
@@ -6914,6 +6936,7 @@ def main():
                     # and start its idle window from this moment.
                     release_focused_tile(time.time())
                     msg, anim_started, card_hold = None, None, False
+                    voice_session = False
                     paint()
                 elif msg and TILE:
                     now_s = time.time()
@@ -7012,6 +7035,7 @@ def main():
                     else:
                         release_or_clear_tile(time.time())
                     msg, anim_started, card_hold = None, None, False
+                    voice_session = False
                     paint(fade=True)
                     print("back to idle", flush=True)
                 elif msg.get("card") and not card_hold:
@@ -7019,6 +7043,7 @@ def main():
                     until = time.time() + CARD_HOLD
                 else:
                     msg, anim_started, card_hold = None, None, False
+                    voice_session = False
                     paint(fade=True)
                     print("back to idle", flush=True)
             elif thinking():  # full-screen ring, or the tile's corner badge

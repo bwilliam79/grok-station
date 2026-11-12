@@ -56,6 +56,17 @@ class CapitalLogoUrl(unittest.TestCase):
         self.assertTrue(league)
         self.assertFalse(cards.espn_teamlogo_url(
             "https://a.espncdn.com/combiner/i?img=/i/teamlogos/nfl/500/kc.png&w=200&h=200"))
+        # Kelvin sign lowercases to "k". The path must be ASCII before that.
+        self.assertEqual("\u212a".lower(), "k")
+        self.assertFalse(cards.espn_teamlogo_url(
+            "https://a.espncdn.com/i/teamlogos/nfl/500/\u212ac.png"))
+        self.assertIn("[0-9]", cards._ESPN_TEAMLOGO.pattern)
+        self.assertNotIn("\\d", cards._ESPN_TEAMLOGO.pattern)
+        self.assertIn("[0-9]", cards._NCAA_PATH.pattern)
+        self.assertNotIn("\\d", cards._NCAA_PATH.pattern)
+        self.assertIsNotNone(cards._ESPN_TEAMLOGO.fullmatch("/i/teamlogos/nfl/500/kc.png"))
+        self.assertIsNone(cards._ESPN_TEAMLOGO.fullmatch("/i/teamlogos/nfl/\u0665\u0660\u0660/kc.png"))
+        self.assertIsNone(cards._NCAA_PATH.fullmatch("/i/teamlogos/ncaa/\u0665\u0660\u0660/gonz.png"))
 
 
 if __name__ == "__main__":

@@ -97,6 +97,40 @@ class WrappedQuestion(unittest.TestCase):
         self.assertNotEqual(before, after)
         self.assertTrue(zone.contains(gs.LAST_HEARD["rect"]))
 
+    def test_a_new_session_starts_the_question_at_the_top(self):
+        """The scroller is kept across paints, and a later session does not resume it."""
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        from test_gs1216_bottom_zone import Harness
+        gs.reset_heard_scroll()
+        now = 1000.0
+        quote = "“" + HEARD + "”"
+        tele = gs.heard_window(quote, 2, now)
+        tele.set_geometry(8, 40, 1.0)
+        tele.step(now + 8)
+        self.assertGreater(tele.offset, 0.5)
+        gs.reset_heard_scroll()
+        again = gs.heard_window(quote, 2, now + 8)
+        self.assertIsNot(again, tele)
+        self.assertEqual(again.offset, 0.0)
+        seen = []
+
+        def grab():
+            slot = gs._HEARD_SCROLL.get("tele")
+            seen.append(None if slot is None else slot.offset)
+
+        h = Harness(size=(1280, 800))
+        h.run(
+            h.state("speaking", heard=HEARD, text=REPLY),
+            h.advance(6),
+            h.call(grab),
+            h.state("idle"),
+            h.state("speaking", heard=HEARD, text=REPLY),
+        )
+        self.assertGreater(seen[0], 0.5, seen)
+        fresh = gs._HEARD_SCROLL.get("tele")
+        self.assertIsNotNone(fresh)
+        self.assertLess(fresh.offset, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
