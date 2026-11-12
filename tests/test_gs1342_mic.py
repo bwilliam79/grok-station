@@ -13,6 +13,8 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import test_admin  # noqa: E402,F401  sets the admin sandbox before grok_admin is imported
 sys.path.insert(0, os.path.join(ROOT, "app"))
 sys.path.insert(0, os.path.join(ROOT, "wake"))
 sys.path.insert(0, os.path.join(ROOT, "admin"))

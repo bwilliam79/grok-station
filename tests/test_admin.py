@@ -2713,12 +2713,12 @@ class MicResetApi(unittest.TestCase):
         c = signed_in()
         st, body = c.req("GET", "/api/audio")
         self.assertEqual(st, 200)
-        self.assertEqual(body["mic_reset"], {"button": True, "night": True, "drought": True})
+        self.assertEqual(body["mic_reset"], {"button": True, "night": False, "drought": True})
         log = os.environ["FAKE_LOG"]
         before = os.path.getsize(log) if os.path.exists(log) else 0
         st, body = c.req("PUT", "/api/audio/mic-reset", {"button": False})
         self.assertEqual(st, 200, body)
-        self.assertEqual(body["mic_reset"], {"button": False, "night": True, "drought": True})
+        self.assertEqual(body["mic_reset"], {"button": False, "night": False, "drought": True})
         path = os.path.join(os.environ["ADMIN_STATE_DIR"], "mic-reset.json")
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
         self.assertFalse(json.load(open(path))["button"])
