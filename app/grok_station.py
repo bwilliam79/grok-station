@@ -5525,10 +5525,16 @@ def bottom_panel_rect(L):
 
 
 def clock_date_bottom(L):
-    """Bottom of the idle clock and date. Same y as draw_idle when there is no weather."""
+    """Bottom of the idle clock and date. Same y as draw_idle when there is no weather.
+
+    The baseline is the same one draw_idle uses, raised so a short minute meets the
+    tallest-digit line. The shared panel does not use this y.
+    """
     top = idle_clock_top(L)
-    cf = font("display", L(300))
-    base = top + int(cf.get_ascent() * 0.98)
+    clock_px = L(300)
+    cf = font("display", clock_px)
+    hhmm, _ampm = clock_parts(time.localtime())
+    base = top + int(cf.get_ascent() * 0.98) - clock_ink_lift("display", clock_px, hhmm)
     clock_bottom = base - cf.get_ascent() + cf.get_height()
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
