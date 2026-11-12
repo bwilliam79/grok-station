@@ -62,8 +62,10 @@ class BotsCopy(unittest.TestCase):
 class RefreshSizes(unittest.TestCase):
     def test_idle_and_night_clock(self):
         src = read("app", "grok_station.py")
-        self.assertIn("clock_px = L(300)", src)
+        self.assertIn("IDLE_CLOCK_PX = 238", src)
+        self.assertIn("clock_px = L(IDLE_CLOCK_PX)", src)
         self.assertNotIn("clock_px = L(320)", src)
+        self.assertNotIn("clock_px = L(300)", src)
         self.assertIn('font("night", L(440))', src)
         self.assertNotIn('font("night", L(340))', src)
 

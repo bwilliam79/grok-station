@@ -287,20 +287,43 @@ def logo_url_ok(url, hosts):
     return host in allow
 
 
-def espn_teamlogo_url(url):
-    """True only for https://a.espncdn.com/i/teamlogos/<league>/<size>/<abbr>.png.
+def _espn_logo_path(url):
+    """Lowercase team-logo path, or None.
 
-    The combiner URL (a query string on /combiner/) is not this path. Other hosts are not.
+    The bot template puts the league and the abbreviation in capitals
+    (nfl/500/KC.png). ESPN serves that file. The pattern itself is lowercase,
+    so the check and the cache id use the lowercase path. A combiner URL, a
+    query string, and any other host stay out.
     """
     parts = _split_url(url)
     if parts is None:
-        return False
+        return None
     host = (parts.hostname or "").lower().rstrip(".")
     if host != ESPN_LOGO_HOST:
-        return False
+        return None
     if parts.query or (parts.port and parts.port != 443):
-        return False
-    return _ESPN_TEAMLOGO.fullmatch(parts.path or "") is not None
+        return None
+    path = (parts.path or "").lower()
+    if _ESPN_TEAMLOGO.fullmatch(path) is None:
+        return None
+    return path
+
+
+def espn_teamlogo_url(url):
+    """True only for https://a.espncdn.com/i/teamlogos/<league>/<size>/<abbr>.png.
+
+    Capitals in the league or the abbreviation still match. The combiner URL
+    (a query string on /combiner/) is not this path. Other hosts are not.
+    """
+    return _espn_logo_path(url) is not None
+
+
+def canonical_espn_logo_url(url):
+    """The lowercase team-logo URL the cache stores. Same file KC.png and kc.png."""
+    path = _espn_logo_path(url)
+    if path is None:
+        raise CardError("schema")
+    return f"https://{ESPN_LOGO_HOST}{path}"
 
 
 def ip_ok(ip):
@@ -934,7 +957,8 @@ def logo_known_missing(url):
     """True for a college logo URL ESPN cannot serve: college logos are named by the numeric ESPN
     team id (ncaa/500/2250.png), never by an abbreviation (ncaa/500/gonz.png is a 404)."""
     parts = _split_url(url)
-    m = _NCAA_PATH.fullmatch((parts.path or "") if parts else "")
+    path = ((parts.path or "") if parts else "").lower()
+    m = _NCAA_PATH.fullmatch(path)
     return bool(m) and not m.group(1).isdigit()
 
 
@@ -968,6 +992,8 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
                 if team.get("logo_badge") is not True:
                     team.pop("logo_badge", None)
             continue
+        if espn_teamlogo_url(url):
+            url = canonical_espn_logo_url(url)
         allowed = (cache is not None and espn_teamlogo_url(url) and not logo_known_missing(url)
                    and logo_url_ok(url, getattr(cache, "hosts", ())))
         team.pop("logo_url", None)

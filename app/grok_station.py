@@ -95,8 +95,10 @@ BADGE_STATES = ("listening", "thinking", "speaking", "error")
 def tile_step(tile, prev_state, state, now, hold_s):
     """0.12.6: what a new voice state does to a tile that is up during a session. Returns "keep" or "clear".
 
-    A new user turn (listening) or the tile's hold running out marks the tile stale; a stale tile is never
-    pulled mid-listen, it clears when the bot starts its response (speaking). A tile the response
+    A transition into listening, or the tile's hold running out, marks the tile stale. speech_started
+    and speech_stopped post listening again only to refresh the timeout; that second post must not
+    mark a score just put on screen stale, or the reply that follows deletes it. A stale tile is never
+    pulled mid-listen. It clears when the bot starts its response (speaking). A tile the response
     posts replaces the old one (the FEED handler stores it fresh), so it shows."""
     if not tile:
         return "keep"
@@ -108,7 +110,7 @@ def tile_step(tile, prev_state, state, now, hold_s):
     # The next spoken reply would otherwise delete that card from the deck.
     if tile.get("focused"):
         return "keep"
-    if state == "listening" and prev_state is not None:
+    if state == "listening" and prev_state not in (None, "listening"):
         tile["stale"] = True
     if now >= float(tile.get("shown", now)) + float(hold_s):
         tile["stale"] = True
@@ -201,7 +203,7 @@ class Teleprompter:
     TAU_S = 0.25
     FADE_S = 0.2
 
-    def __init__(self, now, reduced=False):
+    def __init__(self, now, reduced=False, window_lines=None):
         self.started = float(now)
         self.reduced = bool(reduced)
         self.progress = None   # 0..1 once the wake listener reports it
@@ -209,12 +211,13 @@ class Teleprompter:
         self.settled = False   # speech ended: last window, no fades
         self.offset = 0.0
         self.line_h, self.text_h, self.scale = 1, 1, 1.0
+        self.window_lines = self.WINDOW_LINES if window_lines is None else max(1, int(window_lines))
         self._t = float(now)
         self._page, self._page_at, self._prev_page = 0, None, 0
 
     @property
     def win_h(self):
-        return self.WINDOW_LINES * self.line_h
+        return self.window_lines * self.line_h
 
     @property
     def max_offset(self):
@@ -2394,11 +2397,13 @@ def portrait(name, d, ring_w, state="speaking", t=1.0, photo_ok=True):
 
 
 # ---------------------------------------------------------------- screens
-def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True):
+def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True, lift=0):
     """Draw HH:MM. The colon's ink sits in the middle of the hour/minute ink gap and on the
     vertical ink center of digits 0-9 (not the font line box). Hour and minute stay on their
     normal advances, so the gap width matches a single render of the string.
-    Returns (digits_rect, colon_rect): digits_rect unions the advance box and the ink (no AM/PM)."""
+    Returns (digits_rect, colon_rect): digits_rect unions the advance box and the ink (no AM/PM).
+    lift is the pixel raise already applied to baseline for a short minute. The colon is
+    placed back down by that amount so it stays on the tallest-digit line."""
     global LAST_COLON_RECT, LAST_COLON_GLYPH, LAST_DIGITS_RECT
     f = font(kind, px)
     hour, minute = hhmm.split(":", 1)
@@ -2417,7 +2422,9 @@ def draw_clock(surf, kind, px, hhmm, color, x, baseline, colon_on=True):
     gap_cx = (x + hbr.right + min_x + mbr.left) / 2.0
     ref = f.render("0123456789", True, color).get_bounding_rect()
     col_x = int(round(gap_cx - (cbr.x + cbr.w / 2.0)))
-    col_y = int(round(top + ref.y + ref.h / 2.0 - (cbr.y + cbr.h / 2.0)))
+    # lift raises short digits onto the tallest-digit line. The colon stays on that
+    # line, so it is put back by the same amount and does not stick up above it.
+    col_y = int(round(top + int(lift) + ref.y + ref.h / 2.0 - (cbr.y + cbr.h / 2.0)))
     if colon_on:
         surf.blit(col_img, (col_x, col_y))
     colon_rect = pygame.Rect(col_x + cbr.x, col_y + cbr.y, max(1, cbr.w), max(1, cbr.h))
@@ -3149,18 +3156,19 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     surf.fill(BG)
     hhmm, ampm = clock_parts(now)
     top = idle_clock_top(L, hhmm)
-    clock_px = L(300)  # design.md §13 refresh: idle clock 300 px @1080
+    clock_px = L(IDLE_CLOCK_PX)
     # Raise a short minute so its ink meets the tallest-digit line the panel is measured from.
-    base = top + int(font("display", clock_px).get_ascent() * 0.98) - clock_ink_lift("display", clock_px, hhmm)
+    base = top + int(font("display", clock_px).get_ascent() * 0.98)
+    lift = clock_ink_lift("display", clock_px, hhmm)
     x = L.m - L(8)
-    digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base, colon_on)
-    ampm_r = baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base)
+    digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base - lift, colon_on, lift)
+    ampm_r = baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base - lift)
     LAST_CLOCK_RECT = digits.union(ampm_r)
     date = time.strftime("%A, %B %-d", now)
-    dimg = font("body", L(60)).render(date, True, TEXT)
+    dimg = font("body", L(IDLE_DATE_PX)).render(date, True, TEXT)
     dbr = dimg.get_bounding_rect()
     bx = int(round(digits.x + digits.w / 2.0 - (dbr.x + dbr.w / 2.0)))
-    date_y = base + L(40)
+    date_y = base + L(IDLE_DATE_GAP)
     surf.blit(dimg, (bx, date_y))
     LAST_DATE_RECT = pygame.Rect(bx, date_y, dimg.get_width(), dimg.get_height())
     if wx.offline():
@@ -4977,6 +4985,7 @@ WAKE_TEXT_RIGHT = 60
 WAKE_NAME_PX = 96
 WAKE_QUOTE_PX = 54
 WAKE_REPLY_PX = 64
+HEARD_WINDOW_MAX = 3  # spoken question lines before that window scrolls
 WAKE_RING = 10
 UPDATE_RING = 2  # plain neutral ring on the update card; the wake ring stays the state ring
 UPDATE_LINE_MAX = 3
@@ -5021,29 +5030,53 @@ def panel_text_width(L, rect):
     return max(L(120), rect.right - L(WAKE_TEXT_RIGHT) - x)
 
 
-def zone_reply_metrics(L, rect, has_heard):
-    """(name px, heard px or 0, reply px, line step) for the voice card. The window is always 4 lines; on a
-    short zone the heard line goes first, then the reply size steps down (never under 40 spec px)."""
+def zone_reply_metrics(L, rect, heard):
+    """(name px, heard px or 0, reply px, line step, question window lines).
+
+    The reply window is 4 lines. The spoken question uses the same wrap, up to
+    HEARD_WINDOW_MAX lines, then scrolls. On a short zone the reply size steps
+    down before the question window loses a line, and never under 40 spec px.
+    """
     pad = ZONE_PAD(L)
-    name_px, heard_px, reply_px = L(WAKE_NAME_PX), L(WAKE_QUOTE_PX), L(WAKE_REPLY_PX)
     floor = L(40)
+    heard_lines = HEARD_WINDOW_MAX if heard else 0
+    width = panel_text_width(L, rect)
     while True:
-        step = max(1, int(reply_px * 1.18))  # Inter 500 at line height 1.18
-        need = font("display", name_px).get_height() + L(12) + Teleprompter.WINDOW_LINES * step
-        if has_heard and heard_px:
-            need += font("italic", heard_px).get_height() + L(12)
-        if need <= rect.h - 2 * pad:
-            return name_px, heard_px if has_heard else 0, reply_px, step
-        if has_heard and heard_px:
-            heard_px = 0
+        name_px, heard_px, reply_px = L(WAKE_NAME_PX), L(WAKE_QUOTE_PX), L(WAKE_REPLY_PX)
+        restart = False
+        while True:
+            step = max(1, int(reply_px * 1.18))  # Inter 500 at line height 1.18
+            need = font("display", name_px).get_height() + L(12) + Teleprompter.WINDOW_LINES * step
+            if heard_lines:
+                need += heard_lines * font("italic", heard_px).get_height() + L(12)
+            if need <= rect.h - 2 * pad:
+                if heard_lines:
+                    face = font("italic", heard_px)
+                    n = len(wrap(face, f"“{heard}”", width)) or 1
+                    n = max(1, min(HEARD_WINDOW_MAX, n))
+                    if n < heard_lines:
+                        heard_lines = n
+                        restart = True
+                        break
+                return name_px, heard_px if heard_lines else 0, reply_px, step, heard_lines
+            if reply_px <= floor:
+                break
+            reply_px = max(floor, int(reply_px * 0.92))
+            name_px = max(L(56), int(name_px * 0.92))
+        if restart:
             continue
-        if reply_px <= floor:
-            return name_px, 0, floor, step
-        reply_px = max(floor, int(reply_px * 0.92))
-        name_px = max(L(56), int(name_px * 0.92))
+        if heard_lines > 1:
+            heard_lines -= 1
+            continue
+        if heard_lines == 1:
+            heard_lines = 0
+            continue
+        step = max(1, int(floor * 1.18))
+        return max(L(56), name_px), 0, floor, step, 0
 
 
-LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
+LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = LAST_HEARD = None
+_HEARD_SCROLL = {"text": None, "lines": 0, "tele": None}
 LAST_PORTRAIT_BG = None
 LAST_CHIP_RECTS = []
 
@@ -5069,11 +5102,31 @@ def draw_reply_line(surf, L, msg, state):
     LAST_REPLY_LINE = {"who": who, "text": quote, "y": y}
 
 
+def heard_window(text, window_lines, now, reduced=False):
+    """The question scroller. Same Teleprompter as the reply, kept across paints so a redraw does not jump."""
+    slot = _HEARD_SCROLL
+    if slot["text"] != text or slot["lines"] != window_lines or slot["tele"] is None:
+        slot["text"] = text
+        slot["lines"] = window_lines
+        slot["tele"] = Teleprompter(now, reduced, window_lines)
+    return slot["tele"]
+
+
+def _tele_surface(face, lines, color, width, step, clip_wide=False):
+    """One surface of wrapped lines. The reply clips a single too-wide word; the question does not."""
+    full = pygame.Surface((max(1, width), max(1, len(lines)) * step), pygame.SRCALPHA)
+    for i, ln in enumerate(lines):
+        shown = ellipsize(face, ln, width) if clip_wide and face.size(ln)[0] > width else ln
+        full.blit(face.render(shown, True, color), (0, i * step))
+    return full
+
+
 def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
-    """A bot state in the bottom zone: avatar on the left, name, heard line and the 4-line reply window on the
-    right, and the state icon and word at the top right."""
-    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG, LAST_TELE
+    """A bot state in the bottom zone: avatar on the left, name, the wrapped question, and the 4-line reply
+    window on the right. The question scrolls with the same teleprompter as the reply."""
+    global LAST_PORTRAIT_RECT, LAST_PORTRAIT_ARGS, LAST_PORTRAIT_BG, LAST_TELE, LAST_HEARD
     LAST_TELE = None
+    LAST_HEARD = None
     _card_chrome(surf, L, rect)
     who, heard, text = msg.get("from") or VOICE_NAME, msg.get("heard", ""), msg.get("text") or ""
     if state == "thinking":
@@ -5091,29 +5144,38 @@ def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     # 0.13.0: no state word in the card's top-right corner; the ring around the avatar is the state.
     x = panel_text_x(L, rect)
     width = panel_text_width(L, rect)
-    name_px, heard_px, reply_px, step = zone_reply_metrics(L, rect, bool(heard))
+    name_px, heard_px, reply_px, step, heard_lines = zone_reply_metrics(L, rect, heard)
     y = rect.top + pad
     name_w = width
     nm = _line(surf, "display", name_px, who, TEXT, max(40, name_w))
     surf.blit(nm, (x, y))
     y += nm.get_height() + L(12)
-    if heard_px:
-        hl = _line(surf, "italic", heard_px, f"“{heard}”", MUTED, width)
-        surf.blit(hl, (x, y))
-        y += hl.get_height() + L(12)
+    now = now_s if now_s is not None else time.time()
+    if heard_px and heard_lines:
+        hf = font("italic", heard_px)
+        hstep = max(1, hf.get_height())
+        quote = f"“{heard}”"
+        qlines = wrap(hf, quote, width) or [quote]
+        visible = min(heard_lines, len(qlines))
+        htele = heard_window(quote, visible, now, reduced=bool(getattr(tele, "reduced", False)))
+        htele.set_geometry(len(qlines), hstep, L.s)
+        win = pygame.Rect(x, y, width, visible * hstep).clip(rect)
+        if win.w > 0 and win.h > 0:
+            LAST_HEARD = {"rect": win, "text": _tele_surface(hf, qlines, MUTED, width, hstep),
+                          "fade": L(45), "tele": htele, "lines": qlines}
+            y += win.h + L(12)
     color = AMBER if state == "error" else TEXT
     f = font("body", reply_px)
     lines = wrap(f, text, width) if text else []
-    win = pygame.Rect(x, y, width, Teleprompter.WINDOW_LINES * step)
-    if tele is not None:
-        tele.set_geometry(len(lines), step, L.s)
-    if not lines:
-        return
-    full = pygame.Surface((width, max(1, len(lines)) * step), pygame.SRCALPHA)
-    for i, ln in enumerate(lines):
-        full.blit(f.render(ln if f.size(ln)[0] <= width else ellipsize(f, ln, width), True, color), (0, i * step))
-    LAST_TELE = {"rect": win, "text": full, "fade": L(45), "tele": tele}
-    paint_tele(surf, now_s if now_s is not None else time.time())
+    if lines:
+        win = pygame.Rect(x, y, width, Teleprompter.WINDOW_LINES * step).clip(rect)
+        if tele is not None:
+            tele.set_geometry(len(lines), step, L.s)
+        if win.w > 0 and win.h > 0:
+            LAST_TELE = {"rect": win, "text": _tele_surface(f, lines, color, width, step, clip_wide=True),
+                         "fade": L(45), "tele": tele, "lines": lines}
+    if LAST_HEARD or LAST_TELE:
+        paint_tele(surf, now)
 
 
 def _window_at(full, offset, w, h):
@@ -5135,11 +5197,8 @@ def _fade_edges(win, fade, top, bottom):
             win.fill((255, 255, 255, a), (0, h - 1 - i, w, 1), special_flags=pygame.BLEND_RGBA_MULT)
 
 
-def paint_tele(surf, now_s):
-    """Repaint only the reply window (the main loop calls this at 30 fps while it scrolls). Returns its rect."""
-    st = LAST_TELE
-    if not st:
-        return None
+def _paint_one_tele(surf, st, now_s):
+    """One teleprompter window: the spoken question or the reply. Same crop, fade, and step."""
     rect, full, tele = st["rect"], st["text"], st["tele"]
     surf.fill(SURFACE, rect)
     if tele is None or not tele.scrolls:
@@ -5160,6 +5219,17 @@ def paint_tele(surf, now_s):
     return rect
 
 
+def paint_tele(surf, now_s):
+    """Repaint the question window and the reply window. The main loop calls this while either scrolls."""
+    rect = None
+    for st in (LAST_HEARD, LAST_TELE):
+        if not st or st.get("text") is None:
+            continue
+        one = _paint_one_tele(surf, st, now_s)
+        rect = one if rect is None else rect.union(one)
+    return rect
+
+
 def zone_view(msg, tile_card, feed_card=None):
     """What the bottom zone shows. A tile wins the zone; a bot state then moves to the upper-left badge and its
     reply text is hidden (no caption). With no tile, the bot state fills the zone."""
@@ -5176,10 +5246,10 @@ def zone_view(msg, tile_card, feed_card=None):
 
 def draw_zone(surf, L, now, wx, colon_on=True, zone=None, t=1.0, tele=None, now_s=None):
     """The idle clock, date and weather, unchanged, with the bottom zone under them (docs/display.md)."""
-    global LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE
+    global LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE, LAST_HEARD
     zone = zone or {}
     busy = bool(zone.get("tile") or zone.get("voice"))
-    LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None
+    LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = LAST_HEARD = None
     if zone.get("voice") and not zone.get("tile"):
         # The conversation replaces the update card. Hold the rotation step, with no Paused label.
         update_rotation_step(time.time(), paused=True)
@@ -5496,6 +5566,13 @@ _ENROLL_SQUARES = 5
 PANEL_X = 128
 PANEL_W = 2304
 PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a clear band
+# Idle time and date, sized so that block matches the weather block. Weather sizes stay put.
+IDLE_CLOCK_PX = 238
+IDLE_DATE_PX = 60
+IDLE_DATE_GAP = 36
+# The smaller clock's digit ink sits higher in the font box. This drop keeps it
+# under the upper-left conversation badge. Weather sizes are unchanged.
+IDLE_CLOCK_DROP = 8
 
 
 def _glyph_ink_dy(img):
@@ -5547,9 +5624,9 @@ def idle_block_offsets(L, hhmm=None):
     block does not jump when weather arrives.
     """
     del hhmm
-    clock_px = L(300)
+    clock_px = L(IDLE_CLOCK_PX)
     cf = font("display", clock_px)
-    key = (L.w, L.h, clock_px)
+    key = (L.w, L.h, clock_px, L(IDLE_DATE_GAP), L(IDLE_DATE_PX))
     hit = _BLOCK_OFFSETS.get(key)
     if hit is not None:
         return hit
@@ -5559,7 +5636,7 @@ def idle_block_offsets(L, hhmm=None):
     clock_bottom = clock_box + cf.get_height()
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
-    date_bottom = base + L(40) + font("body", L(60)).get_height()
+    date_bottom = base + L(IDLE_DATE_GAP) + font("body", L(IDLE_DATE_PX)).get_height()
     tb = base - L(80)
     temp_px = L(180)
     temp_f = font("display", temp_px)
@@ -5586,11 +5663,11 @@ def idle_clock_top(L, hhmm=None):
     The font box sits just below the status icons, which keeps the digits below the
     conversation badge. The visible ink is lower; the panel margin uses that ink.
     """
-    cf = font("display", L(300))
+    cf = font("display", L(IDLE_CLOCK_PX))
     box = int(cf.get_ascent() * 0.98) - cf.get_ascent()
     icon_bottom = max(4, int(round(8 * L.s))) + status_icon_px(L.s)
     pad = max(2, int(round(4 * L.s)))
-    return max(0, icon_bottom + pad - box)
+    return max(0, icon_bottom + pad - box) + L(IDLE_CLOCK_DROP)
 
 
 def bottom_panel_rect(L):
@@ -5629,14 +5706,14 @@ def clock_date_bottom(L, now=None):
     if now is None:
         now = time.localtime()
     top = idle_clock_top(L)
-    clock_px = L(300)
+    clock_px = L(IDLE_CLOCK_PX)
     cf = font("display", clock_px)
     hhmm, _ampm = clock_parts(now)
-    base = top + int(cf.get_ascent() * 0.98) - clock_ink_lift("display", clock_px, hhmm)
+    base = top + int(cf.get_ascent() * 0.98)
     clock_bottom = base - cf.get_ascent() + cf.get_height()
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
-    date_bottom = base + L(40) + font("body", L(60)).get_height()
+    date_bottom = base + L(IDLE_DATE_GAP) + font("body", L(IDLE_DATE_PX)).get_height()
     return max(clock_bottom, ampm_bottom, date_bottom)
 
 
@@ -6553,8 +6630,8 @@ def main():
 
     def paint(fade=False, snapshot=True):
         nonlocal last_key, strip_at
-        global LAST_TIMER_RECT, LAST_PORTRAIT_BG, LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE
-        LAST_PORTRAIT_BG = LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = None  # set again by what this paint draws
+        global LAST_TIMER_RECT, LAST_PORTRAIT_BG, LAST_ZONE_RECT, LAST_BADGE_RECT, LAST_TELE, LAST_HEARD
+        LAST_PORTRAIT_BG = LAST_ZONE_RECT = LAST_BADGE_RECT = LAST_TELE = LAST_HEARD = None  # set again by what this paint draws
         now = time.localtime()
         on = colon_blink_on()
         sd = setup["doc"]
@@ -6657,9 +6734,13 @@ def main():
         disp.flush_rect(rect)
 
     def tele_live():
-        """The reply window on screen still moves on its own."""
-        return bool(tele is not None and LAST_TELE and LAST_TELE.get("tele") is tele and last_key
-                    and last_key[0] == "zone" and tele.moving(time.time()))
+        """The question window or the reply window still moves on its own."""
+        if not last_key or last_key[0] != "zone":
+            return False
+        now = time.time()
+        reply = bool(tele is not None and LAST_TELE and LAST_TELE.get("tele") is tele and tele.moving(now))
+        heard_tele = (LAST_HEARD or {}).get("tele")
+        return reply or bool(heard_tele and heard_tele.moving(now))
 
     def blink_colon():
         """Redraw only the colon glyph (or the background behind it) and flush that rect."""
@@ -6945,7 +7026,7 @@ def main():
             elif CHIPS.prune(time.time()):
                 paint(snapshot=False)  # a chip reached its tile's TTL
             elif tele_live():
-                disp.flush_rect(paint_tele(disp.screen, time.time()))  # only the reply window
+                disp.flush_rect(paint_tele(disp.screen, time.time()))  # question window and reply window
                 maybe_strip()
             elif last_key is None or last_key[1] != time.localtime().tm_min:
                 paint(snapshot=False)

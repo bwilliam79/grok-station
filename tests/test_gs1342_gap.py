@@ -88,5 +88,20 @@ class PanelGap(unittest.TestCase):
                 shutil.rmtree(tmp, ignore_errors=True)
 
 
+class ClockWeatherHeight(unittest.TestCase):
+    def test_clock_date_block_matches_weather_height(self):
+        """The time and date block is the weather block's height, within 2 px.
+
+        1280x800 and a 2560-wide 2.5K frame. The weather block is not enlarged.
+        """
+        now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
+        for size in ((1280, 800), (2560, 1600)):
+            surf = pygame.Surface(size)
+            gs.draw_idle(surf, gs.Layout(*size), now, _Wx())
+            block = gs.LAST_DATE_RECT.bottom - gs.LAST_CLOCK_RECT.top
+            weather = gs.LAST_WEATHER_RECT.height
+            self.assertLessEqual(abs(block - weather), 2, (size, block, weather))
+
+
 if __name__ == "__main__":
     unittest.main()
