@@ -73,6 +73,31 @@ class PanelClock(unittest.TestCase):
             sample = gs.clock_parts(time.strptime("2026-06-15 00:00", "%Y-%m-%d %H:%M"))
             self.assertEqual(sample[0], "12:00")
 
+    def test_a_recycled_font_id_does_not_reuse_another_size(self):
+        import gc
+        text = gs.REF_CLOCK_DIGITS
+        gs._fonts.clear()
+        gs._GLYPH_INK.clear()
+        gs._BLOCK_OFFSETS.clear()
+        big = gs.glyph_ink_dy("display", 400, text)
+        gs._fonts.clear()
+        gc.collect()
+        for px in range(20, 80):
+            gs.font("body", px)
+        for px in range(20, 80):
+            f = gs.font("body", px)
+            got = gs.glyph_ink_dy("body", px, text)
+            real = f.render(text, True, gs.TEXT).get_bounding_rect().y
+            self.assertEqual(got, real if real else 0, px)
+        L = gs.Layout(2560, 1706)
+        first = tuple(gs.bottom_panel_rect(L))
+        gs._fonts.clear()
+        gc.collect()
+        for px in range(20, 90):
+            gs.font("body", px)
+        self.assertEqual(tuple(gs.bottom_panel_rect(L)), first)
+        self.assertEqual(gs.glyph_ink_dy("display", 400, text), big)
+
     def test_visible_top_gap_matches_the_bottom_gap(self):
         wx = _Wx()
         for size in SIZES:

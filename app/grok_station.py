@@ -5422,9 +5422,14 @@ _BLOCK_OFFSETS = {}
 
 
 def glyph_ink_dy(kind, px, text):
-    """Cached ink top for one font at one size. The key is the font object and the string."""
+    """Cached ink top for one font at one size.
+
+    The key is the face, the pixel size, and the string. A font object's id is reused
+    after the font cache drops it, so the id cannot name the measurement.
+    """
+    px = int(px)
     f = font(kind, px)
-    key = (id(f), text)
+    key = (kind, px, text)
     hit = _GLYPH_INK.get(key)
     if hit is not None:
         return hit
@@ -5454,7 +5459,7 @@ def idle_block_offsets(L, hhmm=None):
     del hhmm
     clock_px = L(300)
     cf = font("display", clock_px)
-    key = (L.w, L.h, id(cf))
+    key = (L.w, L.h, clock_px)
     hit = _BLOCK_OFFSETS.get(key)
     if hit is not None:
         return hit
