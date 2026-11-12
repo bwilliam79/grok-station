@@ -7,7 +7,7 @@ USB device that owns it (the directory with both `authorized` and `idVendor`),
 and refuses anything that is not the configured speakerphone. The reset is
 USBDEVFS_RESET on that device's /dev/bus/usb node. This program never writes
 `authorized`. After the reset it requires bConfigurationValue 1 and the ALSA
-card again within a few seconds. Otherwise stdout is `refused: config failed`
+card again within 8 seconds. It returns as soon as both are back. Otherwise stdout is `refused: config failed`
 and the exit status is not 0. No other input. No shell.
 
 GS_USB_RESET_SYSFS and GS_USB_RESET_DEVFS replace /sys and /dev/bus/usb only
@@ -31,7 +31,9 @@ EMEET_IDS = frozenset({("328f", "0109")})
 # _IO('U', 20). USBDEVFS_RESET on the device's usbfs node.
 USBDEVFS_RESET = (ord("U") << 8) | 20
 # How long to wait for configuration 1 and the ALSA card after the port reset.
-VERIFY_S = 3.0
+# The poll returns as soon as both are back. 8 seconds covers a slow ALSA return
+# without reporting a reset that worked as "config failed".
+VERIFY_S = 8.0
 # Minimum seconds between two resets, enforced under an exclusive lock.
 MIN_INTERVAL_S = 30
 

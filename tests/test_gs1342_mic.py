@@ -209,7 +209,75 @@ class NightAndStuck(unittest.TestCase):
         clock["t"] += 60
         rec.poll()
         self.assertEqual(resets, [])
-        self.assertTrue(any("mic back: capture resumes" in line for line in logs), logs)
+        self.assertFalse(rec._wait_card)
+        # Seeing the ALSA card is not the capture reopen. That line is logged
+        # by run_capture_rounds when it opens the device.
+        self.assertFalse(any("mic back: capture resumes" in line for line in logs), logs)
+
+    def test_config_failed_does_not_schedule_another_night(self):
+        import grok_wake as gw
+        logs, resets = [], []
+        clock = {"t": 1000.0}
+        base = datetime.datetime(2026, 11, 12, 3, 30)
+
+        def local(_ts):
+            return base + datetime.timedelta(seconds=clock["t"] - 1000.0)
+
+        def reset(name):
+            resets.append(name)
+            return "refused: config failed"
+
+        rec = gw.MicRecovery(
+            reset,
+            now=lambda: clock["t"],
+            local=local,
+            flags=lambda: {"button": True, "night": True, "drought": True},
+            card=lambda: "Plus",
+            busy=lambda: False,
+            kick=lambda: None,
+            log=logs.append,
+        )
+        rec.poll()
+        self.assertEqual(resets, ["Plus"])
+        self.assertTrue(rec._wait_card)
+        self.assertEqual(rec.last_night, base.date())
+        for i in range(1, 12):
+            clock["t"] = 1000.0 + i * 60
+            rec.poll()
+        self.assertEqual(resets, ["Plus"], logs)
+
+    def test_missing_capture_is_logged_on_transition_then_every_ten_minutes(self):
+        import grok_wake as gw
+        logs = []
+        clock = {"t": 0.0}
+        finds = {"n": 0}
+
+        class _Eof:
+            def __init__(self):
+                self.stdout = self
+
+            def read(self, _n):
+                return b""
+
+            def kill(self):
+                return None
+
+        def find():
+            finds["n"] += 1
+            if finds["n"] <= 4:
+                return None
+            return "plughw:CARD=Plus,DEV=0"
+
+        def sleep(seconds):
+            clock["t"] += 600 if finds["n"] == 3 else seconds
+
+        gw.run_capture_rounds(
+            find, lambda cap: _Eof(), lambda buf, guard: None, lambda: False,
+            rounds=5, sleep=sleep, now=lambda: clock["t"], log=logs.append, stall_s=30.0,
+        )
+        missing = [line for line in logs if "no capture device" in line]
+        self.assertEqual(len(missing), 2, logs)
+        self.assertEqual(sum("mic back: capture resumes" in line for line in logs), 1)
 
     def test_unconfigured_device_says_power_cycle(self):
         import pygame
@@ -243,6 +311,10 @@ class NightAndStuck(unittest.TestCase):
                 self.assertIsNotNone(notice)
                 self.assertGreater(notice.w, 40)
                 self.assertGreater(notice.h, 8)
+                keep = os.environ.get("GS_ARTIFACTS", "")
+                if keep:
+                    os.makedirs(keep, exist_ok=True)
+                    pygame.image.save(surf, os.path.join(keep, "mic-notice-1280x800.png"))
             finally:
                 gs.STATUS["mic"] = {"ok": None, "detail": ""}
         page = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()

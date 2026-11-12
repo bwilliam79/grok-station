@@ -200,6 +200,6 @@ The clock screen's updates row is two larger tiles. Each one shows the bot's pic
 Bot instruction templates are pure ASCII again (straight quotes; "your owner" written out instead of the `{owner}` token) so bots still on 0.13.17 can update. The template check is printable ASCII only.
 
 ### 0.13.18
-Updates mirror email: the email name is the kind (18 characters), its lead sentence is the headline (60), and optional detail is at most 90 characters. Updates replace the same bot/kind and expire after 24 hours. Needs you is one pinned item per bot until explicitly cleared. No progress updates.
+Updates mirror email: the email name is the kind (18 characters), its lead sentence is the headline (60), and optional detail is at most 90 characters. The same bot and kind replaces the previous update, and that latest update stays until the bot replaces or clears it. Needs you is one pinned item per bot until explicitly cleared. No progress updates.
 
 The `{owner}` token is filled from the station’s local sign-in name when rendering bot instructions; absent or unsafe names become “your owner”. Names are not stored in the shipped templates. Update payloads preserve signed ISO timestamps across the relay/station boundary; only station 400 and 413 responses map to schema errors; station 401, 403 and 404 remain 503 (unavailable).

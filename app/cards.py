@@ -4,7 +4,7 @@ Bots send data. Nothing here runs a command, fetches a URL that is not on the
 logo allowlist, or treats card text as markup. Text is stripped, then drawn as
 pixels by the station.
 """
-import base64, hashlib, http.client, ipaddress, json, os, re, socket, ssl, stat, sys, tempfile, threading, time, unicodedata
+import base64, hashlib, http.client, ipaddress, json, math, os, re, socket, ssl, stat, sys, tempfile, threading, time, unicodedata
 from urllib.parse import urlsplit
 
 CARD_MAX = 4096
@@ -1613,6 +1613,8 @@ UPD_CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule", "kind", "detail"))
 UPD_BODY_REQ = frozenset(("type", "line", "time"))
 FEED_FILE_MAX = 65536
+# JSON numbers above 2**53 are not exact in IEEE doubles. A larger seq is refused.
+SEQ_MAX = 2 ** 53
 _ROW_KEYS = ("bot", "id", "type", "line", "time", "seq", "kind", "detail", "expires_at")
 UPDATE_OPS = ("update", "update_clear")
 
@@ -1684,6 +1686,22 @@ def is_update_op(doc):
     return isinstance(doc, dict) and doc.get("op") in UPDATE_OPS
 
 
+def _reject_non_finite(_token):
+    """json.loads parse_constant. NaN and Infinity are not stored."""
+    raise ValueError("non-finite")
+
+
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def _seq_ok(value):
+    return (not isinstance(value, bool) and isinstance(value, int)
+            and 0 <= value <= SEQ_MAX)
+
+
 def _feed_row_ok(row):
     """A stored feed row. A bad row makes the whole file ignored."""
     if not isinstance(row, dict):
@@ -1698,11 +1716,11 @@ def _feed_row_ok(row):
     line = row.get("line")
     if not isinstance(line, str) or not line or len(line) > LINE_MAX:
         return False
-    if isinstance(row.get("time"), bool) or not isinstance(row.get("time"), (int, float)):
+    if not _finite_number(row.get("time")):
         return False
-    if isinstance(row.get("seq"), bool) or not isinstance(row.get("seq"), int) or row["seq"] < 0:
+    if not _seq_ok(row.get("seq")):
         return False
-    if "expires_at" in row and (isinstance(row["expires_at"], bool) or not isinstance(row["expires_at"], (int, float))):
+    if "expires_at" in row and not _finite_number(row.get("expires_at")):
         return False
     for key in ("kind", "detail"):
         if key in row and (not isinstance(row[key], str) or len(row[key]) > 90):
@@ -1725,6 +1743,8 @@ class UpdateFeed:
         self.rules = {}     # bot -> feed rule text shown on the Bots page ("" = All updates)
         self.seq = 0
         self.paused_until = None   # voice "pause updates": until resume or 10 min idle
+        # put() runs on HTTP threads. ordered() expires and saves on the render thread.
+        self._lock = threading.RLock()
         if path:
             self._load(time.time() if now is None else now)
 
@@ -1746,14 +1766,14 @@ class UpdateFeed:
         if len(raw) > FEED_FILE_MAX:
             return
         try:
-            doc = json.loads(raw.decode("utf-8"))
+            doc = json.loads(raw.decode("utf-8"), parse_constant=_reject_non_finite)
         except (ValueError, UnicodeError):
             return
         if not isinstance(doc, dict):
             return
         items, rules, seq = doc.get("items"), doc.get("rules"), doc.get("seq")
         if (not isinstance(items, list) or len(items) > FEED_MAX or not isinstance(rules, dict)
-                or isinstance(seq, bool) or not isinstance(seq, int) or seq < 0):
+                or not _seq_ok(seq)):
             return
         loaded = {}
         for row in items:
@@ -1771,44 +1791,62 @@ class UpdateFeed:
         self.expire(now)
 
     def _save(self):
+        """Write the feed. Caller may already hold _lock. The snapshot and the replace stay inside it,
+        so a later put cannot be overwritten by an older snapshot."""
         if not self.path:
             return
-        doc = {"items": [{k: row[k] for k in _ROW_KEYS if k in row} for row in self.items.values()],
-               "rules": self.rules, "seq": self.seq}
-        try:
-            data = json.dumps(doc, separators=(",", ":")).encode("utf-8")
-        except (TypeError, ValueError):
-            return
-        if len(data) > FEED_FILE_MAX:
-            return
-        directory = os.path.dirname(os.path.abspath(self.path)) or "."
-        try:
-            fd, tmp = tempfile.mkstemp(prefix=".update-feed-", dir=directory)
-        except OSError:
-            return
-        try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, data)
-            os.fsync(fd)
-        except OSError:
+        with self._lock:
+            doc = {"items": [{k: row[k] for k in _ROW_KEYS if k in row} for row in self.items.values()],
+                   "rules": dict(self.rules), "seq": self.seq}
+            try:
+                data = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+            except (TypeError, ValueError):
+                return
+            if len(data) > FEED_FILE_MAX:
+                return
+            directory = os.path.dirname(os.path.abspath(self.path)) or "."
+            try:
+                fd, tmp = tempfile.mkstemp(prefix=".update-feed-", dir=directory)
+            except OSError:
+                return
+            try:
+                os.fchmod(fd, 0o600)
+                os.write(fd, data)
+                os.fsync(fd)
+            except OSError:
+                os.close(fd)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return
             os.close(fd)
             try:
-                os.unlink(tmp)
+                os.replace(tmp, self.path)
             except OSError:
-                pass
-            return
-        os.close(fd)
-        try:
-            os.replace(tmp, self.path)
-        except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return
             try:
-                os.unlink(tmp)
+                dirfd = os.open(directory, os.O_RDONLY)
+            except OSError:
+                return
+            try:
+                os.fsync(dirfd)
             except OSError:
                 pass
+            finally:
+                os.close(dirfd)
 
     def put(self, bot, uid, update):
         if not bot_slug_ok(bot):
             raise CardError("schema")
+        with self._lock:
+            return self._put(bot, uid, update)
+
+    def _put(self, bot, uid, update):
         if "feed_rule" in update:
             self.rules[bot] = update["feed_rule"]
         if update["type"] == "working_on":     # one Working on per bot: the next update replaces it
@@ -1828,18 +1866,20 @@ class UpdateFeed:
         return row
 
     def clear(self, bot, uid):
-        removed = self.items.pop((bot, uid), None) is not None
-        if removed:
-            self._save()
-        return removed
+        with self._lock:
+            removed = self.items.pop((bot, uid), None) is not None
+            if removed:
+                self._save()
+            return removed
 
     def drop_bot(self, bot):
         """Updates switched off (or bot removed): its rows leave the station now."""
-        keys = [k for k in self.items if k[0] == bot]
-        for key in keys:
-            del self.items[key]
-        if keys:
-            self._save()
+        with self._lock:
+            keys = [k for k in self.items if k[0] == bot]
+            for key in keys:
+                del self.items[key]
+            if keys:
+                self._save()
 
     def _cap(self, bot):
         mine = sorted((v for v in self.items.values() if v["bot"] == bot), key=lambda r: r["seq"])
@@ -1860,6 +1900,10 @@ class UpdateFeed:
         and done still leave after their expires_at or after DROP_S (2 hours).
         needs_you stays until it is cleared.
         """
+        with self._lock:
+            self._expire(now)
+
+    def _expire(self, now):
         removed = False
         for key, r in list(self.items.items()):
             t = r["type"]
@@ -1877,8 +1921,9 @@ class UpdateFeed:
 
     def ordered(self, now):
         """Needs you newest first, then the rest newest first. Done past 30 min is marked aged."""
-        self.expire(now)
-        rows = [dict(r) for r in self.items.values()]
+        with self._lock:
+            self._expire(now)
+            rows = [dict(r) for r in self.items.values()]
         for r in rows:
             r["aged"] = r["type"] == "done" and now - r["time"] >= DONE_FADE_S
         newest = lambda r: (-r["time"], -r["seq"])

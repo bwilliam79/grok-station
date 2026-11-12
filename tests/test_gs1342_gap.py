@@ -39,6 +39,8 @@ class PanelGap(unittest.TestCase):
         for size in ((1280, 800), (2560, 1706)):
             gap, layout, panel, clock_top = _gap(size)
             self.assertGreaterEqual(gap, layout(48), size)
+            if size == (1280, 800):
+                self.assertGreaterEqual(gap, 32)
             self.assertGreaterEqual(panel.top, gs.clock_date_bottom(layout, time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")))
             # The 0.13.41 rule: the margin under the panel equals the ink above the block.
             self.assertEqual(size[1] - panel.bottom, clock_top + gs.idle_block_offsets(layout)[0])

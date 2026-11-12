@@ -4,6 +4,7 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,6 +84,94 @@ class FeedPersistence(unittest.TestCase):
         feed.expire(1000 + cards.DROP_S)
         kinds = {row["type"] for row in feed.items.values()}
         self.assertEqual(kinds, {"needs_you"})
+
+    def test_non_finite_and_huge_seq_are_ignored(self):
+        """NaN, Infinity, and a seq above 2**53 must not load or be returned."""
+        huge = 10 ** 23  # the integer 1e23; JSON 1e23 is a float and was already refused
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "update-feed.json")
+            with open(path, "w") as fh:
+                fh.write(
+                    '{"items":[{"bot":"otto","id":"a","type":"update","line":"Hi",'
+                    '"time":NaN,"expires_at":Infinity,"seq":%d}],"rules":{},"seq":%d}'
+                    % (huge, huge))
+            feed = cards.UpdateFeed(path=path, now=1000)
+            needs, rest = feed.ordered(5000)
+            self.assertEqual(feed.items, {})
+            self.assertEqual(needs + rest, [])
+            # The same seq bound, with finite times, so the file is not saved back.
+            with open(path, "w") as fh:
+                fh.write(
+                    '{"items":[{"bot":"otto","id":"a","type":"update","line":"Hi",'
+                    '"time":1000,"seq":%d}],"rules":{},"seq":%d}' % (huge, huge))
+            again = cards.UpdateFeed(path=path, now=1000)
+            self.assertEqual(again.items, {})
+            with open(path) as fh:
+                self.assertTrue(fh.read().startswith("{"))
+            top = os.path.join(d, "top.json")
+            with open(top, "w") as fh:
+                fh.write(
+                    '{"items":[{"bot":"otto","id":"a","type":"update","line":"Hi",'
+                    '"time":1000,"seq":1}],"rules":{},"seq":%d}' % (2 ** 53 + 1))
+            self.assertEqual(cards.UpdateFeed(path=top, now=1000).items, {})
+            ok = os.path.join(d, "ok.json")
+            with open(ok, "w") as fh:
+                fh.write(
+                    '{"items":[{"bot":"otto","id":"a","type":"update","line":"Hi",'
+                    '"time":1000,"seq":%d}],"rules":{},"seq":%d}' % (2 ** 53, 2 ** 53))
+            kept = cards.UpdateFeed(path=ok, now=1000)
+            self.assertEqual(len(kept.items), 1)
+            self.assertEqual(kept.seq, 2 ** 53)
+
+    def test_save_holds_the_lock_across_replace(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "update-feed.json")
+            feed = cards.UpdateFeed(path=path)
+            seen = {}
+            real = os.replace
+
+            def spy(src, dst):
+                def other():
+                    got = feed._lock.acquire(blocking=False)
+                    seen["held"] = not got
+                    if got:
+                        feed._lock.release()
+                worker = threading.Thread(target=other)
+                worker.start()
+                worker.join()
+                real(src, dst)
+
+            os.replace = spy
+            try:
+                feed.put("otto", "a", _row())
+            finally:
+                os.replace = real
+            self.assertTrue(seen.get("held"), seen)
+            # Concurrent puts and ordered() calls keep every row.
+            errors = []
+
+            def writer(n):
+                try:
+                    feed.put("otto", "id%d" % n, _row(kind="K%d" % n, line="Line %d" % n, when=3000 + n))
+                except Exception as exc:
+                    errors.append(exc)
+
+            def reader():
+                try:
+                    for _ in range(20):
+                        feed.ordered(4000)
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=reader)]
+            threads += [threading.Thread(target=writer, args=(n,)) for n in range(12)]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            self.assertEqual(errors, [])
+            again = cards.UpdateFeed(path=path)
+            self.assertEqual(set(again.items), set(feed.items))
 
 
 if __name__ == "__main__":

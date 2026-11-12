@@ -3600,6 +3600,11 @@ def note_stuck_reopen(reason, busy, now):
     return RECOVERY.request("stuck")
 
 
+# While the speakerphone is unconfigured, find_card stays empty. Log the first miss,
+# then at most once per 10 minutes, until the device is open again.
+NO_CARD_LOG_S = 600.0
+
+
 def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, stall_s=3.0, silence_s=10.0,
                        chunk_s=0.08, sleep=None, log=None, gap=30.0, now=None, n_bytes=None, on_open=None):
     """Open capture, read until it should reopen, repeat. find_card runs on every round."""
@@ -3607,11 +3612,17 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
     log = log or (lambda msg: print(msg, flush=True))
     now = now or time.time
     reasons, last_watch, n = [], 0.0, 0
+    missing = False
+    last_missing_log = None
     while rounds is None or n < rounds:
         cap = find_card()
         if not cap:
             LIVE["capture"] = None
-            log(f"no capture device matching {DEVICE!r}; retrying")
+            t = now()
+            if (not missing) or last_missing_log is None or t - last_missing_log >= NO_CARD_LOG_S:
+                log(f"no capture device matching {DEVICE!r}; retrying")
+                last_missing_log = t
+            missing = True
             if rounds is not None:
                 reasons.append("no-card")
                 n += 1
@@ -3619,6 +3630,10 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
                     break
             sleep(5)
             continue
+        if missing:
+            log("mic back: capture resumes")
+            missing = False
+            last_missing_log = None
         LIVE["reopen_by"] = None
         if on_open:
             on_open(cap, None)
@@ -3719,9 +3734,10 @@ class MicRecovery:
             return
         self._last_poll = now
         if self._wait_card:
+            # The card being visible is not the capture reopen. run_capture_rounds
+            # logs "mic back: capture resumes" when it actually opens the device.
             if self.card():
                 self._wait_card = False
-                self.log("mic back: capture resumes")
             return
         flags = self.flags()
         if self.pending and not flags.get(_flag_for(self.pending)):
@@ -3829,6 +3845,11 @@ class MicRecovery:
         if err:
             LIVE["reset_until"] = None
             self.log(f"mic reset failed: {err} ({reason})")
+            # A failed configuration does not come back from another port reset.
+            # Wait for the device, and do not schedule another night attempt.
+            if err == "refused: config failed":
+                self._wait_card = True
+                self.last_night = self.local(self.now()).date()
             self._backoff(reason)
             return "failed"
         self.log(f"mic reset: {reason}")
