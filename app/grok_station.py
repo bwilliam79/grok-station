@@ -467,6 +467,7 @@ TEXT, MUTED, FAINT = hexc("F5EFE6"), hexc("A89B8C"), hexc("6F655A")
 FIELD_EDGE = hexc("806F60")  # empty training-progress square, 3 px edge on SURFACE3
 LISTENING, THINKING, SPEAKING, AMBER = hexc("3FD3B6"), hexc("A99CFF"), hexc("FFE6BF"), hexc("F5C04A")
 RULE2, ALERT_FILL, AMBER_INK = hexc("3A3028"), hexc("241C0E"), hexc("1A1408")
+UPDATE_DETAIL = hexc("AC998B")  # update-card detail, the wake quote line's warm secondary
 RECIPE_FAINT = hexc("998C7D")  # "Serves", "No timers" on the recipe tile (SPEC faint, not the older FAINT)
 RED = hexc("FF5A52")  # mic off, and a stock-down arrow. Problems use text on a quiet ring
 GREEN = hexc("4ADE80")  # stock up only
@@ -3117,7 +3118,8 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     hhmm, ampm = clock_parts(now)
     top = idle_clock_top(L, hhmm)
     clock_px = L(300)  # design.md §13 refresh: idle clock 300 px @1080
-    base = top + int(font("display", clock_px).get_ascent() * 0.98)
+    # Raise a short minute so its ink meets the tallest-digit line the panel is measured from.
+    base = top + int(font("display", clock_px).get_ascent() * 0.98) - clock_ink_lift("display", clock_px, hhmm)
     x = L.m - L(8)
     digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base, colon_on)
     ampm_r = baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base)
@@ -3801,28 +3803,32 @@ def _band_signature(rows):
 LAST_UPDATE_LINES = []
 
 
-def update_full_lines(kind, text, width, max_h, start, floor):
-    """Wrap `text` so the joined lines are the whole string. Shrink until the block fits max_h."""
-    text = " ".join(str(text or "").split())
-    floor = max(8, int(floor))
-    px = max(floor, int(start))
-    width = max(8, int(width))
-    max_h = max(1, int(max_h))
-    while True:
-        f = font(kind, px)
-        lines = wrap(f, text, width) if text else []
-        step = max(1, f.get_height())
-        fits = (not text) or (lines and step * len(lines) <= max_h and all(f.size(ln)[0] <= width for ln in lines))
-        if fits and " ".join(lines) == text:
-            return f, lines, step
-        if px <= floor:
-            return f, lines, step
-        nxt = px - max(1, px // 10)
-        px = floor if nxt < floor else nxt
+def _clamp_lines(kind, text, width, px, max_lines):
+    """Wrap at the wake size. Past max_lines, the last visible line ends with an ellipsis."""
+    f = font(kind, max(8, int(px)))
+    lines = wrap(f, text, width) if text else []
+    if len(lines) <= max_lines:
+        return f, lines
+    head = lines[:max_lines - 1]
+    tail = ellipsize(f, " ".join(lines[max_lines - 1:]), width)
+    return f, head + [tail]
+
+
+def _update_pill_height(L, font_px):
+    """Height _update_pill will draw, so the name row can center the pill before painting it."""
+    px = L(30) if font_px is None else font_px
+    icon_px = max(12, int(px * 0.72))
+    pad_y = zpx(L, 10)
+    return pad_y + max(font("display", px).get_height(), icon_px) + pad_y
 
 
 def _paint_update_card(surf, L, rect, row, now):
-    """One large update card: the bot's avatar and name, and the full line and detail."""
+    """One large update card in the wake panel's column: avatar, name row, line, detail.
+
+    The avatar uses the wake avatar's outer size and center, with a plain 2 px neutral ring.
+    The text column uses the wake text left and right padding. The block is centered on the
+    avatar, and a card with no detail centers the shorter block.
+    """
     global LAST_UPDATE_AVATARS, LAST_UPDATE_PILLS, LAST_UPDATE_LINES
     t = row["type"]
     needs = t == "needs_you"
@@ -3830,30 +3836,27 @@ def _paint_update_card(surf, L, rect, row, now):
     pygame.draw.rect(surf, BG if aged else SURFACE, rect, border_radius=zpx(L, 37))
     edge = AMBER if needs else RULE
     pygame.draw.rect(surf, edge, rect, width=max(1, zpx(L, 3)), border_radius=zpx(L, 37))
-    inset = zpx(L, 36)
-    d = max(zpx(L, 96), min(zpx(L, 220), rect.h // 3))
-    ring_w = max(2, zpx(L, 6 if needs else 4))
-    photo_d = max(8, d - 2 * ring_w)
-    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(d * 0.46)))
+    outer = panel_avatar_outer(L, rect)
+    cx, cy = panel_avatar_center(L, rect)
+    ring_w = UPDATE_RING
+    photo_d = max(8, outer - 2 * ring_w)
+    avatar, fallback, initial = _update_avatar(row.get("bot") or "?", photo_d, max(12, int(photo_d * 0.46)))
     if aged:
         avatar.set_alpha(153)
-    ax, ay = rect.left + inset, rect.top + inset
-    cx, cy = ax + d // 2, ay + d // 2
     surf.blit(avatar, (cx - photo_d // 2, cy - photo_d // 2))
-    ring = AMBER if needs else (MUTED if aged else RULE2)
-    pygame.draw.circle(surf, ring, (cx, cy), max(1, d // 2 - ring_w // 2), max(1, ring_w))
+    pygame.draw.circle(surf, RULE2, (cx, cy), max(1, outer // 2 - ring_w // 2), ring_w)
+    av = pygame.Rect(cx - outer // 2, cy - outer // 2, outer, outer)
     LAST_UPDATE_AVATARS.append({"bot": row.get("bot") or "", "fallback": fallback, "initial": initial,
-                                "rect": pygame.Rect(ax, ay, d, d)})
-    tx = ax + d + zpx(L, 28)
-    text_w = max(40, rect.right - inset - tx)
+                                "rect": av, "size": outer, "center": (cx, cy)})
+    tx = panel_text_x(L, rect)
+    text_w = panel_text_width(L, rect)
     name = (row.get("bot") or "?").capitalize()
     age = update_age(now - row["time"]) if isinstance(row.get("time"), (int, float)) else ""
-    name_px = zpx(L, 48)
-    name_img = font("display", name_px).render(name, True, MUTED if aged else TEXT)
-    age_img = font("body", name_px).render((" \u00b7 " + age) if age else "", True, MUTED)
-    if name_img.get_width() + age_img.get_width() > text_w:
-        name_img = font("display", name_px).render(
-            ellipsize(font("display", name_px), name, max(8, text_w - age_img.get_width())), True, MUTED if aged else TEXT)
+    name_px = L(WAKE_NAME_PX)
+    name_font = font("display", name_px)
+    name_img = name_font.render(name, True, TEXT)
+    age_text = (" \u00b7 " + age) if age else ""
+    age_img = font("body", name_px).render(age_text, True, MUTED)
     if needs:
         pill_fill, pill_ink, pill_edge, dashed = AMBER, AMBER_INK, None, False
         word, icon = "NEEDS YOU", _bang_icon
@@ -3868,39 +3871,54 @@ def _paint_update_card(surf, L, rect, row, now):
         pill_fill, pill_ink, pill_edge, dashed = None, ink, ink, False
         word, icon = UPDATE_PILL.get(t, "Update"), _check_icon
     pill_px = zpx(L, 28)
-    surf.blit(name_img, (tx, ay))
-    surf.blit(age_img, (tx + name_img.get_width(), ay + name_img.get_height() - age_img.get_height()))
-    _update_pill(surf, L, word, icon, tx, ay + name_img.get_height() + zpx(L, 8), text_w,
-                 pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
-    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": 1.0})
-    body_top = max(ay + d, ay + name_img.get_height() + zpx(L, 80)) + zpx(L, 16)
-    body_h = max(zpx(L, 40), rect.bottom - inset - body_top)
+    pill_h = _update_pill_height(L, pill_px)
+    gap_row = L(16)
+    # Keep the pill on the name row. The name gives up width first.
+    pill_w = min(text_w, zpx(L, 280))
+    room = text_w - age_img.get_width() - gap_row - pill_w
+    if name_img.get_width() > max(8, room):
+        name_img = name_font.render(ellipsize(name_font, name, max(8, room)), True, TEXT)
     line = " ".join(str(row.get("line") or "").split())
     detail = " ".join(str(row.get("detail") or "").split())
     if needs:
         detail = needs_you_detail(detail)
-    line_h = int(body_h * (0.62 if detail else 1))
-    kind = "display" if needs else "body"
-    color = MUTED if aged else TEXT
-    lf, lines, step = update_full_lines(kind, line, rect.w - 2 * inset, line_h, zpx(L, 64), zpx(L, 28))
-    ly = body_top
-    shown = []
+    reply_px = L(WAKE_REPLY_PX)
+    quote_px = L(WAKE_QUOTE_PX)
+    lf, lines = _clamp_lines("body", line, text_w, reply_px, UPDATE_LINE_MAX)
+    df, dlines = _clamp_lines("body", detail, text_w, quote_px, UPDATE_DETAIL_MAX) if detail else (None, [])
+    line_step = max(1, int(reply_px * 1.18))
+    detail_step = max(1, font("body", quote_px).get_height())
+    gap = L(12)
+    name_row_h = max(name_img.get_height(), pill_h)
+    block_h = name_row_h
+    if lines:
+        block_h += gap + line_step * len(lines)
+    if dlines:
+        block_h += gap + detail_step * len(dlines)
+    top = cy - block_h // 2
+    name_y = top + max(0, (name_row_h - name_img.get_height()) // 2)
+    surf.blit(name_img, (tx, name_y))
+    age_x = tx + name_img.get_width()
+    surf.blit(age_img, (age_x, name_y + (name_img.get_height() - age_img.get_height()) // 2))
+    pill_x = age_x + age_img.get_width() + gap_row
+    pill_y = name_y + (name_img.get_height() - pill_h) // 2
+    pill_rect = _update_pill(surf, L, word, icon, pill_x, pill_y, max(8, tx + text_w - pill_x),
+                             pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
+    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": 1.0, "rect": pill_rect})
+    ly = top + name_row_h + (gap if lines else 0)
     for text in lines:
-        img = lf.render(text, True, color)
-        if ly + img.get_height() <= rect.bottom - inset:
-            surf.blit(img, (rect.left + inset, ly))
-        shown.append(text)
-        ly += step
-    dlines = []
-    if detail:
-        df, dlines, dstep = update_full_lines("body", detail, rect.w - 2 * inset, max(zpx(L, 24), rect.bottom - inset - ly),
-                                              zpx(L, 36), zpx(L, 22))
+        surf.blit(lf.render(text, True, TEXT), (tx, ly))
+        ly += line_step
+    if dlines:
+        ly = top + name_row_h + (gap + line_step * len(lines) if lines else 0) + gap
         for text in dlines:
-            img = df.render(text, True, MUTED)
-            if ly + img.get_height() <= rect.bottom - inset:
-                surf.blit(img, (rect.left + inset, ly))
-            ly += dstep
-    LAST_UPDATE_LINES = {"line": shown, "detail": dlines, "text": " ".join(shown), "detail_text": " ".join(dlines)}
+            surf.blit(df.render(text, True, UPDATE_DETAIL), (tx, ly))
+            ly += detail_step
+    LAST_UPDATE_LINES = {
+        "line": lines, "detail": dlines, "text": " ".join(lines), "detail_text": " ".join(dlines),
+        "text_x": tx, "text_w": text_w, "block_top": top, "block_h": block_h,
+        "block_center": top + block_h // 2, "avatar_cy": cy, "name_y": name_y,
+    }
 
 
 def _render_band_layer(surf, L, rows, now, layout):
@@ -4863,11 +4881,61 @@ def ZONE_PAD(L):
     return L(26)  # inner top and bottom padding of the voice card
 
 
+# Wake-panel column, shared with the update card. Spec pixels at 1920x1080.
+WAKE_AVATAR_MAX = 390
+WAKE_AVATAR_MIN = 80
+WAKE_AVATAR_LEFT = 54
+WAKE_AVATAR_GAP = 96
+WAKE_TEXT_RIGHT = 60
+WAKE_NAME_PX = 96
+WAKE_QUOTE_PX = 54
+WAKE_REPLY_PX = 64
+WAKE_RING = 10
+UPDATE_RING = 2  # plain neutral ring on the update card; the wake ring stays the state ring
+UPDATE_LINE_MAX = 3
+UPDATE_DETAIL_MAX = 2
+
+
+def panel_avatar_ring(L):
+    """Wake avatar ring width. The update card uses UPDATE_RING instead of this glow ring."""
+    return max(4, L(WAKE_RING))
+
+
+def panel_avatar_d(L, rect):
+    """Photo diameter of the wake-panel avatar inside `rect`."""
+    pad = ZONE_PAD(L)
+    ring_w = panel_avatar_ring(L)
+    return max(L(WAKE_AVATAR_MIN), min(L(WAKE_AVATAR_MAX), rect.h - 2 * pad - 2 * ring_w))
+
+
+def panel_avatar_outer(L, rect):
+    """Outer diameter of the wake avatar, photo plus its ring. About 272 px at 1280x800."""
+    return panel_avatar_d(L, rect) + 2 * panel_avatar_ring(L)
+
+
+def panel_avatar_center(L, rect):
+    """Center of the wake avatar. About x 230 at 1280x800, on the panel's vertical center."""
+    d = panel_avatar_d(L, rect)
+    return rect.left + L(WAKE_AVATAR_LEFT) + d // 2, rect.centery
+
+
+def panel_text_x(L, rect):
+    """Left edge of the wake text column. About 425 px at 1280x800."""
+    d = panel_avatar_d(L, rect)
+    return rect.left + L(WAKE_AVATAR_LEFT) + d + L(WAKE_AVATAR_GAP)
+
+
+def panel_text_width(L, rect):
+    """Width of the wake text column, with the same right padding as the wake panel."""
+    x = panel_text_x(L, rect)
+    return max(L(120), rect.right - L(WAKE_TEXT_RIGHT) - x)
+
+
 def zone_reply_metrics(L, rect, has_heard):
     """(name px, heard px or 0, reply px, line step) for the voice card. The window is always 4 lines; on a
     short zone the heard line goes first, then the reply size steps down (never under 40 spec px)."""
     pad = ZONE_PAD(L)
-    name_px, heard_px, reply_px = L(96), L(54), L(64)
+    name_px, heard_px, reply_px = L(WAKE_NAME_PX), L(WAKE_QUOTE_PX), L(WAKE_REPLY_PX)
     floor = L(40)
     while True:
         step = max(1, int(reply_px * 1.18))  # Inter 500 at line height 1.18
@@ -4921,18 +4989,18 @@ def draw_zone_voice(surf, L, rect, msg, state, t=1.0, tele=None, now_s=None):
     if state == "thinking":
         text = thinking_body(text)
     pad = ZONE_PAD(L)
-    ring_w = max(4, L(10))
-    d = max(L(80), min(L(390), rect.h - 2 * pad - 2 * ring_w))
+    ring_w = panel_avatar_ring(L)
+    d = panel_avatar_d(L, rect)
     photo_ok = bool(msg.get("voice"))
     img, ppad = portrait(who, d, ring_w, state, t, photo_ok=photo_ok)
-    origin = (rect.left + L(54) - ppad, rect.centery - d // 2 - ppad)
+    origin = (rect.left + L(WAKE_AVATAR_LEFT) - ppad, rect.centery - d // 2 - ppad)
     surf.blit(img, origin)
     LAST_PORTRAIT_RECT = pygame.Rect(origin, img.get_size())
     LAST_PORTRAIT_ARGS = (who, d, ring_w, photo_ok)
     LAST_PORTRAIT_BG = SURFACE
     # 0.13.0: no state word in the card's top-right corner; the ring around the avatar is the state.
-    x = rect.left + L(54) + d + L(96)
-    width = max(L(120), rect.right - L(60) - x)
+    x = panel_text_x(L, rect)
+    width = panel_text_width(L, rect)
     name_px, heard_px, reply_px, step = zone_reply_metrics(L, rect, bool(heard))
     y = rect.top + pad
     name_w = width
@@ -5346,28 +5414,62 @@ def _glyph_ink_dy(img):
     return bound.y if bound.h else 0
 
 
-def idle_block_offsets(L, hhmm="10:08"):
+# Tallest clock digits. The union's top is the highest ink any digit paints, so the
+# panel does not move when the minute changes.
+REF_CLOCK_DIGITS = "0123456789"
+_GLYPH_INK = {}
+_BLOCK_OFFSETS = {}
+
+
+def glyph_ink_dy(kind, px, text):
+    """Cached ink top for one font at one size. The key is the font object and the string."""
+    f = font(kind, px)
+    key = (id(f), text)
+    hit = _GLYPH_INK.get(key)
+    if hit is not None:
+        return hit
+    dy = _glyph_ink_dy(f.render(text, True, TEXT))
+    _GLYPH_INK[key] = dy
+    return dy
+
+
+def clock_ink_lift(kind, px, hhmm):
+    """Pixels to raise this time so its highest digit meets the tallest-digit ink line."""
+    ref = glyph_ink_dy(kind, px, REF_CLOCK_DIGITS)
+    digits = [ch for ch in str(hhmm) if ch.isdigit()]
+    if not digits:
+        return 0
+    cur = min(glyph_ink_dy(kind, px, ch) for ch in digits)
+    return max(0, cur - ref)
+
+
+def idle_block_offsets(L, hhmm=None):
     """(top, bottom) of the time and weather block, relative to draw_idle's clock top.
 
-    top is the first painted pixel of this time or the weather, not the font box.
+    top is the first painted pixel of the tallest clock digits or the weather, not the
+    font box and not the digits of the current minute. Cached per resolution and font.
     The numbers match draw_idle and draw_weather, including a weather label, so the
     block does not jump when weather arrives.
     """
+    del hhmm
     clock_px = L(300)
     cf = font("display", clock_px)
+    key = (L.w, L.h, id(cf))
+    hit = _BLOCK_OFFSETS.get(key)
+    if hit is not None:
+        return hit
     base = int(cf.get_ascent() * 0.98)
     clock_box = base - cf.get_ascent()
-    hour, minute = hhmm.split(":", 1)
-    ink = min(_glyph_ink_dy(cf.render(part, True, TEXT)) for part in (hour, minute))
-    clock_top = clock_box + ink
+    clock_top = clock_box + glyph_ink_dy("display", clock_px, REF_CLOCK_DIGITS)
     clock_bottom = clock_box + cf.get_height()
     af = font("display", L(84))
     ampm_bottom = base - af.get_ascent() + af.get_height()
     date_bottom = base + L(40) + font("body", L(60)).get_height()
     tb = base - L(80)
-    temp_f = font("display", L(180))
+    temp_px = L(180)
+    temp_f = font("display", temp_px)
     temp_box = tb - temp_f.get_ascent()
-    temp_top = temp_box + _glyph_ink_dy(temp_f.render("72°", True, TEXT))
+    temp_top = temp_box + glyph_ink_dy("display", temp_px, "72°")
     temp_bottom = temp_box + temp_f.get_height()
     icon_px = L(150)
     icon_box = tb - L(140)
@@ -5378,7 +5480,9 @@ def idle_block_offsets(L, hhmm="10:08"):
     hl_bottom = label_top + font("body", L(56)).get_height() + L(4) + font("body", L(48)).get_height()
     weather_top = min(temp_top, icon_top)
     weather_bottom = max(temp_bottom, icon_bottom, hl_bottom)
-    return min(clock_top, weather_top), max(clock_bottom, ampm_bottom, date_bottom, weather_bottom)
+    hit = min(clock_top, weather_top), max(clock_bottom, ampm_bottom, date_bottom, weather_bottom)
+    _BLOCK_OFFSETS[key] = hit
+    return hit
 
 
 def idle_clock_top(L, hhmm=None):
@@ -5397,13 +5501,13 @@ def idle_clock_top(L, hhmm=None):
 def bottom_panel_rect(L):
     """The shared bottom panel.
 
-    Its bottom leaves the same margin as the first painted pixel of the time and weather.
-    A timer strip lifts the bottom to content_limit and the panel gets shorter.
+    Its bottom leaves the same margin as the first painted pixel of the tallest clock
+    digits and the weather. The rect does not depend on the current minute. A timer
+    strip lifts the bottom to content_limit and the panel gets shorter.
     """
     global LAST_PANEL_RECT
-    hhmm, _ampm = clock_parts(time.localtime())
-    clock_top = idle_clock_top(L, hhmm)
-    top_off, bot_off = idle_block_offsets(L, hhmm)
+    clock_top = idle_clock_top(L)
+    top_off, bot_off = idle_block_offsets(L)
     block_top = clock_top + top_off
     block_bottom = clock_top + bot_off
     panel_top = block_bottom + zpx(L, PANEL_GAP)
