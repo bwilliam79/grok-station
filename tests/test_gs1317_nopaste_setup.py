@@ -261,7 +261,7 @@ class N05Fixture(unittest.TestCase):
 
 class Version(unittest.TestCase):
     def test_version_file(self):
-        self.assertEqual(_read("VERSION").strip(), "0.13.40")
+        self.assertEqual(_read("VERSION").strip(), "0.13.41")
 
 
 if __name__ == "__main__":
