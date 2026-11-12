@@ -1470,7 +1470,7 @@ class Deck:
             return self._current(now)
 
     def find_type(self, kind, now):
-        """The live card of this type, recipe first when several conversation cards exist, else the first in order."""
+        """The first live card of this type, in deck order, or None."""
         if kind not in ("recipe", "sports", "calendar", "home"):
             return None
         with self._lock:

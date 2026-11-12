@@ -84,12 +84,12 @@ def _kill_group(proc):
 
 
 def _chrome_argv(argv):
-    """Drop --user-data-dir. A new profile directory hangs Chrome 156 before --dump-dom.
+    """A run that passes --virtual-time-budget uses --headless=old.
 
-    --headless=new does not advance --virtual-time-budget while a timer or a load is open,
-    so a run that still passes that flag uses --headless=old. A shell stand-in ignores it.
+    --headless=new does not advance that budget while a timer or a load is open.
+    A shell stand-in ignores the flag. Nothing passes --user-data-dir, so this does not strip it.
     """
-    out = [arg for arg in argv if not arg.startswith("--user-data-dir=")]
+    out = list(argv)
     base = os.path.basename(out[0]) if out else ""
     if ("chrome" in base or "chromium" in base) and any(a.startswith("--virtual-time-budget") for a in out):
         out = ["--headless=old" if a == "--headless=new" else a for a in out]

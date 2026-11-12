@@ -39,9 +39,10 @@ class WeatherFloor(unittest.TestCase):
 
     def _check(self, wx, chips):
         gs.TIMER_CHIPS[:] = chips
+        now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
         for w, h in SIZES:
             L = gs.Layout(w, h)
-            gs.draw_enroll(pygame.Surface((w, h)), L, time.localtime(),
+            gs.draw_enroll(pygame.Surface((w, h)), L, now,
                            {"from": "Juniper", "voice": True, "state": "enroll", "text": "“Juniper”",
                             "heard": "1/5|recording|"}, 1.0, wx=wx)
             tile = gs.LAST_ENROLL_RECT
@@ -49,7 +50,7 @@ class WeatherFloor(unittest.TestCase):
                 if mark is None:
                     continue
                 self.assertFalse(mark.colliderect(tile), (w, h, mark, tile))
-                self.assertLessEqual(mark.bottom, gs.clock_date_bottom(L), (w, h))
+                self.assertLessEqual(mark.bottom, gs.clock_date_bottom(L, now), (w, h))
                 self.assertGreaterEqual(tile.top, mark.bottom, (w, h))
 
     def test_every_label_every_size(self):

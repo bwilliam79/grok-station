@@ -3725,6 +3725,8 @@ def focus_content_tile(kind, now=None):
     page = deck().find_type(kind, now)
     if not page:
         return False
+    if TILE.get("focused") and (TILE.get("bot"), TILE.get("id")) != (page["bot"], page["id"]):
+        restore_focused_idle(now)
     deck().suspend_idle(page["bot"], page["id"])
     TILE.clear()
     TILE.update({"bot": page["bot"], "id": page["id"], "card": page["card"],
@@ -3732,24 +3734,38 @@ def focus_content_tile(kind, now=None):
     return True
 
 
+def restore_focused_idle(now=None):
+    """Start a fresh idle window on the focused deck card.
+
+    None when the screen copy is not focused, or the card has already left the deck.
+    The screen copy stays until the caller drops it.
+    """
+    if not TILE.get("focused"):
+        return None
+    now = time.time() if now is None else now
+    bot, cid = TILE.get("bot"), TILE.get("id")
+    kind = (TILE.get("card") or {}).get("type")
+    if not bot or not cid:
+        return None
+    span = cards.RECIPE_IDLE_S if kind == "recipe" else cards.CONVO_IDLE_S
+    return deck().rearm_idle(bot, cid, now, span)
+
+
 def release_focused_tile(now=None):
     """Drop the screen copy of a voice-focused deck card and start a fresh idle window."""
     if not TILE.get("focused"):
         return False
     now = time.time() if now is None else now
-    bot, cid = TILE.get("bot"), TILE.get("id")
-    kind = (TILE.get("card") or {}).get("type")
+    restore_focused_idle(now)
     TILE.clear()
-    if bot and cid:
-        span = cards.RECIPE_IDLE_S if kind == "recipe" else cards.CONVO_IDLE_S
-        deck().rearm_idle(bot, cid, now, span)
     return True
 
 
 def release_or_clear_tile(now=None):
     """The main-loop deck delete when a voice state or the hold ends.
 
-    A focused card stays in the deck. On a hold timeout it also gets a fresh idle window.
+    A focused card stays on the station. This returns False and does not start an idle window.
+    release_focused_tile is what starts that window.
     Returns True when a conversation card was removed from the deck.
     """
     if not TILE:
@@ -3800,7 +3816,7 @@ def _band_signature(rows):
     return tuple((r.get("kind"), r.get("id"), r.get("bot"), r.get("type")) for r in rows)
 
 
-LAST_UPDATE_LINES = []
+LAST_UPDATE_LINES = {}
 
 
 def _clamp_lines(kind, text, width, px, max_lines):
@@ -5529,16 +5545,19 @@ def bottom_panel_rect(L):
     return rect
 
 
-def clock_date_bottom(L):
+def clock_date_bottom(L, now=None):
     """Bottom of the idle clock and date. Same y as draw_idle when there is no weather.
 
     The baseline is the same one draw_idle uses, raised so a short minute meets the
     tallest-digit line. The shared panel does not use this y.
+    now is a time.struct_time. A test passes one so the result does not follow the wall clock.
     """
+    if now is None:
+        now = time.localtime()
     top = idle_clock_top(L)
     clock_px = L(300)
     cf = font("display", clock_px)
-    hhmm, _ampm = clock_parts(time.localtime())
+    hhmm, _ampm = clock_parts(now)
     base = top + int(cf.get_ascent() * 0.98) - clock_ink_lift("display", clock_px, hhmm)
     clock_bottom = base - cf.get_ascent() + cf.get_height()
     af = font("display", L(84))
@@ -6676,6 +6695,9 @@ def main():
         if ev.type == STATE:
             if getattr(ev, "focus", None) and not ev.state:
                 focus_content_tile(ev.focus)
+                # No open voice turn will call release_focused_tile. Start the idle window now.
+                if not (isinstance(msg, dict) and msg.get("voice") and msg.get("state") not in (None, "idle")):
+                    release_focused_tile(time.time())
                 paint()
                 continue
             if getattr(ev, "has_caption", False):
@@ -6699,6 +6721,7 @@ def main():
                 prev_state = msg.get("state") if msg else None
                 now_s = time.time()
                 if ev.state == "enroll" and TILE:
+                    restore_focused_idle(now_s)
                     park_tile_for_enroll(TILE, now_s)  # training takes the zone; the tile becomes a chip
                 elif apply_speaking_clear(prev_state, ev.state, now_s, SCORE_HOLD):
                     pass  # an unfocused conversation card left the deck as the response started
@@ -6764,6 +6787,7 @@ def main():
             continue
         if ev.type == FEED:
             if getattr(ev, "recipe_closed", False):
+                restore_focused_idle(time.time())
                 TILE.clear()
                 if msg and msg.get("voice"):
                     paint()
@@ -6790,6 +6814,7 @@ def main():
                 if text_hold and persona_match(text_hold.get("who"), tile.get("bot")):
                     msg = text_hold["pending"]  # badge only; the reply text is not the screen
                 text_hold = None
+                restore_focused_idle(time.time())
                 TILE.clear()
                 TILE.update(tile, shown=time.time())
                 if tele is not None:

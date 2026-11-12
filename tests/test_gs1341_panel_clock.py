@@ -114,7 +114,7 @@ class PanelClock(unittest.TestCase):
                     ink = _ink_top(surf)
                     panel = gs.bottom_panel_rect(L)
                     self.assertEqual(ink, size[1] - panel.bottom, (size, hm))
-                    self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L), (size, hm))
+                    self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L, now), (size, hm))
 
 
 if __name__ == "__main__":

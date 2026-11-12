@@ -159,11 +159,12 @@ class EqualMargins(unittest.TestCase):
         for size in (PHONE, NATIVE):
             L = gs.Layout(*size)
             surf = pygame.Surface(size)
-            gs.draw_idle(surf, L, time.localtime(), _Wx(True), home_band=False)
+            now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
+            gs.draw_idle(surf, L, now, _Wx(True), home_band=False)
             ink = self._ink_top(surf)
             panel = gs.bottom_panel_rect(L)
             self.assertEqual(ink, size[1] - panel.bottom, size)
-            self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L), size)
+            self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L, now), size)
             self.assertLess(gs.LAST_STATUS_RECT.bottom, ink, size)
             self.assertEqual(panel, gs.enroll_tile_rect(L), size)
 

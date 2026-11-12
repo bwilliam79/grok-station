@@ -41,7 +41,7 @@ class TileBelowClock(unittest.TestCase):
         gs.TIMER_CHIPS[:] = self._timers
 
     def test_tile_sits_below_the_clock_and_date(self):
-        now = time.localtime()
+        now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
         for size in STATION_SIZES:
             with self.subTest(size=size):
                 L = gs.Layout(*size)
@@ -50,8 +50,8 @@ class TileBelowClock(unittest.TestCase):
                 drawn = max(gs.LAST_DATE_RECT.bottom, gs.LAST_CLOCK_RECT.bottom)
                 tile = gs.enroll_tile_rect(L)
                 self.assertGreaterEqual(tile.top, drawn, "tile covers the clock or date")
-                self.assertEqual(gs.clock_date_bottom(L), drawn)
-                self.assertGreaterEqual(tile.top, gs.clock_date_bottom(L))
+                self.assertEqual(gs.clock_date_bottom(L, now), drawn)
+                self.assertGreaterEqual(tile.top, gs.clock_date_bottom(L, now))
                 self.assertGreaterEqual(tile.left, 0)
                 self.assertGreaterEqual(tile.top, 0)
                 self.assertLessEqual(tile.right, size[0])

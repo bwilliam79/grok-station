@@ -1,6 +1,8 @@
 """0.13.41: the update card uses the wake panel's column inside the same rect."""
 import os
+import shutil
 import sys
+import tempfile
 import time
 import unittest
 
@@ -13,7 +15,6 @@ import grok_station as gs
 import pygame
 
 PHONE = (1280, 800)
-ART = os.environ.get("GS_ARTIFACTS", "/opt/cursor/artifacts")
 
 
 def setUpModule():
@@ -39,11 +40,21 @@ class UpdateColumn(unittest.TestCase):
         gs.UPD_ROT.update(step=0, at=None)
         gs.TIMER_CHIPS[:] = []
         gs._BAND_PREV = None
+        art = os.environ.get("GS_ARTIFACTS")
+        if art:
+            self.art = art
+            self._art_tmp = None
+            os.makedirs(self.art, exist_ok=True)
+        else:
+            self._art_tmp = tempfile.mkdtemp(prefix="gs-update-card-")
+            self.art = self._art_tmp
 
     def tearDown(self):
         gs.UPDATES = self.old
         gs.TIMER_CHIPS[:] = []
         gs._BAND_PREV = None
+        if self._art_tmp:
+            shutil.rmtree(self._art_tmp, ignore_errors=True)
 
     def _paint(self, size, line, detail, age_s=300, bot="wren"):
         gs.LAST_UPDATE_AVATARS = []
@@ -57,8 +68,7 @@ class UpdateColumn(unittest.TestCase):
         return surf, L, rect
 
     def _save(self, surf, name):
-        os.makedirs(ART, exist_ok=True)
-        pygame.image.save(surf, os.path.join(ART, name))
+        pygame.image.save(surf, os.path.join(self.art, name))
 
     def test_avatar_and_text_match_the_wake_column(self):
         for size in (PHONE, (2560, 1706)):
@@ -135,7 +145,9 @@ class UpdateColumn(unittest.TestCase):
             self.assertEqual(gs.LAST_UPDATE_AVATARS[0]["size"], gs.panel_avatar_outer(L, gs.bottom_panel_rect(L)))
             self.assertEqual(gs.LAST_UPDATE_LINES["text_x"], gs.panel_text_x(L, gs.bottom_panel_rect(L)))
             self._save(surf, name)
-            self.assertTrue(os.path.isfile(os.path.join(ART, name)))
+            self.assertTrue(os.path.isfile(os.path.join(self.art, name)))
+            if not os.environ.get("GS_ARTIFACTS"):
+                self.assertNotIn("/opt/cursor/artifacts", os.path.abspath(self.art))
 
 
 if __name__ == "__main__":

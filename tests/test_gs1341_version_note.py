@@ -16,6 +16,7 @@ class ChromeNote(unittest.TestCase):
         self.assertIn("TMPDIR", note)
         self.assertIn("Bots menu page still uses `--virtual-time-budget`", note)
         self.assertIn("fonts and animations are stripped", note)
+        self.assertIn("home cards are hidden at night even with no updates", note)
         self.assertNotIn("does not use `--virtual-time-budget`", note)
         self.assertNotIn("own `--user-data-dir`", note)
 
