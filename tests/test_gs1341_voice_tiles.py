@@ -93,6 +93,11 @@ class Intents(unittest.TestCase):
             plan = relay.content_tile_plan("hey grok, " + phrase)
             self.assertEqual(plan["tile"], kind, phrase)
 
+    def test_a_five_thousand_digit_number_does_not_raise(self):
+        heard = "convert " + ("9" * 5000) + " meters to feet"
+        self.assertIsNone(cards.content_tile_args(heard))
+        self.assertIsNone(relay.content_tile_plan(heard))
+
     def test_a_question_that_only_mentions_the_word_is_not_a_tile(self):
         self.assertIsNone(cards.content_tile_intent("can you tell me something about sports later"))
         self.assertIsNone(relay.content_tile_plan("what should I cook"))

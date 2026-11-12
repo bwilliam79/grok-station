@@ -1144,7 +1144,7 @@ _CONTENT_PHRASES = {
     "current time": "time",
     "time update": "time",
 }
-_CONVERT_RE = re.compile(r"^convert\s+(-?\d+(?:\.\d+)?)\s+(.+?)\s+to\s+(.+)$")
+_CONVERT_RE = re.compile(r"^convert\s+(-?\d{1,15}(?:\.\d{1,15})?)\s+(.+?)\s+to\s+(.+)$")
 
 
 def content_tile_intent(text):
