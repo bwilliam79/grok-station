@@ -1738,6 +1738,8 @@ def validate_update(doc):
             kind = body.get("kind")
             if not isinstance(kind, str) or not kind or len(kind) > 18:
                 raise CardError("schema")
+            # Same cleanup a stored type update uses, so the clear matches that row.
+            kind = escape_text(kind, 18)
         else:
             kind = None
         out = {"type": "update", "line": None, "null": True, "time": _upd_iso(body.get("time"))}
@@ -1962,6 +1964,10 @@ class UpdateFeed:
         """
         if not bot_slug_ok(bot):
             raise CardError("schema")
+        if kind is not None:
+            if not isinstance(kind, str) or not kind or len(kind) > 18:
+                raise CardError("schema")
+            kind = escape_text(kind, 18)
         with self._lock:
             if isinstance(rule, str):
                 self.rules[bot] = rule

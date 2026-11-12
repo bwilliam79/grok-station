@@ -95,7 +95,7 @@ The same clear with a kind:
 {"v":1,"op":"update","id":"none","update":{"type":"update","kind":"Calendar","line":null,"time":"2026-11-12T21:00:00Z"}}
 ```
 
-The station also treats a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" (any case, and punctuation only after the phrase) as that same clear, and a kind on that line scopes it the same way. A filler line that also has `detail` or `expires_at` is a real update. A line with more words, such as "Nothing open on the calendar until Friday", stays a real update. The filler rule applies only to type `update`. Needs you, heads-up, working on, and done keep a filler line as written.
+The station also treats a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" (any case, and punctuation only after the phrase) as that same clear, and a kind on that line scopes it the same way. A filler line that also has `detail` or `expires_at` is a real update, so it needs a kind too. A real type `update` still needs a kind. A line with more words, such as "Nothing open on the calendar until Friday", stays a real update. The filler rule applies only to type `update`. Needs you, heads-up, working on, and done keep a filler line as written.
 
 | Field | Rule |
 |---|---|

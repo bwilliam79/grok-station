@@ -889,7 +889,11 @@ def update_show_ok(doc):
     elif not isinstance(line, str) or not line.strip() or len(line) > 320:
         return False
     elif nullish:
-        pass
+        # A blank kind is not a scope. Same rule as the station: whitespace-only is refused.
+        if "kind" in body:
+            value = body.get("kind")
+            if not isinstance(value, str) or not value.strip() or len(value) > 18:
+                return False
     elif body.get("type") == "update" and "kind" not in body:
         return False
     for key, cap in (("kind", 18), ("detail", 90)):

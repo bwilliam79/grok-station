@@ -96,6 +96,18 @@ class HelperAgrees(unittest.TestCase):
     def setUpClass(cls):
         cls.home = _seal()
 
+    def _normalized_kind_clears_the_stored_row(self, update, kind):
+        feed = cards.UpdateFeed()
+        stored = cards.validate_update(station_doc(
+            {"type": "update", "kind": update["kind"], "line": "Dentist Friday", "time": WHEN}))["update"]
+        self.assertEqual(stored.get("kind"), kind)
+        feed.put("otto", "row", stored)
+        feed.put("otto", "other", {"type": "update", "kind": "Email", "line": "Invoice paid", "time": T0})
+        feed.put("otto", "none", cards.validate_update(station_doc(update))["update"])
+        rows = {r["id"]: r for r in feed.ordered(T0 + 1)[0] + feed.ordered(T0 + 1)[1]}
+        self.assertNotIn("row", rows)
+        self.assertEqual(rows["other"]["line"], "Invoice paid")
+
     def _pair(self, update):
         try:
             parsed = cards.validate_update(station_doc(update))["update"]
@@ -124,6 +136,12 @@ class HelperAgrees(unittest.TestCase):
             ({"type": "needs_you", "line": None, "time": WHEN}, "no", None),
             ({"type": "update", "kind": "Calendar", "line": "Nothing open on the calendar until Friday",
               "time": WHEN}, "words", "Calendar"),
+            # Kind is cleaned the same way a stored row is, then the clear matches that row.
+            ({"type": "update", "kind": "Calendar ", "line": None, "time": WHEN}, "null", "Calendar"),
+            ({"type": "update", "kind": "<b>Mail</b>", "line": "Nothing open.", "time": WHEN}, "null", "Mail"),
+            ({"type": "update", "kind": "\uff37ork  mail", "line": None, "time": WHEN}, "null", "Work mail"),
+            ({"type": "update", "kind": "   ", "line": None, "time": WHEN}, "no", None),
+            ({"type": "update", "kind": "\t", "line": "Nothing open.", "time": WHEN}, "no", None),
         )
         for update, expect, kind in cases:
             station, parsed, helper = self._pair(update)
@@ -135,6 +153,8 @@ class HelperAgrees(unittest.TestCase):
                 self.assertEqual(station, "ok")
                 if expect == "null":
                     self.assertTrue(parsed["null"])
+                    if "kind" in update:
+                        self._normalized_kind_clears_the_stored_row(update, kind)
                     self.assertEqual(parsed.get("kind"), kind)
                 elif expect == "real":
                     self.assertFalse(parsed.get("null"))
