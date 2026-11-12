@@ -837,12 +837,36 @@ def _iso_zone(value):
     return parsed.tzinfo is not None
 
 
+_NULL_FILLER = (
+    "nothing open",
+    "nothing new",
+    "no updates",
+    "nothing to report",
+    "all clear",
+)
+
+
+def _null_filler(text):
+    """True when text is only a known empty phrase. Same list as the station."""
+    if not isinstance(text, str) or not text:
+        return False
+    folded = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+    for prefix in _NULL_FILLER:
+        if folded == prefix:
+            return True
+        if folded.startswith(prefix) and not any(ch.isalnum() for ch in folded[len(prefix):]):
+            return True
+    return False
+
+
 def update_show_ok(doc):
     """True when an update show body is one the station accepts, including a null line.
 
-    A null update is op update, type update, and line null. That clears the bot's current
-    update. A missing time, a null line on any other type, a non-string line, or an unknown
-    field is refused here, before the post.
+    A null update is op update, type update, and line null, with no detail and no
+    expires_at. An optional kind clears only that kind. A filler line on type update
+    is the same clear, unless it also has detail or expires_at, which makes it a real
+    update. A filler line on any other type is a normal post. A missing time, a null
+    line on any other type, a non-string line, or an unknown field is refused here.
     """
     if not isinstance(doc, dict) or doc.get("v") != 1 or type(doc.get("v")) is not int:
         return False
@@ -856,11 +880,16 @@ def update_show_ok(doc):
     if body.get("type") not in _UPDATE_TYPES or not _iso_zone(body.get("time")):
         return False
     line = body.get("line")
+    filler = _null_filler(line) if isinstance(line, str) else False
+    nullish = (body.get("type") == "update" and (line is None or filler)
+               and not (filler and ("detail" in body or "expires_at" in body)))
     if line is None:
         if body.get("type") != "update" or "detail" in body or "expires_at" in body:
             return False
     elif not isinstance(line, str) or not line.strip() or len(line) > 320:
         return False
+    elif nullish:
+        pass
     elif body.get("type") == "update" and "kind" not in body:
         return False
     for key, cap in (("kind", 18), ("detail", 90)):

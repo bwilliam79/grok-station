@@ -93,7 +93,9 @@ class NullUpdate(unittest.TestCase):
         feed = cards.UpdateFeed()
         feed.put("otto", "a", {"type": "update", "kind": "Mail", "line": "Shipped", "time": T0})
         feed.put("otto", "b", {"type": "heads_up", "line": "Nothing open.", "time": T0})
-        self.assertEqual(feed.ordered(T0)[1], [])
+        rest = {r["id"]: r for r in feed.ordered(T0)[1]}
+        self.assertEqual(rest["a"]["line"], "Shipped")
+        self.assertEqual(rest["b"]["type"], "heads_up")
 
     def test_malformed_null_is_refused_and_the_seal_tool_agrees(self):
         for bad in (

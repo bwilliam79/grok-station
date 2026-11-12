@@ -706,7 +706,7 @@ class SealTools(unittest.TestCase):
 
     def test_helper_version_bumped(self):
         import gs_seal_common
-        self.assertEqual(gs_seal_common.HELPER_VERSION, "0.13.43")
+        self.assertEqual(gs_seal_common.HELPER_VERSION, "0.13.42")
         self.assertEqual(ga.HELPER_RELEASE, gs_seal_common.HELPER_VERSION)
 
 

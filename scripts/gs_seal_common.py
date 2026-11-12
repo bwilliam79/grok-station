@@ -61,7 +61,7 @@ class QuietParser(argparse.ArgumentParser):
 
 # The home helper's release. Sent as the X-GS-Helper header on each post (not signed; older stations
 # ignore it). The station shows "Helper out of date" when this is behind its own helper release.
-HELPER_VERSION = "0.13.43"
+HELPER_VERSION = "0.13.42"
 
 
 def fetch_allowlisted(url):

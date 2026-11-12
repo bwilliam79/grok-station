@@ -83,13 +83,19 @@ Put (signed JSON, before `gs-seal-reply show` adds `kind`, `nonce` and `exp_ms`)
 
 Clear: `{"v":1,"op":"update_clear","id":"table"}`.
 
-A null update clears that bot's current type `update` and drops the bot from the rotation until it posts a real one. If you have nothing of value, post this instead of filler text. `line` is JSON null, the type is `update`, and there is no kind:
+A null update clears type `update` rows for that bot. The type is `update` and `line` is JSON null. `detail` and `expires_at` are not allowed. An optional `kind` clears only that kind. With no `kind`, every type `update` row for that bot is cleared. Needs you and heads-up are left alone.
 
 ```json
 {"v":1,"op":"update","id":"none","update":{"type":"update","line":null,"time":"2026-11-12T21:00:00Z"}}
 ```
 
-The station also treats a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" (any case, and punctuation only after the phrase) as that same clear. A line with more words, such as "Nothing open on the calendar until Friday", stays a real update.
+The same clear with a kind:
+
+```json
+{"v":1,"op":"update","id":"none","update":{"type":"update","kind":"Calendar","line":null,"time":"2026-11-12T21:00:00Z"}}
+```
+
+The station also treats a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" (any case, and punctuation only after the phrase) as that same clear, and a kind on that line scopes it the same way. A filler line that also has `detail` or `expires_at` is a real update. A line with more words, such as "Nothing open on the calendar until Friday", stays a real update. The filler rule applies only to type `update`. Needs you, heads-up, working on, and done keep a filler line as written.
 
 | Field | Rule |
 |---|---|

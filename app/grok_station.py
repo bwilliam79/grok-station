@@ -891,7 +891,7 @@ def apply_update(doc, feed, now=None):
         feed.clear(bot, upd["id"])
         return "clear", bot, upd["id"]
     if upd["update"].get("null"):
-        feed.clear_type_updates(bot, upd["update"].get("feed_rule"))
+        feed.clear_type_updates(bot, upd["update"].get("feed_rule"), upd["update"].get("kind"))
         return "null", bot, upd["id"]
     feed.put(bot, upd["id"], upd["update"])
     return "put", bot, upd["id"]
@@ -5001,12 +5001,17 @@ def draw_calendar(surf, L, card, rect):
     shown = card["events"][:max(1, min(5, room // L(52)))]
     extra = len(card["events"]) - len(shown)
     row_h = min(L(118), max(L(52), room // max(1, len(shown) or 1)))
-    time_col = L(260)
+    row_inner = max(L(40), row_h - L(12))
+    px = min(L(54), max(L(22), row_inner - L(20)))
+    face = font("display", px)
+    widest = 0
+    for ev in shown:
+        widest = max(widest, face.size(str(ev.get("time") or ""))[0])
+    time_col = widest + L(24)
     for i, ev in enumerate(shown):
-        row = pygame.Rect(rect.left + L(24), y, rect.w - L(48), max(L(40), row_h - L(12)))
+        row = pygame.Rect(rect.left + L(24), y, rect.w - L(48), row_inner)
         if i == 0:
             pygame.draw.rect(surf, TEAL_BG, row, border_radius=L(16))
-        px = min(L(54), max(L(22), row.h - L(20)))
         when = _line(surf, "display", px, ev["time"], LISTENING if i == 0 else MUTED, max(40, time_col - L(24)))
         bar = pygame.Rect(row.left + time_col, 0, max(4, L(8)), max(4, min(L(70), row.h - L(16))))
         bar.centery = row.centery
@@ -7173,6 +7178,7 @@ def main():
                 elif msg.get("card") and not card_hold:
                     card_hold = True
                     until = time.time() + CARD_HOLD
+                    voice_session = False
                 else:
                     msg, anim_started, card_hold = None, None, False
                     voice_session = False

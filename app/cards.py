@@ -1722,19 +1722,27 @@ def validate_update(doc):
         raise CardError("schema")
     raw_line = body.get("line")
     explicit_null = raw_line is None
-    if explicit_null or (isinstance(raw_line, str) and null_update_line(raw_line)):
-        # line null is only the standing "update" clear. A filler line on any type is the same clear.
-        if explicit_null and body.get("type") != "update":
-            raise CardError("schema")
+    filler = isinstance(raw_line, str) and null_update_line(raw_line)
+    # A filler line that also carries detail or expires_at is a real update.
+    # Filler on any type other than update is a normal post. Explicit null is only type update.
+    nullish = (body.get("type") == "update" and (explicit_null or filler)
+               and not (filler and ("detail" in body or "expires_at" in body)))
+    if explicit_null and body.get("type") != "update":
+        raise CardError("schema")
+    if nullish:
         if not explicit_null and len(unicodedata.normalize("NFKC", raw_line)) > UPD_RAW_MAX:
             raise CardError("schema")
-        if "detail" in body or "expires_at" in body:
+        if explicit_null and ("detail" in body or "expires_at" in body):
             raise CardError("schema")
         if "kind" in body:
             kind = body.get("kind")
             if not isinstance(kind, str) or not kind or len(kind) > 18:
                 raise CardError("schema")
+        else:
+            kind = None
         out = {"type": "update", "line": None, "null": True, "time": _upd_iso(body.get("time"))}
+        if kind is not None:
+            out["kind"] = kind
         if "feed_rule" in body:
             rule = escape_text(body.get("feed_rule"), RULE_MAX) if isinstance(body.get("feed_rule"), str) else None
             if rule is None:
@@ -1762,6 +1770,23 @@ def validate_update(doc):
 
 def is_update_op(doc):
     return isinstance(doc, dict) and doc.get("op") in UPDATE_OPS
+
+
+def _null_clear(update):
+    """True when this row clears type "update" instead of being stored.
+
+    Only type update. A filler line that also has detail or expires_at is stored.
+    """
+    if not isinstance(update, dict) or update.get("type") != "update":
+        return False
+    if update.get("null"):
+        return True
+    if "detail" in update or "expires_at" in update:
+        return False
+    line = update.get("line")
+    if line is None:
+        return True
+    return isinstance(line, str) and null_update_line(line)
 
 
 def _reject_non_finite(_token):
@@ -1921,17 +1946,18 @@ class UpdateFeed:
     def put(self, bot, uid, update):
         if not bot_slug_ok(bot):
             raise CardError("schema")
-        line = update.get("line") if isinstance(update, dict) else None
-        if isinstance(update, dict) and (update.get("null") or line is None
-                                          or (isinstance(line, str) and null_update_line(line))):
-            self.clear_type_updates(bot, update.get("feed_rule") if isinstance(update.get("feed_rule"), str) else None)
+        if _null_clear(update):
+            rule = update.get("feed_rule") if isinstance(update.get("feed_rule"), str) else None
+            kind = update.get("kind") if isinstance(update.get("kind"), str) else None
+            self.clear_type_updates(bot, rule, kind)
             return None
         with self._lock:
             return self._put(bot, uid, update)
 
-    def clear_type_updates(self, bot, rule=None):
+    def clear_type_updates(self, bot, rule=None, kind=None):
         """Drop this bot's standing type "update" rows. The file is rewritten, so a restart stays clear.
 
+        A kind clears only that kind. No kind clears every type "update" row.
         needs_you, heads_up, working_on, and done are left alone. A feed rule, when given, is kept.
         """
         if not bot_slug_ok(bot):
@@ -1939,7 +1965,9 @@ class UpdateFeed:
         with self._lock:
             if isinstance(rule, str):
                 self.rules[bot] = rule
-            keys = [k for k, row in self.items.items() if k[0] == bot and row.get("type") == "update"]
+            keys = [k for k, row in self.items.items()
+                    if k[0] == bot and row.get("type") == "update"
+                    and (kind is None or row.get("kind") == kind)]
             for key in keys:
                 del self.items[key]
             self._save()

@@ -131,6 +131,37 @@ class WrappedQuestion(unittest.TestCase):
         self.assertIsNotNone(fresh)
         self.assertLess(fresh.offset, 0.5)
 
+    def test_card_hold_timeout_starts_the_next_question_at_the_top(self):
+        """A safety timeout that keeps a card up ends the voice session.
+
+        The next long question must not resume the previous scroll.
+        """
+        sys.path.insert(0, os.path.join(ROOT, "tests"))
+        from test_gs1216_bottom_zone import Harness
+        gs.reset_heard_scroll()
+        card = {"kind": "weather", "icon": "clear", "now_temp": 72, "units": "F",
+                "conditions": "Clear", "today": {"high": 80, "low": 60},
+                "tomorrow": {"high": 78, "low": 55}}
+        seen = []
+
+        def grab():
+            slot = gs._HEARD_SCROLL.get("tele")
+            seen.append(None if slot is None else slot.offset)
+
+        h = Harness(size=(1280, 800))
+        h.run(
+            h.state("speaking", heard=HEARD, text=REPLY),
+            h.advance(6),
+            h.call(grab),
+            h.state(card=card),
+            h.advance(gs.VOICE_HOLDS["speaking"]),
+            h.state("speaking", heard=HEARD, text=REPLY, done=True),
+            h.call(grab),
+        )
+        self.assertGreater(seen[0], 0.5, seen)
+        self.assertIsNotNone(seen[1])
+        self.assertLess(seen[1], 0.5, seen)
+
 
 if __name__ == "__main__":
     unittest.main()

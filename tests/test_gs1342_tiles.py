@@ -5,6 +5,7 @@ actually shows. It must sit inside the panel. Two text or score inks must not ov
 A sports score must also clear the next-game divider by the column's bottom inset.
 """
 import os
+import re
 import sys
 import time
 import unittest
@@ -72,7 +73,19 @@ def _divider(surf, panel):
     return hits[0] if hits else None
 
 
-def _assert_panel(case, panel, marks, surf, layout, sports_row):
+def _short_field(text):
+    """A time or a score. Those stay whole. A title may still end in an ellipsis."""
+    s = " ".join(str(text).split())
+    if not s or len(s) > 16:
+        return False
+    if re.search(r"\d:\d", s) or re.fullmatch(r"\d{1,3}", s):
+        return True
+    return False
+
+
+def _assert_panel(case, panel, marks, surf, layout, sports_row, clipped=()):
+    if clipped:
+        raise AssertionError("%s ellipsized %s" % (case, clipped[0]))
     texts = []
     for rect, text in marks:
         if not rect.colliderect(panel):
@@ -168,9 +181,19 @@ class TileInk(unittest.TestCase):
                 surf = pygame.Surface(size)
                 surf.fill(gs.BG)
                 marks = _watch()
+                clipped = []
+                real_ellipsize = gs.ellipsize
+
+                def watching(face, line, width, _real=real_ellipsize, _clipped=clipped):
+                    if _short_field(line) and face.size(line)[0] > width:
+                        _clipped.append(line)
+                    return _real(face, line, width)
+
+                gs.ellipsize = watching
                 try:
                     paint(surf)
                 finally:
+                    gs.ellipsize = real_ellipsize
                     gs.PAINT_MARKS = None
                 used = getattr(paint, "box", None) if box is None else box
                 if name == "training":
@@ -179,7 +202,7 @@ class TileInk(unittest.TestCase):
                     used = getattr(paint, "box", None) or panel
                 self.assertIsNotNone(used, (name, size))
                 self.assertTrue(marks, (name, size))
-                _assert_panel("%s %s" % (name, size), used, marks, surf, layout, sports_row)
+                _assert_panel("%s %s" % (name, size), used, marks, surf, layout, sports_row, clipped)
 
 
 if __name__ == "__main__":

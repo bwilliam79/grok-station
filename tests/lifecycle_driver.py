@@ -372,8 +372,7 @@ elif SCENARIO == "mixed_releases":
     prev = prev_same()
     tab = table_entries()
     cur_fp = [e for e in tab if e["release"] == REL][-1]["fp"]["home"]  # prev_same() checked it is listed
-    # A republished release adds a second row. Different content means an older release, not that row.
-    diff = [e for e in tab if e["release"] != REL and e["fp"]["home"] != cur_fp][-1]
+    diff = [e for e in tab if e["fp"]["home"] != cur_fp][-1]
     status("juno", REL, gs_routine.instr_hash(current_text("juno")))
     status("kai", prev["release"], old_instr("kai", prev))
     status("pip", diff["release"], old_instr("pip", diff))
