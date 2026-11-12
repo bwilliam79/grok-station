@@ -6694,11 +6694,13 @@ def main():
             continue  # nothing else is shown until setup is done; the deck still kept the card
         if ev.type == STATE:
             if getattr(ev, "focus", None) and not ev.state:
-                focus_content_tile(ev.focus)
+                focused = focus_content_tile(ev.focus)
                 # No open voice turn will call release_focused_tile. Start the idle window now.
                 # A finished turn can still be holding msg (turn_over). Paint uses that session
-                # and skips the deck, so the hold has to end or the card stays off screen.
-                if not (isinstance(msg, dict) and msg.get("voice") and msg.get("state") not in (None, "idle")):
+                # and skips the deck, so a focus that found its card has to end the hold or that
+                # card stays off screen. A miss leaves the hold and the screen as they were.
+                live = isinstance(msg, dict) and msg.get("voice") and msg.get("state") not in (None, "idle")
+                if focused and not live:
                     release_focused_tile(time.time())
                     msg, anim_started, card_hold, text_hold = None, None, False, None
                 paint()

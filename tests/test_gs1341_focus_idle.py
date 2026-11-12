@@ -59,6 +59,7 @@ class Harness:
         self.clock = FakeTime(T0)
         self.script = []
         self.frames = []
+        self.holds = []
 
     def state(self, st=None, **kw):
         body = dict(kw)
@@ -115,13 +116,18 @@ class Harness:
             def show(self, painter, *args, fade=False, snapshot=True):
                 painter(self.screen, self.L, *args)
                 shown = None
+                holding = None
                 for arg in args:
                     if not isinstance(arg, dict):
                         continue
                     tile = arg.get("tile") if isinstance(arg.get("tile"), dict) else arg
                     if isinstance(tile, dict) and tile.get("type") in ("sports", "recipe", "calendar", "home"):
                         shown = tile["type"]
+                    voice = arg.get("msg") if isinstance(arg.get("msg"), dict) else None
+                    if voice and voice.get("voice"):
+                        holding = voice.get("heard")
                 h.frames.append(shown)
+                h.holds.append(holding)
 
         class Wx:
             data = {"temp": 64, "code": 2, "day": True, "hi": 71, "lo": 52}
@@ -247,6 +253,44 @@ class FocusIdle(unittest.TestCase):
         self.assertEqual(h.frames[-1], "sports")
         self.assertIsNotNone(h.deck.get("wren", "sports1"))
         self.assertEqual(h.deck.idle_deadline("wren", "sports1"), T0 + cards.CONVO_IDLE_S)
+
+    def test_a_missing_card_focus_leaves_the_finished_turn_hold(self):
+        h = Harness()
+        seen = {}
+
+        def snap(name):
+            def step():
+                seen[name] = {
+                    "card": h.frames[-1],
+                    "heard": h.holds[-1],
+                    "tile": (gs.TILE.get("card") or {}).get("type"),
+                    "focused": bool(gs.TILE.get("focused")),
+                    "deck": h.deck.get("wren", "sports1") is not None,
+                }
+            return h.call(step)
+
+        h.run(
+            h.put("wren", "sports1", SPORTS),
+            h.state("speaking", heard="what's the score", text="Harbor leads."),
+            h.put("wren", "sports1", SPORTS),
+            h.state("idle"),
+            h.focus("recipe"),
+            snap("asked"),
+            h.advance(14),
+            snap("inside"),
+            h.advance(2),
+            snap("expired"),
+        )
+        self.assertEqual(seen["asked"]["card"], "sports")
+        self.assertEqual(seen["asked"]["heard"], "what's the score")
+        self.assertEqual(seen["asked"]["tile"], "sports")
+        self.assertFalse(seen["asked"]["focused"])
+        self.assertTrue(seen["asked"]["deck"])
+        self.assertEqual(seen["inside"], seen["asked"])
+        self.assertIsNone(seen["expired"]["card"])
+        self.assertIsNone(seen["expired"]["heard"])
+        self.assertIsNone(seen["expired"]["tile"])
+        self.assertFalse(seen["expired"]["deck"])
 
 
 if __name__ == "__main__":
