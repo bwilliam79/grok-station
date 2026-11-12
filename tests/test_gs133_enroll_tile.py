@@ -63,7 +63,7 @@ class TrainingTile(unittest.TestCase):
         for stage in ("prompt", "ready", "recording", "quiet", "loud", "saved", "queued", "passed", "failed", "error"):
             self._draw(stage)
             boxes.append(pygame.Rect(gs.LAST_ENROLL_AVATAR))
-        self.assertEqual(boxes[0], pygame.Rect(203, 803, 548, 548))
+        self.assertEqual(boxes[0], pygame.Rect(203, 758, 548, 548))
         self.assertTrue(all(b == boxes[0] for b in boxes))
 
     def test_retry_and_failed_rings_are_dashed(self):

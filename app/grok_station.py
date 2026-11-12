@@ -5570,9 +5570,10 @@ PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a c
 IDLE_CLOCK_PX = 238
 IDLE_DATE_PX = 60
 IDLE_DATE_GAP = 36
-# The smaller clock's digit ink sits higher in the font box. This drop keeps it
-# under the upper-left conversation badge. Weather sizes are unchanged.
-IDLE_CLOCK_DROP = 8
+# The smaller clock's digit ink sits higher in the font box. This drop keeps the
+# weather below the status icons and the digits below the conversation badge.
+# Weather sizes are unchanged.
+IDLE_CLOCK_DROP = 30
 
 
 def _glyph_ink_dy(img):
