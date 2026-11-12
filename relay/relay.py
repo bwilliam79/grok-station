@@ -2523,6 +2523,7 @@ async def session(req):
                     pcm = await tts_pcm(http, line, voice)
                     if pcm:
                         await pi.send_bytes(pcm)
+                    clear_tool_flight(st)
                     if MULTI_TURN and time.monotonic() - t0 < MAX_TOTAL - NO_SPEECH:
                         await pi.send_json({"type": "turn_done", "turn": st["turn"]})
                     else:
@@ -2558,6 +2559,7 @@ async def session(req):
                 return pcm
 
             async def end_routed_turn():
+                clear_tool_flight(st)
                 who = "" if st["persona"] == "grok" else f" ({st['persona']})"
                 if MULTI_TURN and time.monotonic() - t0 < MAX_TOTAL - NO_SPEECH:
                     st.update(responding=False, speaking=False, playing=True, audio=False)
@@ -2685,6 +2687,7 @@ async def session(req):
                             await up.send_json({"type": "input_audio_buffer.clear"})
                             now = time.monotonic()
                             st.update(playing=False, speech=False, quiet_since=now, turn_t0=now, turn=st["turn"] + 1)
+                            clear_tool_flight(st)
                             st["heard"] = ""  # each turn's question starts empty
                             log(f"turn {st['turn']} open")
                             off = arm_offer_window(st, offer_now())
@@ -2992,7 +2995,7 @@ async def session(req):
                             continue
                         # A content-tile ask shows its tile. The question still goes on to the bot or the model,
                         # so a fresh card can replace the one already on screen.
-                        await dispatch_content_tile(heard, pi, http, st.get("timers"), timer_clock.now())
+                        await dispatch_content_tile(heard, pi, http, st.get("timers"), timer_clock.now(), st)
                         # Home is station-local, before "heard" (that would show thinking). A tone, not speech.
                         intent = home.home_match(heard, home.load_registry())
                         if intent:
@@ -3153,7 +3156,7 @@ async def session(req):
                             if ev.get("name") == "set_timer":
                                 args = recipe_timer_args(args, st)
                             if ev.get("name") in ("get_weather", "get_time", "convert_units"):
-                                out, to_pi = await take_tool_card(ev["name"], args, http, st["timers"], now_t)
+                                out, to_pi = await take_tool_card(ev["name"], args, http, st["timers"], now_t, st)
                             else:
                                 out, to_pi = await station_tools.run(ev["name"], args, http, st["timers"], now_t)
                             if ev.get("name") == "set_timer" and out.get("ok") and step_timer_say(args):
@@ -3231,6 +3234,7 @@ async def session(req):
                             st.update(again=False, responding=True, audio=False)
                             await up.send_json({"type": "response.create"})
                             continue
+                        clear_tool_flight(st)
                         who = "" if st["persona"] == "grok" else f" ({st['persona']})"
                         if MULTI_TURN and time.monotonic() - t0 < MAX_TOTAL - NO_SPEECH:
                             st.update(responding=False, speaking=False, playing=True, audio=False)
@@ -4141,7 +4145,9 @@ def content_tile_plan(heard):
     return {"tool": tool, "args": args or {}, "tile": kind}
 
 
-_tool_flight = None
+# In-flight card sends. The set is the reference that keeps each task alive until it
+# finishes; the done callback logs a failure and then drops that reference.
+_TOOL_TASKS = set()
 
 
 def _tool_key(name, args):
@@ -4155,25 +4161,68 @@ def _tool_key(name, args):
     return str(name) + "\n" + blob
 
 
-def start_tool_flight(name, args, http, timers, now):
-    """Begin one fetch for a voice tool card. A later take of the same key shares it."""
-    global _tool_flight
-    _tool_flight = {
+def _log_tool_task(task):
+    _TOOL_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log("tool card send failed", type(exc).__name__)
+
+
+def _track_tool_task(task):
+    """Hold the background send until it finishes, and log an exception instead of dropping it."""
+    _TOOL_TASKS.add(task)
+    task.add_done_callback(_log_tool_task)
+    return task
+
+
+def start_tool_flight(st, name, args, http, timers, now):
+    """Begin one fetch for this turn. A later take in the same turn and session shares it.
+
+    The flight lives on the session, not on the process. Another session cannot see it
+    or replace it.
+    """
+    flight = {
         "key": _tool_key(name, args),
+        "turn": st.get("turn") if isinstance(st, dict) else None,
         "task": asyncio.create_task(station_tools.run(name, args, http, timers, now)),
         "card": False,
+        "send": None,
     }
-    return _tool_flight
+    if isinstance(st, dict):
+        st["tool_flight"] = flight
+    return flight
 
 
-async def take_tool_card(name, args, http, timers, now):
-    """The model's tool call. Join the voice fetch when it is the same call, and do not send a second card.
+def clear_tool_flight(st):
+    """Forget this turn's shared fetch. The send task keeps running until the card is out."""
+    if isinstance(st, dict):
+        st.pop("tool_flight", None)
 
-    Returns (output, card or None). The card is None when the voice path already claimed it.
+
+def _flight_for(st, name, args):
+    """The open fetch for this turn, or None when the key or the turn does not match."""
+    if not isinstance(st, dict):
+        return None
+    flight = st.get("tool_flight")
+    if not isinstance(flight, dict):
+        return None
+    if flight.get("key") != _tool_key(name, args):
+        return None
+    if flight.get("turn") != st.get("turn"):
+        return None
+    return flight
+
+
+async def take_tool_card(name, args, http, timers, now, st=None):
+    """The model's tool call. Join this turn's voice fetch when it is the same call.
+
+    Returns (output, card or None). The card is None when this turn already claimed it.
+    A later turn, or another session, fetches again and can send its own card.
     """
-    flight = _tool_flight
-    key = _tool_key(name, args)
-    if flight is None or flight["key"] != key:
+    flight = _flight_for(st, name, args)
+    if flight is None:
         out, to_pi = await station_tools.run(name, args, http, timers, now)
         if isinstance(to_pi, dict) and to_pi.get("type") == "card":
             return out, to_pi
@@ -4193,12 +4242,13 @@ async def _send_tool_card(flight, pi):
         await pi.send_json(to_pi)
 
 
-async def dispatch_content_tile(heard, pi, http, timers, now):
+async def dispatch_content_tile(heard, pi, http, timers, now, st=None):
     """Send the tile this ask names.
 
     A deck tile is a show_tile message. A tool tile starts its fetch and returns without
     waiting, so the question reaches the bot immediately. The card is sent when the fetch
-    finishes. The model's later call of the same tool shares that fetch. Returns None.
+    finishes. The model's later call of the same tool, in this turn, shares that fetch.
+    The flight is cleared when the turn ends. Returns None.
     """
     plan = content_tile_plan(heard)
     if not plan:
@@ -4206,8 +4256,8 @@ async def dispatch_content_tile(heard, pi, http, timers, now):
     if plan.get("show"):
         await pi.send_json({"type": "show_tile", "tile": plan["show"]})
         return None
-    flight = start_tool_flight(plan["tool"], plan.get("args") or {}, http, timers, now)
-    asyncio.create_task(_send_tool_card(flight, pi))
+    flight = start_tool_flight(st, plan["tool"], plan.get("args") or {}, http, timers, now)
+    flight["send"] = _track_tool_task(asyncio.create_task(_send_tool_card(flight, pi)))
     return None
 
 

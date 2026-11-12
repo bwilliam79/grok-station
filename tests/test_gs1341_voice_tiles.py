@@ -213,8 +213,7 @@ class Routing(unittest.TestCase):
 
         async def ask(phrase, http):
             pi = Pi()
-            relay._tool_flight = None
-            await relay.dispatch_content_tile(phrase, pi, http, {}, time.time())
+            await relay.dispatch_content_tile(phrase, pi, http, {}, time.time(), {"turn": 1})
             for _ in range(8):
                 await asyncio.sleep(0)
             return pi
@@ -255,12 +254,12 @@ class Routing(unittest.TestCase):
         async def run():
             http = Slow()
             pi = Pi()
-            relay._tool_flight = None
+            st = {"turn": 1}
             started = time.monotonic()
-            await relay.dispatch_content_tile("what's the weather", pi, http, {}, time.time())
+            await relay.dispatch_content_tile("what's the weather", pi, http, {}, time.time(), st)
             self.assertLess(time.monotonic() - started, 0.2)
             await http.entered.wait()
-            out, card = await relay.take_tool_card("get_weather", {}, http, {}, time.time())
+            out, card = await relay.take_tool_card("get_weather", {}, http, {}, time.time(), st)
             self.assertTrue(out.get("ok"))
             for _ in range(20):
                 if any(m.get("type") == "card" for m in pi.msgs):
