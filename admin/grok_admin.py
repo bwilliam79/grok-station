@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "relay"))
 import safe_io  # noqa: E402
 import setup_text  # noqa: E402  (one copy of FP_NOT_THE_KEY, shared with the relay)
+import mic_usb  # noqa: E402
 
 E = os.environ.get
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -592,31 +593,52 @@ def save_wait_tone(body):
     return doc["on"]
 
 
+# Night is on only when the file records a choice made after 0.13.42. An older
+# file that stored night:true (the previous default) stays off, and the
+# WAKE_MIC_RESET_NIGHT environment variable alone does not turn it on.
+NIGHT_CHOICE = "0.13.42"
+
+
+def _night_enabled(data):
+    return (isinstance(data, dict) and data.get("night_choice") == NIGHT_CHOICE
+            and data.get("night") is True)
+
+
 def mic_reset_public():
-    """The three microphone-reset switches. A bool in the file wins over the env. Default on."""
+    """The three microphone-reset switches. Button and drought: a bool in the file wins, else the env, else on.
+    Night stays off unless night_choice is this release and night is true."""
     data = read_json(mic_reset_path(), {})
     if not isinstance(data, dict):
         data = {}
     out = {}
-    for key in ("button", "night", "drought"):
+    for key in ("button", "drought"):
         if isinstance(data.get(key), bool):
             out[key] = data[key]
         else:
             out[key] = _env_bool("WAKE_MIC_RESET_" + key.upper(), True)
-    return out
+    out["night"] = _night_enabled(data)
+    return {"button": out["button"], "night": out["night"], "drought": out["drought"]}
 
 
 def save_mic_reset(updates):
-    """Merge bool switches and write them group-readable for the listener. None if the body is bad."""
+    """Merge bool switches and write them group-readable for the listener. None if the body is bad.
+    Setting night records night_choice so the choice survives the next read."""
     if not isinstance(updates, dict) or not updates:
         return None
     cur = mic_reset_public()
+    chose_night = False
     for key, val in updates.items():
         if key not in ("button", "night", "drought") or not isinstance(val, bool):
             return None
+        if key == "night":
+            chose_night = True
         cur[key] = val
-    write_json(mic_reset_path(), cur, 0o640)
-    return cur
+    existing = read_json(mic_reset_path(), {})
+    doc = {"button": cur["button"], "night": cur["night"], "drought": cur["drought"]}
+    if chose_night or (isinstance(existing, dict) and existing.get("night_choice") == NIGHT_CHOICE):
+        doc["night_choice"] = NIGHT_CHOICE
+    write_json(mic_reset_path(), doc, 0o640)
+    return {"button": doc["button"], "night": doc["night"], "drought": doc["drought"]}
 
 
 _DISPLAY_STATUS_WARNED = set()
@@ -3358,7 +3380,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.37"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.42"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -4868,11 +4890,18 @@ class Handler(BaseHTTPRequestHandler):
             for key in ("button", "night", "drought"):
                 if isinstance(st["mic_reset"].get(key), bool):
                     flags[key] = st["mic_reset"][key]
+        notice = None
+        try:
+            found = mic_usb.unconfigured_speakerphone()
+            if found:
+                notice = found["detail"]
+        except Exception:
+            notice = None
         return self.send(200, {"inputs": cards("arecord"), "outputs": cards("aplay"),
                                "in_use": busy("arecord"), "capture": st.get("capture") if code == 200 else None,
                                "level_dbfs": st.get("level_dbfs") if code == 200 else None,
                                "level_at": st.get("level_at") if code == 200 else None,
-                               "mic_reset": flags, "wait_tone": wait_tone_on(),
+                               "mic_reset": flags, "mic_notice": notice, "wait_tone": wait_tone_on(),
                                "wait_tone_style": wait_tone_style()})
 
     def api_put_audio(self, p, q, j):

@@ -1,10 +1,9 @@
 """Mic icon stuck after a USB reset (gs138).
 
-A reset writes authorized 0 then 1, so the speakerphone leaves /proc/asound/cards while it
-re-enumerates. check_mic used to report that as a missing mic before it looked at any planned
-deadline, and the listener killed arecord only after the device was already deauthorized, which
-can leave the read stuck and audio_at stale. A planned reset publishes reset_until and drops
-capture first. A real unplug (no reset_until, or only reopen_by) still shows the problem.
+A port reset can drop the speakerphone from /proc/asound/cards while it re-enumerates.
+check_mic used to report that as a missing mic before it looked at any planned deadline.
+A planned reset publishes reset_until and drops capture first. A real unplug (no reset_until,
+or only reopen_by) still shows the problem.
 """
 import os
 import sys
@@ -53,7 +52,7 @@ class MicResetIcon(unittest.TestCase):
             payload = dict(stale, reset_until=bad)
             self.assertEqual(gs.check_mic(5.0, lambda p=payload: p, CARDS)["detail"], "capture stalled", bad)
 
-    def test_reset_arms_the_hold_and_drops_capture_before_deauthorize(self):
+    def test_reset_arms_the_hold_and_drops_capture_before_the_port_reset(self):
         clock = {"t": 1000.0}
         order = []
 
@@ -62,7 +61,7 @@ class MicResetIcon(unittest.TestCase):
 
         def reset(card):
             order.append("reset")
-            # What the display reads while authorized is 0 and the card is absent.
+            # What the display reads while the card is absent.
             seen = gs.check_mic(clock["t"], lambda: {
                 "capture": gw.LIVE.get("capture"), "audio_at": gw.LIVE.get("audio_at"),
                 "reopen_by": gw.LIVE.get("reopen_by"), "reset_until": gw.LIVE.get("reset_until"),

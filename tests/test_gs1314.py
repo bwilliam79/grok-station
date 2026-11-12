@@ -372,7 +372,7 @@ class Pi02Hardening(unittest.TestCase):
         for p in ("/var/lib/grok-station", "/etc/grok-station", "/etc/hosts", "/etc/NetworkManager/system-connections"):
             self.assertIn(p, adm)
         st = rw("systemd/grok-station.service")
-        self.assertEqual(sorted(st), ["/run/grok-station", "/var/cache/grok-station"])
+        self.assertEqual(sorted(st), ["/run/grok-station", "/var/cache/grok-station", "/var/lib/grok-station-display"])
         h = _read("admin/grok-station-helper")
         self.assertIn('"/etc/NetworkManager/system-connections"', h)
         self.assertIn('open("/etc/hosts", "w")', h)

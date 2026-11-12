@@ -4,7 +4,7 @@ Bots send data. Nothing here runs a command, fetches a URL that is not on the
 logo allowlist, or treats card text as markup. Text is stripped, then drawn as
 pixels by the station.
 """
-import base64, hashlib, http.client, ipaddress, json, os, re, socket, ssl, sys, tempfile, threading, time, unicodedata
+import base64, hashlib, http.client, ipaddress, json, os, re, socket, ssl, stat, sys, tempfile, threading, time, unicodedata
 from urllib.parse import urlsplit
 
 CARD_MAX = 4096
@@ -1612,6 +1612,8 @@ UPDATE_KEYS = frozenset(("v", "op", "id", "update", "kind", "nonce", "exp_ms"))
 UPD_CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 UPD_BODY_KEYS = frozenset(("type", "line", "time", "expires_at", "feed_rule", "kind", "detail"))
 UPD_BODY_REQ = frozenset(("type", "line", "time"))
+FEED_FILE_MAX = 65536
+_ROW_KEYS = ("bot", "id", "type", "line", "time", "seq", "kind", "detail", "expires_at")
 UPDATE_OPS = ("update", "update_clear")
 
 
@@ -1682,14 +1684,127 @@ def is_update_op(doc):
     return isinstance(doc, dict) and doc.get("op") in UPDATE_OPS
 
 
-class UpdateFeed:
-    """The station's update feed. Not persisted: a restart starts empty (bots resend)."""
+def _feed_row_ok(row):
+    """A stored feed row. A bad row makes the whole file ignored."""
+    if not isinstance(row, dict):
+        return False
+    bot, uid = row.get("bot"), row.get("id")
+    if not isinstance(bot, str) or not bot_slug_ok(bot):
+        return False
+    if not isinstance(uid, str) or not CARD_ID.fullmatch(uid):
+        return False
+    if row.get("type") not in UPDATE_TYPES:
+        return False
+    line = row.get("line")
+    if not isinstance(line, str) or not line or len(line) > LINE_MAX:
+        return False
+    if isinstance(row.get("time"), bool) or not isinstance(row.get("time"), (int, float)):
+        return False
+    if isinstance(row.get("seq"), bool) or not isinstance(row.get("seq"), int) or row["seq"] < 0:
+        return False
+    if "expires_at" in row and (isinstance(row["expires_at"], bool) or not isinstance(row["expires_at"], (int, float))):
+        return False
+    for key in ("kind", "detail"):
+        if key in row and (not isinstance(row[key], str) or len(row[key]) > 90):
+            return False
+    return True
 
-    def __init__(self):
+
+class UpdateFeed:
+    """The station's update feed.
+
+    With a path, items, rules and seq are stored as one small JSON file (atomic
+    replace, mode 0600) and loaded on start. Expiry runs on load. A missing
+    path stays in memory, which is what the older tests use. paused_until is
+    not stored: a voice pause does not outlive the process.
+    """
+
+    def __init__(self, path=None, now=None):
+        self.path = path
         self.items = {}     # (bot, id) -> {"bot","id","type","line","time","expires_at"?,"seq"}
         self.rules = {}     # bot -> feed rule text shown on the Bots page ("" = All updates)
         self.seq = 0
         self.paused_until = None   # voice "pause updates": until resume or 10 min idle
+        if path:
+            self._load(time.time() if now is None else now)
+
+    def _load(self, now):
+        try:
+            st = os.lstat(self.path)
+        except OSError:
+            return
+        if not stat.S_ISREG(st.st_mode) or st.st_size <= 0 or st.st_size > FEED_FILE_MAX:
+            return
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            return
+        try:
+            raw = os.read(fd, FEED_FILE_MAX + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > FEED_FILE_MAX:
+            return
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            return
+        if not isinstance(doc, dict):
+            return
+        items, rules, seq = doc.get("items"), doc.get("rules"), doc.get("seq")
+        if (not isinstance(items, list) or len(items) > FEED_MAX or not isinstance(rules, dict)
+                or isinstance(seq, bool) or not isinstance(seq, int) or seq < 0):
+            return
+        loaded = {}
+        for row in items:
+            if not _feed_row_ok(row):
+                return
+            loaded[(row["bot"], row["id"])] = {k: row[k] for k in _ROW_KEYS if k in row}
+        clean = {}
+        for key, val in rules.items():
+            if not isinstance(key, str) or not bot_slug_ok(key) or not isinstance(val, str) or len(val) > RULE_MAX:
+                return
+            clean[key] = val
+        self.items = loaded
+        self.rules = clean
+        self.seq = max([seq] + [r["seq"] for r in loaded.values()])
+        self.expire(now)
+
+    def _save(self):
+        if not self.path:
+            return
+        doc = {"items": [{k: row[k] for k in _ROW_KEYS if k in row} for row in self.items.values()],
+               "rules": self.rules, "seq": self.seq}
+        try:
+            data = json.dumps(doc, separators=(",", ":")).encode("utf-8")
+        except (TypeError, ValueError):
+            return
+        if len(data) > FEED_FILE_MAX:
+            return
+        directory = os.path.dirname(os.path.abspath(self.path)) or "."
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=".update-feed-", dir=directory)
+        except OSError:
+            return
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, data)
+            os.fsync(fd)
+        except OSError:
+            os.close(fd)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return
+        os.close(fd)
+        try:
+            os.replace(tmp, self.path)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     def put(self, bot, uid, update):
         if not bot_slug_ok(bot):
@@ -1709,15 +1824,22 @@ class UpdateFeed:
                **{k: v for k, v in update.items() if k != "feed_rule"}}
         self.items[(bot, uid)] = row
         self._cap(bot)
+        self._save()
         return row
 
     def clear(self, bot, uid):
-        return self.items.pop((bot, uid), None) is not None
+        removed = self.items.pop((bot, uid), None) is not None
+        if removed:
+            self._save()
+        return removed
 
     def drop_bot(self, bot):
         """Updates switched off (or bot removed): its rows leave the station now."""
-        for key in [k for k in self.items if k[0] == bot]:
+        keys = [k for k in self.items if k[0] == bot]
+        for key in keys:
             del self.items[key]
+        if keys:
+            self._save()
 
     def _cap(self, bot):
         mine = sorted((v for v in self.items.values() if v["bot"] == bot), key=lambda r: r["seq"])
@@ -1731,19 +1853,27 @@ class UpdateFeed:
             self.items.pop((old["bot"], old["id"]), None)
 
     def expire(self, now):
-        """Ageing keeps running at night and while paused (SPEC)."""
+        """Ageing keeps running at night and while paused.
+
+        A type "update" row is the bot's latest of that kind. It stays until
+        that bot replaces it, clears it, or is removed. heads_up, working_on
+        and done still leave after their expires_at or after DROP_S (2 hours).
+        needs_you stays until it is cleared.
+        """
+        removed = False
         for key, r in list(self.items.items()):
             t = r["type"]
-            if t == "needs_you":
+            if t in ("needs_you", "update"):
                 continue
-            if t == "update":
-                gone = now - r["time"] >= 86400
-            elif t == "heads_up" and "expires_at" in r:
+            if t == "heads_up" and "expires_at" in r:
                 gone = now >= r["expires_at"]
             else:
                 gone = now - r["time"] >= DROP_S
             if gone:
                 del self.items[key]
+                removed = True
+        if removed:
+            self._save()
 
     def ordered(self, now):
         """Needs you newest first, then the rest newest first. Done past 30 min is marked aged."""

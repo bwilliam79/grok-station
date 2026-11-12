@@ -41,6 +41,9 @@ def make_tree(root, *, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet",
     _write(os.path.join(iface, "bInterfaceClass"), "01\n")
     _write(os.path.join(usb, "idVendor"), vendor + "\n")
     _write(os.path.join(usb, "idProduct"), product_id + "\n")
+    _write(os.path.join(usb, "bConfigurationValue"), "1\n")
+    _write(os.path.join(usb, "busnum"), "1\n")
+    _write(os.path.join(usb, "devnum"), "2\n")
     _write(os.path.join(usb, "product"), product + "\n")
     _write(os.path.join(usb, "manufacturer"), manufacturer + "\n")
     hub = os.path.join(root, "devices", "usb1")
@@ -72,35 +75,37 @@ def make_tree(root, *, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet",
         _write(os.path.join(usb, "authorized"), "1")
     target = outside if escape else iface
     os.symlink(target, os.path.join(card_dir, "device"))
+    node = os.path.join(root, "usbfs", "001", "002")
+    os.makedirs(os.path.dirname(node))
+    with open(node, "wb") as fh:
+        fh.write(b"")
+    os.environ["GS_USB_RESET_DEVFS"] = os.path.join(root, "usbfs")
+    os.environ["GS_USB_RESET_VERIFY_S"] = "0"
     return usb
 
 
 def run_helper(root, *args):
     env = dict(os.environ)
     env["GS_USB_RESET_SYSFS"] = root
+    env["GS_USB_RESET_DEVFS"] = os.path.join(root, "usbfs")
+    env["GS_USB_RESET_VERIFY_S"] = "0"
     return subprocess.run([sys.executable, HELPER, *args], capture_output=True, text=True, env=env, timeout=10)
 
 
 class UsbReset(unittest.TestCase):
-    def test_writes_zero_then_one_only_on_that_device(self):
+    def test_port_reset_leaves_authorized_alone(self):
         mod = load()
         with tempfile.TemporaryDirectory() as root:
             usb = make_tree(root)
             auth = os.path.join(usb, "authorized")
-            seen = []
-            real = mod._store
-
-            def wrap(path, data):
-                seen.append((path, data))
-                real(path, data)
-
-            mod._store = wrap
+            node = os.path.join(root, "usbfs", "001", "002")
             mod.reset_card("0", root)
-            self.assertEqual(seen, [(auth, b"0"), (auth, b"1")])
             self.assertEqual(open(auth).read(), "1")
+            self.assertEqual(open(node, "rb").read(), b"USBDEVFS_RESET\n")
             self.assertEqual(open(os.path.join(root, "devices", "usb1", "authorized")).read(), "1")
             self.assertEqual(open(os.path.join(root, "devices", "usb1", "9-9", "authorized")).read(), "KEEP")
             self.assertEqual(open(os.path.join(root, "outside", "authorized")).read(), "STAY")
+            # A second reset inside the lock window is the helper's own interval, not this call.
             proc = run_helper(root, "M0")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertEqual(proc.stdout, "ok\n")
@@ -166,43 +171,16 @@ class UsbReset(unittest.TestCase):
         finally:
             os.environ.pop("GS_USB_RESET_SYSFS", None)
 
-    def _flaky_store(self, mod, fail_ones):
-        """Wrap _store: the first fail_ones writes of 1 raise; every write is recorded."""
-        seen = []
-        real = mod._store
-        left = {"n": fail_ones}
-
-        def wrap(path, data):
-            seen.append(data)
-            if data == b"1" and left["n"] > 0:
-                left["n"] -= 1
-                raise OSError("busy")
-            real(path, data)
-
-        mod._store = wrap
-        # mod.time is the process-wide time module: put sleep back, or every later test's sleep is a no-op.
-        self.addCleanup(setattr, mod.time, "sleep", mod.time.sleep)
-        mod.time.sleep = lambda _s: None
-        return seen
-
-    def test_failed_restore_is_retried_until_it_sticks(self):
+    def test_failed_config_refuses_without_writing_authorized(self):
         mod = load()
         with tempfile.TemporaryDirectory() as root:
             usb = make_tree(root)
-            seen = self._flaky_store(mod, 1)
-            mod.reset_card("0", root)
-            self.assertEqual(seen, [b"0", b"1", b"1"])
-            self.assertEqual(open(os.path.join(usb, "authorized")).read(), "1")
-
-    def test_restore_that_never_sticks_refuses_nonzero(self):
-        mod = load()
-        with tempfile.TemporaryDirectory() as root:
-            make_tree(root)
-            seen = self._flaky_store(mod, 99)
+            auth = os.path.join(usb, "authorized")
+            _write(os.path.join(usb, "bConfigurationValue"), "")
             with self.assertRaises(mod.Refuse) as cm:
                 mod.reset_card("0", root)
-            self.assertEqual(cm.exception.reason, "restore failed")
-            self.assertEqual(seen, [b"0"] + [b"1"] * mod.RESTORE_TRIES)
+            self.assertEqual(cm.exception.reason, "config failed")
+            self.assertEqual(open(auth).read(), "1")
             os.environ["GS_USB_RESET_SYSFS"] = root
             old_out = sys.stdout
             try:
@@ -212,7 +190,8 @@ class UsbReset(unittest.TestCase):
             finally:
                 mod.sys.stdout = old_out
                 os.environ.pop("GS_USB_RESET_SYSFS", None)
-            self.assertEqual("".join(out), "refused: restore failed\n")
+            self.assertEqual("".join(out), "refused: config failed\n")
+            self.assertEqual(open(auth).read(), "1")
 
     def test_needs_an_audio_interface(self):
         mod = load()

@@ -92,9 +92,9 @@ It plays on the station speaker, so the speaker volume applies. During the night
 
 ## Microphone reset
 
-The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB reset (the connection turned off, then on) does, the same as unplugging it.
+The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB port reset (USBDEVFS_RESET on that device) often does. Turning the USB `authorized` file off and on does not: on the OfficeCore M0 Plus (USB 328f:0109) that leaves the device enumerated with an empty `bConfigurationValue` and no ALSA card, and a later port reset does not bring it back. Only a power cycle does (unplug it, or switch it off and on). The display and the Audio page then say "Mic needs a power cycle".
 
-Seen on the eMeet OfficeCore M0 Plus (USB 328f:0109), already on its latest firmware, so no firmware fix is expected. In one case it streamed normal levels for about 21 hours while the wake score stayed at 0.001; a listener restart did not help and a USB power-cycle fixed it at once.
+Seen on that speakerphone, already on its latest firmware, so no firmware fix is expected. In one case it streamed normal levels for about 21 hours while the wake score stayed at 0.001; a listener restart did not help and a USB power-cycle fixed it at once. The station accepts any USB speaker and microphone. The helper resets only the configured speakerphone (an audio interface, and either the USB id 328f:0109 or the name eMeet).
 
 The listener is not root. It asks `sudo -n` to run one helper:
 
@@ -106,9 +106,9 @@ The listener is not root. It asks `sudo -n` to run one helper:
 | sudoers | `/etc/sudoers.d/grok-station-usb` from `admin/sudoers-usb.example`, `root:root`, mode `0440` |
 | Who may run it | user `grok` only, and only that program |
 
-There is no systemd unit for the reset. The installer writes the sudoers file with `visudo -cf` before it installs it. The rule names that one program and no other command. The helper takes a single ALSA card (a number `0`–`99`, or the card id). It resolves that card's `device` link, walks up to the USB device that owns it (the directory with `authorized` and `idVendor`), checks the device is the speakerphone (the USB product or manufacturer text, or the card id, contains `emeet`), and writes `0` then `1` to that one `authorized` file. A bad card, an extra argument, a symlink, or a device that is not the speakerphone is refused. Nothing else is written. Stdout is `ok` or `refused:` plus a short reason with no path.
+There is no systemd unit for the reset. The installer writes the sudoers file with `visudo -cf` before it installs it. The rule names that one program and no other command. The helper takes a single ALSA card (a number 0-99, or the card id) and does not accept a path. It resolves that card's `device` link, walks up to the USB device that owns it (the directory with `authorized` and `idVendor`), and refuses anything that is not the speakerphone. It then opens that device's `/dev/bus/usb/BBB/DDD` node (from `busnum` and `devnum`) and issues USBDEVFS_RESET. It never writes `authorized`. After the reset it waits a few seconds for `bConfigurationValue` to be `1` and for the ALSA card to come back. If either is missing, stdout is `refused: config failed` and the exit status is not 0. A bad card, an extra argument, a symlink, or a device that is not the speakerphone is refused. Stdout is `ok` or `refused:` plus a short reason with no path.
 
-`GS_USB_RESET_SYSFS` replaces `/sys` only when the helper is not real root (`euid` is not 0). The installed root copy ignores it. Tests use that variable, or call `sysfs_root(euid=...)`. The command line has no override.
+`GS_USB_RESET_SYSFS` replaces `/sys` only when the helper is not real root (`euid` is not 0). `GS_USB_RESET_DEVFS` replaces `/dev/bus/usb` on the same rule, and `GS_USB_RESET_VERIFY_S` shortens the check only then. The installed root copy ignores all three. Tests use those variables, or call `sysfs_root(euid=...)` and `devfs_root(euid=...)`. The command line has no override. Root ioctls a character device. A non-root test whose stand-in is a regular file records the request as the bytes `USBDEVFS_RESET` and does not ioctl.
 
 The listener also reopens the capture on its own, without a USB reset:
 
@@ -120,11 +120,11 @@ Stall and silence wait 30 seconds between reopens (`WAKE_CAPTURE_REOPEN_S`). Eac
 
 A USB reset is logged `mic reset:` plus the reason. It never runs during a conversation or a wake-word recording; the log says `mic reset deferred (session):` and it runs when that ends. If a deferred night reset is still waiting when the night window closes, the log says `mic reset skipped: night window ended` and it does not run later that morning. Reasons:
 
-- **button** — Audio page, **Reset microphone**. Hidden when the Reset button switch is off.
-- **night** — once a night, 03:30–04:30 local (`WAKE_MIC_RESET_NIGHT_HM`, `WAKE_MIC_RESET_NIGHT_END`), and only when nothing is playing.
-- **drought** — speech-level audio (at least −45 dBFS, `WAKE_MIC_RESET_SPEECH_DB`) heard 20 times (`WAKE_MIC_RESET_SPEECH`) across at least 2 hours (`WAKE_MIC_RESET_WINDOW_S`) with no wake score above 0.1 (`WAKE_MIC_RESET_SCORE`). Events during a conversation do not count. A real wake score clears the count. Samples closer than 2 seconds (`WAKE_MIC_RESET_COALESCE_S`) count as one.
+- **button**: Audio page, **Reset microphone**. Hidden when the Reset button switch is off. This stays available.
+- **night**: once a night, 03:30 to 04:30 local (`WAKE_MIC_RESET_NIGHT_HM`, `WAKE_MIC_RESET_NIGHT_END`), and only when nothing is playing. Off unless you turn it on after 0.13.42.
+- **drought**: speech-level audio (at least -45 dBFS, `WAKE_MIC_RESET_SPEECH_DB`) heard 20 times (`WAKE_MIC_RESET_SPEECH`) across at least 2 hours (`WAKE_MIC_RESET_WINDOW_S`) with no wake score above 0.1 (`WAKE_MIC_RESET_SCORE`). Events during a conversation do not count. A real wake score clears the count. Samples closer than 2 seconds (`WAKE_MIC_RESET_COALESCE_S`) count as one.
 
-The three switches default to on. Set `WAKE_MIC_RESET_BUTTON`, `WAKE_MIC_RESET_NIGHT`, or `WAKE_MIC_RESET_DROUGHT` to `0` to turn one off. The Audio page switches apply on click and are stored in `/var/lib/grok-station/admin/mic-reset.json` (mode `0640`, so the listener can read it). A bool in that file wins over the environment variable. Saving a switch does not restart the listener. The night window and the counts are read from the environment (restart the listener after changing those). A failed automatic reset waits a minute before it tries again. The button does not wait.
+The Reset button and the drought switch default to on. The nightly reset defaults to off. A `mic-reset.json` saved before 0.13.42 often has `"night": true` because that used to be the default; that value stays off until the Audio page writes `night_choice` `0.13.42` (turning Nightly reset on or off does that). `WAKE_MIC_RESET_NIGHT` alone does not turn it on. Set `WAKE_MIC_RESET_BUTTON` or `WAKE_MIC_RESET_DROUGHT` to `0` to turn one of those off. The Audio page switches apply on click and are stored in `/var/lib/grok-station/admin/mic-reset.json` (mode `0640`, so the listener can read it). A bool in that file wins over the environment variable for the button and the drought switch. Saving a switch does not restart the listener. The night window and the counts are read from the environment (restart the listener after changing those). If an automatic reset finds no ALSA card, it tries once, waits, and then stops until the speakerphone re-enumerates. Capture opens again on its own when the card is back. It does not reset the device again just because the card returned. The button does not retry on its own.
 
 ## Troubleshooting
 

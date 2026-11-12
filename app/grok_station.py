@@ -35,6 +35,7 @@ import cards
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path[len(sys.path):] = [os.path.join(_HERE, "relay"), os.path.join(_HERE, os.pardir, "relay")]
 import safe_io  # noqa: E402
+import mic_usb  # noqa: E402
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # no SDL display; we write /dev/fb0 directly
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -794,11 +795,16 @@ UPDATES = None
 UPDATES_PAUSE_S = 600  # a voice pause lasts until "resume updates" or 10 minutes
 
 
+def updates_state_dir():
+    """Display-owned state. systemd StateDirectory creates it; tests can point elsewhere."""
+    return os.environ.get("GROK_STATION_STATE", "/var/lib/grok-station-display")
+
+
 def updates_feed():
-    """The station's bot updates feed (0.13.10). In memory; tests replace UPDATES."""
+    """The station's bot updates feed. Loaded from the state dir; tests replace UPDATES."""
     global UPDATES
     if UPDATES is None:
-        UPDATES = cards.UpdateFeed()
+        UPDATES = cards.UpdateFeed(os.path.join(updates_state_dir(), "update-feed.json"))
     return UPDATES
 
 
@@ -1138,7 +1144,7 @@ def _reset_hold(payload, now, window, grace):
     return True
 
 
-def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
+def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10, sysfs=None):
     """fetch() -> wake /status JSON or None. ok when the speakerphone is present and capture is alive.
     Uses audio_at (any frame read, any mode) when the listener sends it, else level_at (older listeners).
     A brief reopen (no capture device, audio within grace_s) stays ok, and so does a planned reopen wait:
@@ -1160,6 +1166,12 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10):
     if _reset_hold(payload, now, window, grace):
         return {"ok": True, "detail": "ok"}
     if not speakerphone_present(cards_text, match):
+        try:
+            stuck = mic_usb.unconfigured_speakerphone(sysfs)
+        except Exception:
+            stuck = None
+        if stuck:
+            return {"ok": False, "detail": stuck["detail"]}
         return {"ok": False, "detail": "speakerphone missing"}
     if not isinstance(payload, dict):
         return {"ok": False, "detail": "wake listener down"}
@@ -1843,7 +1855,27 @@ def draw_status_icons(surf, L, status=None, right=None, cy=None):
         rects.append(rect)
         x -= gap
     LAST_STATUS_RECT = rects[0].unionall(rects[1:]) if len(rects) > 1 else rects[0]
+    draw_mic_notice(surf, L, status_snapshot() if status is None else status)
     return LAST_STATUS_RECT
+
+
+LAST_MIC_NOTICE = None
+
+
+def draw_mic_notice(surf, L, status):
+    """Left of the status icons when the speakerphone is on USB but not configured."""
+    global LAST_MIC_NOTICE
+    LAST_MIC_NOTICE = None
+    mic = (status or {}).get("mic") if isinstance(status, dict) else None
+    if not isinstance(mic, dict) or mic.get("detail") != mic_usb.POWER_CYCLE:
+        return None
+    px = max(18, L(28))
+    img = font("body", px).render(mic_usb.POWER_CYCLE, True, AMBER)
+    x = L.m
+    y = max(4, int(round(8 * L.s)))
+    surf.blit(img, (x, y))
+    LAST_MIC_NOTICE = pygame.Rect(x, y, img.get_width(), img.get_height())
+    return LAST_MIC_NOTICE
 
 
 # ---------------------------------------------------------------- drawing helpers
@@ -3854,14 +3886,6 @@ def _clamp_lines(kind, text, width, px, max_lines):
     return f, head + [tail]
 
 
-def _update_pill_height(L, font_px):
-    """Height _update_pill will draw, so the name row can center the pill before painting it."""
-    px = L(30) if font_px is None else font_px
-    icon_px = max(12, int(px * 0.72))
-    pad_y = zpx(L, 10)
-    return pad_y + max(font("display", px).get_height(), icon_px) + pad_y
-
-
 def _paint_update_card(surf, L, rect, row, now):
     """One large update card in the wake panel's column: avatar, name row, line, detail.
 
@@ -5471,7 +5495,7 @@ _ENROLL_SQUARES = 5
 # Design pixels at 2560x1706, scaled by zpx. Do not copy these numbers into another rect.
 PANEL_X = 128
 PANEL_W = 2304
-PANEL_GAP = 12
+PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a clear band
 
 
 def _glyph_ink_dy(img):
@@ -5581,7 +5605,7 @@ def bottom_panel_rect(L):
     top_off, bot_off = idle_block_offsets(L)
     block_top = clock_top + top_off
     block_bottom = clock_top + bot_off
-    panel_top = block_bottom + zpx(L, PANEL_GAP)
+    panel_top = block_bottom + L(PANEL_GAP)
     panel_bottom = L.h - block_top
     if TIMER_CHIPS:
         panel_bottom = min(panel_bottom, content_limit(L))

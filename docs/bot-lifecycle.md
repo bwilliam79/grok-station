@@ -262,14 +262,16 @@ enforces the order through invariant 1.
 `tools/check-deploy-pins.py` with no pending re-pin), the installed-tree import checks, and the scenarios in
 `tests/test_lifecycle_scenarios.py`. It fails when a scenario could not run. No push to `main` unless it passes.
 Headless Chrome tests (`--dump-dom` / `--virtual-time-budget`, including `tests/test_gs1337_bots_menu.py` and
-`tests/test_gs1326_bots_align.py`) call `tests/chrome_harness.py:run_chrome`. It waits 20 seconds of wall-clock
-time, then kills the Chrome process group. A timeout raises SkipTest "headless Chrome hung after 20s". Empty
-stdout raises SkipTest "Chrome produced no render". Neither is a pass. `GS_REQUIRE_CHROME=1` turns those skips
-into failures. When `google-chrome-stable`, `chromium`, `chromium-browser`, or `google-chrome` is on PATH,
-`tools/release-check.sh` sets that variable and runs the Chrome tests, including `tests/test_gs1340_updates_align`,
-so a release machine with working Chrome must render them. `tests/test_gs1340_chrome_timeout` is in that list and
-also runs when Chrome is not installed, because it uses a stand-in that sleeps. A machine without Chrome leaves
-the render tests skipped and the release check does not fail for that.
+`tests/test_gs1326_bots_align.py`) call `tests/chrome_harness.py:run_chrome`. That harness gives each run its own
+`TMPDIR` (and `TMP` and `TEMP`), deletes that directory on exit, on timeout, and on kill, and does not pass
+`--user-data-dir`. It waits 20 seconds of wall-clock time, then kills the Chrome process group. A timeout raises
+SkipTest "headless Chrome hung after 20s". Empty stdout raises SkipTest "Chrome produced no render". Neither is a
+pass. `GS_REQUIRE_CHROME=1` turns those skips into failures. When `google-chrome-stable`, `chromium`,
+`chromium-browser`, or `google-chrome` is on PATH, `tools/release-check.sh` sets that variable and runs the Chrome
+tests, including `tests/test_gs1340_updates_align` and `tests/test_gs1341_chrome_temp`, so a release machine with
+working Chrome must render them. `tests/test_gs1340_chrome_timeout` and `tests/test_gs1341_chrome_temp` are in that
+list and also run when Chrome is not installed, because they use a stand-in. A machine without Chrome leaves the
+render tests skipped and the release check does not fail for that.
 `sh tools/install-release-hook` chains `tools/release-check-pre-push` into the clone's local pre-push hook, which
 the global hooks dispatcher runs after pii-guard and the leak scan. It gates only pre-push lines whose remote ref
 is `refs/heads/main`: the pushed commit must be the checked-out commit and `tools/release-check.sh` must end with

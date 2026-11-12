@@ -3356,8 +3356,20 @@ def night_window(local_dt):
     return cur >= start or cur < end
 
 
+# Night is on only when the file records a choice made after 0.13.42. An older
+# mic-reset.json stored night:true because that used to be the default, and the
+# WAKE_MIC_RESET_NIGHT environment variable alone does not turn it on.
+NIGHT_CHOICE = "0.13.42"
+
+
+def _night_enabled(data):
+    return (isinstance(data, dict) and data.get("night_choice") == NIGHT_CHOICE
+            and data.get("night") is True)
+
+
 def mic_reset_flags(path=None):
-    """button / night / drought. A bool in the file wins; otherwise the env; otherwise on."""
+    """button / night / drought. Button and drought: a bool in the file wins, else the env, else on.
+    Night stays off unless night_choice is this release and night is true."""
     path = path or os.environ.get("WAKE_MIC_RESET_FILE", "/var/lib/grok-station/admin/mic-reset.json")
     data = {}
     try:
@@ -3367,11 +3379,12 @@ def mic_reset_flags(path=None):
     except (OSError, ValueError):
         data = {}
     out = {}
-    for key in ("button", "night", "drought"):
+    for key in ("button", "drought"):
         if isinstance(data.get(key), bool):
             out[key] = data[key]
         else:
             out[key] = _env_bool("WAKE_MIC_RESET_" + key.upper(), True)
+    out["night"] = _night_enabled(data)
     return out
 
 
@@ -3677,6 +3690,9 @@ class MicRecovery:
         self._next_auto = 0.0
         self.min_gap_s = _env_float("WAKE_MIC_RESET_MIN_GAP_S", 45.0)
         self._last_reset = None
+        # Set after one automatic attempt finds no ALSA card. Further polls wait
+        # for the device to re-enumerate and do not reset it again.
+        self._wait_card = False
 
     def request(self, reason):
         if reason not in ("button", "night", "drought", "stuck"):
@@ -3702,6 +3718,11 @@ class MicRecovery:
         if now - self._last_poll < 1:
             return
         self._last_poll = now
+        if self._wait_card:
+            if self.card():
+                self._wait_card = False
+                self.log("mic back: capture resumes")
+            return
         flags = self.flags()
         if self.pending and not flags.get(_flag_for(self.pending)):
             self.pending = None
@@ -3782,11 +3803,19 @@ class MicRecovery:
         card = self.card()
         if not card:
             self.log(f"mic reset failed: no card ({reason})")
-            self._backoff(reason)
+            if reason == "button":
+                return "failed"
+            # One automatic attempt. The per-minute night loop used to keep
+            # asking after the card was already gone, and a port reset cannot
+            # bring this device back. Wait until it re-enumerates.
+            self._wait_card = True
+            self._next_auto = self.now() + 60
+            if reason == "night":
+                self.last_night = self.local(self.now()).date()
             return "failed"
         self._last_reset = self.now()
-        # Publish the hold and drop the read before deauthorize. Killing arecord after
-        # authorized is already 0 can leave the read stuck and audio_at stale, and the
+        # Publish the hold and drop the read before the port reset. Killing arecord after
+        # the reset has started can leave the read stuck and audio_at stale, and the
         # card is absent from /proc/asound/cards for the whole re-enumeration.
         LIVE["reset_until"] = self.now() + MIC_RESET_ICON_HOLD_S
         try:

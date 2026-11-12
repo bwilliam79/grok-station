@@ -243,7 +243,8 @@ class MicReset(unittest.TestCase):
                 path = os.path.join(d, "mic-reset.json")
                 json.dump({"button": False, "night": True}, open(path, "w"))
                 flags = gw.mic_reset_flags(path)
-            self.assertEqual(flags, {"button": False, "night": True, "drought": False})
+            # Night from before 0.13.42 is not a choice. The file still wins for button.
+            self.assertEqual(flags, {"button": False, "night": False, "drought": False})
             os.environ.pop("WAKE_MIC_RESET_BUTTON", None)
             self.assertTrue(gw.mic_reset_flags(os.path.join(d, "missing.json"))["button"])
         finally:

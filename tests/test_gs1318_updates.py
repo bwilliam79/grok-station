@@ -109,7 +109,7 @@ class EmailUpdates(unittest.TestCase):
         f.put("otto", "b", dict(row, time=1001))
         self.assertEqual(len(f.items), 1)
         f.expire(1001 + 86400)
-        self.assertFalse(f.items)
+        self.assertEqual(len(f.items), 1)  # the latest update stays until the bot replaces or clears it
 
     def test_one_needs_you_per_bot_until_cleared(self):
         f = cards.UpdateFeed()
