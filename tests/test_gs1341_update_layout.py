@@ -106,6 +106,37 @@ class UpdateColumn(unittest.TestCase):
             self.assertTrue(shown["detail"][-1].endswith("\u2026"), size)
             self.assertNotEqual(shown["detail_text"], detail, size)
 
+    def test_pill_text_is_20px_and_scales_with_the_card(self):
+        phone = gs.Layout(*PHONE)
+        wide = gs.Layout(2560, 1706)
+        self.assertEqual(phone(30), 20)
+        for size, layout in ((PHONE, phone), ((2560, 1706), wide)):
+            self._paint(size, "The north lot is closed today.", "East aisle, before noon.")
+            self.assertEqual(gs.LAST_UPDATE_PILLS[-1].get("font_px"), layout(30), size)
+        self.assertEqual(wide(30) / phone(30), wide(gs.WAKE_NAME_PX) / phone(gs.WAKE_NAME_PX))
+
+    def test_pill_stays_centered_on_the_name(self):
+        for size in (PHONE, (2560, 1706)):
+            self._paint(size, "The north lot is closed today.", "East aisle, before noon.")
+            L = gs.Layout(*size)
+            name_font = gs.font("display", L(gs.WAKE_NAME_PX))
+            sample = name_font.render("x", True, (255, 255, 255))
+            ink = pygame.mask.from_surface(sample, 8).get_bounding_rects()[0]
+            mid = ink.y + ink.h // 2
+            pill = gs.LAST_UPDATE_PILLS[-1]["rect"]
+            self.assertAlmostEqual(pill.centery, gs.LAST_UPDATE_LINES["name_y"] + mid, delta=1, msg=str(size))
+
+    def test_a_long_bot_name_moves_the_pill_onto_the_line_row(self):
+        self._paint(PHONE, "The north lot is closed today.", "East aisle.", bot="northwind-community-hub")
+        pill = gs.LAST_UPDATE_PILLS[-1]["rect"]
+        shown = gs.LAST_UPDATE_LINES
+        self.assertEqual(pill.left, shown["text_x"])
+        self.assertLessEqual(pill.right, shown["text_x"] + shown["text_w"])
+        self.assertGreaterEqual(shown["line_y"], pill.bottom)
+        self._paint(PHONE, "The north lot is closed today.", "East aisle.", bot="wren")
+        short = gs.LAST_UPDATE_PILLS[-1]["rect"]
+        self.assertEqual(pill.size, short.size)
+
     def test_text_block_is_centered_with_and_without_detail(self):
         heights = {}
         for detail in ("East aisle, before noon.", ""):
@@ -129,19 +160,22 @@ class UpdateColumn(unittest.TestCase):
             ("update-card-line-overflow.png", long_line,
              "Bring the signed form before closing.", 300),
             ("update-card-no-detail.png", "Filed the market list.", "", 300),
+            ("update-card-long-name.png", "The north lot is closed for paving today.",
+             "The stall moved to the east aisle beside the bakery.", 300),
         )
         now_s = time.mktime(time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M"))
         wx = _Wx()
         for name, line, detail, age in samples:
+            bot = "northwind-community-hub" if name == "update-card-long-name.png" else "wren"
             gs.UPDATES = cards.UpdateFeed()
             gs._BAND_PREV = None
             gs.UPD_ROT.update(step=0, at=None)
-            gs.UPDATES.put("wren", "note", {"type": "heads_up", "line": line, "detail": detail,
-                                            "time": time.time() - age})
+            gs.UPDATES.put(bot, "note", {"type": "heads_up", "line": line, "detail": detail,
+                                         "time": time.time() - age})
             L = gs.Layout(*PHONE)
             surf = pygame.Surface(PHONE)
             gs.draw_idle(surf, L, time.localtime(now_s), wx, home_band=True)
-            self.assertEqual(gs.LAST_UPDATE_AVATARS[0]["bot"], "wren")
+            self.assertEqual(gs.LAST_UPDATE_AVATARS[0]["bot"], bot)
             self.assertEqual(gs.LAST_UPDATE_AVATARS[0]["size"], gs.panel_avatar_outer(L, gs.bottom_panel_rect(L)))
             self.assertEqual(gs.LAST_UPDATE_LINES["text_x"], gs.panel_text_x(L, gs.bottom_panel_rect(L)))
             self._save(surf, name)

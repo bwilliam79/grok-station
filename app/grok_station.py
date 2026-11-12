@@ -3570,18 +3570,42 @@ def _update_avatar(name, d, letter_px):
     return photo, True, initial
 
 
-def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=False, font_px=None):
-    """Word plus icon. Filled, outlined, or dashed. Returns the pill rect."""
+def _x_height_mid(font_obj):
+    """Midpoint of the x glyph, in pixels down from the top of a rendered line."""
+    sample = font_obj.render("x", True, (255, 255, 255))
+    rects = pygame.mask.from_surface(sample, 8).get_bounding_rects()
+    if not rects:
+        return sample.get_height() // 2
+    ink = rects[0]
+    return ink.y + ink.h // 2
+
+
+def _update_pill_box(L, word, icon, ink, font_px=None, pad_x=None, pad_y=None):
+    """Natural size of the word-and-icon pill, before any max-width shrink."""
     px = L(30) if font_px is None else font_px
-    f = font("display", px)
-    label = f.render(word, True, ink)
+    face = font("display", px)
+    label = face.render(word, True, ink)
     icon_px = max(12, int(px * 0.72))
     glyph = icon(icon_px, ink) if icon else None
     gap = zpx(L, 8) if glyph else 0
-    pad_x, pad_y = zpx(L, 20), zpx(L, 10)
+    inset_x = zpx(L, 20) if pad_x is None else pad_x
+    inset_y = zpx(L, 10) if pad_y is None else pad_y
     inner = (glyph.get_width() + gap if glyph else 0) + label.get_width()
-    width = min(max_w, pad_x + inner + pad_x)
-    height = pad_y + max(label.get_height(), glyph.get_height() if glyph else 0) + pad_y
+    width = inset_x + inner + inset_x
+    height = inset_y + max(label.get_height(), glyph.get_height() if glyph else 0) + inset_y
+    return {"px": px, "face": face, "label": label, "glyph": glyph, "gap": gap,
+            "pad_x": inset_x, "pad_y": inset_y, "width": width, "height": height}
+
+
+def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=False, font_px=None,
+                 pad_x=None, pad_y=None):
+    """Word plus icon. Filled, outlined, or dashed. Returns the pill rect."""
+    box = _update_pill_box(L, word, icon, ink, font_px, pad_x, pad_y)
+    label, glyph, face = box["label"], box["glyph"], box["face"]
+    gap = box["gap"]
+    inset_x = box["pad_x"]
+    width = min(max_w, box["width"])
+    height = box["height"]
     rect = pygame.Rect(x, y, max(height, width), height)
     radius = rect.h // 2
     if fill is not None:
@@ -3590,14 +3614,14 @@ def _update_pill(surf, L, word, icon, x, y, max_w, fill, ink, outline, dashed=Fa
         _dashed_rect(surf, outline, rect, max(1, L(2)), zpx(L, 8), zpx(L, 6))
     elif outline is not None and fill is None:
         pygame.draw.rect(surf, outline, rect, width=max(1, L(2)), border_radius=radius)
-    cx = rect.left + pad_x
-    room = rect.right - pad_x - cx
+    cx = rect.left + inset_x
+    room = rect.right - inset_x - cx
     if glyph and room > glyph.get_width():
         surf.blit(glyph, (cx, rect.centery - glyph.get_height() // 2))
         cx += glyph.get_width() + gap
-        room = rect.right - pad_x - cx
-    shown = label if label.get_width() <= room else font("display", px).render(
-        ellipsize(f, word, max(8, room)), True, ink)
+        room = rect.right - inset_x - cx
+    shown = label if label.get_width() <= room else face.render(
+        ellipsize(face, word, max(8, room)), True, ink)
     surf.blit(shown, (cx, rect.centery - shown.get_height() // 2))
     return rect
 
@@ -3886,14 +3910,17 @@ def _paint_update_card(surf, L, rect, row, now):
         ink = MUTED if aged else LISTENING
         pill_fill, pill_ink, pill_edge, dashed = None, ink, ink, False
         word, icon = UPDATE_PILL.get(t, "Update"), _check_icon
-    pill_px = zpx(L, 28)
-    pill_h = _update_pill_height(L, pill_px)
+    pill_px = L(UPDATE_PILL_PX)
+    pad_x, pad_y = L(UPDATE_PILL_PAD_X), L(UPDATE_PILL_PAD_Y)
+    box = _update_pill_box(L, word, icon, pill_ink, font_px=pill_px, pad_x=pad_x, pad_y=pad_y)
+    pill_w, pill_h = box["width"], box["height"]
     gap_row = L(16)
-    # Keep the pill on the name row. The name gives up width first.
-    pill_w = min(text_w, zpx(L, 280))
-    room = text_w - age_img.get_width() - gap_row - pill_w
-    if name_img.get_width() > max(8, room):
-        name_img = name_font.render(ellipsize(name_font, name, max(8, room)), True, TEXT)
+    age_w = age_img.get_width()
+    # A long name moves the pill down at full size. The pill is never shrunk to stay on the name row.
+    on_name = name_img.get_width() + age_w + gap_row + pill_w <= text_w
+    if not on_name and name_img.get_width() + age_w > text_w:
+        room = max(8, text_w - age_w)
+        name_img = name_font.render(ellipsize(name_font, name, room), True, TEXT)
     line = " ".join(str(row.get("line") or "").split())
     detail = " ".join(str(row.get("detail") or "").split())
     if needs:
@@ -3905,35 +3932,55 @@ def _paint_update_card(surf, L, rect, row, now):
     line_step = max(1, int(reply_px * 1.18))
     detail_step = max(1, font("body", quote_px).get_height())
     gap = L(12)
-    name_row_h = max(name_img.get_height(), pill_h)
+    if on_name:
+        x_mid = _x_height_mid(name_font)
+        pill_top_rel = x_mid - pill_h // 2
+        row_top = min(0, pill_top_rel)
+        row_bot = max(name_img.get_height(), pill_top_rel + pill_h)
+        name_row_h = row_bot - row_top
+    else:
+        row_top = 0
+        name_row_h = name_img.get_height()
     block_h = name_row_h
+    if not on_name:
+        block_h += gap + pill_h
     if lines:
         block_h += gap + line_step * len(lines)
     if dlines:
         block_h += gap + detail_step * len(dlines)
     top = cy - block_h // 2
-    name_y = top + max(0, (name_row_h - name_img.get_height()) // 2)
+    name_y = top - row_top
     surf.blit(name_img, (tx, name_y))
     age_x = tx + name_img.get_width()
     surf.blit(age_img, (age_x, name_y + (name_img.get_height() - age_img.get_height()) // 2))
-    pill_x = age_x + age_img.get_width() + gap_row
-    pill_y = name_y + (name_img.get_height() - pill_h) // 2
-    pill_rect = _update_pill(surf, L, word, icon, pill_x, pill_y, max(8, tx + text_w - pill_x),
-                             pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px)
-    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": 1.0, "rect": pill_rect})
-    ly = top + name_row_h + (gap if lines else 0)
-    for text in lines:
-        surf.blit(lf.render(text, True, TEXT), (tx, ly))
-        ly += line_step
+    if on_name:
+        pill_x = age_x + age_img.get_width() + gap_row
+        pill_y = name_y + pill_top_rel
+    else:
+        pill_x = tx
+        pill_y = top + name_row_h + gap
+    pill_rect = _update_pill(surf, L, word, icon, pill_x, pill_y, pill_w,
+                             pill_fill, pill_ink, pill_edge, dashed, font_px=pill_px,
+                             pad_x=pad_x, pad_y=pad_y)
+    LAST_UPDATE_PILLS.append({"word": word, "icon": icon is not None, "scale": 1.0,
+                             "rect": pill_rect, "font_px": pill_px, "wrapped": not on_name})
+    cursor = pill_rect.bottom if not on_name else top + name_row_h
+    line_y = None
+    if lines:
+        cursor += gap
+        line_y = cursor
+        for text in lines:
+            surf.blit(lf.render(text, True, TEXT), (tx, cursor))
+            cursor += line_step
     if dlines:
-        ly = top + name_row_h + (gap + line_step * len(lines) if lines else 0) + gap
+        cursor += gap
         for text in dlines:
-            surf.blit(df.render(text, True, UPDATE_DETAIL), (tx, ly))
-            ly += detail_step
+            surf.blit(df.render(text, True, UPDATE_DETAIL), (tx, cursor))
+            cursor += detail_step
     LAST_UPDATE_LINES = {
         "line": lines, "detail": dlines, "text": " ".join(lines), "detail_text": " ".join(dlines),
         "text_x": tx, "text_w": text_w, "block_top": top, "block_h": block_h,
-        "block_center": top + block_h // 2, "avatar_cy": cy, "name_y": name_y,
+        "block_center": top + block_h // 2, "avatar_cy": cy, "name_y": name_y, "line_y": line_y,
     }
 
 
@@ -4910,6 +4957,9 @@ WAKE_RING = 10
 UPDATE_RING = 2  # plain neutral ring on the update card; the wake ring stays the state ring
 UPDATE_LINE_MAX = 3
 UPDATE_DETAIL_MAX = 2
+UPDATE_PILL_PX = 30       # 20 px at 1280x800; L() scales it with the wake text
+UPDATE_PILL_PAD_X = 21    # horizontal pad, grown with that face
+UPDATE_PILL_PAD_Y = 11
 
 
 def panel_avatar_ring(L):
