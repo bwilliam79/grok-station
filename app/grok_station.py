@@ -3402,6 +3402,11 @@ def _team_has_face(team):
     return bool(path and os.path.isfile(path))
 
 
+# Team logo square, in 1920x1080 spec pixels. 84 is 56 px at 1280x800 and 112 px at 2560x1706.
+# This is the one size to change when the marks should be larger or smaller.
+SPORTS_LOGO_PX = 84
+
+
 def _sports_column_px(L, avail, col_w, scores, face):
     """Logo, name, and score sizes whose font boxes fit in avail, including the gaps.
 
@@ -4955,16 +4960,26 @@ def draw_sports(surf, L, card, rect):
     face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
     mark, name_px, score_px, gap = _sports_column_px(
         L, avail, col_w, (card["home_score"], card["away_score"]), face)
+    # The name and the score keep the fitted stack. The logo uses SPORTS_LOGO_PX and
+    # sits on the bottom of that slot, so a different mark does not push the text.
+    logo_px = L(SPORTS_LOGO_PX) if face else 0
+    status_bottom = head + st.get_height()
     score_mids = []
 
     def paint_side(team, score, cx):
-        face = team_face(team, mark)
+        image = team_face(team, logo_px) if logo_px else None
         name = _line(surf, "display", name_px, team["name"], TEXT, col_w)
         sc = font("display", score_px).render(str(score), True, TEXT)
-        face_h = face.get_height() if face is not None else 0
+        face_h = mark if image is not None else 0
         face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), sc.get_height(), gap)
-        if face is not None and face_y is not None:
-            show(surf, face, (cx - face.get_width() // 2, face_y))
+        if image is not None and face_y is not None:
+            # Grow or shrink inside the space above the city name, and stop at the status line.
+            room = face_h + max(0, face_y - status_bottom)
+            side = min(image.get_width(), image.get_height(), room)
+            if side >= 1 and side != image.get_width():
+                image = pygame.transform.smoothscale(image, (side, side))
+            if image.get_width() >= 1:
+                show(surf, image, (cx - image.get_width() // 2, face_y + face_h - image.get_height()))
         show(surf, name, (cx - name.get_width() // 2, name_y))
         show(surf, sc, (cx - sc.get_width() // 2, score_y))
         score_mids.append(score_y + sc.get_height() // 2)

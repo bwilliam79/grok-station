@@ -6,9 +6,12 @@ A sports score must also clear the next-game divider by the column's bottom inse
 """
 import os
 import re
+import struct
 import sys
+import tempfile
 import time
 import unittest
+import zlib
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -238,6 +241,127 @@ def _painted_words(size, card):
         gs.show = real_show
         gs.PAINT_MARKS = None
     return painted, panel
+
+
+def _paint_sports(size, card):
+    """Every blit from draw_sports: the word (or None), its ink, and the placed square."""
+    layout = gs.Layout(*size)
+    panel = gs.bottom_panel_rect(layout)
+    surf = pygame.Surface(size)
+    surf.fill(gs.BG)
+    labels = []
+    painted = []
+    real_line, real_show = gs._line, gs.show
+
+    def watching_line(surf, role, px, text, color, width):
+        img = real_line(surf, role, px, text, color, width)
+        labels.append((img, str(text)))
+        return img
+
+    def watching_show(surf, img, dest, area=None, special_flags=0):
+        before = len(gs.PAINT_MARKS)
+        result = real_show(surf, img, dest, area, special_flags)
+        if len(gs.PAINT_MARKS) <= before:
+            return result
+        if isinstance(dest, pygame.Rect):
+            dx, dy = dest.x, dest.y
+        else:
+            dx, dy = int(dest[0]), int(dest[1])
+        word = next((text for img0, text in labels if img0 is img), None)
+        placed = pygame.Rect(dx, dy, img.get_width(), img.get_height())
+        painted.append((word, gs.PAINT_MARKS[-1][0], placed))
+        return result
+
+    gs.PAINT_MARKS = []
+    gs._line = watching_line
+    gs.show = watching_show
+    try:
+        gs.draw_sports(surf, layout, card, panel)
+    finally:
+        gs._line = real_line
+        gs.show = real_show
+        gs.PAINT_MARKS = None
+    return painted, panel
+
+
+def _png(w, h):
+    """A solid red PNG pygame can load. image.save is not a readable PNG here."""
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * w for _ in range(h))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
+
+def _attach_logo(card):
+    """A real logo file and no badge, so the plain case still paints a mark."""
+    lid = "a" * 64
+    root = tempfile.mkdtemp(prefix="gs1342-logo-")
+    with open(os.path.join(root, lid), "wb") as fh:
+        fh.write(_png(12, 12))
+    gs._LOGO = gs.cards.LogoCache(root, [])
+    for side in ("home", "away"):
+        card[side]["logo_id"] = lid
+
+
+class LogoSize(unittest.TestCase):
+    """Team marks use SPORTS_LOGO_PX: 56 px at 1280x800, scaled at 2560x1706, clear of the score and the city."""
+
+    def test_logos_match_the_named_size_and_clear_the_score_and_city(self):
+        expect = {(1280, 800): 56, (2560, 1706): 112}
+        for size, px in expect.items():
+            self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), px, size)
+        for size in expect:
+            px = expect[size]
+            for status in ("live", "final"):
+                for badge in (True, False):
+                    with self.subTest(size=size, status=status, badge=badge):
+                        card = _sports(status, True, badge)
+                        old = gs._LOGO
+                        try:
+                            if not badge:
+                                _attach_logo(card)
+                            painted, panel = _paint_sports(size, card)
+                        finally:
+                            gs._LOGO = old
+                        self._check(painted, panel, px)
+
+    def _check(self, painted, panel, px):
+        names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
+        status = [item for item in painted if item[0] in ("LIVE", "FINAL", "Q4", "OT", "2OT", "NFL")]
+        logos = []
+        for word, ink, placed in painted:
+            if word is not None or placed.w != placed.h or placed.h < 8:
+                continue
+            if any(placed.centery < name[2].centery and abs(placed.centerx - name[2].centerx) < panel.w // 4
+                   for name in names):
+                logos.append((ink, placed))
+        # The digits are font.render, not _line, so they have no word. The dash sits between them.
+        name_bottom = max(item[2].bottom for item in names) if names else 0
+        scores = [(ink, placed) for word, ink, placed in painted
+                  if word is None and placed.top >= name_bottom and (ink, placed) not in [(a, b) for a, b in logos]]
+        self.assertEqual(len(names), 2, [item[0] for item in painted])
+        self.assertEqual(len(logos), 2, [(word, placed.size) for word, _ink, placed in painted])
+        self.assertGreaterEqual(len(scores), 2, [(placed.size) for _ink, placed in scores])
+        for ink, placed in logos:
+            self.assertEqual((placed.w, placed.h), (px, px), placed)
+            self.assertTrue(panel.contains(placed), (placed, panel))
+            self.assertTrue(panel.contains(ink), (ink, panel))
+            city = min(names, key=lambda item: abs(item[2].centerx - placed.centerx))
+            self.assertLessEqual(abs(city[2].centerx - placed.centerx), 1, (placed, city[2]))
+            self.assertLessEqual(placed.bottom, city[2].top, (placed, city[0], city[2]))
+            self.assertFalse(placed.colliderect(city[1]) or ink.colliderect(city[1]), (placed, city[1]))
+            self.assertFalse(placed.colliderect(city[2]), (placed, city[2]))
+            for score_ink, score_placed in scores:
+                self.assertFalse(placed.colliderect(score_ink) or ink.colliderect(score_ink),
+                                 (placed, score_ink))
+                self.assertFalse(placed.colliderect(score_placed), (placed, score_placed))
+            for word, status_ink, status_placed in status:
+                self.assertFalse(placed.colliderect(status_ink) or ink.colliderect(status_ink),
+                                 (placed, word, status_ink))
+                self.assertFalse(placed.colliderect(status_placed), (placed, word, status_placed))
 
 
 class FinalLabel(unittest.TestCase):
