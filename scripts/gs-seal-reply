@@ -619,14 +619,14 @@ def post_error(exc):
 
 
 def _run_post(endpoint, body, pin, path):
-    """(http status, reason code or None). Does not turn a pin miss into unreachable."""
+    """(http status, reason code or None, detail or None). Does not turn a pin miss into unreachable."""
     got = {}
     try:
         status = post_once(endpoint, body, pin, path, out=got)
     except Refused:
         raise
     except Exception as exc:
-        return 0, post_error(exc)
+        return 0, post_error(exc), None
     if status == 200:
         return 200, None, None
     return status, post_failure(status, got.get("reason")), got.get("detail")

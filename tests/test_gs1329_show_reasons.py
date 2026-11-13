@@ -83,7 +83,10 @@ class Base(unittest.TestCase):
         blob = json.dumps(body)
         for s in (self.seed,) + secrets:
             self.assertNotIn(s, blob)
-        self.assertLessEqual(set(body), {"error", "reason"})
+        self.assertLessEqual(set(body) - {"detail"}, {"error", "reason"})
+        if "detail" in body:
+            self.assertIsInstance(body["detail"], str)
+            self.assertLess(len(body["detail"]), 80)
 
 
 class RelayReasons(Base):

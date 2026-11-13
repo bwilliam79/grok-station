@@ -39,7 +39,8 @@ class HelperOps(unittest.TestCase):
     def test_other_ops_and_replay_fields_still_refused(self):
         self.assertEqual(self._show({"v": 1, "op": "speak", "id": "x"}), "refused")
         self.assertEqual(self._show({"v": 1, "op": "update", "id": "x", "nonce": "n"}), "refused")
-        self.assertEqual(self._show({"v": 1, "op": "put", "id": "x"}), "past-op-check")
+        # A put with no card fails the local schema check and never opens a connection.
+        self.assertEqual(self._show({"v": 1, "op": "put", "id": "x"}), "refused")
 
 
 class Templates(unittest.TestCase):
