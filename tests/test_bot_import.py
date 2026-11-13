@@ -246,6 +246,10 @@ class Merge(unittest.TestCase):
         self.assertEqual(doc2["rows"]["kai"]["last_seen"], self._clock)
         self.assertNotEqual(doc2["updated_at"], doc["updated_at"])
         self.assertEqual(set(doc2["rows"]), {"kai", "mira"})
+        overlay = os.path.join(self.tmp, "personas-overlay.json")
+        settled = json.loads(files[overlay])
+        settled["voices_cleared"] = True
+        files[overlay] = (json.dumps(settled, sort_keys=True, indent=2) + "\n").encode()
         for path, content in files.items():
             self.assertEqual(open(path, "rb").read(), content)
         self._personas([{"slug": "sol", "name": "Kai", "voice": "ara", "prompt": "Helper.", "aliases": [], "facts": []}])

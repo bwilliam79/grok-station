@@ -625,6 +625,16 @@ class SignedShow(unittest.TestCase):
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(12, 60), down, ttl_max=3600)
         self.assertEqual(status, 400)  # downstream schema refusal, not outage
         self.assertEqual(len(posts), 1)
+        self.assertNotIn("detail", resp)
+
+        def named(show):
+            named.detail = "sports.away_score not int"
+            return 400, "sports.period empty"
+
+        status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(12, 60), named, ttl_max=3600)
+        self.assertEqual(status, 400)
+        self.assertEqual(resp.get("detail"), "sports.period empty")
+        self.assertNotIn("away_score", json.dumps(resp))
 
     def test_replay_of_the_same_blob_is_409(self):
         import relay

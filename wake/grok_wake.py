@@ -243,7 +243,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "d
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None, "deaf": None, "muted": False, "reset_until": None}  # deaf: stall or silence while capture is open; reset_until: USB reset hold
+LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None, "deaf": None, "reset_until": None}  # deaf: stall or silence while capture is open; reset_until: USB reset hold
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
@@ -3397,8 +3397,8 @@ def mic_busy():
 
 
 def capture_held():
-    """Skip deaf detection while the station is speaking, playing a line, or muted."""
-    if mic_busy() or LATE_PLAYING.get("on") or LIVE.get("muted"):
+    """Skip deaf detection while the station is speaking or playing a line."""
+    if mic_busy() or LATE_PLAYING.get("on"):
         return True
     return False
 
@@ -3495,14 +3495,15 @@ class DeafWatch:
         self.degraded = False
         self.reason = None
 
-    def observe(self, frame, stalled=False, speaking=False, playing=False, muted=False, now=None):
+    def observe(self, frame, stalled=False, speaking=False, playing=False, now=None):
         """'stall' or 'silence' when a reset should run, else None.
 
         stalled or a missing frame: no capture is arriving. A stuck frame is exact
-        silence or one constant sample. speaking, playing, and muted clear the window.
+        silence or one constant sample. speaking and playing clear the window.
+        The clock is time.monotonic unless a test passes now.
         """
         t = self._now() if now is None else now
-        if speaking or playing or muted:
+        if speaking or playing:
             self._since = None
             self._kind = None
             self.degraded = False
@@ -3768,8 +3769,8 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
 
 
 def _flag_for(reason):
-    """"stuck" (0.13.9) rides the drought switch: both are automatic resets for a mic that stopped hearing."""
-    return "drought" if reason == "stuck" else reason
+    """"stuck" and "deaf" ride the drought switch: automatic resets for a mic that stopped hearing."""
+    return "drought" if reason in ("stuck", "deaf") else reason
 
 
 class MicRecovery:
@@ -3805,7 +3806,7 @@ class MicRecovery:
         if reason not in ("button", "night", "drought", "stuck", "deaf"):
             return "off"
         flags = self.flags()
-        if reason != "deaf" and not flags.get(_flag_for(reason)):
+        if not flags.get(_flag_for(reason)):
             return "off"
         if reason == "night":
             loc = self.local(self.now())
@@ -3883,7 +3884,7 @@ class MicRecovery:
 
     def _run(self, reason):
         flags = self.flags()
-        if reason != "deaf" and not flags.get(_flag_for(reason)):
+        if not flags.get(_flag_for(reason)):
             self.pending = None
             return "off"
         if reason == "night":

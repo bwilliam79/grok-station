@@ -5982,19 +5982,19 @@ class Handler(BaseHTTPRequestHandler):
         return self.send(201, {"ok": True, "slug": slug, "voice_token": tok})
 
     def bots_rename(self, slug, j):
-        """Rename, change voice, change the computer, or a combination.
+        """Rename, change the computer, or a combination. A voice field is unknown.
 
         0.13.37: a key lives only on the home computer. key_mode "home" is accepted and changes nothing; any
         other key_mode is refused before the password.
         """
         if not isinstance(j, dict):
             return self.send(400, {"error": "Type a name."})
+        if "voice" in j:
+            return self.send(400, {"error": "unknown field voice"})
         if "key_mode" in j and j.get("key_mode") != "home":
             return self.send(400, {"error": KEY_HOME_ONLY})
-        has_name, has_voice, has_mode = "name" in j, "voice" in j, "key_mode" in j
+        has_name, has_mode = "name" in j, "key_mode" in j
         has_host = "reply_host" in j
-        if has_voice and not has_name and not has_mode and not has_host:
-            return self.send(404, {"error": "not found"})
         if not has_name and not has_mode and not has_host:
             return self.send(400, {"error": "Type a name."})
         host = clean_host(j.get("reply_host")) if has_host else ""

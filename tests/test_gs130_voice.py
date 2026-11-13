@@ -312,7 +312,8 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self._actions("voice-synced")), 2)
         changed = await self.client.patch("/admin/bots/max", headers=self.headers(),
                                           json={"voice": "rex", "actor": "admin"})
-        self.assertEqual(changed.status, 404, await changed.text())
+        self.assertEqual(changed.status, 400, await changed.text())
+        self.assertEqual(await changed.json(), {"error": "unknown field voice"})
         self.assertEqual(self._added("max")["voice"], "eve")
         self.assertNotIn("max", self.relay.load_overlay_doc()["voices"])
 
@@ -380,7 +381,8 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self._pin("pia")
         blank = await self.client.patch("/admin/bots/pia", headers=self.headers(),
                                         json={"voice": "  ", "actor": "admin"})
-        self.assertEqual(blank.status, 404, await blank.text())
+        self.assertEqual(blank.status, 400, await blank.text())
+        self.assertEqual(await blank.json(), {"error": "unknown field voice"})
         self.assertNotIn("voice", self._added("pia"))
         posted = await self._post("pia", "eve")
         self.assertEqual(posted.status, 200, await posted.text())
@@ -433,12 +435,49 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         await self._add("max", "Max")
         gone = await self.client.patch("/admin/bots/max", headers=self.headers(),
                                        json={"voice": "eve", "actor": "admin"})
-        self.assertEqual(gone.status, 404, await gone.text())
+        self.assertEqual(gone.status, 400, await gone.text())
+        self.assertEqual(await gone.json(), {"error": "unknown field voice"})
         self.assertNotIn("voice", self._added("max"))
         page = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
         self.assertNotIn('id="bvoice"', page)
         self.assertNotIn('id="avoice"', page)
         self.assertIn("From Grok Bot:", page)
+
+    async def test_admin_voices_clear_once_and_a_later_report_sticks(self):
+        r = self.relay
+        missing = r.load_overlay_doc()
+        self.assertTrue(missing["voices_cleared"])
+        self.assertFalse(os.path.isfile(r.overlay_path()))
+        os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)
+        with open(r.overlay_path(), "w", encoding="utf-8") as fh:
+            json.dump({
+                "added": {"hank": {"name": "Hank", "voice": "eve"}},
+                "voices": {"noa": "rex"},
+                "renamed": {}, "hidden": [],
+            }, fh)
+        lines = []
+        r.log = lambda *a: lines.append(" ".join(str(x) for x in a))
+        loaded = r.load_overlay_doc()
+        r.log = lambda *_a: None
+        self.assertNotIn("voice", loaded["added"]["hank"])
+        self.assertEqual(loaded["voices"], {})
+        self.assertTrue(loaded["voices_cleared"])
+        with open(r.overlay_path(), encoding="utf-8") as fh:
+            disk = json.load(fh)
+        self.assertNotIn("voice", disk["added"]["hank"])
+        self.assertEqual(disk.get("voices"), {})
+        self.assertTrue(disk["voices_cleared"])
+        self.assertEqual(lines, ["admin voices cleared 2"])
+        self.assertEqual(r.persona_list()["hank"]["voice"], r.VOICE.lower())
+        r.VOICES.add("sal")
+        r.seed_reported_voice("hank", "sal")
+        with open(r.overlay_path(), encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertEqual(saved["added"]["hank"]["voice"], "sal")
+        self.assertTrue(saved["voices_cleared"])
+        kept = r.load_overlay_doc()
+        self.assertEqual(kept["added"]["hank"]["voice"], "sal")
+        self.assertEqual(lines, ["admin voices cleared 2"])
 
     async def test_unknown_field_is_still_rejected(self):
         await self._add("lea", "Lea")

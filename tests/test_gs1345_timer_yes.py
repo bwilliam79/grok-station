@@ -52,15 +52,16 @@ class OfferWords(unittest.TestCase):
     def test_no_thanks_is_no_and_a_command_is_not_an_answer(self):
         self.assertEqual(cards.offer_answer("No, thanks."), "no")
         self.assertIsNone(cards.offer_answer("next step"))
+        self.assertIsNone(cards.offer_answer("no, set a timer for the pasta"))
+        self.assertIsNone(cards.local_timer_command("no, set a timer for the pasta"))
 
-    def test_a_yes_that_names_a_length_uses_that_length(self):
-        got = cards.offer_answer("yes, make it 12 minutes")
-        self.assertEqual(got, {"answer": "yes", "seconds": 720, "minutes": 12})
+    def test_a_yes_that_names_a_length_stays_yes(self):
+        self.assertEqual(cards.offer_answer("yes, make it 12 minutes"), "yes")
         st = {"recipe_offer": {"seconds": 600, "minutes": 10, "label": "Orzo", "until": 1000},
               "recipe": {"id": "orzo01", "step": 1}}
         self.assertEqual(relay.classify_offer_reply("yes, make it 12 minutes", st, 100), "yes")
-        self.assertEqual(st["recipe_offer"]["seconds"], 720)
-        self.assertEqual(st["recipe_offer"]["minutes"], 12)
+        self.assertEqual(st["recipe_offer"]["seconds"], 600)
+        self.assertEqual(st["recipe_offer"]["minutes"], 10)
 
     def test_a_comma_before_please_still_sets_the_timer(self):
         for line in ("Set a timer for 10 minutes, please", "Set a timer for 10 minutes, please.",

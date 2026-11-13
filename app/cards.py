@@ -81,7 +81,7 @@ class _at:
     """Push one path segment for the CardError detail. Pop on the way out, including on error."""
 
     def __init__(self, name):
-        self.name = name if isinstance(name, str) and _KEY_SEG.fullmatch(name) else "field"
+        self.name = _seg(name)
 
     def __enter__(self):
         _path_stack().append(self.name)
@@ -91,6 +91,7 @@ class _at:
 
 
 def _seg(name):
+    """A key that is safe to put in a refusal path. Anything else is the word field."""
     if isinstance(name, str) and _KEY_SEG.fullmatch(name):
         return name
     return "field"
@@ -1566,8 +1567,19 @@ def _strip_one_polite(rest):
     return None
 
 
+def _polite_only(rest):
+    """True when rest is empty or only politeness words. Not a timer phrase."""
+    rest = rest.strip()
+    for _ in range(8):
+        nxt = _strip_one_polite(rest)
+        if nxt is None:
+            return rest == ""
+        rest = nxt
+    return rest == ""
+
+
 def _yes_tail_ok(rest):
-    """A yes or no followed only by politeness, or by 'set a timer for the <dish>'."""
+    """A yes followed only by politeness, or by 'set a timer for the <dish>'."""
     rest = rest.strip()
     for _ in range(8):
         if rest.startswith("set a timer for the "):
@@ -1581,6 +1593,7 @@ def _yes_tail_ok(rest):
 
 
 def _duration_frame_ok(left):
+    """True when the words around a length are just how someone accepts the offer."""
     left = left.strip()
     for phrase in _DURATION_FRAME:
         if left == phrase.strip() or left.startswith(phrase):
@@ -1594,27 +1607,47 @@ def _duration_frame_ok(left):
     return _OFFER_QUESTION.search(left) is None and len(left) <= 48
 
 
-def offer_answer(text):
-    """'yes', 'no', {'answer':'yes','seconds','minutes'}, or None.
+def _yes_names_a_length(text):
+    """A yes that also names a length. The length is not a new timer."""
+    hit = step_time(text)
+    if not hit:
+        return False
+    without = " ".join((text[:hit["start"]] + " " + text[hit["end"]:]).split())
+    _head, left = _split_head(without, _YES_HEADS)
+    return left is not None and _duration_frame_ok(left)
 
-    Punctuation is stripped before the compare. A yes or no may be followed only by
-    politeness or timer words. A yes that names a length returns that length. A recipe
-    command, or any other question, is None so the station still cancels the offer.
+
+def _strip_trailing_polite(text):
+    """Drop trailing politeness, including please, using _POLITE."""
+    t = text.strip()
+    for _ in range(6):
+        nxt = None
+        for phrase in _POLITE:
+            if t.endswith(" " + phrase):
+                nxt = t[: -(len(phrase) + 1)].strip()
+                break
+        if nxt is None:
+            return t
+        t = nxt
+    return t
+
+
+def offer_answer(text):
+    """'yes', 'no', or None.
+
+    Punctuation is stripped before the compare. A yes may be followed only by
+    politeness, 'set a timer for the <dish>', or a length. The length does not
+    change the offered timer: the answer is still 'yes'. A no may be followed
+    only by politeness. A recipe command, or any other question, is None.
     """
     t = _offer_norm(text)
     if not t:
         return None
-    hit = step_time(t)
-    if hit:
-        head, _rest = _split_head(t, _YES_HEADS)
-        if head is not None:
-            without = " ".join((t[:hit["start"]] + " " + t[hit["end"]:]).split())
-            _head, left = _split_head(without, _YES_HEADS)
-            if left is not None and _duration_frame_ok(left):
-                return {"answer": "yes", "seconds": hit["seconds"], "minutes": hit["minutes"]}
     head, rest = _split_head(t, _NO_HEADS)
     if head is not None:
-        return "no" if _yes_tail_ok(rest) else None
+        return "no" if _polite_only(rest) else None
+    if _yes_names_a_length(t):
+        return "yes"
     head, rest = _split_head(t, _YES_HEADS)
     if head is not None and _yes_tail_ok(rest):
         return "yes"
@@ -1625,12 +1658,11 @@ def local_timer_command(text):
     """'set/start a timer for N seconds/minutes/hours [for X]', or None.
 
     The number words are the same ones step_time uses. Punctuation is stripped the same
-    way as a yes or no, so "10 minutes, please" still matches. Anything else is None, so a
-    question that merely mentions a timer still goes to the bot.
+    way as a yes or no, and a trailing please is one of the politeness words, so
+    "10 minutes, please" still matches. Anything else is None, so a question that
+    merely mentions a timer still goes to the bot.
     """
-    t = _offer_norm(text)
-    if t.endswith(" please"):
-        t = t[: -len(" please")].strip()
+    t = _strip_trailing_polite(_offer_norm(text))
     match = _LOCAL_TIMER_RE.match(t)
     if not match:
         return None

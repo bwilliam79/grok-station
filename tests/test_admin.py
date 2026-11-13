@@ -717,15 +717,17 @@ class Bots(unittest.TestCase):
         self.assertEqual(j["default_voice"], "")
         self.assertEqual(j["message"], ga.RELAY_UNCONFIGURED)
 
-    def test_voice_patch_forwards_with_the_rename_stepup(self):
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})[0], 404)
+    def test_voice_patch_is_an_unknown_field(self):
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})
+        self.assertEqual((st, j.get("error")), (400, "unknown field voice"))
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {})[0], 400)
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})[0], 404)
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})
+        self.assertEqual((st, j.get("error")), (400, "unknown field voice"))
         self.assertFalse(any(c[0] == "PATCH" for c in self.calls))
+        before = len(self.calls)
         st, j = self.c.req("PATCH", "/api/bots/kai", {"name": "Kay", "voice": "rex", "password": GOOD})
-        self.assertEqual(st, 200, j)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"name": "Kay", "actor": "admin"}))
-        self.assertNotIn("voice", self.calls[-1][2])
+        self.assertEqual((st, j.get("error")), (400, "unknown field voice"))
+        self.assertEqual(len(self.calls), before)
 
     def test_test_needs_no_password_and_unconfigured_message(self):
         st, j = self.c.req("POST", "/api/bots/kai/test", {})
@@ -813,7 +815,7 @@ class Bots(unittest.TestCase):
         self.assertEqual(len(self.calls), before)  # nothing to change, nothing sent
         before = len(self.calls)
         st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})
-        self.assertEqual(st, 404, j)
+        self.assertEqual((st, j.get("error")), (400, "unknown field voice"))
         self.assertEqual(len(self.calls), before)
         st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "sideways"})
         self.assertEqual(st, 400)

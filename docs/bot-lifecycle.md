@@ -10,7 +10,7 @@ enforces it. If code and this file disagree, the code is wrong or this file is s
 0.13.45: the home routine tells a bot that every sports key is required, how to fill a pregame card, and to fix the
 field named by `refused: schema <path> <problem>` and resend that card once in the same turn. A speakerphone that
 stays online but delivers no frames, or only exact silence, for 60 seconds is reset through the existing USB helper.
-A voice a bot reports replaces that bot's saved voice when it differs. The admin page no longer sets a voice.
+A voice a bot reports replaces that bot's saved voice when it differs. The admin page no longer sets a voice. Stored admin voices are cleared once when the overlay loads.
 "Yes, please" on a recipe timer offer, and "set a timer for N minutes", run on the station and are not sent to the bot.
 
 ## Words

@@ -1,5 +1,5 @@
-"""0.13.0: voice pickers show "Aurora", but the option value (what is saved and sent to xAI) stays "aurora"."""
-import json, os, shutil, subprocess, unittest
+"""Voice names on the admin page are display labels. The stored id stays lowercase."""
+import os, shutil, subprocess, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JS = os.path.join(ROOT, "admin", "web", "app.js")
@@ -16,26 +16,14 @@ def _fn(src, name):
 
 @unittest.skipUnless(shutil.which("node"), "node not installed")
 class VoiceLabels(unittest.TestCase):
-    def run_js(self, body):
-        src = open(JS).read()
-        prog = "\n".join([
-            "const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');",
-            _fn(src, "voiceLabel"), _fn(src, "voiceOptions"), _fn(src, "stationVoiceLabel"), body])
-        return subprocess.run(["node", "-e", prog], capture_output=True, text=True, check=True).stdout
-
     def test_labels_capitalised_values_lowercase(self):
-        out = self.run_js("""
-const add = voiceOptions(["aurora", "castor", "lux"], "", "avoice", stationVoiceLabel({_defaultVoice: "luna"}));
-const cfg = voiceOptions(["aurora", "castor", "lux"], "castor", "bvoice");
-console.log(JSON.stringify({add, cfg}));""")
-        doc = json.loads(out)
-        for html in (doc["add"], doc["cfg"]):
-            self.assertIn('<option value="aurora">Aurora</option>', html)
-            self.assertIn('<option value="lux">Lux</option>', html)
-            self.assertNotIn('value="Aurora"', html)
-        self.assertIn('<option value="castor" selected>Castor</option>', doc["cfg"])
-        self.assertIn(">Station default (Luna)</option>", doc["add"])
-        self.assertIn('<option value="">Station default</option>', doc["cfg"])
+        with open(JS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("function voiceOptions", src)
+        self.assertNotIn("function stationVoiceLabel", src)
+        prog = _fn(src, "voiceLabel") + "\nconsole.log(voiceLabel('aurora'));\nconsole.log(voiceLabel(''));"
+        out = subprocess.run(["node", "-e", prog], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out.splitlines(), ["Aurora", ""])
 
     def test_relay_ids_stay_lowercase(self):
         import sys

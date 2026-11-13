@@ -1,7 +1,8 @@
 """0.13.45: an open capture that is stalled or exact silence asks for one USB reset.
 
-A varying noise floor is not dead. Speaking, playback, and mute skip the window.
-A second reset waits out the gap, then a longer backoff.
+A varying noise floor is not dead. Speaking and playback skip the window.
+A second reset waits out the gap, then a longer backoff. The reset follows the
+same auto-reset switch as a stuck microphone.
 """
 import os
 import struct
@@ -101,8 +102,8 @@ class DeafCapture(unittest.TestCase):
         # Window opens at 0. First reset at 60. Next is 60+600. The one after waits the doubled gap.
         self.assertEqual(fired, [60.0, 660.0, 660.0 + 1200.0])
 
-    def test_no_detection_while_speaking_playing_or_muted(self):
-        for flag in ("speaking", "playing", "muted"):
+    def test_no_detection_while_speaking_or_playing(self):
+        for flag in ("speaking", "playing"):
             watch, clock = self._watch()
             fired = []
             for step in range(0, 180):
@@ -124,22 +125,73 @@ class DeafCapture(unittest.TestCase):
                 fired.append(clock.t)
         self.assertEqual(fired, [])
 
-    def test_deaf_reset_uses_the_existing_helper_path(self):
+    def test_deaf_reset_follows_the_auto_reset_switch(self):
         calls = []
         logs = []
-        rec = gw.MicRecovery(
-            lambda card: calls.append(card) or None,
-            now=lambda: 1000.0,
-            flags=lambda: {"button": True, "night": False, "drought": False},
-            card=lambda: "Plus",
-            busy=lambda: False,
-            kick=lambda: None,
-            log=logs.append,
-        )
-        self.assertEqual(rec.request("deaf"), "ok")
+
+        def rec(drought):
+            return gw.MicRecovery(
+                lambda card: calls.append(card) or None,
+                now=lambda: 1000.0,
+                flags=lambda: {"button": True, "night": False, "drought": drought},
+                card=lambda: "Plus",
+                busy=lambda: False,
+                kick=lambda: None,
+                log=logs.append,
+            )
+
+        self.assertEqual(rec(False).request("deaf"), "off")
+        self.assertEqual(calls, [])
+        self.assertEqual(logs, [])
+        self.assertEqual(rec(True).request("deaf"), "ok")
         self.assertEqual(calls, ["Plus"])
         self.assertIn("mic reset: deaf", logs)
         self.assertTrue(all("/" not in line and "http" not in line for line in logs))
+
+    def test_serve_capture_reports_silence_and_skips_while_speaking(self):
+        class Clock:
+            t = 0.0
+
+        class Guard:
+            def __init__(self, frames, clock):
+                self.frames = list(frames)
+                self.clock = clock
+                self.reason = None
+
+            def read(self, _n):
+                self.clock.t += 1.0
+                if not self.frames:
+                    return b""
+                return self.frames.pop(0)
+
+            def observe(self, _buf, _busy):
+                return False
+
+        buf = _zeros()
+        clock = Clock()
+        watch = gw.DeafWatch(now=lambda: clock.t, window_s=60, gap_s=600)
+        kinds = []
+
+        def on_deaf(_deaf, _was, kind):
+            if kind:
+                kinds.append(kind)
+
+        reason = gw.serve_capture(
+            None, Guard([buf] * 70, clock), lambda _b, _g: None, lambda: False,
+            n=len(buf), deaf=watch, held=lambda: False, on_deaf=on_deaf)
+        self.assertEqual(reason, "eof")
+        self.assertEqual(kinds, ["silence"])
+
+        clock2 = Clock()
+        watch2 = gw.DeafWatch(now=lambda: clock2.t, window_s=60, gap_s=600)
+        quiet = []
+        reason = gw.serve_capture(
+            None, Guard([buf] * 70, clock2), lambda _b, _g: None, lambda: False,
+            n=len(buf), deaf=watch2, held=lambda: True,
+            on_deaf=lambda _d, _w, kind: quiet.append(kind) if kind else None)
+        self.assertEqual(reason, "eof")
+        self.assertEqual(quiet, [])
+        self.assertFalse(watch2.degraded)
 
     def test_the_mic_icon_shows_the_problem_while_frames_still_arrive(self):
         now = 2000.0

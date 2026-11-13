@@ -215,8 +215,8 @@ class AdminUI(unittest.TestCase):
         add = self.js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
         self.assertNotIn('id="avoice"', add)
         self.assertNotIn("body.voice", add)
-        self.assertIn("function voiceOptions", self.js)
-        self.assertIn("Station default", _fn(self.js, "stationVoiceLabel"))
+        self.assertNotIn("function voiceOptions", self.js)
+        self.assertNotIn("function stationVoiceLabel", self.js)
         x = _fn(self.js, "dialogX")
         self.assertIn('aria-label="Close"', x)
         self.assertIn('type="button"', x)
@@ -250,7 +250,7 @@ class AdminUI(unittest.TestCase):
         self.assertNotIn("withPassword(", sysp)
         self.assertIn("data-bot", _fn(self.js, "paintBots"))
         self.assertIn("From Grok Bot:", _fn(self.js, "openBot"))
-        self.assertIn('id="${id}"', _fn(self.js, "voiceOptions"))
+        self.assertIn("function voiceLabel", self.js)
         self.assertNotIn("data-vsel", _fn(self.js, "paintBots"))
 
     def test_main_bot_sorts_first_and_gold_star(self):

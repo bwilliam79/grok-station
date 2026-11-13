@@ -467,17 +467,56 @@ def key_mode_refused(body):
     return isinstance(body, dict) and "key_mode" in body and body.get("key_mode") != "home"
 
 
+def _overlay_voices_cleared():
+    """True when the overlay file already records the one-time admin-voice clear."""
+    path = overlay_path()
+    if not os.path.isfile(path):
+        return False
+    try:
+        doc = safe_io.read_json(path, safe_io.LARGE_JSON, "personas-overlay")
+    except (OSError, ValueError):
+        return False
+    return isinstance(doc, dict) and doc.get("voices_cleared") is True
+
+
+def _clear_admin_voices(built):
+    """Drop admin-set voices once, persist the marker, and log a count with no ids.
+
+    A missing file never reaches here. The marker stops a later reported voice from
+    being wiped on the next load.
+    """
+    n = len(built.get("voices") or {})
+    for ent in (built.get("added") or {}).values():
+        if isinstance(ent, dict) and "voice" in ent:
+            n += 1
+            ent.pop("voice", None)
+    built["voices"] = {}
+    built["voices_cleared"] = True
+    try:
+        save_overlay(built)
+    except OSError:
+        return built
+    if n:
+        log(f"admin voices cleared {n}")
+    return built
+
+
 def load_overlay_doc():
     """Raw overlay. Shape-checked so a bad file can't grow; voice membership is enforced later, at read.
 
     list_source is always present here ("" when unset). An empty list_source is left out of the file on save.
     A key_mode left by a release before 0.13.37 is not read (every key is on a home computer).
+    Admin-set voices (voices and added voice) are cleared once. A missing file returns the marker in
+    memory and does not write, so the first save records it and a later report is kept.
     """
-    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
+    base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {},
+            "voices_cleared": True}
+    if not os.path.isfile(overlay_path()):
+        return base
     try:
         doc = safe_io.read_json(overlay_path(), safe_io.LARGE_JSON, "personas-overlay")
     except (OSError, ValueError):
-        return base
+        return {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
     if not isinstance(doc, dict):
         return base
     added = {}
@@ -505,8 +544,12 @@ def load_overlay_doc():
     src = doc.get("list_source") if isinstance(doc.get("list_source"), str) else ""
     if not handoff.bot_slug_ok(src):
         src = ""
-    return {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices, "list_source": src,
-            "reply_host": _reply_hosts(doc.get("reply_host"))}
+    built = {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices, "list_source": src,
+             "reply_host": _reply_hosts(doc.get("reply_host"))}
+    if doc.get("voices_cleared") is True:
+        built["voices_cleared"] = True
+        return built
+    return _clear_admin_voices(built)
 
 
 def save_overlay(doc):
@@ -527,6 +570,10 @@ def save_overlay(doc):
         out["reply_host"] = hosts
     else:
         out.pop("reply_host", None)
+    if out.get("voices_cleared") is True or _overlay_voices_cleared():
+        out["voices_cleared"] = True
+    else:
+        out.pop("voices_cleared", None)
     atomic_write(overlay_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
     _personas["mtime"] = None
 
@@ -2069,20 +2116,6 @@ def kick_voice_fetch():
         return
 
 
-def chosen_voice(voice, allow_default=False):
-    """A lowercased offered voice, None when missing and allow_default, or False when rejected."""
-    if voice is None:
-        return None if allow_default else False
-    if not isinstance(voice, str):
-        return False
-    voice = voice.strip()
-    if voice == "":
-        return None if allow_default else False
-    if voice.lower() not in offered_voices():
-        return False
-    return voice.lower()
-
-
 async def load_voices():
     seed_offered_voices()
     while True:
@@ -3591,7 +3624,7 @@ def _last4(token):
 
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
-_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-synced", "pair", "revoke",
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice-synced", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
                   "update-reply", "update-bad", "setup-ask", "setup-fail", "rescan"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
@@ -4416,11 +4449,7 @@ def classify_offer_reply(heard, st, now=None):
         kind = load_cards().offer_answer(heard)
     except Exception:
         kind = None
-    override = None
-    if isinstance(kind, dict) and kind.get("answer") == "yes":
-        override = kind
-        kind = "yes"
-    elif not isinstance(kind, str):
+    if not isinstance(kind, str):
         kind = None
     if off.get("pending"):
         # The offer is still playing (R2-7). A yes/no or a short fragment is held, not acted on;
@@ -4428,12 +4457,6 @@ def classify_offer_reply(heard, st, now=None):
         if kind in ("yes", "no") or len((heard or "").split()) < 2:
             return "hold"
     if kind in ("yes", "no"):
-        if kind == "yes" and isinstance(override, dict):
-            sec, minutes = override.get("seconds"), override.get("minutes")
-            if isinstance(sec, int) and not isinstance(sec, bool) and sec > 0:
-                off["seconds"] = sec
-            if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0:
-                off["minutes"] = minutes
         return kind
     st.pop("recipe_offer", None)
     return "cancel"
@@ -4475,7 +4498,7 @@ STATION_UNREACHABLE_SAY = {
 
 def updates_pause_send(pause_hit, post=None):
     """POST updates_pause; "Updates paused/resumed." only when the station accepted it (200)."""
-    status = post_station_show({"v": 1, "op": "updates_pause", "on": pause_hit[0] == "pause"}, post=post)
+    status, _detail = post_station_show({"v": 1, "op": "updates_pause", "on": pause_hit[0] == "pause"}, post=post)
     return pause_hit[1] if status == 200 else STATION_UNREACHABLE_SAY[pause_hit[0]]
 
 
@@ -4667,12 +4690,11 @@ def post_recipe_cmd(cmd, post=None):
 
 
 def post_station_show(show, post=None):
-    """POST the cleaned card to the station's localhost /show. Never logs the token, the URL, or the body.
+    """POST the cleaned card to the station's localhost /show. Returns (status, detail).
 
-    On a 400, a safe detail from the station body is kept on this function as .detail
-    so the /voice/show answer can name the field. Anything else is dropped.
+    On a 400, detail is the safe field path from the station body, or None.
+    Never logs the token, the URL, or the body. The card text is not in detail.
     """
-    post_station_show.detail = None
     vals = _station_env_values(frozenset(("GROK_STATION_TOKEN", "GROK_STATION_PORT")))
     token = vals.get("GROK_STATION_TOKEN", "")
     try:
@@ -4680,31 +4702,32 @@ def post_station_show(show, post=None):
     except ValueError:
         port = 8787
     if not token or not 1 <= port <= 65535:
-        return 503
+        return 503, None
     body = json.dumps(show, separators=(",", ":"), sort_keys=True).encode()
     if post is not None:
         try:
-            return int(post(body, token, port))
+            return int(post(body, token, port)), None
         except Exception:
-            return 503
+            return 503, None
     req = urllib.request.Request(
         "http://127.0.0.1:%d/show" % port, data=body,
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
-            return int(resp.status)
+            return int(resp.status), None
     except urllib.error.HTTPError as e:
+        detail = None
         if e.code == 400:
             try:
                 raw = e.read(512)
                 doc = json.loads(raw.decode("utf-8"))
                 if isinstance(doc, dict):
-                    post_station_show.detail = _show_detail(doc.get("detail"))
+                    detail = _show_detail(doc.get("detail"))
             except Exception:
-                post_station_show.detail = None
-        return int(e.code)
+                detail = None
+        return int(e.code), detail
     except Exception:
-        return 503
+        return 503, None
 
 
 def show_seen():
@@ -4769,9 +4792,8 @@ def seed_reported_voice(slug, raw):
 
     The id is never logged. A missing report, or an id that is not offered, leaves the
     stored voice. A bot with none stored keeps the station default until a real report.
-    An older admin choice is that stored voice until the next report, which replaces it
-    when the report differs. That is the same as dropping the choice on load: the next
-    report wins, and a bot that reports nothing keeps what is already saved.
+    Load clears admin-set voices once and writes that back. A bot that never reports a
+    voice then uses the station default. A report after that clear is kept on the next load.
     A picture that already saved must still succeed if this write fails.
     """
     mapped = voices.map_reported_voice(raw, VOICES or None)
@@ -5066,9 +5088,16 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
         reserved = True
     try:
         wire = dict(signed_update, bot=show["bot"]) if is_update else show
-        code = int(post(wire))
+        got = post(wire)
+        if isinstance(got, tuple):
+            code = int(got[0])
+            posted_detail = got[1] if len(got) > 1 else None
+        else:
+            code = int(got)
+            posted_detail = None
     except Exception:
         code = 503
+        posted_detail = None
     if code != 200:
         if reserved:
             try:
@@ -5076,7 +5105,7 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
             except OSError:
                 pass
         if code in (400, 413):
-            detail = _show_detail(getattr(post, "detail", None))
+            detail = _show_detail(posted_detail)
             body = {"error": "schema", "reason": "schema"}
             if detail:
                 body["detail"] = detail
@@ -5167,7 +5196,7 @@ def _write_updates_locked(slug, on):
 def post_station_updates_drop(slug, post=None, tries=2):
     """Switching a bot off removes its rows from the station now. True when the station said 200 (Nix L3)."""
     for _ in range(max(1, tries)):
-        if post_station_show({"v": 1, "op": "updates_off", "bot": slug}, post=post) == 200:
+        if post_station_show({"v": 1, "op": "updates_off", "bot": slug}, post=post)[0] == 200:
             return True
     return False
 
@@ -5176,7 +5205,7 @@ def post_station_updates_only(post=None, tries=3):
     """Relay startup: the station keeps rows only for bots whose switch is on (Nix L3)."""
     keep = sorted(read_updates())
     for _ in range(max(1, tries)):
-        if post_station_show({"v": 1, "op": "updates_only", "bots": keep}, post=post) == 200:
+        if post_station_show({"v": 1, "op": "updates_only", "bots": keep}, post=post)[0] == 200:
             return True
     return False
 
@@ -5594,7 +5623,7 @@ async def admin_bots_post(req):
 
 
 async def admin_bots_patch(req):
-    """Name, voice, computer, or a combination. At least one is required.
+    """Name, computer, or a combination. At least one is required. A voice field is unknown.
 
     0.13.37: there is no key location to switch. key_mode "home" alone is accepted and changes nothing (an older
     page may still send it); any other key_mode is refused before anything is saved.
@@ -5603,17 +5632,17 @@ async def admin_bots_patch(req):
     if _is_response(bad):
         return bad
     slug = req.match_info.get("slug", "")
-    if not _known(slug):
-        return web.json_response({"error": "not found"}, status=404)
     body = await admin_json(req)
+    if isinstance(body, dict) and "voice" in body:
+        return web.json_response({"error": "unknown field voice"}, status=400)
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
+    if not _known(slug):
+        return web.json_response({"error": "not found"}, status=404)
     if key_mode_refused(body):
         return web.json_response({"error": KEY_HOME_ONLY}, status=400)
-    has_name, has_voice, has_mode = "name" in body, "voice" in body, "key_mode" in body
+    has_name, has_mode = "name" in body, "key_mode" in body
     has_host = "reply_host" in body
-    if has_voice and not has_name and not has_mode and not has_host:
-        return web.json_response({"error": "not found"}, status=404)
     if not has_name and not has_mode and not has_host:
         return web.json_response({"error": "bad request"}, status=400)
     if has_host and body.get("reply_host") not in (None, "") and not host_name_ok(body.get("reply_host")):
@@ -7461,10 +7490,8 @@ async def voice_show(req):
 
     def post(show):
         if late_hold_show(show):
-            return 200  # checked and accepted; shown when the late answer is spoken
-        code = post_station_show(show)
-        post.detail = getattr(post_station_show, "detail", None)
-        return code
+            return 200, None  # checked and accepted; shown when the late answer is spoken
+        return post_station_show(show)
 
     status, body, info = accept_show(raw, station, trusted_keys(), known_bot_slugs(),
                                       card_limiter(), post, ttl_max=card_ttl_max(), seen=show_seen(),

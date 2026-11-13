@@ -2791,25 +2791,6 @@ function voiceLabel(v) {
   const t = String(v || "");
   return t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
 }
-function voiceOptions(voices, current, id, blankLabel, attrs) {
-  const list = Array.isArray(voices) ? voices.slice() : [];
-  const cur = typeof current === "string" ? current : "";
-  if (cur && list.indexOf(cur) < 0) list.unshift(cur);
-  const blank = blankLabel || "Station default";
-  let opts = `<option value=""${cur ? "" : " selected"}>${esc(blank)}</option>`;
-  opts += list.map(v => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(voiceLabel(v))}</option>`).join("");
-  return `<select class="sel" id="${id}"${attrs || ""}>${opts}</select>`;
-}
-function voiceChoice(bot, el) {
-  const v = (bot && bot.voice) || "";
-  const d = (el && el._defaultVoice) || "";
-  if (!v || (d && v.toLowerCase() === d.toLowerCase())) return "";
-  return v;
-}
-function stationVoiceLabel(el) {
-  const v = el && el._defaultVoice;
-  return v ? "Station default (" + voiceLabel(v) + ")" : "Station default";
-}
 // GS1337-03: every key pin names the key it replaces (16 hex, or "-" for none), so the relay can refuse a pin
 // made from a stale page or a second tab with 409.
 function expectOldFp(bot) {
