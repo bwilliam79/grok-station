@@ -5776,6 +5776,7 @@ def _glyph_ink_dy(img):
 REF_CLOCK_DIGITS = "0123456789"
 _GLYPH_INK = {}
 _BLOCK_OFFSETS = {}
+_DATE_SLACK = {}
 
 
 def glyph_ink_dy(kind, px, text):
@@ -5860,15 +5861,28 @@ def idle_clock_top(L, hhmm=None):
     return max(0, icon_bottom + pad - box) + L(IDLE_CLOCK_DROP)
 
 
+def _date_ink_slack(L):
+    """Empty rows under the date font box. Cached per layout. The sample is fixed."""
+    px = L(IDLE_DATE_PX)
+    key = (L.w, L.h, px)
+    hit = _DATE_SLACK.get(key)
+    if hit is not None:
+        return hit
+    date = font("body", px).render("Monday, June 15", True, TEXT)
+    box = date.get_bounding_rect()
+    slack = date.get_height() - box.bottom if box.h else 0
+    _DATE_SLACK[key] = slack
+    return slack
+
+
 def bottom_panel_rect(L):
     """The shared bottom panel.
 
-    Height and width stay the 0.13.42 size (the gap under the block was L(PANEL_GAP),
-    and the bottom sat at the same margin as the top of the clock block). The top is
-    centered in the open band under that block. With timer chips showing, the band
-    ends at content_limit. The rect does not depend on the current minute. If the
-    0.13.42 height cannot fit in that band, the bottom stays on the limit and the
-    height is kept unless that would start above the screen.
+    Without timer chips the height and width stay the 0.13.42 size and the top is
+    centered under the painted date. With chips, the top is never closer than
+    L(PANEL_GAP) to that ink. The full height stays when it fits above the timer
+    strip. Otherwise the panel shortens so its bottom meets content_limit.
+    The rect does not depend on the current minute.
     """
     global LAST_PANEL_RECT
     clock_top = idle_clock_top(L)
@@ -5877,23 +5891,34 @@ def bottom_panel_rect(L):
     block_bottom = clock_top + bot_off
     old_top = int(block_bottom + L(PANEL_GAP))
     old_bottom = int(L.h - block_top)
-    height = max(1, old_bottom - old_top)
-    # The date font box hangs below its painted ink (1 px at 1280x800, 2 px at
-    # 2560x1706). Centering on that ink keeps the painted gaps within 1 px.
-    # Height still uses the font-box block, so it stays the 0.13.42 size.
-    date = font("body", L(IDLE_DATE_PX)).render("Monday, June 15", True, TEXT)
-    date_box = date.get_bounding_rect()
-    slack = date.get_height() - date_box.bottom if date_box.h else 0
-    ink_bottom = int(block_bottom) - slack
+    full_h = max(1, old_bottom - old_top)
+    ink_bottom = int(block_bottom) - _date_ink_slack(L)
     limit = int(content_limit(L) if TIMER_CHIPS else L.h)
-    space = limit - ink_bottom
-    if height <= space:
-        panel_top = ink_bottom + (space - height) // 2
-    else:
-        panel_top = limit - height
-        if panel_top < 0:
-            panel_top = 0
+    if TIMER_CHIPS:
+        # The font-box bottom is at or below every painted pixel in the block, so the
+        # gap under the painted date and weather is at least L(PANEL_GAP).
+        min_top = int(block_bottom) + int(L(PANEL_GAP))
+        room = limit - ink_bottom
+        if full_h <= room:
+            centered = ink_bottom + (room - full_h) // 2
+            panel_top = max(centered, min_top)
+            height = full_h
+            if panel_top + height > limit:
+                panel_top = min_top
+                height = max(1, limit - panel_top)
+        else:
+            panel_top = min_top
             height = max(1, limit - panel_top)
+    else:
+        space = limit - ink_bottom
+        height = full_h
+        if height <= space:
+            panel_top = ink_bottom + (space - height) // 2
+        else:
+            panel_top = limit - height
+            if panel_top < 0:
+                panel_top = 0
+                height = max(1, limit - panel_top)
     x, w = zpx(L, PANEL_X), zpx(L, PANEL_W)
     if x + w > L.w - zpx(L, 16):
         x, w = L.m, max(1, L.w - 2 * L.m)

@@ -740,7 +740,7 @@ class SealReply(unittest.TestCase):
             "home": {"name": "Arkansas", "abbr": "ARK",
                      "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/ARK.png"},
             "away": {"name": "Gonzaga", "abbr": "GONZ",
-                     "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/2250.png"}}}
+                     "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/GONZ.png"}}}
         tls = LocalTLS(self.server_ctx, 200)
         tls.__enter__()
         try:
@@ -749,6 +749,7 @@ class SealReply(unittest.TestCase):
             tls.close()
         self.assertEqual((rc, out), (0, ""), err)
         self.assertEqual(err, "warning: college logo needs ESPN team id\n")
+        self.assertEqual(err.count("warning:"), 1)
         self.assertNotIn("http", err)
         self.assertNotIn("ARK", err)
         self.assertEqual(len(tls.posts), 1)

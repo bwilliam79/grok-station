@@ -196,7 +196,7 @@ def has_audio_interface(usb):
     return False
 
 
-def is_speakerphone(usb, card):
+def is_speakerphone(usb):
     if not has_audio_interface(usb):
         return False
     vend = (_reg_text(os.path.join(usb, "idVendor")) or "").strip().lower()
@@ -275,7 +275,7 @@ def reset_card(spec, sysfs, euid=None):
     if not _inside(start, devices):
         raise Refuse("outside device")
     usb = usb_owner(start, devices)
-    if not is_speakerphone(usb, card):
+    if not is_speakerphone(usb):
         raise Refuse("not speakerphone")
     if not _inside(usb, devices) or os.path.realpath(usb) == os.path.realpath(devices):
         raise Refuse("outside device")

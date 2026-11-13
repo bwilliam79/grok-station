@@ -233,7 +233,8 @@ class Scenarios(unittest.TestCase):
             bare = gs.bottom_panel_rect(L)
             gs.TIMER_CHIPS[:] = timers
             self.assertEqual(last["zone_rect"], gs.bottom_panel_rect(L))
-            self.assertEqual((last["zone_rect"].w, last["zone_rect"].h), (bare.w, bare.h))
+            self.assertEqual(last["zone_rect"].w, bare.w)
+            self.assertLessEqual(last["zone_rect"].h, bare.h)
             self.assertLessEqual(last["zone_rect"].bottom, gs.content_limit(L))
         finally:
             gs.TIMER_CHIPS[:] = saved

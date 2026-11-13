@@ -75,6 +75,12 @@ def releases(manifest_text, ref="HEAD"):
             continue  # a file missing at that commit (rewritten history): that release just isn't listed
         if line not in seen:
             seen.add(line); out.append(line)
+    # One row per release: the last manifest of that version. Earlier rows of the
+    # same version (left in history when a release was re-pinned) are not listed.
+    last = {}
+    for index, line in enumerate(out):
+        last[line.split(" ", 1)[0]] = index
+    out = [out[index] for index in sorted(last.values())]
     return "\n".join(out) + "\n"
 
 

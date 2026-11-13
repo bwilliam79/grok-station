@@ -8,8 +8,10 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "app"))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
 import grok_station as gs
 import pygame
+from painted_gaps import painted_gaps
 
 SIZES = ((1280, 800), (2560, 1706))
 
@@ -24,33 +26,6 @@ class _Wx:
 
     def offline(self):
         return False
-
-
-def _painted_gaps(surf):
-    """Gap above the panel, gap below it, and the panel's painted height.
-
-    The block bottom is the lowest painted clock, date, or weather pixel.
-    The panel is the non-background paint under that line.
-    """
-    rects = [gs.LAST_CLOCK_RECT, gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT]
-    block = 0
-    for rect in rects:
-        if not rect:
-            continue
-        sub = surf.subsurface(rect).copy()
-        sub.set_colorkey(gs.BG)
-        box = sub.get_bounding_rect()
-        if box.w:
-            block = max(block, rect.y + box.bottom)
-    w, h = surf.get_size()
-    band = surf.subsurface(pygame.Rect(0, block, w, h - block)).copy()
-    band.set_colorkey(gs.BG)
-    box = band.get_bounding_rect()
-    if box.w == 0:
-        raise AssertionError("the lower tile painted nothing")
-    top = block + box.y
-    bottom = block + box.bottom
-    return top - block, h - bottom, bottom - top
 
 
 def _ink_top(surf):
@@ -145,7 +120,7 @@ class PanelClock(unittest.TestCase):
                                               "detail": "Ready to try", "time": 1_000.0})
                 surf = pygame.Surface(size)
                 gs.draw_idle(surf, L, now, wx, home_band=True)
-                above, below, height = _painted_gaps(surf)
+                above, below, height = painted_gaps(surf)
                 self.assertLessEqual(abs(above - below), 1, (size, above, below))
                 self.assertEqual(height, heights[size], size)
                 self.assertGreaterEqual(above, L(48), size)

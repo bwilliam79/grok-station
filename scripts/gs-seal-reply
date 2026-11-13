@@ -989,10 +989,14 @@ def _warn_college_logos(doc):
     card = doc.get("card")
     if not isinstance(card, dict) or card.get("type") != "sports":
         return
+    warned = False
     for side in ("home", "away"):
         team = card.get(side)
         if isinstance(team, dict) and college_logo_needs_id(team.get("logo_url")):
-            sys.stderr.write("warning: college logo needs ESPN team id\n")
+            warned = True
+            break
+    if warned:
+        sys.stderr.write("warning: college logo needs ESPN team id\n")
 
 
 def cmd_show(slug):

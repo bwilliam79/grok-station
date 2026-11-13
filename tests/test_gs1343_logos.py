@@ -73,6 +73,8 @@ class TeamInstruction(unittest.TestCase):
         self.assertFalse(cards.logo_known_missing(url))
         college = home.split("College teams", 1)[1]
         self.assertNotIn("<abbr>", college)
+        self.assertIn("ncaa path", college)
+        self.assertNotIn("mens-college-basketball", college)
         self.assertIn("/500/<abbr>.png", home.split("College teams", 1)[0])
 
 

@@ -215,6 +215,27 @@ class FeedKindCap(unittest.TestCase):
             self.assertEqual(kind, long_kind[:18])
             self.assertEqual(len(kind), 18)
 
+    def test_cut_kind_with_a_space_at_18_still_clears(self):
+        """The 18th character is a space. The stored kind is cleaned, so a clear matches."""
+        raw = "12345678901234567 WXYZ"
+        self.assertEqual(len(raw), 22)
+        self.assertEqual(raw[17], " ")
+        cleaned = cards.escape_text(raw[:18], 18)
+        self.assertNotEqual(cleaned, raw[:18])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "update-feed.json")
+            doc = {"items": [{
+                "bot": "otto", "id": "a", "type": "update", "line": "Shipped",
+                "time": 1000, "seq": 1, "kind": raw, "detail": "Ready",
+            }], "rules": {}, "seq": 1}
+            with open(path, "w") as fh:
+                json.dump(doc, fh)
+            os.chmod(path, 0o600)
+            feed = cards.UpdateFeed(path=path)
+            self.assertEqual(next(iter(feed.items.values()))["kind"], cleaned)
+            feed.clear_type_updates("otto", kind=cleaned)
+            self.assertEqual(feed.items, {})
+
 
 if __name__ == "__main__":
     unittest.main()

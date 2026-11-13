@@ -8,11 +8,13 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "app"))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 import pygame  # noqa: E402
 import grok_station as gs  # noqa: E402
+from painted_gaps import painted_gaps  # noqa: E402
 
 pygame.display.init()
 pygame.font.init()
@@ -53,7 +55,7 @@ class PanelGap(unittest.TestCase):
                                               "detail": "Ready to try", "time": 1_000.0})
                 surf = pygame.Surface(size)
                 gs.draw_idle(surf, layout, now, _Wx(), home_band=True)
-                above, below, height = _painted_gaps(surf)
+                above, below, height = painted_gaps(surf)
                 self.assertLessEqual(abs(above - below), 1, (size, above, below))
                 self.assertEqual(height, heights[size], size)
                 self.assertGreaterEqual(above, layout(48), size)
@@ -103,29 +105,6 @@ class PanelGap(unittest.TestCase):
             gs.UPDATES = None
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
-
-
-def _painted_gaps(surf):
-    """Gap above the panel, gap below it, and the panel's painted height."""
-    rects = [gs.LAST_CLOCK_RECT, gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT]
-    block = 0
-    for rect in rects:
-        if not rect:
-            continue
-        sub = surf.subsurface(rect).copy()
-        sub.set_colorkey(gs.BG)
-        box = sub.get_bounding_rect()
-        if box.w:
-            block = max(block, rect.y + box.bottom)
-    w, h = surf.get_size()
-    band = surf.subsurface(pygame.Rect(0, block, w, h - block)).copy()
-    band.set_colorkey(gs.BG)
-    box = band.get_bounding_rect()
-    if box.w == 0:
-        raise AssertionError("the lower tile painted nothing")
-    top = block + box.y
-    bottom = block + box.bottom
-    return top - block, h - bottom, bottom - top
 
 
 def _ink_rect(surf, rect):

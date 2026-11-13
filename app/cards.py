@@ -1918,7 +1918,10 @@ class UpdateFeed:
             kept = {k: row[k] for k in _ROW_KEYS if k in row}
             kind = kept.get("kind")
             if isinstance(kind, str) and len(kind) > 18:
-                kept["kind"] = kind[:18]
+                try:
+                    kept["kind"] = escape_text(kind[:18], 18)
+                except CardError:
+                    return
             loaded[(row["bot"], row["id"])] = kept
         clean = {}
         for key, val in rules.items():

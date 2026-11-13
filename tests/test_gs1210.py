@@ -107,6 +107,12 @@ class NoFalseBehind(_Rel):
         self._table(True)
         self.assertEqual(self._state(self._old_instr("kai"), helper_behind=True), ("needs", 1))
 
+    def test_each_release_appears_once(self):
+        rows = [line.split()[0] for line in open(os.path.join(ROOT, "admin", "bot-releases.txt"))
+                if line.strip() and not line.startswith("#")]
+        self.assertEqual(sorted(rows), sorted(set(rows)))
+        self.assertEqual(len(rows), len(set(rows)))
+
     def test_shipped_table_matches_this_tree(self):
         """bot-releases.txt (written by tools/gen-update-manifest.py) names this release with this tree's content."""
         import bot_content
