@@ -443,41 +443,66 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('id="avoice"', page)
         self.assertIn("From Grok Bot:", page)
 
-    async def test_admin_voices_clear_once_and_a_later_report_sticks(self):
+    def _voice_audit(self, slug, action):
+        path = self.relay.audit_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("2026-01-01T00:00:00Z admin %s %s -\n" % (slug, action))
+
+    async def test_admin_voices_clear_only_an_admin_audit(self):
         r = self.relay
-        missing = r.load_overlay_doc()
-        self.assertTrue(missing["voices_cleared"])
-        self.assertFalse(os.path.isfile(r.overlay_path()))
         os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)
+        self._voice_audit("castor", "voice-synced")
+        self._voice_audit("aurora", "voice")
+        self._voice_audit("luna", "voice")
+        self._voice_audit("luna", "voice-seeded")
         with open(r.overlay_path(), "w", encoding="utf-8") as fh:
             json.dump({
-                "added": {"hank": {"name": "Hank", "voice": "eve"}},
-                "voices": {"noa": "rex"},
+                "added": {
+                    "castor": {"name": "Castor", "voice": "eve"},
+                    "hank": {"name": "Hank", "voice": "ara"},
+                    "luna": {"name": "Luna", "voice": "rex"},
+                },
+                "voices": {"aurora": "sal"},
                 "renamed": {}, "hidden": [],
             }, fh)
         lines = []
         r.log = lambda *a: lines.append(" ".join(str(x) for x in a))
         loaded = r.load_overlay_doc()
         r.log = lambda *_a: None
-        self.assertNotIn("voice", loaded["added"]["hank"])
-        self.assertEqual(loaded["voices"], {})
+        self.assertEqual(loaded["added"]["castor"]["voice"], "eve")
+        self.assertEqual(loaded["added"]["hank"]["voice"], "ara")
+        self.assertEqual(loaded["added"]["luna"]["voice"], "rex")
+        self.assertNotIn("aurora", loaded["voices"])
         self.assertTrue(loaded["voices_cleared"])
+        self.assertEqual(lines, ["admin voices cleared 1"])
+        self.assertFalse(any(slug in lines[0] for slug in ("castor", "aurora", "hank", "luna", "eve", "ara", "sal", "rex")))
         with open(r.overlay_path(), encoding="utf-8") as fh:
             disk = json.load(fh)
-        self.assertNotIn("voice", disk["added"]["hank"])
-        self.assertEqual(disk.get("voices"), {})
-        self.assertTrue(disk["voices_cleared"])
-        self.assertEqual(lines, ["admin voices cleared 2"])
-        self.assertEqual(r.persona_list()["hank"]["voice"], r.VOICE.lower())
-        r.VOICES.add("sal")
-        r.seed_reported_voice("hank", "sal")
+        self.assertEqual(disk["added"]["castor"]["voice"], "eve")
+        self.assertEqual(disk["added"]["hank"]["voice"], "ara")
+        self.assertNotIn("aurora", disk.get("voices") or {})
+        self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(r.overlay_path()), "voices-cleared")))
+
+    async def test_a_corrupt_overlay_keeps_the_cleared_marker(self):
+        r = self.relay
+        os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)
+        self._voice_audit("aurora", "voice")
+        with open(r.overlay_path(), "w", encoding="utf-8") as fh:
+            json.dump({"added": {}, "voices": {"aurora": "sal"}, "renamed": {}, "hidden": []}, fh)
+        r.load_overlay_doc()
+        with open(r.overlay_path(), "wb") as fh:
+            fh.write(b"{not json")
+        broken = r.load_overlay_doc()
+        self.assertTrue(broken.get("voices_cleared"))
+        r.save_overlay({"added": {"aurora": {"name": "Aurora", "voice": "rex"}},
+                        "voices": {}, "renamed": {}, "hidden": [], "list_source": ""})
         with open(r.overlay_path(), encoding="utf-8") as fh:
-            saved = json.load(fh)
-        self.assertEqual(saved["added"]["hank"]["voice"], "sal")
-        self.assertTrue(saved["voices_cleared"])
-        kept = r.load_overlay_doc()
-        self.assertEqual(kept["added"]["hank"]["voice"], "sal")
-        self.assertEqual(lines, ["admin voices cleared 2"])
+            disk = json.load(fh)
+        self.assertTrue(disk["voices_cleared"])
+        self.assertEqual(disk["added"]["aurora"]["voice"], "rex")
+        again = r.load_overlay_doc()
+        self.assertEqual(again["added"]["aurora"]["voice"], "rex")
 
     async def test_unknown_field_is_still_rejected(self):
         await self._add("lea", "Lea")

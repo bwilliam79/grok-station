@@ -467,6 +467,27 @@ def key_mode_refused(body):
     return isinstance(body, dict) and "key_mode" in body and body.get("key_mode") != "home"
 
 
+_VOICE_AUDIT = frozenset(("voice", "voice-seeded", "voice-synced"))
+
+
+def _voices_cleared_path():
+    """Sidecar next to the overlay. Survives a corrupt overlay so the clear does not run again."""
+    return os.path.join(bots_dir(), "voices-cleared")
+
+
+def _voices_cleared_marked():
+    return os.path.isfile(_voices_cleared_path())
+
+
+def _mark_voices_cleared():
+    if _voices_cleared_marked():
+        return
+    try:
+        atomic_write(_voices_cleared_path(), b"1\n")
+    except OSError:
+        return
+
+
 def _overlay_voices_cleared():
     """True when the overlay file already records the one-time admin-voice clear."""
     path = overlay_path()
@@ -479,18 +500,55 @@ def _overlay_voices_cleared():
     return isinstance(doc, dict) and doc.get("voices_cleared") is True
 
 
+def _latest_voice_action(slug):
+    """Last voice, voice-seeded, or voice-synced audit action for slug, or None.
+
+    Monthly audit files are read in name order, and lines in append order, so the last
+    match is the most recent. The admin action is the word voice, not voice-synced.
+    """
+    latest = None
+    try:
+        names = sorted(name for name in os.listdir(bots_dir())
+                       if name.startswith("audit-") and name.endswith(".log"))
+    except OSError:
+        return None
+    for name in names:
+        try:
+            with open(os.path.join(bots_dir(), name), encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 4 or parts[2] != slug:
+                        continue
+                    if parts[3] in _VOICE_AUDIT:
+                        latest = parts[3]
+        except OSError:
+            continue
+    return latest
+
+
+def _admin_voice_slug(slug):
+    """True only when the latest voice audit entry is the admin voice action."""
+    return _latest_voice_action(slug) == "voice"
+
+
 def _clear_admin_voices(built):
     """Drop admin-set voices once, persist the marker, and log a count with no ids.
 
-    A missing file never reaches here. The marker stops a later reported voice from
-    being wiped on the next load.
+    A slug is cleared only when its latest voice audit entry is the admin action voice.
+    voice-seeded, voice-synced, and a slug with no voice audit keep the stored voice.
+    Nothing here asks a bot for an avatar or a voice. A missing file never reaches here.
     """
-    n = len(built.get("voices") or {})
-    for ent in (built.get("added") or {}).values():
-        if isinstance(ent, dict) and "voice" in ent:
+    n = 0
+    voices = built.get("voices") if isinstance(built.get("voices"), dict) else {}
+    for slug in list(voices):
+        if _admin_voice_slug(slug):
+            voices.pop(slug, None)
             n += 1
+    built["voices"] = voices
+    for slug, ent in list((built.get("added") or {}).items()):
+        if isinstance(ent, dict) and "voice" in ent and _admin_voice_slug(slug):
             ent.pop("voice", None)
-    built["voices"] = {}
+            n += 1
     built["voices_cleared"] = True
     try:
         save_overlay(built)
@@ -506,8 +564,10 @@ def load_overlay_doc():
 
     list_source is always present here ("" when unset). An empty list_source is left out of the file on save.
     A key_mode left by a release before 0.13.37 is not read (every key is on a home computer).
-    Admin-set voices (voices and added voice) are cleared once. A missing file returns the marker in
-    memory and does not write, so the first save records it and a later report is kept.
+    A stored voice is cleared once only when that slug's latest voice audit entry is the admin
+    action voice. A seeded, reported, or unaudited voice stays. A missing file returns the marker in
+    memory and does not write, so the first save records it. A corrupt file keeps the marker when the
+    sidecar already says the clear ran, so a later good load does not clear again.
     """
     base = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {},
             "voices_cleared": True}
@@ -516,9 +576,14 @@ def load_overlay_doc():
     try:
         doc = safe_io.read_json(overlay_path(), safe_io.LARGE_JSON, "personas-overlay")
     except (OSError, ValueError):
-        return {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
+        broken = {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
+        if _voices_cleared_marked():
+            broken["voices_cleared"] = True
+        return broken
     if not isinstance(doc, dict):
-        return base
+        if _voices_cleared_marked():
+            return base
+        return {"added": {}, "renamed": {}, "hidden": [], "voices": {}, "list_source": "", "reply_host": {}}
     added = {}
     for slug, ent in (doc.get("added") if isinstance(doc.get("added"), dict) else {}).items():
         # A missing or empty voice is kept (the station default). A present voice must be a non-empty string.
@@ -546,8 +611,9 @@ def load_overlay_doc():
         src = ""
     built = {"added": added, "renamed": renamed, "hidden": hidden, "voices": voices, "list_source": src,
              "reply_host": _reply_hosts(doc.get("reply_host"))}
-    if doc.get("voices_cleared") is True:
+    if doc.get("voices_cleared") is True or _voices_cleared_marked():
         built["voices_cleared"] = True
+        _mark_voices_cleared()
         return built
     return _clear_admin_voices(built)
 
@@ -570,11 +636,14 @@ def save_overlay(doc):
         out["reply_host"] = hosts
     else:
         out.pop("reply_host", None)
-    if out.get("voices_cleared") is True or _overlay_voices_cleared():
+    mark = out.get("voices_cleared") is True or _voices_cleared_marked() or _overlay_voices_cleared()
+    if mark:
         out["voices_cleared"] = True
     else:
         out.pop("voices_cleared", None)
     atomic_write(overlay_path(), (json.dumps(out, sort_keys=True, indent=2) + "\n").encode())
+    if mark:
+        _mark_voices_cleared()
     _personas["mtime"] = None
 
 
@@ -4792,8 +4861,9 @@ def seed_reported_voice(slug, raw):
 
     The id is never logged. A missing report, or an id that is not offered, leaves the
     stored voice. A bot with none stored keeps the station default until a real report.
-    Load clears admin-set voices once and writes that back. A bot that never reports a
-    voice then uses the station default. A report after that clear is kept on the next load.
+    Load clears a stored voice once only when that bot's latest voice audit entry is the
+    admin action voice. A voice-seeded or voice-synced entry, or no voice audit, keeps
+    the stored voice. The next differing report replaces a voice that stayed.
     A picture that already saved must still succeed if this write fails.
     """
     mapped = voices.map_reported_voice(raw, VOICES or None)
@@ -5032,7 +5102,7 @@ def lint_update_texts(texts, hosts=(), names=(), pii=True):
 
 def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, rate_now=None,
                 seen=None, now_ms=None, pii=True, hosts=(), names=()):
-    """Verify a sealed card and hand it to post(show) -> HTTP status. Testable without aiohttp.
+    """Verify a sealed card and hand it to post(show) -> (status, detail). Testable without aiohttp.
 
     post is called only after the signature, the schema, and the text lint pass. A non-200 from
     the station (including a tighter ttl cap) is an error, not a success. seen, when passed,
@@ -5089,12 +5159,8 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
     try:
         wire = dict(signed_update, bot=show["bot"]) if is_update else show
         got = post(wire)
-        if isinstance(got, tuple):
-            code = int(got[0])
-            posted_detail = got[1] if len(got) > 1 else None
-        else:
-            code = int(got)
-            posted_detail = None
+        code = int(got[0])
+        posted_detail = got[1] if len(got) > 1 else None
     except Exception:
         code = 503
         posted_detail = None

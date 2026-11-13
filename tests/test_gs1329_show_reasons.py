@@ -77,7 +77,7 @@ class Base(unittest.TestCase):
     def accept(self, raw, limiter=None, post=None, seen=None):
         return relay.accept_show(raw, self.station, self.keys, self.known,
                                  limiter or botreply.Limiter(30, 60),
-                                 post or (lambda show: 200), ttl_max=3600, seen=seen)
+                                 post or (lambda show: (200, None)), ttl_max=3600, seen=seen)
 
     def assert_clean(self, body, *secrets):
         blob = json.dumps(body)
@@ -118,9 +118,9 @@ class RelayReasons(Base):
         self.assertEqual((status, body.get("reason")), (503, "busy"))
 
     def test_unavailable_when_the_display_does_not_take_it(self):
-        status, body, info = self.accept(self.seal(_put()), post=lambda show: 503)
+        status, body, info = self.accept(self.seal(_put()), post=lambda show: (503, None))
         self.assertEqual((status, body.get("reason")), (503, "unavailable"))
-        status, body, info = self.accept(self.seal(_put()), post=lambda show: 413)
+        status, body, info = self.accept(self.seal(_put()), post=lambda show: (413, None))
         self.assertEqual((status, body.get("reason")), (400, "schema"))
 
     def test_expired(self):
@@ -143,7 +143,7 @@ class RelayReasons(Base):
     def test_existing_codes_unchanged(self):
         keys = {"killed": False, "keys": {}}
         status, body, info = relay.accept_show(self.seal(_put()), self.station, keys, self.known,
-                                               botreply.Limiter(30, 60), lambda s: 200, ttl_max=3600)
+                                               botreply.Limiter(30, 60), lambda s: (200, None), ttl_max=3600)
         self.assertEqual((status, body), (403, {"error": "forbidden", "reason": "revoked"}))
 
 
@@ -229,7 +229,7 @@ class HelperLines(Base):
         cases = (
             (lambda: self.accept(self.seal(dict(_put(), card={"v": 1}))), "refused: reply format not accepted"),
             (lambda: self.accept(self.seal(_put(title=LINT_BAIT))), "refused: blocked by station content filter"),
-            (lambda: self.accept(self.seal(_put()), post=lambda s: 503), "refused: station could not show it"),
+            (lambda: self.accept(self.seal(_put()), post=lambda s: (503, None)), "refused: station could not show it"),
         )
         for run, want in cases:
             status, body, _ = run()

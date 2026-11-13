@@ -603,7 +603,7 @@ class SignedShow(unittest.TestCase):
 
         def post(show):
             posts.append(show)
-            return 200
+            return 200, None
 
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, self.limiter, post, ttl_max=3600)
         self.assertEqual(status, 200)
@@ -620,7 +620,7 @@ class SignedShow(unittest.TestCase):
 
         def down(show):
             posts.append(show)
-            return 400
+            return 400, None
 
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(12, 60), down, ttl_max=3600)
         self.assertEqual(status, 400)  # downstream schema refusal, not outage
@@ -644,7 +644,7 @@ class SignedShow(unittest.TestCase):
 
         def post(show):
             posts.append(show)
-            return 200
+            return 200, None
 
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, self.limiter, post,
                                                ttl_max=3600, seen=seen)
@@ -670,7 +670,7 @@ class SignedShow(unittest.TestCase):
 
         def post(_show):
             calls["n"] += 1
-            return 400 if calls["n"] == 1 else 200
+            return (400, None) if calls["n"] == 1 else (200, None)
 
         lim = botreply.Limiter(12, 60)
         status, _, _ = relay.accept_show(raw, self.station, self.keys, self.known, lim, post, ttl_max=3600, seen=seen)
@@ -740,7 +740,7 @@ class SignedShow(unittest.TestCase):
         raw = _seal(self.station, self.signer, json.dumps(put(recipe()), separators=(",", ":"), sort_keys=True).encode())
         posts = []
         status, resp, info = relay.accept_show(raw, self.station, self.keys, self.known, self.limiter,
-                                               lambda show: posts.append(show) or 200, ttl_max=3600, seen=store)
+                                               lambda show: posts.append(show) or (200, None), ttl_max=3600, seen=store)
         self.assertEqual(status, 503)
         self.assertEqual(info.verdict, "busy")
         self.assertEqual(posts, [])
@@ -753,7 +753,7 @@ class SignedShow(unittest.TestCase):
 
         def accept(show):
             posts.append(show)
-            return 200
+            return 200, None
 
         status, resp, info = relay.accept_show(
             raw, self.station, self.keys, self.known, botreply.Limiter(30, 60),

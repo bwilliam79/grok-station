@@ -141,7 +141,7 @@ class SignedRoundTrip(previous.RelayGate):
                         posts, seen = [], set()
                         def send():
                             return self.relay.accept_show(raw, self.station, self.keys, self.known,
-                                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or 200,
+                                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or (200, None),
                                 ttl_max=3600, seen=seen, pii=pii, hosts=("secret.example",))
                         if gate == "raw":
                             with patch.object(self.relay, "lint_show", return_value=None): result = send()
@@ -164,7 +164,7 @@ class SignedRoundTrip(previous.RelayGate):
             raw = previous.tc._seal(self.station, self.signer, json.dumps(doc))
             posts = []
             status, _, _ = self.relay.accept_show(raw, self.station, self.keys, self.known,
-                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or 200,
+                previous.botreply.Limiter(50, 60), lambda d: posts.append(d) or (200, None),
                 ttl_max=3600, pii=False, hosts=("secret.example",))
             self.assertEqual(status, 200)  # PII opt-out remains intact; secrets still blocked above.
             with patch.object(self.relay, "_lint_field", side_effect=RuntimeError("test")):
@@ -179,7 +179,7 @@ class SignedRoundTrip(previous.RelayGate):
                 raw = previous.tc._seal(self.station, self.signer, json.dumps(previous.upd()))
                 status, result, audit = self.relay.accept_show(
                     raw, self.station, self.keys, self.known, previous.botreply.Limiter(50, 60),
-                    lambda doc: code, ttl_max=3600)
+                    lambda doc: (code, None), ttl_max=3600)
                 if code in (400, 413):
                     self.assertEqual((status, result["error"]), (400, "schema"))
                 else:

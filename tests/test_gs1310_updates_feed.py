@@ -124,7 +124,7 @@ class RelayGate(unittest.TestCase):
         posts = []
         raw = tc._seal(self.station, self.signer, json.dumps(doc, separators=(",", ":")))
         status, _, _ = self.relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(12, 60),
-                                              lambda s: posts.append(s) or 200, ttl_max=3600)
+                                              lambda s: posts.append(s) or (200, None), ttl_max=3600)
         return status, posts
 
     def test_new_bots_are_off_by_default(self):
@@ -155,7 +155,7 @@ class NixLowFindings(RelayGate):
     def _accept(self, raw, seen=None):
         posts = []
         out = self.relay.accept_show(raw, self.station, self.keys, self.known, botreply.Limiter(50, 60),
-                                     lambda s: posts.append(s) or 200, ttl_max=3600, seen=seen)
+                                     lambda s: posts.append(s) or (200, None), ttl_max=3600, seen=seen)
         return out, posts
 
     def test_corrupt_or_non_dict_file_is_off(self):

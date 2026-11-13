@@ -123,7 +123,7 @@ class StationGates(unittest.TestCase):
         posts = []
         status, body, info = self.relay.accept_show(
             raw, self.station, keys, known, self.botreply.Limiter(12, 60),
-            lambda show: posts.append(show) or 200, ttl_max=3600)
+            lambda show: posts.append(show) or (200, None), ttl_max=3600)
         return status, body, posts, info
 
     def test_no_key_is_forbidden_and_named_and_not_forwarded(self):
@@ -161,7 +161,7 @@ class StationGates(unittest.TestCase):
         try:
             status, body, _ = self.relay.accept_show(
                 raw, self.station, keys, {"jules"}, self.botreply.Limiter(12, 60),
-                lambda show: posts.append(show) or 200, ttl_max=3600)
+                lambda show: posts.append(show) or (200, None), ttl_max=3600)
         finally:
             self.relay.updates_path = real
         self.assertEqual(status, 403)
