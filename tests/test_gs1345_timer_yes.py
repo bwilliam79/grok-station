@@ -62,6 +62,13 @@ class OfferWords(unittest.TestCase):
         self.assertEqual(st["recipe_offer"]["seconds"], 720)
         self.assertEqual(st["recipe_offer"]["minutes"], 12)
 
+    def test_a_comma_before_please_still_sets_the_timer(self):
+        for line in ("Set a timer for 10 minutes, please", "Set a timer for 10 minutes, please.",
+                     "Start a timer for 30 seconds, please"):
+            hit = cards.local_timer_command(line)
+            self.assertIsNotNone(hit, line)
+            self.assertIn(hit["seconds"], (600, 30), line)
+
     def test_the_yes_window_is_15_seconds_and_the_wait_stays_180(self):
         self.assertEqual(relay.OFFER_WINDOW_S, 15)
         with open(os.path.join(ROOT, "relay", "relay.py"), encoding="utf-8") as fh:

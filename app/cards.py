@@ -1624,10 +1624,13 @@ def offer_answer(text):
 def local_timer_command(text):
     """'set/start a timer for N seconds/minutes/hours [for X]', or None.
 
-    The number words are the same ones step_time uses. Anything else is None, so a
+    The number words are the same ones step_time uses. Punctuation is stripped the same
+    way as a yes or no, so "10 minutes, please" still matches. Anything else is None, so a
     question that merely mentions a timer still goes to the bot.
     """
-    t = fold_utterance(text)
+    t = _offer_norm(text)
+    if t.endswith(" please"):
+        t = t[: -len(" please")].strip()
     match = _LOCAL_TIMER_RE.match(t)
     if not match:
         return None
