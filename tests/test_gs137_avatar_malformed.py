@@ -136,7 +136,8 @@ class Pins(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.30"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.33"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.37"})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.42"})["out_of_date"])
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.42"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.43"})["out_of_date"])
 
 
 if __name__ == "__main__":
