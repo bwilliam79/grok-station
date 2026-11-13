@@ -612,12 +612,10 @@ def persona_list():
         if slug in ov["hidden"] or slug in out:
             continue
         raw = ent.get("voice")
-        if isinstance(raw, str) and raw:
-            if raw.lower() not in offered:
-                continue
-            voice = raw.lower()
-        elif VOICE.lower() not in offered:
-            continue
+        # No stored voice, or one the live list does not offer, uses the station default.
+        # The bot stays on the list either way. A report replaces the stored voice later.
+        if isinstance(raw, str) and raw.strip() and raw.strip().lower() in offered:
+            voice = raw.strip().lower()
         else:
             voice = VOICE.lower()
         name = ov["renamed"].get(slug, ent["name"])

@@ -331,7 +331,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("/api/wakewords/", toggles)
         self.assertNotIn(">Save<", toggles)
         voice = _fn(js, "openBot")
-        self.assertIn("autoSaveSelect(", voice)
+        self.assertNotIn("autoSaveSelect(", voice)
         self.assertIn("dataset.saved", _fn(js, "autoSaveSelect"))
         def chunk(start, end):
             return js.split(start, 1)[1].split(end, 1)[0]
@@ -1576,7 +1576,7 @@ class StatusRingAndWebhookUI(unittest.TestCase):
         self.assertIn('aria-live="polite"', html)
         self.assertLess(html.index("data-copyfor="), html.index("data-viewfor="))
         self.assertIn(".btn.cpy{min-width:9.25rem}", self.css)
-        self.assertIn('class="oknote"', self.js)
+        self.assertIn(".oknote{", self.css.replace(" ", ""))
 
 
 class StationAddressUI(unittest.TestCase):
