@@ -315,6 +315,24 @@ def helper_problem(read):
     if digest != last_digest:
         return (f"helper files changed without a HELPER_VERSION bump (still {version}); bump HELPER_VERSION "
                 f"and add a line to {HELPER_RECORD}.")
+    return cards_pin_problem(read)
+
+
+_CARDS_PIN = re.compile(r'^CARDS_SHA256 = "([0-9a-f]{64})"$', re.M)
+
+
+def cards_pin_problem(read):
+    """None when gs-seal-reply's CARDS_SHA256 is the sha256 of app/cards.py."""
+    reply, cards = read("scripts/gs-seal-reply"), read("app/cards.py")
+    if reply is None or cards is None:
+        return None
+    match = _CARDS_PIN.search(reply.decode("utf-8", "replace"))
+    if not match:
+        return "scripts/gs-seal-reply has no CARDS_SHA256."
+    digest = hashlib.sha256(cards).hexdigest()
+    if match.group(1) != digest:
+        return (f"CARDS_SHA256 is {match.group(1)[:12]} but app/cards.py is {digest[:12]}; "
+                f"put \"{digest}\" in scripts/gs-seal-reply.")
     return None
 
 

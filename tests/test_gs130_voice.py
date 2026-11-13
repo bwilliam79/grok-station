@@ -484,6 +484,20 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("aurora", disk.get("voices") or {})
         self.assertTrue(os.path.isfile(os.path.join(os.path.dirname(r.overlay_path()), "voices-cleared")))
 
+    async def test_a_long_audit_file_ignores_a_voice_action_in_its_head(self):
+        r = self.relay
+        os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)
+        filler = b"2026-01-01T00:00:01Z admin aurora rename -\n"
+        body = b"2026-01-01T00:00:00Z admin aurora voice -\n"
+        body += filler * ((r._AUDIT_READ_MAX // len(filler)) + 3)
+        self.assertGreater(len(body), r._AUDIT_READ_MAX)
+        with open(r.audit_path(), "wb") as fh:
+            fh.write(body)
+        with open(r.overlay_path(), "w", encoding="utf-8") as fh:
+            json.dump({"added": {}, "voices": {"aurora": "eve"}, "renamed": {}, "hidden": []}, fh)
+        loaded = r.load_overlay_doc()
+        self.assertEqual(loaded["voices"].get("aurora"), "eve")
+
     async def test_a_corrupt_overlay_keeps_the_cleared_marker(self):
         r = self.relay
         os.makedirs(os.path.dirname(r.overlay_path()), exist_ok=True)

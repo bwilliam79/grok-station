@@ -500,11 +500,39 @@ def _overlay_voices_cleared():
     return isinstance(doc, dict) and doc.get("voices_cleared") is True
 
 
+# One-time voice clear reads at most this much of each audit file, from the end.
+_AUDIT_READ_MAX = 2 * 1024 * 1024
+
+
+def _audit_tail(path):
+    """The tail of one audit file, or '' when it cannot be read. A long file drops its head."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return ""
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode) or st.st_size <= 0:
+        return ""
+    try:
+        with open(path, "rb") as fh:
+            if st.st_size > _AUDIT_READ_MAX:
+                fh.seek(st.st_size - _AUDIT_READ_MAX)
+                raw = fh.read(_AUDIT_READ_MAX)
+                cut = raw.find(b"\n")
+                if cut >= 0:
+                    raw = raw[cut + 1:]
+            else:
+                raw = fh.read(_AUDIT_READ_MAX + 1)
+    except OSError:
+        return ""
+    return raw.decode("utf-8", "replace")
+
+
 def _latest_voice_action(slug):
     """Last voice, voice-seeded, or voice-synced audit action for slug, or None.
 
     Monthly audit files are read in name order, and lines in append order, so the last
     match is the most recent. The admin action is the word voice, not voice-synced.
+    Each file contributes only its last _AUDIT_READ_MAX bytes.
     """
     latest = None
     try:
@@ -513,16 +541,13 @@ def _latest_voice_action(slug):
     except OSError:
         return None
     for name in names:
-        try:
-            with open(os.path.join(bots_dir(), name), encoding="utf-8", errors="replace") as fh:
-                for line in fh:
-                    parts = line.split()
-                    if len(parts) < 4 or parts[2] != slug:
-                        continue
-                    if parts[3] in _VOICE_AUDIT:
-                        latest = parts[3]
-        except OSError:
-            continue
+        text = _audit_tail(os.path.join(bots_dir(), name))
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[2] != slug:
+                continue
+            if parts[3] in _VOICE_AUDIT:
+                latest = parts[3]
     return latest
 
 

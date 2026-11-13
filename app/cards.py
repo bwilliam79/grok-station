@@ -4,7 +4,7 @@ Bots send data. Nothing here runs a command, fetches a URL that is not on the
 logo allowlist, or treats card text as markup. Text is stripped, then drawn as
 pixels by the station.
 """
-import base64, hashlib, http.client, ipaddress, json, math, os, re, socket, ssl, stat, sys, tempfile, threading, time, unicodedata
+import base64, datetime, hashlib, http.client, ipaddress, json, math, os, re, socket, ssl, stat, sys, tempfile, threading, time, unicodedata
 from urllib.parse import urlsplit
 
 CARD_MAX = 4096
@@ -243,8 +243,8 @@ def _keys(doc, allowed, required=None):
         _fail("schema", "not object")
     extra = set(doc) - allowed
     if extra:
-        names = sorted(k for k in extra if isinstance(k, str))
-        _fail("schema", "unexpected", names[0] if names else "field")
+        # The key is the bot's text. The log keeps the fixed word field.
+        _fail("schema", "unexpected", "field")
     if required is not None and not required <= set(doc):
         missing = sorted(required - set(doc))
         _fail("schema", "empty", missing[0] if missing else "field")
@@ -913,6 +913,23 @@ def _scheduled_period(card):
         raise
 
 
+_STARTS_AT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
+
+
+def _starts_at(value):
+    """One ISO-8601 instant with a numeric offset or Z. Anything else is invalid."""
+    if not isinstance(value, str) or _STARTS_AT.fullmatch(value) is None:
+        _fail("schema", "invalid", "starts_at")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        _fail("schema", "invalid", "starts_at")
+    if parsed.tzinfo is None:
+        _fail("schema", "invalid", "starts_at")
+    return value
+
+
 def _scheduled_score(card, field):
     """A pregame score may be missing or null. A present value is still 0..999."""
     if field not in card or card.get(field) is None:
@@ -926,6 +943,8 @@ def _sports(card):
             _fail("schema", "not object")
         pregame = card.get("status") == "scheduled"
         allowed = {"type", "v", "league", "home", "away", "home_score", "away_score", "status", "period", "schedule"}
+        if pregame:
+            allowed = allowed | {"starts_at"}
         required = {"type", "v", "league", "home", "away", "status", "schedule"}
         if not pregame:
             required |= {"home_score", "away_score", "period"}
@@ -955,10 +974,13 @@ def _sports(card):
             home = _team(card.get("home"))
         with _at("away"):
             away = _team(card.get("away"))
-        return {"type": "sports", "v": 1, "league": escape_text(card.get("league"), 24, "league"),
-                "home": home, "away": away,
-                "home_score": home_score, "away_score": away_score,
-                "status": card["status"], "period": period, "schedule": games}
+        out = {"type": "sports", "v": 1, "league": escape_text(card.get("league"), 24, "league"),
+               "home": home, "away": away,
+               "home_score": home_score, "away_score": away_score,
+               "status": card["status"], "period": period, "schedule": games}
+        if pregame and "starts_at" in card:
+            out["starts_at"] = _starts_at(card.get("starts_at"))
+        return out
 
 
 def _date(value):

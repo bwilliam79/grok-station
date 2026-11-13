@@ -41,7 +41,7 @@ The card itself is at most 4096 bytes of JSON. `v` must be the integer 1. Any ot
 | Type | Fields |
 |---|---|
 | `recipe` | `title` (60), `servings` 1..48, `ingredients` 1..12 of 48, `steps` 1..12 of 160, `step` 1..len(steps), optional `dish` (16, shown as given, for example `Orzo` or `McRib`; all caps or all lowercase is title-cased once; an over-long or empty `dish` is dropped and the recipe still shows) |
-| `sports` | `league` (24), `home` and `away` teams, `home_score` and `away_score` 0..999, `status` `live`\|`final`\|`scheduled`\|`delayed`, `period` (16), `schedule` 0..4 of `{label` 48, `when` 24}`. A `scheduled` card may leave `period` blank and `home_score` or `away_score` null. Live and final may not. |
+| `sports` | `league` (24), `home` and `away` teams, `home_score` and `away_score` 0..999, `status` `live`\|`final`\|`scheduled`\|`delayed`, `period` (16), optional `starts_at` (one ISO-8601 time with a numeric offset or `Z`, only when `status` is `scheduled`), `schedule` 0..4 of `{label` 48, `when` 24}`. A `scheduled` card may leave `period` blank and `home_score` or `away_score` null. Live and final may not. A malformed `starts_at` is `sports.starts_at invalid`. |
 | `calendar` | `date` `YYYY-MM-DD`, `events` 0..8 of `{time` 16, `title` 48}`. The display shows five rows. The first is next (teal), then a summary line |
 | `home` | `title` (24), `items` 1..6 of `{label` 32, `value` 24, optional `trend` `up`\|`down}` |
 

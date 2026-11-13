@@ -4,6 +4,7 @@ The helper, the relay, and the station share cards.validate_card. A scheduled
 card may omit the period and the scores. Live and final may not. The reason
 is the path and the problem, never the value.
 """
+import datetime
 import io
 import json
 import os
@@ -66,6 +67,24 @@ class PregameSchema(unittest.TestCase):
         self.assertEqual(cleaned["period"], "")
         self.assertIsNone(cleaned["home_score"])
         self.assertIsNone(cleaned["away_score"])
+        self.assertNotIn("starts_at", cleaned)
+
+    def test_starts_at_is_one_offset_instant_and_only_on_a_scheduled_game(self):
+        good = cards.validate_card(_sports(status="scheduled", starts_at="2026-11-15T19:15:00-06:00"))
+        self.assertEqual(good["starts_at"], "2026-11-15T19:15:00-06:00")
+        zulu = cards.validate_card(_sports(status="scheduled", starts_at="2026-11-15T19:15:00Z"))
+        self.assertEqual(zulu["starts_at"], "2026-11-15T19:15:00Z")
+        for bad in ("7:15 PM", "2026-11-15T19:15:00", "2026-11-15T19:15:00-0600",
+                    "2026-11-15T19:15:00.0-06:00", "2026-02-31T19:15:00-06:00", "", None, 3):
+            card = _sports(status="scheduled", starts_at=bad)
+            with self.assertRaises(cards.CardError) as caught:
+                cards.validate_card(card)
+            self.assertEqual(caught.exception.detail, "sports.starts_at invalid", bad)
+        live = _sports(starts_at="2026-11-15T19:15:00-06:00")
+        with self.assertRaises(cards.CardError) as caught:
+            cards.validate_card(live)
+        self.assertEqual(caught.exception.detail, "sports.field unexpected")
+        self.assertNotIn("starts_at", caught.exception.detail)
         blank = cards.validate_card(_sports(status="scheduled", period="", home_score=None, away_score=None))
         self.assertEqual(blank["period"], "")
         labeled = _sports(status="scheduled", period="Sat 11:00 AM")
@@ -92,7 +111,8 @@ class PregameSchema(unittest.TestCase):
         extra["extra_key"] = secret
         with self.assertRaises(cards.CardError) as caught:
             cards.validate_card(extra)
-        self.assertEqual(caught.exception.detail, "sports.extra_key unexpected")
+        self.assertEqual(caught.exception.detail, "sports.field unexpected")
+        self.assertNotIn("extra_key", caught.exception.detail)
         self.assertNotIn(secret, caught.exception.detail)
         self.assertNotIn("http", cards.show_refused_line("rhea", "schema", "sports.period empty"))
 
@@ -128,43 +148,63 @@ class HelperShow(unittest.TestCase):
 
 
 class PregameTile(unittest.TestCase):
-    def test_scheduled_tile_shows_the_start_and_hides_none(self):
-        card = cards.validate_card(_sports(status="scheduled", period="Sat 11:00 AM",
-                                           home_score=None, away_score=None))
+    def _draw(self, card, size, now):
+        layout = gs.Layout(*size)
+        panel = gs.bottom_panel_rect(layout)
+        surf = pygame.Surface(size)
+        surf.fill(gs.BG)
+        drawn = []
+        real_font = gs.font
+
+        class _Face:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def render(self, text, antialias, color, *args, **kwargs):
+                drawn.append((str(text), tuple(color)))
+                return self._inner.render(text, antialias, color, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        gs.PAINT_MARKS = []
+        gs.font = lambda kind, px, _real=real_font: _Face(_real(kind, px))
+        try:
+            gs.draw_sports(surf, layout, card, panel, now=now)
+        finally:
+            gs.font = real_font
+            marks = list(gs.PAINT_MARKS or [])
+            gs.PAINT_MARKS = None
+        return drawn, marks, panel
+
+    def test_scheduled_tile_shows_today_another_day_or_tbd_and_no_score(self):
+        zone = datetime.timezone(datetime.timedelta(hours=-6))
+        now = datetime.datetime(2026, 11, 15, 12, 0, tzinfo=zone)
+        today = cards.validate_card(_sports(
+            status="scheduled", period="Sat 11:00 AM", home_score=None, away_score=None,
+            starts_at="2026-11-15T19:15:00-06:00"))
+        later = cards.validate_card(_sports(
+            status="scheduled", home_score=None, away_score=None,
+            starts_at="2026-11-16T19:15:00-06:00"))
+        unknown = cards.validate_card(_sports(
+            status="scheduled", period="Sat 11:00 AM", home_score=None, away_score=None))
         for size in ((1280, 720), (2560, 1440)):
-            layout = gs.Layout(*size)
-            panel = gs.bottom_panel_rect(layout)
-            surf = pygame.Surface(size)
-            surf.fill(gs.BG)
-            drawn = []
-            real_font = gs.font
-
-            class _Face:
-                def __init__(self, inner):
-                    self._inner = inner
-
-                def render(self, text, *args, **kwargs):
-                    drawn.append(str(text))
-                    return self._inner.render(text, *args, **kwargs)
-
-                def __getattr__(self, name):
-                    return getattr(self._inner, name)
-
-            gs.PAINT_MARKS = []
-            gs.font = lambda kind, px, _real=real_font: _Face(_real(kind, px))
-            try:
-                gs.draw_sports(surf, layout, card, panel)
-            finally:
-                gs.font = real_font
-                marks = list(gs.PAINT_MARKS or [])
-                gs.PAINT_MARKS = None
-            self.assertIn("Sat 11:00 AM", drawn)
-            self.assertIn("SCHEDULED", drawn)
-            self.assertNotIn("None", drawn)
-            self.assertIn("\u2013", drawn)
-            self.assertTrue(marks, size)
-            for rect, _ink in marks:
-                self.assertTrue(panel.contains(rect), (size, rect, panel))
+            for card, word, ink in (
+                (today, "7:15 PM", gs.TEXT),
+                (later, "Mon 7:15 PM", gs.TEXT),
+                (unknown, "Time TBD", gs.MUTED),
+            ):
+                drawn, marks, panel = self._draw(card, size, now)
+                words = [text for text, _color in drawn]
+                self.assertIn("SCHEDULED", words, (size, word))
+                self.assertIn(word, words, size)
+                self.assertNotIn("Sat 11:00 AM", words, size)
+                self.assertNotIn("\u2013", words, size)
+                self.assertFalse(any(text.isdigit() for text in words), (size, words))
+                self.assertEqual(dict(drawn)[word], tuple(ink), (size, word))
+                self.assertTrue(marks, size)
+                for rect, _paint in marks:
+                    self.assertTrue(panel.contains(rect), (size, rect, panel))
 
 
 class FeedKind(unittest.TestCase):

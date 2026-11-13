@@ -517,35 +517,103 @@ def refusal_line(reason):
     return REFUSAL_LINES.get(reason, "refused") if isinstance(reason, str) else "refused"
 
 
+# sha256 of app/cards.py. tools/check-version.py refuses a tree where these bytes differ.
+CARDS_SHA256 = "cabe255ba96b83fc6d366da1d4c5c3a0f75baf55c429aa9636b4d6087567afc0"
+
+
+def _repo_cards_path(script_dir):
+    """../app/cards.py when this file is the repo's scripts/gs-seal-reply. An install returns None."""
+    if os.path.basename(script_dir) != "scripts":
+        return None
+    root = os.path.dirname(script_dir)
+    markers = (
+        os.path.join(root, "VERSION"),
+        os.path.join(root, "tools", "check-version.py"),
+        os.path.join(root, "relay", "relay.py"),
+        os.path.join(root, "app", "cards.py"),
+    )
+    for path in markers:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return None
+    return markers[-1]
+
+
+def _cards_refuse():
+    sys.stderr.write("refused: helper cards.py untrusted\n")
+    raise SystemExit(1)
+
+
+def _read_cards_bytes(path, uid):
+    """The file's bytes, after cards.py and its directory pass _trusted_path. One read, no second open."""
+    directory = os.path.dirname(path) or "."
+    if not _trusted_path(directory, uid, "dir") or not _trusted_path(path, uid, "file"):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            return None
+        if st.st_uid != uid and st.st_uid != 0:
+            return None
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        if st.st_size <= 0 or st.st_size > 2 * 1024 * 1024:
+            return None
+        chunks, left = [], st.st_size
+        while left:
+            block = os.read(fd, min(left, 1 << 20))
+            if not block:
+                return None
+            chunks.append(block)
+            left -= len(block)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _exec_cards(data):
+    import types
+    mod = types.ModuleType("gs_show_cards")
+    mod.__file__ = "<gs_show_cards>"
+    mod.__package__ = None
+    code = compile(data, "<gs_show_cards>", "exec")
+    runner = getattr(__import__("builtins"), "exec")
+    runner(code, mod.__dict__)
+    return mod
+
+
 def load_show_cards():
     """The station's cards.py, the one validator the helper, the relay and the station share.
 
-    Beside this script when install-home.sh fetched it, or ../app/cards.py in a checkout.
+    An install loads only the cards.py beside this script, and only when _trusted_path accepts
+    the file and its directory and the bytes match CARDS_SHA256. Those bytes are what runs.
+    A repo checkout (scripts/ next to VERSION, app/cards.py, relay/relay.py, tools/check-version.py)
+    loads ../app/cards.py and does not fall through to anything else. A failed check refuses.
     """
     cached = getattr(load_show_cards, "_mod", None)
     if cached is not None:
         return cached
-    import importlib.util
     here = os.path.dirname(os.path.realpath(__file__))
-    candidates = (
-        os.path.join(here, "cards.py"),
-        os.path.normpath(os.path.join(here, os.pardir, "app", "cards.py")),
-    )
-    for path in candidates:
-        try:
-            st = os.lstat(path)
-        except OSError:
-            continue
-        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
-            continue
-        spec = importlib.util.spec_from_file_location("gs_show_cards", path)
-        if spec is None or spec.loader is None:
-            continue
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        load_show_cards._mod = mod
-        return mod
-    return None
+    uid = os.geteuid()
+    checkout = _repo_cards_path(here)
+    if checkout is not None:
+        path, check_hash = checkout, False
+    else:
+        path, check_hash = os.path.join(here, "cards.py"), True
+    if not os.path.lexists(path):
+        _cards_refuse()
+    data = _read_cards_bytes(path, uid)
+    if data is None:
+        _cards_refuse()
+    if check_hash and hashlib.sha256(data).hexdigest() != CARDS_SHA256:
+        _cards_refuse()
+    mod = _exec_cards(data)
+    load_show_cards._mod = mod
+    return mod
 
 
 def show_failure_line(reason, detail=None):

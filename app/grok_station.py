@@ -18,7 +18,7 @@ Off leaves the backlight alone. A missing backlight file is a black overlay on a
 The thinking ring spins by repainting only its own rectangle; the clock colon is steady (GROK_STATION_BLINK=1 blinks it).
 Small status icons (network, Grok, mic, and an update arrow only while a newer version is cached) sit in the top-right corner. The Grok icon takes the old relay slot and covers relay health and the Grok service. A daemon thread polls them; --demo does not.
 """
-import hashlib, hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
+import datetime, hashlib, hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -4924,13 +4924,44 @@ def _score_label(score):
     return str(score)
 
 
+def _pregame_when(card, now=None):
+    """(label, ink) for the center of a scheduled tile.
+
+    A starts_at instant is the station's local clock: '7:15 PM', or 'Sun 7:15 PM' when that
+    local day is not today. No start time is 'Time TBD' in the dim ink. The score dashes stay off.
+    """
+    if now is None:
+        now = datetime.datetime.now().astimezone()
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+    raw = card.get("starts_at")
+    if not isinstance(raw, str) or not raw:
+        return "Time TBD", MUTED
+    text = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return "Time TBD", MUTED
+    if parsed.tzinfo is None:
+        return "Time TBD", MUTED
+    local = parsed.astimezone(now.tzinfo)
+    hour = local.strftime("%I").lstrip("0") or "12"
+    clock = "%s:%s" % (hour, local.strftime("%M %p"))
+    if local.date() != now.date():
+        clock = local.strftime("%a") + " " + clock
+    return clock, TEXT
+
+
 def _sports_side_label(card):
     """The right-hand status word.
 
-    A live, scheduled, or delayed game keeps its period. A regulation final leaves the slot empty,
-    because the left badge already says FINAL. An overtime final shows OT only when the period says so
-    (ESPN writes Final/OT or 2OT). The word Final itself is not repeated.
+    A live or delayed game keeps its period. A scheduled game leaves the slot empty.
+    A regulation final leaves the slot empty, because the left badge already says FINAL.
+    An overtime final shows OT only when the period says so (ESPN writes Final/OT or 2OT).
+    The word Final itself is not repeated.
     """
+    if card.get("status") == "scheduled":
+        return ""
     period = " ".join(str(card.get("period") or "").split())
     if card.get("status") != "final":
         return period
@@ -4943,7 +4974,7 @@ def _sports_side_label(card):
     return (count + "OT") if count else "OT"
 
 
-def draw_sports(surf, L, card, rect):
+def draw_sports(surf, L, card, rect, now=None):
     """Score tile in the bottom zone: header row, the two teams, and the next game as a band inside the card.
     Shields or cached logos only; no fetch while drawing."""
     _card_chrome(surf, L, rect)
@@ -4974,8 +5005,10 @@ def draw_sports(surf, L, card, rect):
     col_w = max(40, rect.w // 2 - L(72))
     avail = max(0, col_bot - col_top)
     face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
-    home_score = _score_label(card.get("home_score"))
-    away_score = _score_label(card.get("away_score"))
+    pregame = card.get("status") == "scheduled"
+    # A scheduled game keeps the score line's height so the names stay put, and draws no digits.
+    home_score = "\u2013" if pregame else _score_label(card.get("home_score"))
+    away_score = "\u2013" if pregame else _score_label(card.get("away_score"))
     mark, name_px, score_px, gap = _sports_column_px(
         L, avail, col_w, (home_score, away_score), face)
     # The name and the score keep the fitted stack. The logo uses SPORTS_LOGO_PX and
@@ -4987,9 +5020,15 @@ def draw_sports(surf, L, card, rect):
     def paint_side(team, score, cx):
         image = team_face(team, logo_px) if logo_px else None
         name = _line(surf, "display", name_px, team["name"], TEXT, col_w)
-        sc = font("display", score_px).render(_score_label(score), True, MUTED if score is None else TEXT)
+        shown = None if pregame else _score_label(score)
+        if shown is None:
+            score_h = font("display", score_px).get_height()
+            sc = None
+        else:
+            sc = font("display", score_px).render(shown, True, MUTED if score is None else TEXT)
+            score_h = sc.get_height()
         face_h = mark if image is not None else 0
-        face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), sc.get_height(), gap)
+        face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), score_h, gap)
         if image is not None and face_y is not None:
             # Grow or shrink inside the space above the city name, and stop at the status line.
             room = face_h + max(0, face_y - status_bottom)
@@ -4999,15 +5038,25 @@ def draw_sports(surf, L, card, rect):
             if image.get_width() >= 1:
                 show(surf, image, (cx - image.get_width() // 2, face_y + face_h - image.get_height()))
         show(surf, name, (cx - name.get_width() // 2, name_y))
-        show(surf, sc, (cx - sc.get_width() // 2, score_y))
-        score_mids.append(score_y + sc.get_height() // 2)
+        if sc is not None:
+            show(surf, sc, (cx - sc.get_width() // 2, score_y))
+        score_mids.append(score_y + score_h // 2)
 
     paint_side(card["home"], card["home_score"], rect.left + rect.w // 4)
     paint_side(card["away"], card["away_score"], rect.right - rect.w // 4)
-    dash_px = min(L(60), max(8, score_px // 3))
-    dash = font("display", dash_px).render("\u2013", True, MUTED)
     mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
-    show(surf, dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
+    if pregame:
+        when, ink = _pregame_when(card, now)
+        px = score_px
+        room = max(8, rect.w // 2)
+        while px > 8 and font("display", px).size(when)[0] > room:
+            px -= 1
+        clock = font("display", px).render(when, True, ink)
+        show(surf, clock, (rect.centerx - clock.get_width() // 2, mid - clock.get_height() // 2))
+    else:
+        dash_px = min(L(60), max(8, score_px // 3))
+        dash = font("display", dash_px).render("\u2013", True, MUTED)
+        show(surf, dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
     if strip_h:
         rule_h = max(2, L(2))
         pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), rule_h)
