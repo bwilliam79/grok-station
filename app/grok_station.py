@@ -4942,17 +4942,21 @@ def _pregame_when(card, now=None):
         return "Time TBD", MUTED
     # now.tzinfo from datetime.now().astimezone() is a fixed offset for this minute.
     # astimezone() with no argument uses the station zone's rules, including daylight time.
-    if now is None:
-        now = datetime.datetime.now().astimezone()
-        local = parsed.astimezone()
-    else:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
-        local = parsed.astimezone(now.tzinfo)
-    hour = local.strftime("%I").lstrip("0") or "12"
-    clock = "%s:%s" % (hour, local.strftime("%M %p"))
-    if local.date() != now.date():
-        clock = local.strftime("%a") + " " + clock
+    # A year the C library cannot format becomes Time TBD instead of killing the display.
+    try:
+        if now is None:
+            now = datetime.datetime.now().astimezone()
+            local = parsed.astimezone()
+        else:
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+            local = parsed.astimezone(now.tzinfo)
+        hour = local.strftime("%I").lstrip("0") or "12"
+        clock = "%s:%s" % (hour, local.strftime("%M %p"))
+        if local.date() != now.date():
+            clock = local.strftime("%a") + " " + clock
+    except (ValueError, OverflowError, OSError):
+        return "Time TBD", MUTED
     return clock, TEXT
 
 

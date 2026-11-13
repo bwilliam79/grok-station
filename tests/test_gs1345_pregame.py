@@ -86,6 +86,16 @@ class PregameSchema(unittest.TestCase):
             cards.validate_card(live)
         self.assertEqual(caught.exception.detail, "sports.field unexpected")
         self.assertNotIn("starts_at", caught.exception.detail)
+
+    def test_starts_at_year_must_stay_inside_2000_to_2100(self):
+        for bad in ("9999-12-31T23:59:59-05:00", "0001-01-01T00:00:00+05:00",
+                    "1999-12-31T23:59:59Z", "2101-01-01T00:00:00Z"):
+            with self.assertRaises(cards.CardError) as caught:
+                cards.validate_card(_sports(status="scheduled", starts_at=bad))
+            self.assertEqual(caught.exception.detail, "sports.starts_at invalid", bad)
+        for good in ("2000-01-01T00:00:00Z", "2100-12-31T23:59:59Z"):
+            cleaned = cards.validate_card(_sports(status="scheduled", starts_at=good))
+            self.assertEqual(cleaned["starts_at"], good)
         blank = cards.validate_card(_sports(status="scheduled", period="", home_score=None, away_score=None))
         self.assertEqual(blank["period"], "")
         labeled = _sports(status="scheduled", period="Sat 11:00 AM")
@@ -222,6 +232,18 @@ class PregameTile(unittest.TestCase):
         self.assertIn("7:15 PM", label)
         self.assertNotIn("6:15 PM", label)
         self.assertEqual(ink, gs.TEXT)
+
+    def test_an_overflowing_start_draws_time_tbd(self):
+        label, ink = gs._pregame_when({"starts_at": "9999-12-31T23:59:59-05:00"})
+        self.assertEqual((label, ink), ("Time TBD", gs.MUTED))
+        label, ink = gs._pregame_when({"starts_at": "0001-01-01T00:00:00+05:00"})
+        self.assertEqual((label, ink), ("Time TBD", gs.MUTED))
+        tile = cards.validate_card(_sports(status="scheduled", home_score=None, away_score=None))
+        tile["starts_at"] = "9999-12-31T23:59:59-05:00"
+        layout = gs.Layout(1280, 720)
+        panel = gs.bottom_panel_rect(layout)
+        surf = pygame.Surface((1280, 720))
+        gs.draw_sports(surf, layout, tile, panel)
 
 
 class FeedKind(unittest.TestCase):

@@ -917,15 +917,22 @@ _STARTS_AT = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{
 
 
 def _starts_at(value):
-    """One ISO-8601 instant with a numeric offset or Z. Anything else is invalid."""
+    """One ISO-8601 instant with a numeric offset or Z, in 2000..2100.
+
+    The year is checked on the parsed value and after conversion to UTC, so a huge
+    offset cannot sneak a year the display cannot format. Anything else is invalid.
+    """
     if not isinstance(value, str) or _STARTS_AT.fullmatch(value) is None:
         _fail("schema", "invalid", "starts_at")
     text = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
         parsed = datetime.datetime.fromisoformat(text)
-    except ValueError:
-        _fail("schema", "invalid", "starts_at")
-    if parsed.tzinfo is None:
+        if parsed.tzinfo is None:
+            raise ValueError("offset")
+        utc = parsed.astimezone(datetime.timezone.utc)
+        if not (2000 <= parsed.year <= 2100 and 2000 <= utc.year <= 2100):
+            raise ValueError("year")
+    except (ValueError, OverflowError):
         _fail("schema", "invalid", "starts_at")
     return value
 
