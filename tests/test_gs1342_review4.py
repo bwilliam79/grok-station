@@ -142,6 +142,10 @@ class HelperAgrees(unittest.TestCase):
             ({"type": "update", "kind": "\uff37ork  mail", "line": None, "time": WHEN}, "null", "Work mail"),
             ({"type": "update", "kind": "   ", "line": None, "time": WHEN}, "no", None),
             ({"type": "update", "kind": "\t", "line": "Nothing open.", "time": WHEN}, "no", None),
+            # Empty after the same cleanup a stored kind gets. The helper must refuse these too.
+            ({"type": "update", "kind": "<b></b>", "line": None, "time": WHEN}, "no", None),
+            ({"type": "update", "kind": "\u200b", "line": None, "time": WHEN}, "no", None),
+            ({"type": "update", "kind": "\x07", "line": "Nothing open.", "time": WHEN}, "no", None),
         )
         for update, expect, kind in cases:
             station, parsed, helper = self._pair(update)

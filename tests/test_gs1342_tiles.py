@@ -131,9 +131,9 @@ class TileInk(unittest.TestCase):
                         label = "sports-%s-%s-%s" % (status, "next" if schedule else "none", "badge" if badge else "plain")
                         add(label, lambda s, c=card, r=panel: gs.draw_sports(s, layout, c, r), panel, schedule)
             calendar = {"v": 1, "type": "calendar", "date": "2026-10-22", "events": [
-                {"time": "6:30 AM", "title": "Harbor practice"},
-                {"time": "9:00 AM", "title": "Market run"},
+                {"time": "11:15 AM", "title": "Harbor practice"},
                 {"time": "12:15 PM", "title": "Lunch with the team"},
+                {"time": "1:30 PM", "title": "Market run"},
                 {"time": "3:40 PM", "title": "Pickup at the school"},
                 {"time": "7:00 PM", "title": "League game"},
             ]}
@@ -203,6 +203,62 @@ class TileInk(unittest.TestCase):
                 self.assertIsNotNone(used, (name, size))
                 self.assertTrue(marks, (name, size))
                 _assert_panel("%s %s" % (name, size), used, marks, surf, layout, sports_row, clipped)
+
+
+def _painted_words(size, card):
+    """(word, ink rect) for every _line that draw_sports actually blits."""
+    layout = gs.Layout(*size)
+    panel = gs.bottom_panel_rect(layout)
+    surf = pygame.Surface(size)
+    surf.fill(gs.BG)
+    labels = {}
+    painted = []
+    real_line, real_show = gs._line, gs.show
+
+    def watching_line(surf, role, px, text, color, width):
+        img = real_line(surf, role, px, text, color, width)
+        labels[id(img)] = str(text)
+        return img
+
+    def watching_show(surf, img, dest, area=None, special_flags=0):
+        before = len(gs.PAINT_MARKS)
+        result = real_show(surf, img, dest, area, special_flags)
+        word = labels.get(id(img))
+        if word and len(gs.PAINT_MARKS) > before:
+            painted.append((word, gs.PAINT_MARKS[-1][0]))
+        return result
+
+    gs.PAINT_MARKS = []
+    gs._line = watching_line
+    gs.show = watching_show
+    try:
+        gs.draw_sports(surf, layout, card, panel)
+    finally:
+        gs._line = real_line
+        gs.show = real_show
+        gs.PAINT_MARKS = None
+    return painted, panel
+
+
+class FinalLabel(unittest.TestCase):
+    def test_a_regulation_final_paints_final_once(self):
+        for size in ((1280, 800), (2560, 1706)):
+            for badge in (True, False):
+                painted, panel = _painted_words(size, _sports("final", True, badge))
+                finals = [word for word, _rect in painted if word.casefold() == "final"]
+                right = [word for word, rect in painted if rect.centerx > panel.centerx]
+                with self.subTest(size=size, badge=badge):
+                    self.assertEqual(finals, ["FINAL"], (finals, right))
+                    self.assertFalse(any(word.casefold() in ("final", "f", "ot") for word in right), right)
+
+    def test_an_overtime_final_paints_ot_on_the_right(self):
+        card = _sports("final", False, False)
+        card["period"] = "Final/OT"
+        painted, panel = _painted_words((1280, 800), card)
+        finals = [word for word, _rect in painted if word.casefold() == "final"]
+        right = [word for word, rect in painted if rect.centerx > panel.centerx]
+        self.assertEqual(finals, ["FINAL"])
+        self.assertIn("OT", right)
 
 
 if __name__ == "__main__":

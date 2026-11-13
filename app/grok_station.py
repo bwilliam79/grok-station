@@ -4903,6 +4903,25 @@ def _card_chrome(surf, L, rect):
     pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
 
 
+def _sports_side_label(card):
+    """The right-hand status word.
+
+    A live, scheduled, or delayed game keeps its period. A regulation final leaves the slot empty,
+    because the left badge already says FINAL. An overtime final shows OT only when the period says so
+    (ESPN writes Final/OT or 2OT). The word Final itself is not repeated.
+    """
+    period = " ".join(str(card.get("period") or "").split())
+    if card.get("status") != "final":
+        return period
+    parts = re.split(r"[\s/]+", period.casefold())
+    overtime = [part for part in parts if re.fullmatch(r"\d*ot", part)]
+    if not overtime:
+        return ""
+    token = overtime[-1]
+    count = token[:-2]
+    return (count + "OT") if count else "OT"
+
+
 def draw_sports(surf, L, card, rect):
     """Score tile in the bottom zone: header row, the two teams, and the next game as a band inside the card.
     Shields or cached logos only; no fetch while drawing."""
@@ -4919,8 +4938,10 @@ def draw_sports(surf, L, card, rect):
         show(surf, st, (rect.left + pad + L(28), head))
     else:
         show(surf, st, (rect.left + pad, head))
-    period = _line(surf, "display", L(44), card["period"], MUTED, max(40, rect.w // 3))
-    show(surf, period, (rect.right - pad - period.get_width(), head))
+    side = _sports_side_label(card)
+    if side:
+        period = _line(surf, "display", L(44), side, MUTED, max(40, rect.w // 3))
+        show(surf, period, (rect.right - pad - period.get_width(), head))
     # MUTED, not FAINT: FAINT on SURFACE is 3.24:1 and fails AA for small text (Noor's contrast table).
     league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
     show(surf, league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))

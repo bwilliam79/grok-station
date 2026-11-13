@@ -846,6 +846,27 @@ _NULL_FILLER = (
 )
 
 
+def _cleaned_kind(value):
+    """Kind text after the station's cleanup. Empty means the kind is blank.
+
+    NFKC, drop <...> markup, drop quotes and format or control characters, then collapse spaces.
+    The same steps as cards.escape_text, without the length cap.
+    """
+    if not isinstance(value, str):
+        return ""
+    s = unicodedata.normalize("NFKC", value)
+    s = re.sub(r"<[^>]*>", "", s)
+    out = []
+    for ch in s:
+        if ch in "<>&\"'`":
+            continue
+        cat = unicodedata.category(ch)
+        if cat in ("Cf", "Cc", "Cs", "Co") or ord(ch) < 32:
+            continue
+        out.append(ch)
+    return " ".join("".join(out).split())
+
+
 def _null_filler(text):
     """True when text is only a known empty phrase. Same list as the station."""
     if not isinstance(text, str) or not text:
@@ -888,14 +909,14 @@ def update_show_ok(doc):
             return False
     elif not isinstance(line, str) or not line.strip() or len(line) > 320:
         return False
-    elif nullish:
-        # A blank kind is not a scope. Same rule as the station: whitespace-only is refused.
-        if "kind" in body:
-            value = body.get("kind")
-            if not isinstance(value, str) or not value.strip() or len(value) > 18:
-                return False
-    elif body.get("type") == "update" and "kind" not in body:
+    elif not nullish and body.get("type") == "update" and "kind" not in body:
         return False
+    # A blank kind is not a scope. Emptiness is judged after the station's kind cleanup.
+    # This covers a null line as well as a filler line. The line check above does not.
+    if nullish and "kind" in body:
+        value = body.get("kind")
+        if not isinstance(value, str) or not value or len(value) > 18 or not _cleaned_kind(value):
+            return False
     for key, cap in (("kind", 18), ("detail", 90)):
         if key not in body:
             continue
