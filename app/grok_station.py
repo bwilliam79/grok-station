@@ -4930,10 +4930,6 @@ def _pregame_when(card, now=None):
     A starts_at instant is the station's local clock: '7:15 PM', or 'Sun 7:15 PM' when that
     local day is not today. No start time is 'Time TBD' in the dim ink. The score dashes stay off.
     """
-    if now is None:
-        now = datetime.datetime.now().astimezone()
-    elif now.tzinfo is None:
-        now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
     raw = card.get("starts_at")
     if not isinstance(raw, str) or not raw:
         return "Time TBD", MUTED
@@ -4944,7 +4940,15 @@ def _pregame_when(card, now=None):
         return "Time TBD", MUTED
     if parsed.tzinfo is None:
         return "Time TBD", MUTED
-    local = parsed.astimezone(now.tzinfo)
+    # now.tzinfo from datetime.now().astimezone() is a fixed offset for this minute.
+    # astimezone() with no argument uses the station zone's rules, including daylight time.
+    if now is None:
+        now = datetime.datetime.now().astimezone()
+        local = parsed.astimezone()
+    else:
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
+        local = parsed.astimezone(now.tzinfo)
     hour = local.strftime("%I").lstrip("0") or "12"
     clock = "%s:%s" % (hour, local.strftime("%M %p"))
     if local.date() != now.date():

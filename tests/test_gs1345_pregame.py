@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -205,6 +206,22 @@ class PregameTile(unittest.TestCase):
                 self.assertTrue(marks, size)
                 for rect, _paint in marks:
                     self.assertTrue(panel.contains(rect), (size, rect, panel))
+
+    def test_a_summer_start_uses_daylight_time_not_todays_offset(self):
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Chicago"
+        try:
+            time.tzset()
+            label, ink = gs._pregame_when({"starts_at": "2026-07-15T19:15:00-05:00"})
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        self.assertIn("7:15 PM", label)
+        self.assertNotIn("6:15 PM", label)
+        self.assertEqual(ink, gs.TEXT)
 
 
 class FeedKind(unittest.TestCase):
