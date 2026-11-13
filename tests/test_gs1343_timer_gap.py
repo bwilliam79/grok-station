@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(ROOT, "tests"))
 import pygame  # noqa: E402
 import cards  # noqa: E402
 import grok_station as gs  # noqa: E402
-from painted_gaps import painted_gaps  # noqa: E402
+from painted_gaps import chip_ink_top, painted_gaps  # noqa: E402
 
 pygame.display.init()
 pygame.font.init()
@@ -54,6 +54,23 @@ class TimerGap(unittest.TestCase):
             self.assertGreaterEqual(above, layout(gs.PANEL_GAP), (size, above, panel))
             self.assertLessEqual(panel.bottom, gs.content_limit(layout), size)
             self.assertGreaterEqual(panel.top, 0, size)
+
+    def test_timer_chips_keep_a_gap_above_the_chips(self):
+        now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
+        gs.TIMER_CHIPS[:] = [{"id": "aaaa01", "label": "pasta",
+                               "ends_at_epoch": time.time() + 400, "ringing": False}]
+        tops = {(1280, 800): 326, (2560, 1706): 653, (1080, 1920): 275}
+        for size in SIZES:
+            layout = gs.Layout(*size)
+            surf = pygame.Surface(size)
+            gs.draw_idle(surf, layout, now, _Wx(), home_band=True)
+            above, _below, _height = painted_gaps(surf)
+            panel = gs.bottom_panel_rect(layout)
+            gap = chip_ink_top(surf, panel.bottom) - panel.bottom
+            self.assertGreaterEqual(gap, layout(getattr(gs, "CHIP_GAP", 24)), (size, gap, panel))
+            self.assertGreaterEqual(above, layout(gs.PANEL_GAP), (size, above, panel))
+            self.assertEqual(panel.top, tops[size], size)
+            self.assertEqual(gs.LAST_UPDATE_LINES["avatar_cy"], panel.centery, size)
 
     def test_date_slack_is_measured_once_per_layout(self):
         gs._DATE_SLACK.clear()

@@ -1,4 +1,4 @@
-# Bot Update and Set up lifecycle (authoritative, 0.13.43)
+# Bot Update and Set up lifecycle (authoritative, 0.13.44)
 
 This is the spec for how the station updates a bot's instructions and sets up a new bot through the main bot. It
 covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the relay (`relay/relay.py`,

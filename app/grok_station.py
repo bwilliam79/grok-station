@@ -5750,6 +5750,7 @@ _ENROLL_SQUARES = 5
 PANEL_X = 128
 PANEL_W = 2304
 PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a clear band
+CHIP_GAP = 24  # design px from the tile bottom to the timer chip ink
 # Idle time and date, sized so that block matches the weather block. Weather sizes stay put.
 IDLE_CLOCK_PX = 238
 IDLE_DATE_PX = 60
@@ -5879,9 +5880,11 @@ def bottom_panel_rect(L):
     """The shared bottom panel.
 
     Without timer chips the height and width stay the 0.13.42 size and the top is
-    centered under the painted date. With chips, the top is never closer than
-    L(PANEL_GAP) to that ink. The full height stays when it fits above the timer
-    strip. Otherwise the panel shortens so its bottom meets content_limit.
+    centered under the painted date. With chips, the minimum gap under that ink
+    takes precedence over centering: the top is never closer than L(PANEL_GAP).
+    The full height stays when it fits above the chips with L(CHIP_GAP) of clear
+    paint under the tile. Otherwise the panel keeps that top and shortens so the
+    painted gap from the tile bottom to the chip ink is at least L(CHIP_GAP).
     The rect does not depend on the current minute.
     """
     global LAST_PANEL_RECT
@@ -5909,6 +5912,11 @@ def bottom_panel_rect(L):
         else:
             panel_top = min_top
             height = max(1, limit - panel_top)
+        # The chip pill starts at the strip top. Keep that top and shorten so the
+        # painted gap under the tile is at least L(CHIP_GAP).
+        max_bottom = int(timer_strip_rect(L).top) - int(L(CHIP_GAP))
+        if panel_top + height > max_bottom:
+            height = max(1, max_bottom - int(panel_top))
     else:
         space = limit - ink_bottom
         height = full_h

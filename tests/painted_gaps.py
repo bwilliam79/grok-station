@@ -32,3 +32,14 @@ def painted_gaps(surf):
     top = block + box.y
     bottom = block + box.bottom
     return top - block, height - bottom, bottom - top
+
+
+def chip_ink_top(surf, after_y):
+    """First painted row of the timer chips at or below after_y. Background rows do not count."""
+    width, height = surf.get_size()
+    for y in range(int(after_y), height):
+        row = surf.subsurface(pygame.Rect(0, y, width, 1)).copy()
+        row.set_colorkey(gs.BG)
+        if row.get_bounding_rect().w:
+            return y
+    raise AssertionError("no chip ink")
