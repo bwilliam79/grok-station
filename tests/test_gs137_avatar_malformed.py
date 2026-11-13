@@ -122,9 +122,9 @@ class Pins(unittest.TestCase):
         # 0.13.16: the helper gained seal-setup-ack and setup-check (typed setup_relay), so the helper version moved on
         # 0.13.29: the helper changed in 0.13.27 without a bump (vendor bytecode caches, named refusals); 0.13.29
         # 0.13.37: vendor-install keeps a matching set, writes a lock stamp and names what it refused, so it moved again
-        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.42"$')
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.42"  #')
-        self.assertRegex(manifest, r"(?m)^helper 0\.13\.42$")
+        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.43"$')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.43"  #')
+        self.assertRegex(manifest, r"(?m)^helper 0\.13\.43$")
         sys.path.insert(0, os.path.join(ROOT, "tests"))
         import test_admin  # sets the admin test env before grok_admin is first imported
         ga = test_admin.ga

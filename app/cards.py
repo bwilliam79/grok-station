@@ -967,6 +967,37 @@ def logo_known_missing(url):
     return bool(m) and not m.group(1).isdigit()
 
 
+def _logo_refuse_reason(url, cache):
+    """Why prepare_display_logos will not fetch this logo, or None when it will.
+
+    The reason is a short label. It never includes the URL.
+    """
+    if logo_known_missing(url):
+        return "college logo needs ESPN team id"
+    if not espn_teamlogo_url(url):
+        return "not a team-logo path"
+    hosts = getattr(cache, "hosts", ()) if cache is not None else ()
+    if cache is None or not logo_url_ok(url, hosts):
+        return "host not allowed"
+    return None
+
+
+def _log_logo_skip(cache, reason):
+    """One line on the cache logger. No URL."""
+    if cache is not None and hasattr(cache, "skipped"):
+        cache.skipped(reason)
+        return
+    line = "logo skipped: " + reason
+    log = getattr(cache, "log", None) if cache is not None else None
+    try:
+        if log is not None:
+            log(line)
+        else:
+            print(line, flush=True)
+    except Exception:
+        pass
+
+
 def logo_id_of(url):
     """The cache id a fetch of this URL will store. Does not fetch or resolve."""
     return hashlib.sha256(canonical_logo_url(url).encode()).hexdigest()
@@ -999,12 +1030,12 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
             continue
         if espn_teamlogo_url(url):
             url = canonical_espn_logo_url(url)
-        allowed = (cache is not None and espn_teamlogo_url(url) and not logo_known_missing(url)
-                   and logo_url_ok(url, getattr(cache, "hosts", ())))
+        reason = _logo_refuse_reason(url, cache)
         team.pop("logo_url", None)
         team.pop("logo_id", None)
         team["logo_badge"] = True
-        if not allowed:
+        if reason:
+            _log_logo_skip(cache, reason)
             continue
         try:
             lid = logo_id_of(url)
@@ -1884,7 +1915,11 @@ class UpdateFeed:
         for row in items:
             if not _feed_row_ok(row):
                 return
-            loaded[(row["bot"], row["id"])] = {k: row[k] for k in _ROW_KEYS if k in row}
+            kept = {k: row[k] for k in _ROW_KEYS if k in row}
+            kind = kept.get("kind")
+            if isinstance(kind, str) and len(kind) > 18:
+                kept["kind"] = kind[:18]
+            loaded[(row["bot"], row["id"])] = kept
         clean = {}
         for key, val in rules.items():
             if not isinstance(key, str) or not bot_slug_ok(key) or not isinstance(val, str) or len(val) > RULE_MAX:

@@ -196,5 +196,25 @@ class FeedBots(unittest.TestCase):
         self.assertEqual(feed.bots(), {"otto"})
 
 
+class FeedKindCap(unittest.TestCase):
+    def test_load_caps_kind_at_18_characters(self):
+        long_kind = "Calendar-mailbox-extra"
+        self.assertGreater(len(long_kind), 18)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "update-feed.json")
+            doc = {"items": [{
+                "bot": "otto", "id": "a", "type": "update", "line": "Shipped",
+                "time": 1000, "seq": 1, "kind": long_kind, "detail": "Ready",
+            }], "rules": {}, "seq": 1}
+            with open(path, "w") as fh:
+                json.dump(doc, fh)
+            os.chmod(path, 0o600)
+            feed = cards.UpdateFeed(path=path)
+            self.assertEqual(len(feed.items), 1)
+            kind = next(iter(feed.items.values()))["kind"]
+            self.assertEqual(kind, long_kind[:18])
+            self.assertEqual(len(kind), 18)
+
+
 if __name__ == "__main__":
     unittest.main()

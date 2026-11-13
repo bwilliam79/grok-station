@@ -36,14 +36,31 @@ def _gap(size):
 
 class PanelGap(unittest.TestCase):
     def test_minimum_gap_at_both_resolutions(self):
-        for size in ((1280, 800), (2560, 1706)):
-            gap, layout, panel, clock_top = _gap(size)
-            self.assertGreaterEqual(gap, layout(48), size)
-            if size == (1280, 800):
-                self.assertGreaterEqual(gap, 32)
-            self.assertGreaterEqual(panel.top, gs.clock_date_bottom(layout, time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")))
-            # The 0.13.41 rule: the margin under the panel equals the ink above the block.
-            self.assertEqual(size[1] - panel.bottom, clock_top + gs.idle_block_offsets(layout)[0])
+        """Painted gap above the panel equals the gap below, within 1 px, at both sizes.
+
+        The panel height is the 0.13.42 height. The gap is at least L(48).
+        """
+        import cards
+        heights = {(1280, 800): 380, (2560, 1706): 867}
+        now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
+        old = gs.UPDATES
+        try:
+            for size in ((1280, 800), (2560, 1706)):
+                layout = gs.Layout(*size)
+                gs.UPDATES = cards.UpdateFeed()
+                gs.UPDATES.put("otto", "a", {"type": "update", "kind": "Release",
+                                              "line": "Shipped the nightly build",
+                                              "detail": "Ready to try", "time": 1_000.0})
+                surf = pygame.Surface(size)
+                gs.draw_idle(surf, layout, now, _Wx(), home_band=True)
+                above, below, height = _painted_gaps(surf)
+                self.assertLessEqual(abs(above - below), 1, (size, above, below))
+                self.assertEqual(height, heights[size], size)
+                self.assertGreaterEqual(above, layout(48), size)
+                self.assertGreaterEqual(gs.bottom_panel_rect(layout).top,
+                                        gs.clock_date_bottom(layout, now), size)
+        finally:
+            gs.UPDATES = old
 
     def test_frames_show_the_gap(self):
         """1280x800 idle with an update card, and the same size with a content tile.
@@ -86,6 +103,29 @@ class PanelGap(unittest.TestCase):
             gs.UPDATES = None
             if tmp:
                 shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _painted_gaps(surf):
+    """Gap above the panel, gap below it, and the panel's painted height."""
+    rects = [gs.LAST_CLOCK_RECT, gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT]
+    block = 0
+    for rect in rects:
+        if not rect:
+            continue
+        sub = surf.subsurface(rect).copy()
+        sub.set_colorkey(gs.BG)
+        box = sub.get_bounding_rect()
+        if box.w:
+            block = max(block, rect.y + box.bottom)
+    w, h = surf.get_size()
+    band = surf.subsurface(pygame.Rect(0, block, w, h - block)).copy()
+    band.set_colorkey(gs.BG)
+    box = band.get_bounding_rect()
+    if box.w == 0:
+        raise AssertionError("the lower tile painted nothing")
+    top = block + box.y
+    bottom = block + box.bottom
+    return top - block, h - bottom, bottom - top
 
 
 def _ink_rect(surf, rect):

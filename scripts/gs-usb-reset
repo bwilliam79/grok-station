@@ -23,9 +23,9 @@ import sys
 import tempfile
 import time
 
-# Numeric USB ids, lowercase hex without a 0x prefix: the EMEET OfficeCore
-# M0 Plus. The product and manufacturer strings, and the ALSA card id, also
-# match (the word "emeet"). Either way the device must have an audio interface.
+# Numeric USB ids, lowercase hex without a 0x prefix: the OfficeCore M0 Plus.
+# Match is this id only. A product string that says eMeet is not enough.
+# The device must also have an audio interface.
 EMEET_IDS = frozenset({("328f", "0109")})
 
 # _IO('U', 20). USBDEVFS_RESET on the device's usbfs node.
@@ -199,10 +199,6 @@ def has_audio_interface(usb):
 def is_speakerphone(usb, card):
     if not has_audio_interface(usb):
         return False
-    for folder, name in ((usb, "product"), (usb, "manufacturer"), (card, "id")):
-        text = _reg_text(os.path.join(folder, name))
-        if text and "emeet" in text.lower():
-            return True
     vend = (_reg_text(os.path.join(usb, "idVendor")) or "").strip().lower()
     prod = (_reg_text(os.path.join(usb, "idProduct")) or "").strip().lower()
     return (vend, prod) in EMEET_IDS

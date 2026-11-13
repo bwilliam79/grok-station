@@ -224,8 +224,19 @@ class Scenarios(unittest.TestCase):
         frames = h.run(h.put("jules", "game", SPORTS), h.state(None, timers=timers), h.advance(1))
         last = [f for f in frames if f["painter"] == "draw_zone"][-1]
         self.assertLess(last["zone_rect"].bottom, frames[0]["zone_rect"].bottom)
-        self.assertEqual(last["zone_rect"].bottom, gs.timer_strip_rect(gs.Layout(2560, 1706)).top
-                         - max(6, round(0.008 * 1706)))
+        # 0.13.43: the panel keeps its height and is centered above the timer strip.
+        # 0.13.42 pinned the bottom to content_limit and shortened the panel.
+        L = gs.Layout(2560, 1706)
+        saved = list(gs.TIMER_CHIPS)
+        try:
+            gs.TIMER_CHIPS[:] = []
+            bare = gs.bottom_panel_rect(L)
+            gs.TIMER_CHIPS[:] = timers
+            self.assertEqual(last["zone_rect"], gs.bottom_panel_rect(L))
+            self.assertEqual((last["zone_rect"].w, last["zone_rect"].h), (bare.w, bare.h))
+            self.assertLessEqual(last["zone_rect"].bottom, gs.content_limit(L))
+        finally:
+            gs.TIMER_CHIPS[:] = saved
 
     def test_each_bot_state_fills_the_zone(self):
         h = Harness()

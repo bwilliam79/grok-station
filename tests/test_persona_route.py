@@ -327,6 +327,9 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                         continue
                     if msg.type == WSMsgType.TEXT and events and events[-1].get("type") in ("turn_done", "done", "timeout", "error"):
                         # The filler is sent before queued model frames are read. Drain so a late forward fails the test.
+                        if expect_ack and not follow:
+                            await self._drain_settled(ws, take)
+                            return
                         while True:
                             try:
                                 nxt = await asyncio.wait_for(ws.receive(), 0.25)
@@ -358,6 +361,56 @@ class PersonaRoute(unittest.IsolatedAsyncioTestCase):
                 await client.close()
             await xs.close()
             await hs.close()
+
+    async def _drain_settled(self, ws, take):
+        """Read until the relay has handled response.done, then take frames already queued.
+
+        The end of that handling is an event the log sets. A second event fires on the
+        next loop turn so a frame sent in the same turn is taken. There is no sleep.
+        """
+        settled = asyncio.Event()
+        if any(line.startswith("xai response.done") for line in self.lines):
+            settled.set()
+        previous = relay.log
+
+        def watching(*parts):
+            previous(*parts)
+            if self.lines and self.lines[-1].startswith("xai response.done"):
+                settled.set()
+
+        relay.log = watching
+        try:
+            while not settled.is_set():
+                incoming = asyncio.create_task(ws.receive())
+                waiter = asyncio.create_task(settled.wait())
+                done, pending = await asyncio.wait({incoming, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                if incoming in done:
+                    msg = incoming.result()
+                    if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                        return
+                    take(msg)
+            while True:
+                incoming = asyncio.create_task(ws.receive())
+                tick = asyncio.Event()
+                asyncio.get_running_loop().call_soon(tick.set)
+                waiter = asyncio.create_task(tick.wait())
+                done, pending = await asyncio.wait({incoming, waiter}, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                if incoming not in done:
+                    return
+                msg = incoming.result()
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                    return
+                take(msg)
+        finally:
+            relay.log = previous
 
     def _updates(self, upstream):
         return [e["session"] for e in upstream if e.get("type") == "session.update"]

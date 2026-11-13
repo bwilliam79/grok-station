@@ -1,4 +1,4 @@
-# Bot Update and Set up lifecycle (authoritative, 0.13.37)
+# Bot Update and Set up lifecycle (authoritative, 0.13.43)
 
 This is the spec for how the station updates a bot's instructions and sets up a new bot through the main bot. It
 covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the relay (`relay/relay.py`,
@@ -255,6 +255,24 @@ admin rescan and import routes still await `ask_bot_list` on their own request.
 
 Press Update on the main bot first and wait until its row is done, then Update the rest, then Set up. The page
 enforces the order through invariant 1.
+
+## Station updates feed (0.13.43)
+
+A bot posts updates with `gs-seal-reply show`. Two ops matter here.
+
+**Null update.** Type `update` with `line` null. It takes no `detail` and no `expires_at`. An optional `kind` clears only that kind. With no `kind`, every type `update` row for that bot is cleared. Needs you and heads-up rows are not touched. The same clear is what a line that is only "nothing open", "nothing new", "no updates", "nothing to report", or "all clear" does, and a kind on that line scopes it. The cleared state is written to the feed file, so it is still clear after a restart.
+
+```json
+{"v":1,"op":"update","id":"<id>","update":{"type":"update","line":null,"time":"<ISO 8601 time with zone>"}}
+```
+
+Kind-scoped:
+
+```json
+{"v":1,"op":"update","id":"<id>","update":{"type":"update","kind":"<kind>","line":null,"time":"<ISO 8601 time with zone>"}}
+```
+
+**Persistent feed.** `cards.UpdateFeed` stores items, rules, and seq in `/var/lib/grok-station-display/update-feed.json` (mode 0600, atomic replace). The display unit's StateDirectory creates that directory. The feed loads the file on start. A kind longer than 18 characters is cut to 18 when the file is read. Expiry still runs on load: heads-up, working on, and done use the 2 hour rule, Needs you stays, and a type `update` row stays until that bot replaces or clears it. Back up this file with the rest of the station state. A wipe of `/var/lib/grok-station-display`, or deleting the file, drops the saved feed. The next update creates it again. See [cards.md](cards.md#bot-updates) and [operations.md](operations.md#backup-and-wipe).
 
 ## Checking a release
 

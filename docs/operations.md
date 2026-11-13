@@ -94,7 +94,7 @@ It plays on the station speaker, so the speaker volume applies. During the night
 
 The speakerphone can keep streaming while the audio it sends is no longer usable. Restarting the listener does not clear that. A USB port reset (USBDEVFS_RESET on that device) often does. Turning the USB `authorized` file off and on does not: on the OfficeCore M0 Plus (USB 328f:0109) that leaves the device enumerated with an empty `bConfigurationValue` and no ALSA card, and a later port reset does not bring it back. Only a power cycle does (unplug it, or switch it off and on). The display and the Audio page then say "Mic needs a power cycle".
 
-Seen on that speakerphone, already on its latest firmware, so no firmware fix is expected. In one case it streamed normal levels for about 21 hours while the wake score stayed at 0.001; a listener restart did not help and a USB power-cycle fixed it at once. The station accepts any USB speaker and microphone. The helper resets only the configured speakerphone (an audio interface, and either the USB id 328f:0109 or the name eMeet).
+Seen on that speakerphone, already on its latest firmware, so no firmware fix is expected. In one case it streamed normal levels for about 21 hours while the wake score stayed at 0.001; a listener restart did not help and a USB power-cycle fixed it at once. The station accepts any USB speaker and microphone. The helper resets only the configured speakerphone: an audio interface whose USB id is 328f:0109. A different device whose name says eMeet is left alone.
 
 The listener is not root. It asks `sudo -n` to run one helper:
 
@@ -125,6 +125,10 @@ A USB reset is logged `mic reset:` plus the reason. It never runs during a conve
 - **drought**: speech-level audio (at least -45 dBFS, `WAKE_MIC_RESET_SPEECH_DB`) heard 20 times (`WAKE_MIC_RESET_SPEECH`) across at least 2 hours (`WAKE_MIC_RESET_WINDOW_S`) with no wake score above 0.1 (`WAKE_MIC_RESET_SCORE`). Events during a conversation do not count. A real wake score clears the count. Samples closer than 2 seconds (`WAKE_MIC_RESET_COALESCE_S`) count as one.
 
 The Reset button and the drought switch default to on. The nightly reset defaults to off. A `mic-reset.json` saved before 0.13.42 often has `"night": true` because that used to be the default; that value stays off until the Audio page writes `night_choice` `0.13.42` (turning Nightly reset on or off does that). `WAKE_MIC_RESET_NIGHT` alone does not turn it on. Set `WAKE_MIC_RESET_BUTTON` or `WAKE_MIC_RESET_DROUGHT` to `0` to turn one of those off. The Audio page switches apply on click and are stored in `/var/lib/grok-station/admin/mic-reset.json` (mode `0640`, so the listener can read it). A bool in that file wins over the environment variable for the button and the drought switch. Saving a switch does not restart the listener. The night window and the counts are read from the environment (restart the listener after changing those). If an automatic reset finds no ALSA card, it tries once, waits, and then stops until the speakerphone re-enumerates. Capture opens again on its own when the card is back. It does not reset the device again just because the card returned. The button does not retry on its own.
+
+## Backup and wipe
+
+Back up `/var/lib/grok-station-display/update-feed.json` with the rest of the station state you keep. It is the updates feed (mode 0600, owned by the display user). A restart reads it back, including a clear from a null update. Wiping the display state directory, or deleting that file, removes the saved feed. Logos and the weather cache under `/var/cache/grok-station` are caches: a wipe there only means the next screen fetches them again. The feed file is not a cache. The display creates it again the next time a bot posts an update.
 
 ## Troubleshooting
 
@@ -160,6 +164,7 @@ hard link and a successful fchmod, and tmp-then-rename uses a random O_EXCL temp
 | `/opt/grok-station/wake`, `wake/models`, `wake/lines` (code: grok_wake.py, gain.py, fewshot.py, wait_tone.py, wakewords.json, chime.wav, shipped models, lines) | root:root 0755, files 0644 (0.13.14, Nix PI-01) | install.sh st_wake, tools/install-files.sh | root (installer) | wake, admin | n/a (code) |
 | `/opt/grok-station/wake/models/enrolled`, `/opt/grok-station/portraits` | grok 0755 | install.sh st_wake (safe-mkdirs; enrolled with --leaf) | wake (grok) | wake, display, admin | not needed: the only writer is the reader's own user |
 | `/var/lib/grok-station-wake` (timers.json) | grok 0750 | grok-station-wake.service StateDirectory (0.13.14) | wake | wake | not needed: only the wake listener |
+| `/var/lib/grok-station-display` (`update-feed.json`, mode 0600) | grok 0755 (systemd StateDirectory) | grok-station.service StateDirectory | display | display | not needed: only the display |
 | `/opt/grok-station/relay` | root:root 0755 | install.sh:208, tools/install-files.sh | root | relay, wake, admin | n/a (code) |
 | `/etc/grok-station/secrets` | root:root 0711, files per token | install.sh:136 | root | each service its token | n/a (root-written) |
 
@@ -174,7 +179,7 @@ and the paths below) with PrivateTmp=yes. What each one writes, from the code:
 
 | Unit | Writes (ReadWritePaths, or a systemd-made dir) | ProtectHome | NoNewPrivileges |
 |---|---|---|---|
-| grok-station (display) | /var/cache/grok-station (CacheDirectory: weather.json, logos/, dim-level); /run/grok-station (RuntimeDirectory: last.png); /dev/fb0 and /sys/class/backlight are API trees strict leaves writable. ExecStartPre `+` lines run unsandboxed. | yes | yes |
+| grok-station (display) | /var/cache/grok-station (CacheDirectory: weather.json, logos/, dim-level); /run/grok-station (RuntimeDirectory: last.png); /var/lib/grok-station-display (StateDirectory: update-feed.json, mode 0600). /dev/fb0 and /sys/class/backlight are API trees strict leaves writable. ExecStartPre `+` lines run unsandboxed. | yes | yes |
 | grok-station-wake | /opt/grok-station/wake/models/enrolled (models, wakewords.enrolled.json, pair-margins.jsonl); /opt/grok-station/portraits (persona cache); /var/lib/grok-station/enroll (clips, sessions, building.json); /var/lib/grok-station/late (spoken jobs deleted); /var/lib/grok-station-wake (StateDirectory: timers.json); /run/gs-usb-reset.lock (the sudo'd mic reset; pre-created by ExecStartPre). t1.json in $V/admin is rewritten only when grok can write there (it can't: grok-admin 0750), so it is not listed. | yes | no: `sudo -n gs-usb-reset` |
 | grok-station-admin | /var/lib/grok-station (admin state, enroll inbox, wakewords drop, tls, integrations, home-status); /etc/grok-station (helper: env, wake.env, secrets, tls); /etc/hosts (helper, hostname change); /etc/NetworkManager/system-connections (helper, Wi-Fi join); /opt/grok-station/wake/models/enrolled (enrolled list); the install clone (drop-in source-dir.conf, helper's git fetch); /run/grok-station-admin (RuntimeDirectory). | no: the clone is usually in a home folder | no: sudo helper |
 | grok-station-relay | unchanged (already hardened). | yes | yes |

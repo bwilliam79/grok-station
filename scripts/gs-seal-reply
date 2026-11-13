@@ -145,7 +145,7 @@ sys.dont_write_bytecode = True
 _SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 sys.path = [_SCRIPT_DIR] + _stdlib_dirs()
 
-import base64, datetime, hashlib, http.client, json, math, re, secrets, ssl, time, unicodedata
+import base64, datetime, hashlib, http.client, ipaddress, json, math, re, secrets, ssl, time, unicodedata
 from urllib.parse import urlsplit
 
 try:
@@ -932,6 +932,69 @@ def update_show_ok(doc):
     return True
 
 
+_NCAA_LOGO = re.compile(r"^/i/teamlogos/ncaa[a-z0-9-]*/[0-9]{2,4}/([a-z0-9]{1,16})\.png$")
+_BAD_LOGO_HOST = ("local", "lan", "internal", "localhost", "home.arpa", "localdomain")
+_LOGO_LABEL = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def _logo_host_ok(host):
+    """Same public-host shape the station uses before it calls a college path missing."""
+    if not isinstance(host, str):
+        return False
+    h = host.strip().lower().rstrip(".")
+    if not h or len(h) > 253 or ".." in h or any(ord(c) > 126 for c in h):
+        return False
+    for suffix in _BAD_LOGO_HOST:
+        if h == suffix or h.endswith("." + suffix):
+            return False
+    try:
+        ipaddress.ip_address(h)
+        return False
+    except ValueError:
+        pass
+    labels = h.split(".")
+    if len(labels) < 2 or not re.fullmatch(r"[a-z]{2,63}", labels[-1]):
+        return False
+    return all(_LOGO_LABEL.fullmatch(lab) for lab in labels)
+
+
+def college_logo_needs_id(url):
+    """True when a college logo path uses an abbreviation instead of ESPN's numeric team id.
+
+    Agrees with cards.logo_known_missing. The warning that uses this never prints the URL.
+    """
+    if not isinstance(url, str) or not url or len(url) > 200:
+        return False
+    if any(c.isspace() or c in "<>\"'`" for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme != "https" or parts.username or parts.password or parts.fragment:
+        return False
+    if not _logo_host_ok(parts.hostname or ""):
+        return False
+    match = _NCAA_LOGO.fullmatch((parts.path or "").lower())
+    return bool(match) and not match.group(1).isdigit()
+
+
+def _warn_college_logos(doc):
+    """Tell the bot, on stderr, when a sports card names a college logo by abbreviation.
+
+    The post still goes out. Exit status stays 0 when the station accepts the card.
+    """
+    if not isinstance(doc, dict) or doc.get("op") != "put":
+        return
+    card = doc.get("card")
+    if not isinstance(card, dict) or card.get("type") != "sports":
+        return
+    for side in ("home", "away"):
+        team = card.get(side)
+        if isinstance(team, dict) and college_logo_needs_id(team.get("logo_url")):
+            sys.stderr.write("warning: college logo needs ESPN team id\n")
+
+
 def cmd_show(slug):
     """Seal the card JSON on stdin and post it once to /voice/show. The station checks the card itself."""
     if not slug_ok(slug):
@@ -945,6 +1008,7 @@ def cmd_show(slug):
         raise Refused()
     if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear", "update", "update_clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
         raise Refused()
+    _warn_college_logos(doc)
     if doc.get("op") == "update" and not update_show_ok(doc):
         raise Refused()
     _reject_if_secret(text)

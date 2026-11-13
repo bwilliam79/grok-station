@@ -169,7 +169,7 @@ Paste this into the bot's routine. Do not add the key, and do not add any other 
 The routine (gs-seal-setup once, then one reply command on the home computer):
 
 ```text
-Grok Station instructions, release 0.13.42.
+Grok Station instructions, release 0.13.43.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -206,7 +206,9 @@ Display cards (optional). When the answer is visual, a recipe, a game score or s
 CARD is one of (limits in parentheses):
 recipe: {"v":1,"type":"recipe","title":(60),"servings":1-48,"ingredients":[1-12 of (48)],"steps":[1-12 of (160)],"step":1}
 sports: {"v":1,"type":"sports","league":(24),"home":TEAM,"away":TEAM,"home_score":0-999,"away_score":0-999,"status":"live|final|scheduled|delayed","period":(16),"schedule":[0-4 of {"label":(48),"when":(24)}]}
-  TEAM: {"name":(24),"abbr":"2-4 capitals or digits","logo_url":"https://a.espncdn.com/i/teamlogos/<league>/500/<abbr>.png"} (logo_url optional)
+  TEAM: {"name":(24),"abbr":"2-4 capitals or digits","logo_url": optional}
+  Pro leagues use https://a.espncdn.com/i/teamlogos/<league>/500/<abbr>.png with the abbreviation.
+  College teams (ncaa, ncaa-football, mens-college-basketball, womens-college-basketball, college-football, and similar) use ESPN's numeric team id. Arkansas is https://a.espncdn.com/i/teamlogos/ncaa/500/8.png. The id is team.id on the ESPN team page or the site API. If unsure, omit logo_url rather than guess.
 calendar: {"v":1,"type":"calendar","date":"YYYY-MM-DD","events":[0-8 of {"time":(16),"title":(48)}]}
 home: {"v":1,"type":"home","title":(24),"items":[1-6 of {"label":(32),"value":(24),"trend":"up|down" optional}]}
 To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Unknown fields are rejected. Send at most one card per answer.

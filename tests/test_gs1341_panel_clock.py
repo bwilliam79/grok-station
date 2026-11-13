@@ -26,6 +26,33 @@ class _Wx:
         return False
 
 
+def _painted_gaps(surf):
+    """Gap above the panel, gap below it, and the panel's painted height.
+
+    The block bottom is the lowest painted clock, date, or weather pixel.
+    The panel is the non-background paint under that line.
+    """
+    rects = [gs.LAST_CLOCK_RECT, gs.LAST_DATE_RECT, gs.LAST_WEATHER_RECT]
+    block = 0
+    for rect in rects:
+        if not rect:
+            continue
+        sub = surf.subsurface(rect).copy()
+        sub.set_colorkey(gs.BG)
+        box = sub.get_bounding_rect()
+        if box.w:
+            block = max(block, rect.y + box.bottom)
+    w, h = surf.get_size()
+    band = surf.subsurface(pygame.Rect(0, block, w, h - block)).copy()
+    band.set_colorkey(gs.BG)
+    box = band.get_bounding_rect()
+    if box.w == 0:
+        raise AssertionError("the lower tile painted nothing")
+    top = block + box.y
+    bottom = block + box.bottom
+    return top - block, h - bottom, bottom - top
+
+
 def _ink_top(surf):
     """First non-background row left of the status icons. Row compares stay in C."""
     bg = surf.get_at((0, 0))[:3]
@@ -99,22 +126,35 @@ class PanelClock(unittest.TestCase):
         self.assertEqual(gs.glyph_ink_dy("display", 400, text), big)
 
     def test_visible_top_gap_matches_the_bottom_gap(self):
+        """The lower tile is centered: painted gap above it equals the gap below, within 1 px.
+
+        Height is the 0.13.42 panel (380 px at 1280x800, 867 px at 2560x1706).
+        The gap is at least L(48). Measured from painted pixels, not font boxes.
+        """
+        import cards
         wx = _Wx()
-        for size in SIZES:
-            L = gs.Layout(*size)
-            # Every minute of the 12-hour face, plus a short digit and a tall digit
-            # from the afternoon, which is what the station actually draws.
-            for hour in range(1, 13):
-                for minute in range(60):
-                    hm = "%d:%02d" % (hour, minute)
-                    now = time.strptime("2026-06-15 " + hm, "%Y-%m-%d %H:%M")
+        heights = {(1280, 800): 380, (2560, 1706): 867}
+        old = gs.UPDATES
+        try:
+            for size in SIZES:
+                L = gs.Layout(*size)
+                now = time.strptime("2026-06-15 10:08", "%Y-%m-%d %H:%M")
+                gs.UPDATES = cards.UpdateFeed()
+                gs.UPDATES.put("otto", "a", {"type": "update", "kind": "Release",
+                                              "line": "Shipped the nightly build",
+                                              "detail": "Ready to try", "time": 1_000.0})
+                surf = pygame.Surface(size)
+                gs.draw_idle(surf, L, now, wx, home_band=True)
+                above, below, height = _painted_gaps(surf)
+                self.assertLessEqual(abs(above - below), 1, (size, above, below))
+                self.assertEqual(height, heights[size], size)
+                self.assertGreaterEqual(above, L(48), size)
+                first = gs.bottom_panel_rect(L)
+                for hm in ("1:11", "8:00", "12:59"):
                     self._at(hm)
-                    surf = pygame.Surface(size)
-                    gs.draw_idle(surf, L, now, wx, home_band=False)
-                    ink = _ink_top(surf)
-                    panel = gs.bottom_panel_rect(L)
-                    self.assertEqual(ink, size[1] - panel.bottom, (size, hm))
-                    self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L, now), (size, hm))
+                    self.assertEqual(gs.bottom_panel_rect(L), first, hm)
+        finally:
+            gs.UPDATES = old
 
 
 if __name__ == "__main__":

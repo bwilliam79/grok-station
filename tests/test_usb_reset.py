@@ -46,8 +46,8 @@ def _bound(root):
     })
 
 
-def make_tree(root, *, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet", vendor="0c76",
-              product_id="161f", card="0", card_id="M0", escape=False, auth_link=False):
+def make_tree(root, *, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet", vendor="328f",
+              product_id="0109", card="0", card_id="M0", escape=False, auth_link=False):
     """A tiny sysfs: card0 -> USB device 1-2, plus a hub parent and a sibling device."""
     usb = os.path.join(root, "devices", "usb1", "1-2")
     iface = os.path.join(usb, "1-2:1.0")
@@ -125,13 +125,16 @@ class UsbReset(unittest.TestCase):
             self.assertEqual(proc.stderr, "")
             self.assertEqual(_text(auth), "1")
 
-    def test_card_id_emeet_matches_when_the_product_string_does_not(self):
+    def test_name_alone_is_not_the_speakerphone(self):
+        """USB id 328f:0109 is the speakerphone. The word eMeet on another id is not."""
         mod = load()
         with tempfile.TemporaryDirectory() as root:
-            usb = make_tree(root, product="USB Audio", manufacturer="Generic", card_id="EMEET")
+            make_tree(root, product="eMeet OfficeCore M0 Plus", manufacturer="eMeet",
+                      card_id="EMEET", vendor="0c76", product_id="161f")
             with _bound(root):
-                mod.reset_card("EMEET", root)
-            self.assertEqual(_text(os.path.join(usb, "authorized")), "1")
+                with self.assertRaises(mod.Refuse) as cm:
+                    mod.reset_card("EMEET", root)
+            self.assertEqual(cm.exception.reason, "not speakerphone")
 
     def test_refuses_bad_input_and_paths_outside_the_device(self):
         mod = load()

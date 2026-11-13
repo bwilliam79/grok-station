@@ -5863,25 +5863,41 @@ def idle_clock_top(L, hhmm=None):
 def bottom_panel_rect(L):
     """The shared bottom panel.
 
-    Its bottom leaves the same margin as the first painted pixel of the tallest clock
-    digits and the weather. The rect does not depend on the current minute. A timer
-    strip lifts the bottom to content_limit and the panel gets shorter.
+    Height and width stay the 0.13.42 size (the gap under the block was L(PANEL_GAP),
+    and the bottom sat at the same margin as the top of the clock block). The top is
+    centered in the open band under that block. With timer chips showing, the band
+    ends at content_limit. The rect does not depend on the current minute. If the
+    0.13.42 height cannot fit in that band, the bottom stays on the limit and the
+    height is kept unless that would start above the screen.
     """
     global LAST_PANEL_RECT
     clock_top = idle_clock_top(L)
     top_off, bot_off = idle_block_offsets(L)
     block_top = clock_top + top_off
     block_bottom = clock_top + bot_off
-    panel_top = block_bottom + L(PANEL_GAP)
-    panel_bottom = L.h - block_top
-    if TIMER_CHIPS:
-        panel_bottom = min(panel_bottom, content_limit(L))
+    old_top = int(block_bottom + L(PANEL_GAP))
+    old_bottom = int(L.h - block_top)
+    height = max(1, old_bottom - old_top)
+    # The date font box hangs below its painted ink (1 px at 1280x800, 2 px at
+    # 2560x1706). Centering on that ink keeps the painted gaps within 1 px.
+    # Height still uses the font-box block, so it stays the 0.13.42 size.
+    date = font("body", L(IDLE_DATE_PX)).render("Monday, June 15", True, TEXT)
+    date_box = date.get_bounding_rect()
+    slack = date.get_height() - date_box.bottom if date_box.h else 0
+    ink_bottom = int(block_bottom) - slack
+    limit = int(content_limit(L) if TIMER_CHIPS else L.h)
+    space = limit - ink_bottom
+    if height <= space:
+        panel_top = ink_bottom + (space - height) // 2
+    else:
+        panel_top = limit - height
+        if panel_top < 0:
+            panel_top = 0
+            height = max(1, limit - panel_top)
     x, w = zpx(L, PANEL_X), zpx(L, PANEL_W)
     if x + w > L.w - zpx(L, 16):
         x, w = L.m, max(1, L.w - 2 * L.m)
-    if panel_top > panel_bottom - 1:
-        panel_top = max(0, panel_bottom - max(1, zpx(L, 120)))
-    rect = pygame.Rect(int(x), int(panel_top), int(w), max(1, int(panel_bottom) - int(panel_top)))
+    rect = pygame.Rect(int(x), int(panel_top), int(w), int(height))
     LAST_PANEL_RECT = rect
     return rect
 

@@ -163,7 +163,10 @@ class EqualMargins(unittest.TestCase):
             gs.draw_idle(surf, L, now, _Wx(True), home_band=False)
             ink = self._ink_top(surf)
             panel = gs.bottom_panel_rect(L)
-            self.assertEqual(ink, size[1] - panel.bottom, size)
+            # 0.13.41 matched this ink to the margin under the panel. 0.13.43 centers
+            # the panel, so the painted equality lives in the panel tests. The clock
+            # ink still starts above the panel.
+            self.assertLess(ink, panel.top, size)
             self.assertGreaterEqual(panel.top, gs.clock_date_bottom(L, now), size)
             self.assertLess(gs.LAST_STATUS_RECT.bottom, ink, size)
             self.assertEqual(panel, gs.enroll_tile_rect(L), size)

@@ -731,6 +731,62 @@ class SealReply(unittest.TestCase):
         doc = json.loads(SigningKey(seed).verify_key.verify(signed))
         self.assertEqual((doc["kind"], doc["op"], doc["card"]["type"]), ("show", "put", "sports"))
         self.assertEqual(doc["card"]["home"]["logo_url"], card["card"]["home"]["logo_url"])
+
+    def test_show_warns_on_a_college_abbreviation_and_still_posts(self):
+        self.provision()
+        self.rewrite_endpoint("https://127.0.0.1:9443")
+        card = {"v": 1, "op": "put", "id": "score", "priority": 10, "ttl_s": 600, "card": {
+            "v": 1, "type": "sports", "league": "NCAAM", "home_score": 70, "away_score": 68, "status": "final",
+            "home": {"name": "Arkansas", "abbr": "ARK",
+                     "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/ARK.png"},
+            "away": {"name": "Gonzaga", "abbr": "GONZ",
+                     "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/2250.png"}}}
+        tls = LocalTLS(self.server_ctx, 200)
+        tls.__enter__()
+        try:
+            rc, out, err = self.call(["show", "--persona", "kai"], json.dumps(card).encode())
+        finally:
+            tls.close()
+        self.assertEqual((rc, out), (0, ""), err)
+        self.assertEqual(err, "warning: college logo needs ESPN team id\n")
+        self.assertNotIn("http", err)
+        self.assertNotIn("ARK", err)
+        self.assertEqual(len(tls.posts), 1)
+        numeric = {"v": 1, "op": "put", "id": "score2", "priority": 10, "ttl_s": 600, "card": {
+            "v": 1, "type": "sports", "league": "NCAAM", "home_score": 1, "away_score": 0, "status": "final",
+            "home": {"name": "Arkansas", "abbr": "ARK",
+                     "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png"},
+            "away": {"name": "Kansas City", "abbr": "KC",
+                     "logo_url": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"}}}
+        tls = LocalTLS(self.server_ctx, 200)
+        tls.__enter__()
+        try:
+            rc, out, err = self.call(["show", "--persona", "kai"], json.dumps(numeric).encode())
+        finally:
+            tls.close()
+        self.assertEqual((rc, out, err), (0, "", ""))
+        self.assertEqual(len(tls.posts), 1)
+
+    def test_college_logo_check_matches_the_station(self):
+        sys.path.insert(0, os.path.join(ROOT, "app"))
+        import cards
+        samples = [
+            "https://a.espncdn.com/i/teamlogos/ncaa/500/ARK.png",
+            "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png",
+            "https://a.espncdn.com/i/teamlogos/ncaa/500/2250.png",
+            "https://a.espncdn.com/i/teamlogos/nfl/500/KC.png",
+            "https://a.espncdn.com/i/teamlogos/mens-college-basketball/500/ARK.png",
+            "https://a.espncdn.com/i/teamlogos/womens-college-basketball/500/gonz.png",
+            "https://a.espncdn.com/i/teamlogos/college-football/500/12.png",
+            "https://a.espncdn.com/i/teamlogos/ncaa-football/500/8.png",
+            "https://cdn.example.com/i/teamlogos/ncaa/500/ark.png",
+            "http://a.espncdn.com/i/teamlogos/ncaa/500/ark.png",
+            "https://a.espncdn.com/i/teamlogos/ncaa/500/ark.png?x=1",
+            "",
+            "https://localhost/i/teamlogos/ncaa/500/ark.png",
+        ]
+        for url in samples:
+            self.assertEqual(gs.college_logo_needs_id(url), cards.logo_known_missing(url), url)
         for bad in (b"not json", json.dumps({"op": "put", "kind": "reply"}).encode(), b"[1]"):
             tls = LocalTLS(self.server_ctx, 200)
             tls.__enter__()
