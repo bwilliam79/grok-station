@@ -55,6 +55,13 @@ class TimerGap(unittest.TestCase):
             self.assertLessEqual(panel.bottom, gs.content_limit(layout), size)
             self.assertGreaterEqual(panel.top, 0, size)
 
+    def test_date_slack_is_measured_once_per_layout(self):
+        gs._DATE_SLACK.clear()
+        layout = gs.Layout(1280, 800)
+        gs.bottom_panel_rect(layout)
+        gs.bottom_panel_rect(layout)
+        self.assertEqual(len(gs._DATE_SLACK), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

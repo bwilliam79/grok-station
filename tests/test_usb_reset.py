@@ -5,6 +5,7 @@ so they point the helper at a fake sysfs tree. sysfs_root(euid=0) still ignores 
 """
 import importlib.machinery
 import importlib.util
+import inspect
 import os
 import stat
 import subprocess
@@ -124,6 +125,10 @@ class UsbReset(unittest.TestCase):
             self.assertEqual(proc.stdout, "ok\n")
             self.assertEqual(proc.stderr, "")
             self.assertEqual(_text(auth), "1")
+
+    def test_speakerphone_check_takes_the_device_only(self):
+        mod = load()
+        self.assertEqual(list(inspect.signature(mod.is_speakerphone).parameters), ["usb"])
 
     def test_name_alone_is_not_the_speakerphone(self):
         """USB id 328f:0109 is the speakerphone. The word eMeet on another id is not."""
