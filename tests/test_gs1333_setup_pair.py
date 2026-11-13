@@ -538,7 +538,7 @@ class HelperCommands(unittest.TestCase):
 
         def post(endpoint, body, pin, path):
             posted.append((endpoint, path, body, pin))
-            return 200, None
+            return 200, None, None
 
         with mock.patch.object(helper, "_setup_paths", lambda s: "/tmp"), \
                 mock.patch.object(helper, "refuse_unsafe_location"), \
