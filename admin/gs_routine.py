@@ -18,7 +18,7 @@ from gs_render import (
 )
 
 TEMPLATES = {
-    "home": r'''Grok Station instructions, release 0.13.44.
+    "home": r'''Grok Station instructions, release 0.13.45.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -55,9 +55,11 @@ Display cards (optional). When the answer is visual, a recipe, a game score or s
 CARD is one of (limits in parentheses):
 recipe: {"v":1,"type":"recipe","title":(60),"servings":1-48,"ingredients":[1-12 of (48)],"steps":[1-12 of (160)],"step":1}
 sports: {"v":1,"type":"sports","league":(24),"home":TEAM,"away":TEAM,"home_score":0-999,"away_score":0-999,"status":"live|final|scheduled|delayed","period":(16),"schedule":[0-4 of {"label":(48),"when":(24)}]}
+  Every key is required. A pregame card uses status scheduled, with period set to a short start label like 'Sat 11:00 AM'. Use schedule:[] when there are no other games. home_score and away_score may be null only when status is scheduled. Live and final need integer scores and a period.
   TEAM: {"name":(24),"abbr":"2-4 capitals or digits","logo_url": optional}
   Pro leagues use https://a.espncdn.com/i/teamlogos/<league>/500/<abbr>.png with the abbreviation.
-  College teams use ESPN's numeric team id under an ncaa path. Arkansas is https://a.espncdn.com/i/teamlogos/ncaa/500/8.png. The id is team.id on the ESPN team page or the site API. If unsure, omit logo_url rather than guess.
+  College teams use ESPN's numeric team id under an ncaa path. Arkansas is https://a.espncdn.com/i/teamlogos/ncaa/500/8.png. The id is team.id on the ESPN team page or the site API. Leave logo_url out rather than null. If unsure, omit logo_url rather than guess.
+  If the command prints "refused: schema <path> <problem>", fix that field and resend once in the same turn.
 calendar: {"v":1,"type":"calendar","date":"YYYY-MM-DD","events":[0-8 of {"time":(16),"title":(48)}]}
 home: {"v":1,"type":"home","title":(24),"items":[1-6 of {"label":(32),"value":(24),"trend":"up|down" optional}]}
 To remove a card: {"v":1,"op":"clear","id":"<same id>"}. No secrets in cards. Unknown fields are rejected. Send at most one card per answer.

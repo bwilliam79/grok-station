@@ -668,8 +668,14 @@ class Handler(BaseHTTPRequestHandler):
         """Localhost card put/clear. The log is the op, the bot, and the id. Never the text or a logo URL."""
         try:
             kind, bot, cid = apply_show(j, logo_cache(), deck())
-        except cards.CardError:
-            return self._reply(400, {"error": "bad card"})
+        except cards.CardError as err:
+            detail = err.detail if cards.show_detail_ok(getattr(err, "detail", None)) else None
+            who = j.get("bot") if isinstance(j, dict) else None
+            print(cards.show_refused_line(who, err.reason, detail), flush=True)
+            body = {"error": "bad card", "reason": err.reason if err.reason in ("schema", "type", "ttl", "size", "escape") else "schema"}
+            if detail:
+                body["detail"] = detail
+            return self._reply(400, body)
         tile = None
         if kind == "put":
             page = deck().get(bot, cid)
@@ -908,7 +914,7 @@ def feed_identity(now=None):
         if c["type"] == "recipe":
             mark = str(c["step"])
         elif c["type"] == "sports":
-            mark = f"{c['home_score']}-{c['away_score']}-{c['status']}"
+            mark = "%s-%s-%s" % (_score_label(c.get("home_score")), _score_label(c.get("away_score")), c["status"])
         else:
             mark = str(len(c["events"]))
         full = f"{cur['bot']}:{cur['id']}:{c['type']}:{mark}"
@@ -1228,6 +1234,8 @@ def check_mic(now, fetch, cards_text, stale_s=30, match="emeet", grace_s=10, sys
         return {"ok": False, "detail": "speakerphone missing"}
     if not isinstance(payload, dict):
         return {"ok": False, "detail": "wake listener down"}
+    if payload.get("deaf") in ("stall", "silence"):
+        return {"ok": False, "detail": "capture deaf"}
     raw = payload.get("audio_at") if payload.get("audio_at") else payload.get("level_at")
     try:
         alive_at = float(raw)
@@ -2852,6 +2860,7 @@ def content_limit(L):
 
 
 def draw_timer_chips(surf, rect, timers, epoch):
+    """The timer chips. CHIP_GAP is the clear space from the tile bottom to the ink drawn here."""
     se = min(surf.get_width(), surf.get_height())
     px = tpx(se, 0.0328)
     fl, fn = font("body", px), font("mono", px)
@@ -4908,6 +4917,13 @@ def _card_chrome(surf, L, rect):
     pygame.draw.rect(surf, RULE, rect, max(2, L(2)), border_radius=L(28))
 
 
+def _score_label(score):
+    """A missing pregame score is a dash. A number is the number. Never the word None."""
+    if score is None:
+        return "\u2013"
+    return str(score)
+
+
 def _sports_side_label(card):
     """The right-hand status word.
 
@@ -4958,8 +4974,10 @@ def draw_sports(surf, L, card, rect):
     col_w = max(40, rect.w // 2 - L(72))
     avail = max(0, col_bot - col_top)
     face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
+    home_score = _score_label(card.get("home_score"))
+    away_score = _score_label(card.get("away_score"))
     mark, name_px, score_px, gap = _sports_column_px(
-        L, avail, col_w, (card["home_score"], card["away_score"]), face)
+        L, avail, col_w, (home_score, away_score), face)
     # The name and the score keep the fitted stack. The logo uses SPORTS_LOGO_PX and
     # sits on the bottom of that slot, so a different mark does not push the text.
     logo_px = L(SPORTS_LOGO_PX) if face else 0
@@ -4969,7 +4987,7 @@ def draw_sports(surf, L, card, rect):
     def paint_side(team, score, cx):
         image = team_face(team, logo_px) if logo_px else None
         name = _line(surf, "display", name_px, team["name"], TEXT, col_w)
-        sc = font("display", score_px).render(str(score), True, TEXT)
+        sc = font("display", score_px).render(_score_label(score), True, MUTED if score is None else TEXT)
         face_h = mark if image is not None else 0
         face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), sc.get_height(), gap)
         if image is not None and face_y is not None:
@@ -5458,7 +5476,9 @@ def chip_text(card):
     """(status word, live?, league, main) for a recipe chip. Calendar: "Next 6:30 · Practice"."""
     if card.get("type") == "sports":
         live = card.get("status") == "live"
-        main = f"{card['home'].get('abbr') or card['home']['name']} {card['home_score']} – {card['away_score']} {card['away'].get('abbr') or card['away']['name']}"
+        main = "%s %s \u2013 %s %s" % (
+            card["home"].get("abbr") or card["home"]["name"], _score_label(card.get("home_score")),
+            _score_label(card.get("away_score")), card["away"].get("abbr") or card["away"]["name"])
         return ("LIVE" if live else str(card.get("status", "")).upper()), live, card.get("league", ""), main
     if card.get("type") == "recipe":
         return "", False, "", card.get("title") or "Recipe"
@@ -5750,7 +5770,8 @@ _ENROLL_SQUARES = 5
 PANEL_X = 128
 PANEL_W = 2304
 PANEL_GAP = 48  # design px, applied with L() so 1280x800 and 2560 both keep a clear band
-CHIP_GAP = 24  # design px from the tile bottom to the timer chip ink
+# draw_timer_chips paints the chip ink. This is the design gap from the tile bottom to that ink.
+CHIP_GAP = 24
 # Idle time and date, sized so that block matches the weather block. Weather sizes stay put.
 IDLE_CLOCK_PX = 238
 IDLE_DATE_PX = 60

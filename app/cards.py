@@ -45,14 +45,85 @@ _PUT_KEYS = frozenset(("v", "op", "id", "priority", "ttl_s", "card", "kind", "no
 _CLEAR_KEYS = frozenset(("v", "op", "id", "kind", "nonce", "exp_ms"))
 _NONCE_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 _REASONS = frozenset(("type", "schema", "size", "ttl", "escape"))
+# A refused show names the field and the problem. The value and the card text never appear.
+_DETAIL_PROBLEMS = (
+    "empty", "not int", "not text", "unexpected", "invalid", "too long", "not object", "not list",
+)
+_DETAIL = re.compile(
+    r"^[a-z][a-z0-9_]*(?:\.[A-Za-z0-9_]{1,32}){0,6} (?:"
+    + "|".join(re.escape(p) for p in _DETAIL_PROBLEMS) + r")$")
+_KEY_SEG = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,31}")
+_path_local = threading.local()
+
+
+def show_detail_ok(value):
+    """True when value is a log-safe 'path problem' label. No field value and no card text."""
+    return isinstance(value, str) and len(value) <= 80 and _DETAIL.fullmatch(value) is not None
+
+
+def show_refused_line(bot, check, detail=None):
+    """One journal line for a refused show. bot, check, and the path. Never the card text or a URL."""
+    who = bot if bot_slug_ok(bot) else "-"
+    why = check if isinstance(check, str) and re.fullmatch(r"[a-z]{1,16}", check) else "schema"
+    field = detail if show_detail_ok(detail) else "-"
+    return "show refused bot=%s check=%s %s" % (who, why, field)
+
+
+def _path_stack():
+    stack = getattr(_path_local, "stack", None)
+    if stack is None:
+        stack = []
+        _path_local.stack = stack
+    return stack
+
+
+class _at:
+    """Push one path segment for the CardError detail. Pop on the way out, including on error."""
+
+    def __init__(self, name):
+        self.name = name if isinstance(name, str) and _KEY_SEG.fullmatch(name) else "field"
+
+    def __enter__(self):
+        _path_stack().append(self.name)
+
+    def __exit__(self, *_exc):
+        _path_stack().pop()
+
+
+def _seg(name):
+    if isinstance(name, str) and _KEY_SEG.fullmatch(name):
+        return name
+    return "field"
+
+
+def _where(field=None):
+    parts = list(_path_stack())
+    if field:
+        parts.append(_seg(field))
+    if not parts:
+        return None
+    return ".".join(parts)
+
+
+def _fail(reason, problem, field=None):
+    path = _where(field)
+    detail = (path + " " + problem) if path and problem in _DETAIL_PROBLEMS else None
+    if not show_detail_ok(detail):
+        detail = None
+    raise CardError(reason, detail)
 
 
 class CardError(ValueError):
-    """A card or show document the station must not keep. reason is safe to log."""
+    """A card or show document the station must not keep. reason is safe to log.
 
-    def __init__(self, reason="schema"):
+    detail, when set, is the dotted field path and the problem (sports.period empty).
+    It never includes the field's value or the card text.
+    """
+
+    def __init__(self, reason="schema", detail=None):
         self.reason = reason if reason in _REASONS else "schema"
-        super().__init__(self.reason)
+        self.detail = detail if show_detail_ok(detail) else None
+        super().__init__(self.detail or self.reason)
 
 
 def bot_slug_ok(name):
@@ -119,14 +190,18 @@ def rotate_s(raw):
     return upd_rotate_s(raw)
 
 
-def escape_text(value, cap):
+def escape_text(value, cap, field=None):
     """NFKC, drop markup and control/bidi characters, collapse spaces, then enforce the cap.
 
     Idempotent. A value that is not text, or that is empty after cleaning, is an error.
     The cap is a schema failure (the text was too long), not an escape failure.
+    None is empty: a missing score clock is the same problem as a blank one.
+    field names the path segment. The value itself is never part of the error.
     """
+    if value is None:
+        _fail("escape", "empty", field)
     if not isinstance(value, str):
-        raise CardError("escape")
+        _fail("escape", "not text", field)
     s = unicodedata.normalize("NFKC", value)
     s = re.sub(r"<[^>]*>", "", s)
     out = []
@@ -139,15 +214,17 @@ def escape_text(value, cap):
         out.append(ch)
     cleaned = " ".join("".join(out).split())
     if not cleaned:
-        raise CardError("escape")
+        _fail("escape", "empty", field)
     if len(cleaned) > cap:
-        raise CardError("schema")
+        _fail("schema", "too long", field)
     return cleaned
 
 
-def _int(value, lo, hi):
-    if type(value) is not int or value < lo or value > hi:
-        raise CardError("schema")
+def _int(value, lo, hi, field=None):
+    if type(value) is bool or type(value) is not int:
+        _fail("schema", "not int", field)
+    if value < lo or value > hi:
+        _fail("schema", "invalid", field)
     return value
 
 
@@ -161,10 +238,15 @@ def _raw_size(card):
 
 
 def _keys(doc, allowed, required=None):
-    if not isinstance(doc, dict) or not set(doc) <= allowed:
-        raise CardError("schema")
+    if not isinstance(doc, dict):
+        _fail("schema", "not object")
+    extra = set(doc) - allowed
+    if extra:
+        names = sorted(k for k in extra if isinstance(k, str))
+        _fail("schema", "unexpected", names[0] if names else "field")
     if required is not None and not required <= set(doc):
-        raise CardError("schema")
+        missing = sorted(required - set(doc))
+        _fail("schema", "empty", missing[0] if missing else "field")
 
 
 def host_ok(host):
@@ -742,30 +824,35 @@ class LogoCache:
         self._evict()
 
 
-def _list(items, lo, hi, cap, clean):
-    if not isinstance(items, list) or not lo <= len(items) <= hi:
-        raise CardError("schema")
-    return [clean(item, cap) for item in items]
+def _list(items, lo, hi, cap, clean, field=None):
+    if not isinstance(items, list):
+        _fail("schema", "not list", field)
+    if not lo <= len(items) <= hi:
+        _fail("schema", "invalid", field)
+    if not field:
+        return [clean(item, cap) for item in items]
+    with _at(field):
+        return [clean(item, cap) for item in items]
 
 
 def _team(doc):
     _keys(doc, {"name", "abbr", "logo_url", "logo_id", "logo_badge"}, {"name", "abbr"})
     if "logo_url" in doc and "logo_id" in doc:
-        raise CardError("schema")
-    out = {"name": escape_text(doc.get("name"), 24), "abbr": doc.get("abbr")}
+        _fail("schema", "unexpected", "logo_id")
+    out = {"name": escape_text(doc.get("name"), 24, "name"), "abbr": doc.get("abbr")}
     if not isinstance(out["abbr"], str) or not ABBR.fullmatch(out["abbr"]):
-        raise CardError("schema")
+        _fail("schema", "invalid", "abbr")
     if "logo_url" in doc:
-        if not logo_url_shape(doc.get("logo_url")):
-            raise CardError("schema")
+        if doc.get("logo_url") is None or not logo_url_shape(doc.get("logo_url")):
+            _fail("schema", "invalid", "logo_url")
         out["logo_url"] = canonical_logo_url(doc["logo_url"])
     if "logo_id" in doc:
         if not isinstance(doc.get("logo_id"), str) or not LOGO_ID.fullmatch(doc["logo_id"]):
-            raise CardError("schema")
+            _fail("schema", "invalid", "logo_id")
         out["logo_id"] = doc["logo_id"]
     if "logo_badge" in doc:
         if doc.get("logo_badge") is not True:
-            raise CardError("schema")
+            _fail("schema", "invalid", "logo_badge")
         out["logo_badge"] = True
     return out
 
@@ -787,13 +874,18 @@ def _dish_name(value):
 
 
 def _recipe(card):
+    with _at("recipe"):
+        return _recipe_body(card)
+
+
+def _recipe_body(card):
     _keys(card, {"type", "v", "title", "servings", "ingredients", "steps", "step", "dish"},
           {"type", "v", "title", "servings", "ingredients", "steps", "step"})
-    steps = _list(card.get("steps"), 1, 12, 160, escape_text)
-    out = {"type": "recipe", "v": 1, "title": escape_text(card.get("title"), 60),
-           "servings": _int(card.get("servings"), 1, 48),
-           "ingredients": _list(card.get("ingredients"), 1, 12, 48, escape_text),
-           "steps": steps, "step": _int(card.get("step"), 1, len(steps))}
+    steps = _list(card.get("steps"), 1, 12, 160, escape_text, "steps")
+    out = {"type": "recipe", "v": 1, "title": escape_text(card.get("title"), 60, "title"),
+           "servings": _int(card.get("servings"), 1, 48, "servings"),
+           "ingredients": _list(card.get("ingredients"), 1, 12, 48, escape_text, "ingredients"),
+           "steps": steps, "step": _int(card.get("step"), 1, len(steps), "step")}
     if "dish" in card:
         # A malformed dish is dropped, not the recipe: the card still shows (R2-5).
         try:
@@ -803,60 +895,117 @@ def _recipe(card):
     return out
 
 
+def _scheduled_period(card):
+    """A pregame period may be missing, null, or blank. Anything else is a start label."""
+    if "period" not in card or card.get("period") is None:
+        return ""
+    value = card.get("period")
+    if isinstance(value, str) and not value.strip():
+        return ""
+    if not isinstance(value, str):
+        _fail("escape", "not text", "period")
+    try:
+        return escape_text(value, 16, "period")
+    except CardError as err:
+        if err.reason == "escape":
+            return ""
+        raise
+
+
+def _scheduled_score(card, field):
+    """A pregame score may be missing or null. A present value is still 0..999."""
+    if field not in card or card.get(field) is None:
+        return None
+    return _int(card.get(field), 0, 999, field)
+
+
 def _sports(card):
-    _keys(card, {"type", "v", "league", "home", "away", "home_score", "away_score", "status", "period", "schedule"},
-          {"type", "v", "league", "home", "away", "home_score", "away_score", "status", "period", "schedule"})
-    if card.get("status") not in STATUSES:
-        raise CardError("schema")
-    sched = card.get("schedule")
-    if not isinstance(sched, list) or len(sched) > 4:
-        raise CardError("schema")
-    games = []
-    for g in sched:
-        _keys(g, {"label", "when"}, {"label", "when"})
-        games.append({"label": escape_text(g.get("label"), 48), "when": escape_text(g.get("when"), 24)})
-    return {"type": "sports", "v": 1, "league": escape_text(card.get("league"), 24),
-            "home": _team(card.get("home")), "away": _team(card.get("away")),
-            "home_score": _int(card.get("home_score"), 0, 999), "away_score": _int(card.get("away_score"), 0, 999),
-            "status": card["status"], "period": escape_text(card.get("period"), 16), "schedule": games}
+    with _at("sports"):
+        if not isinstance(card, dict):
+            _fail("schema", "not object")
+        pregame = card.get("status") == "scheduled"
+        allowed = {"type", "v", "league", "home", "away", "home_score", "away_score", "status", "period", "schedule"}
+        required = {"type", "v", "league", "home", "away", "status", "schedule"}
+        if not pregame:
+            required |= {"home_score", "away_score", "period"}
+        _keys(card, allowed, required)
+        if card.get("status") not in STATUSES:
+            _fail("schema", "invalid", "status")
+        sched = card.get("schedule")
+        if not isinstance(sched, list):
+            _fail("schema", "not list", "schedule")
+        if len(sched) > 4:
+            _fail("schema", "invalid", "schedule")
+        games = []
+        for game in sched:
+            with _at("schedule"):
+                _keys(game, {"label", "when"}, {"label", "when"})
+                games.append({"label": escape_text(game.get("label"), 48, "label"),
+                              "when": escape_text(game.get("when"), 24, "when")})
+        if pregame:
+            period = _scheduled_period(card)
+            home_score = _scheduled_score(card, "home_score")
+            away_score = _scheduled_score(card, "away_score")
+        else:
+            period = escape_text(card.get("period"), 16, "period")
+            home_score = _int(card.get("home_score"), 0, 999, "home_score")
+            away_score = _int(card.get("away_score"), 0, 999, "away_score")
+        with _at("home"):
+            home = _team(card.get("home"))
+        with _at("away"):
+            away = _team(card.get("away"))
+        return {"type": "sports", "v": 1, "league": escape_text(card.get("league"), 24, "league"),
+                "home": home, "away": away,
+                "home_score": home_score, "away_score": away_score,
+                "status": card["status"], "period": period, "schedule": games}
 
 
 def _date(value):
-    if not isinstance(value, str) or not DATE_RE.fullmatch(value):
-        raise CardError("schema")
+    if value is None or not isinstance(value, str) or not DATE_RE.fullmatch(value):
+        _fail("schema", "invalid", "date")
     month, day = int(value[5:7]), int(value[8:10])
     if not (1 <= month <= 12 and 1 <= day <= 31):
-        raise CardError("schema")
+        _fail("schema", "invalid", "date")
     return value
 
 
 def _calendar(card):
-    _keys(card, {"type", "v", "date", "events"}, {"type", "v", "date", "events"})
-    events = card.get("events")
-    if not isinstance(events, list) or len(events) > 8:
-        raise CardError("schema")
-    rows = []
-    for ev in events:
-        _keys(ev, {"time", "title"}, {"time", "title"})
-        rows.append({"time": escape_text(ev.get("time"), 16), "title": escape_text(ev.get("title"), 48)})
-    return {"type": "calendar", "v": 1, "date": _date(card.get("date")), "events": rows}
+    with _at("calendar"):
+        _keys(card, {"type", "v", "date", "events"}, {"type", "v", "date", "events"})
+        events = card.get("events")
+        if not isinstance(events, list):
+            _fail("schema", "not list", "events")
+        if len(events) > 8:
+            _fail("schema", "invalid", "events")
+        rows = []
+        for ev in events:
+            with _at("events"):
+                _keys(ev, {"time", "title"}, {"time", "title"})
+                rows.append({"time": escape_text(ev.get("time"), 16, "time"),
+                             "title": escape_text(ev.get("title"), 48, "title")})
+        return {"type": "calendar", "v": 1, "date": _date(card.get("date")), "events": rows}
 
 
 def _home(card):
-    _keys(card, {"type", "v", "title", "items"}, {"type", "v", "title", "items"})
-    items = card.get("items")
-    if not isinstance(items, list) or not 1 <= len(items) <= 6:
-        raise CardError("schema")
-    rows = []
-    for item in items:
-        _keys(item, {"label", "value", "trend"}, {"label", "value"})
-        row = {"label": escape_text(item.get("label"), 32), "value": escape_text(item.get("value"), 24)}
-        if "trend" in item:
-            if item.get("trend") not in TRENDS:
-                raise CardError("schema")
-            row["trend"] = item["trend"]
-        rows.append(row)
-    return {"type": "home", "v": 1, "title": escape_text(card.get("title"), 24), "items": rows}
+    with _at("home"):
+        _keys(card, {"type", "v", "title", "items"}, {"type", "v", "title", "items"})
+        items = card.get("items")
+        if not isinstance(items, list):
+            _fail("schema", "not list", "items")
+        if not 1 <= len(items) <= 6:
+            _fail("schema", "invalid", "items")
+        rows = []
+        for item in items:
+            with _at("items"):
+                _keys(item, {"label", "value", "trend"}, {"label", "value"})
+                row = {"label": escape_text(item.get("label"), 32, "label"),
+                       "value": escape_text(item.get("value"), 24, "value")}
+                if "trend" in item:
+                    if item.get("trend") not in TRENDS:
+                        _fail("schema", "invalid", "trend")
+                    row["trend"] = item["trend"]
+                rows.append(row)
+        return {"type": "home", "v": 1, "title": escape_text(card.get("title"), 24, "title"), "items": rows}
 
 
 _BUILD = {"recipe": _recipe, "sports": _sports, "calendar": _calendar, "home": _home}
@@ -931,6 +1080,25 @@ def validate_show(doc, ttl_max):
         raise CardError("ttl")
     card = validate_card(doc.get("card"))
     return {"v": 1, "op": "put", "id": doc["id"], "priority": priority, "ttl_s": ttl_s, "card": card, **replay}
+
+
+def validate_helper_show(doc, ttl_max=None):
+    """Check a gs-seal-reply show body before kind, nonce and exp_ms are added.
+
+    The same validate_show / validate_update the relay and the station run. The helper
+    calls this before it opens a connection. Raises CardError.
+    """
+    if not isinstance(doc, dict):
+        raise CardError("schema", "show not object")
+    body = dict(doc)
+    body["kind"] = "show"
+    # 16 bytes, url-safe, no padding. Shape only: validate_show does not read the clock.
+    body["nonce"] = base64.urlsafe_b64encode(b"\x11" * 16).decode("ascii").rstrip("=")
+    body["exp_ms"] = 1
+    cap = TTL_HARD if ttl_max is None else ttl_max
+    if body.get("op") in UPDATE_OPS:
+        return validate_update(body)
+    return validate_show(body, cap)
 
 
 def _logo_file_ready(cache, logo_id):
@@ -1921,7 +2089,8 @@ class UpdateFeed:
                 try:
                     kept["kind"] = escape_text(kind[:18], 18)
                 except CardError:
-                    return
+                    # A kind that cleans to empty drops this row. The rest of the feed stays.
+                    continue
             loaded[(row["bot"], row["id"])] = kept
         clean = {}
         for key, val in rules.items():

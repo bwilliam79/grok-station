@@ -713,6 +713,7 @@ class SealReply(unittest.TestCase):
         self.rewrite_endpoint("https://127.0.0.1:9443")
         card = {"v": 1, "op": "put", "id": "score", "priority": 10, "ttl_s": 600, "card": {
             "v": 1, "type": "sports", "league": "NFL", "home_score": 21, "away_score": 17, "status": "final",
+            "period": "Final", "schedule": [],
             "home": {"name": "Bears", "abbr": "CHI", "logo_url": "https://a.espncdn.com/i/teamlogos/nfl/500/chi.png"},
             "away": {"name": "Packers", "abbr": "GB"}}}
         tls = LocalTLS(self.server_ctx, 200)
@@ -737,6 +738,7 @@ class SealReply(unittest.TestCase):
         self.rewrite_endpoint("https://127.0.0.1:9443")
         card = {"v": 1, "op": "put", "id": "score", "priority": 10, "ttl_s": 600, "card": {
             "v": 1, "type": "sports", "league": "NCAAM", "home_score": 70, "away_score": 68, "status": "final",
+            "period": "Final", "schedule": [],
             "home": {"name": "Arkansas", "abbr": "ARK",
                      "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/ARK.png"},
             "away": {"name": "Gonzaga", "abbr": "GONZ",
@@ -755,6 +757,7 @@ class SealReply(unittest.TestCase):
         self.assertEqual(len(tls.posts), 1)
         numeric = {"v": 1, "op": "put", "id": "score2", "priority": 10, "ttl_s": 600, "card": {
             "v": 1, "type": "sports", "league": "NCAAM", "home_score": 1, "away_score": 0, "status": "final",
+            "period": "Final", "schedule": [],
             "home": {"name": "Arkansas", "abbr": "ARK",
                      "logo_url": "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png"},
             "away": {"name": "Kansas City", "abbr": "KC",

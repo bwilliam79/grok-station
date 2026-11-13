@@ -131,6 +131,9 @@ Never route the admin HTTPS port (which also carries `/voice/reply` and `/voice/
 
 Locked out of the admin page (for example, your computer is on a different subnet or a VPN)? SSH to the Pi and forward the admin port over loopback, for example `ssh -L 8443:127.0.0.1:443 <user>@<pi-address>`, then open `https://127.0.0.1:8443`. Loopback is always allowed. To reach it from a VPN or another private subnet, add that network under System, Password and security, Allowed networks (up to 4 private IPv4 networks, each /16 to /32, for example `192.168.77.0/24`). It is empty by default, and saving it always asks for the admin password.
 
+### 0.13.45
+A sports card that the station cannot show now says which field failed (`refused: schema sports.period empty`, for example). The home helper checks the card before it sends it, so a bad card never leaves the computer. A game that has not started can use status `scheduled`, a short start label such as `Sat 11:00 AM` in the period, and no score yet. The tile shows that start time and a dash instead of a score. A live or final game still needs both scores and a period. Leave a team logo out when you do not have one, instead of sending null. College logos still use ESPN's numeric team id. If the helper names a field, fix that field and send the card once more in the same turn. If the speakerphone stays connected but the station stops hearing you, a minute of no audio frames, or of exact silence, resets that USB port the same way as a stuck microphone. A quiet room does not. The mic icon shows the problem until sound comes back. The home helper is 0.13.44. Press Update on the main bot first.
+
 ### 0.13.44
 With a timer showing, the lower tile keeps its top and leaves a clear gap above the timer chips: 16 px at 1280x800 and 32 px at 2560x1706. The card's content stays centered in the shorter tile. Without a timer, the tile is unchanged. The home helper stays 0.13.43. Press Update on the main bot first.
 

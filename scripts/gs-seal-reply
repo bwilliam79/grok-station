@@ -517,6 +517,60 @@ def refusal_line(reason):
     return REFUSAL_LINES.get(reason, "refused") if isinstance(reason, str) else "refused"
 
 
+def load_show_cards():
+    """The station's cards.py, the one validator the helper, the relay and the station share.
+
+    Beside this script when install-home.sh fetched it, or ../app/cards.py in a checkout.
+    """
+    cached = getattr(load_show_cards, "_mod", None)
+    if cached is not None:
+        return cached
+    import importlib.util
+    here = os.path.dirname(os.path.realpath(__file__))
+    candidates = (
+        os.path.join(here, "cards.py"),
+        os.path.normpath(os.path.join(here, os.pardir, "app", "cards.py")),
+    )
+    for path in candidates:
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+            continue
+        spec = importlib.util.spec_from_file_location("gs_show_cards", path)
+        if spec is None or spec.loader is None:
+            continue
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        load_show_cards._mod = mod
+        return mod
+    return None
+
+
+def show_failure_line(reason, detail=None):
+    """stderr for a refused show. A safe path is 'refused: schema <path> <problem>'."""
+    mod = load_show_cards()
+    if mod is not None and mod.show_detail_ok(detail):
+        return "refused: schema " + detail
+    return refusal_line(reason)
+
+
+def detail_from_body(raw):
+    """A safe field path from a refused show body, or None. The card text is never kept."""
+    try:
+        doc = json.loads(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    mod = load_show_cards()
+    if mod is None:
+        return None
+    detail = doc.get("detail")
+    return detail if mod.show_detail_ok(detail) else None
+
+
 def reason_from_body(raw):
     """The station's reason code from a refused reply's JSON body, or None. Only known codes."""
     try:
@@ -574,8 +628,8 @@ def _run_post(endpoint, body, pin, path):
     except Exception as exc:
         return 0, post_error(exc)
     if status == 200:
-        return 200, None
-    return status, post_failure(status, got.get("reason"))
+        return 200, None, None
+    return status, post_failure(status, got.get("reason")), got.get("detail")
 
 
 def _require_paired_key(slug):
@@ -603,6 +657,7 @@ def post_once(endpoint, body, pin, path="/voice/reply", out=None):
         raw = resp.read(8192)
         if out is not None and resp.status != 200:
             out["reason"] = reason_from_body(raw)
+            out["detail"] = detail_from_body(raw)
         return resp.status
     finally:
         conn.close()
@@ -771,7 +826,7 @@ def cmd_reply(slug, request_id, kind, interim=False):
             raise Refused()
         claim_rid(request_id, interim)
         t0 = time.monotonic()
-        status, why = _run_post(endpoint, body, pin, "/voice/reply")
+        status, why, _detail = _run_post(endpoint, body, pin, "/voice/reply")
         append_log(request_id, slug, status, int((time.monotonic() - t0) * 1000))
         if status != 200:
             raise Refused(why)
@@ -811,7 +866,7 @@ def cmd_avatar(slug, voice=None):
         except Exception:
             raise Refused()
         t0 = time.monotonic()
-        status, why = _run_post(endpoint, body, pin, "/voice/avatar")
+        status, why, _detail = _run_post(endpoint, body, pin, "/voice/avatar")
         append_avatar_log(slug, status, int((time.monotonic() - t0) * 1000))
         if status != 200:
             raise Refused(why)
@@ -999,8 +1054,18 @@ def _warn_college_logos(doc):
         sys.stderr.write("warning: college logo needs ESPN team id\n")
 
 
+def _refuse_schema(detail=None):
+    err = Refused("schema")
+    err.detail = detail
+    raise err
+
+
 def cmd_show(slug):
-    """Seal the card JSON on stdin and post it once to /voice/show. The station checks the card itself."""
+    """Seal the card JSON on stdin and post it once to /voice/show.
+
+    The same validator the station uses runs here first. A schema miss prints
+    one line and does not open a connection.
+    """
     if not slug_ok(slug):
         raise Refused()
     text = read_stdin()
@@ -1012,6 +1077,13 @@ def cmd_show(slug):
         raise Refused()
     if not isinstance(doc, dict) or doc.get("op") not in ("put", "clear", "update", "update_clear") or any(k in doc for k in ("kind", "nonce", "exp_ms", "bot")):
         raise Refused()
+    cards_mod = load_show_cards()
+    if cards_mod is None:
+        _refuse_schema()
+    try:
+        cards_mod.validate_helper_show(doc)
+    except cards_mod.CardError as err:
+        _refuse_schema(getattr(err, "detail", None))
     _warn_college_logos(doc)
     if doc.get("op") == "update" and not update_show_ok(doc):
         raise Refused()
@@ -1037,9 +1109,11 @@ def cmd_show(slug):
             raise
         except Exception:
             raise Refused()
-        status, why = _run_post(endpoint, body, pin, "/voice/show")
+        status, why, detail = _run_post(endpoint, body, pin, "/voice/show")
         if status != 200:
-            raise Refused(why)
+            err = Refused(why)
+            err.detail = detail
+            raise err
         return 0
     finally:
         _wipe(seed)
@@ -1137,7 +1211,7 @@ def cmd_setup_ack(slug, request_id, status, reason=None):
             raise Refused()
         claim_rid(request_id)
         t0 = time.monotonic()
-        status_code, why = _run_post(endpoint, body, pin, "/voice/reply")
+        status_code, why, _detail = _run_post(endpoint, body, pin, "/voice/reply")
         append_log(request_id, slug, status_code, int((time.monotonic() - t0) * 1000))
         if status_code != 200:
             raise Refused(why)
@@ -1223,7 +1297,7 @@ def cmd_setup_pair(slug, request_id, computer_name):
         sealed = SealedBox(PublicKey(station_pub)).encrypt(sk.sign(msg))
         outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
         body = json.dumps(outer, separators=(",", ":")).encode("ascii")
-        status_code, why = _run_post(endpoint, body, pin, "/voice/reply")
+        status_code, why, _detail = _run_post(endpoint, body, pin, "/voice/reply")
         if status_code != 200:
             raise Refused(why)
         return 0
@@ -1371,7 +1445,12 @@ def main(argv=None):
         sys.stderr.write(exc.message + "\n")
         return 1
     except Refused as exc:
-        sys.stderr.write(refusal_line(getattr(exc, "reason", None)) + "\n")
+        reason = getattr(exc, "reason", None)
+        detail = getattr(exc, "detail", None)
+        if reason == "schema" or (isinstance(detail, str) and detail):
+            sys.stderr.write(show_failure_line(reason, detail) + "\n")
+        else:
+            sys.stderr.write(refusal_line(reason) + "\n")
         return 1
     except Exception:
         sys.stderr.write("refused\n")

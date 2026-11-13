@@ -1,4 +1,4 @@
-# Bot Update and Set up lifecycle (authoritative, 0.13.44)
+# Bot Update and Set up lifecycle (authoritative, 0.13.45)
 
 This is the spec for how the station updates a bot's instructions and sets up a new bot through the main bot. It
 covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the relay (`relay/relay.py`,
@@ -7,6 +7,9 @@ covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the r
 enforces it. If code and this file disagree, the code is wrong or this file is stale: fix one in the same change.
 `tests/test_lifecycle_scenarios.py` checks the rules marked [S] on a tree installed by `tools/install-files.sh`, and
 `tools/release-check.sh` runs it before every push to `main` (the clone's pre-push hook, `tools/install-release-hook`).
+0.13.45: the home routine tells a bot that every sports key is required, how to fill a pregame card, and to fix the
+field named by `refused: schema <path> <problem>` and resend that card once in the same turn. A speakerphone that
+stays online but delivers no frames, or only exact silence, for 60 seconds is reset through the existing USB helper.
 
 ## Words
 

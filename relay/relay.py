@@ -4594,7 +4594,12 @@ def post_recipe_cmd(cmd, post=None):
 
 
 def post_station_show(show, post=None):
-    """POST the cleaned card to the station's localhost /show. Never logs the token, the URL, or the body."""
+    """POST the cleaned card to the station's localhost /show. Never logs the token, the URL, or the body.
+
+    On a 400, a safe detail from the station body is kept on this function as .detail
+    so the /voice/show answer can name the field. Anything else is dropped.
+    """
+    post_station_show.detail = None
     vals = _station_env_values(frozenset(("GROK_STATION_TOKEN", "GROK_STATION_PORT")))
     token = vals.get("GROK_STATION_TOKEN", "")
     try:
@@ -4616,6 +4621,14 @@ def post_station_show(show, post=None):
         with urllib.request.urlopen(req, timeout=3) as resp:
             return int(resp.status)
     except urllib.error.HTTPError as e:
+        if e.code == 400:
+            try:
+                raw = e.read(512)
+                doc = json.loads(raw.decode("utf-8"))
+                if isinstance(doc, dict):
+                    post_station_show.detail = _show_detail(doc.get("detail"))
+            except Exception:
+                post_station_show.detail = None
         return int(e.code)
     except Exception:
         return 503
@@ -4779,12 +4792,35 @@ def show_reason(verdict):
     return SHOW_REASONS.get(verdict) if isinstance(verdict, str) else None
 
 
+def _show_detail(value):
+    """The cards.py path label, or None. Loaded the same way as validate_show."""
+    try:
+        ok = load_cards().show_detail_ok
+    except Exception:
+        return None
+    return value if ok(value) else None
+
+
+def _log_show_refused(bot, check, detail=None):
+    """One line for a refused /voice/show. Never the card text or a URL."""
+    try:
+        line = load_cards().show_refused_line(bot, check, detail)
+    except Exception:
+        return
+    log(line)
+
+
 def _reject_show(rej):
     err = "unavailable" if rej.status >= 500 else _REPLY_HTTP.get(rej.status, "bad request")
     body = {"error": err}
     reason = show_reason(getattr(rej, "verdict", None))
     if reason:
         body["reason"] = reason
+    detail = _show_detail(getattr(rej, "detail", None))
+    if detail:
+        body["detail"] = detail
+    if rej.status != 200:
+        _log_show_refused(getattr(rej, "bot", "-"), reason or getattr(rej, "verdict", None), detail)
     return rej.status, body, rej
 
 
@@ -4929,6 +4965,7 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
     if is_update and not updates_on(show.get("bot")):
         # I-1: 403 only after the signature verified. L5: the nonce is spent even on a refusal.
         _spend_nonce(seen, show, now)
+        _log_show_refused(show.get("bot", "-"), "updates_off", None)
         return 403, {"error": "updates_off"}, botreply.Reject(403, "updates_off", show.get("bot", "-"))
     lint_hit = lint_show(show, hosts, names, pii)
     if not lint_hit and is_update:
@@ -4957,8 +4994,17 @@ def accept_show(raw, station_sk, keys_doc, known, limiter, post, ttl_max=None, r
             except OSError:
                 pass
         if code in (400, 413):
-            return 400, {"error": "schema", "reason": "schema"}, botreply.Reject(400, "schema", show.get("bot", "-"))
-        return 503, {"error": "unavailable", "reason": "unavailable"}, botreply.Reject(503, "error", show.get("bot", "-"))
+            detail = _show_detail(getattr(post, "detail", None))
+            body = {"error": "schema", "reason": "schema"}
+            if detail:
+                body["detail"] = detail
+            rej = botreply.Reject(400, "schema", show.get("bot", "-"))
+            rej.detail = detail
+            _log_show_refused(show.get("bot", "-"), "schema", detail)
+            return 400, body, rej
+        rej = botreply.Reject(503, "error", show.get("bot", "-"))
+        _log_show_refused(show.get("bot", "-"), "unavailable", None)
+        return 503, {"error": "unavailable", "reason": "unavailable"}, rej
     if isinstance(seen, set):
         seen.add((show["bot"], show["nonce"]))
     if show.get("op") == "update" and "feed_rule" in (show.get("update") or {}):
@@ -7352,7 +7398,9 @@ async def voice_show(req):
     def post(show):
         if late_hold_show(show):
             return 200  # checked and accepted; shown when the late answer is spoken
-        return post_station_show(show)
+        code = post_station_show(show)
+        post.detail = getattr(post_station_show, "detail", None)
+        return code
 
     status, body, info = accept_show(raw, station, trusted_keys(), known_bot_slugs(),
                                       card_limiter(), post, ttl_max=card_ttl_max(), seen=show_seen(),
@@ -7363,18 +7411,23 @@ async def voice_show(req):
         return web.json_response(body, status=403)
     if status != 200:
         reason = body.get("reason") if isinstance(body, dict) else None
-        return _show_error(status, reason)
+        detail = body.get("detail") if isinstance(body, dict) else None
+        return _show_error(status, reason, detail)
     return web.json_response({"ok": True})
 
 
-def _show_error(status, reason=None):
+def _show_error(status, reason=None, detail=None):
     """0.13.29: a refused /voice/show with its fixed reason code (SHOW_CLIENT_REASONS only; anything else is dropped).
-    503 keeps its reason too, so busy and unavailable are not one bare refusal."""
+    503 keeps its reason too, so busy and unavailable are not one bare refusal.
+    0.13.45: a safe field path may ride along. The card text never does."""
     body = {"error": "unavailable" if status >= 500 else _REPLY_HTTP.get(status, "bad request")}
     if reason in PAIR_REASONS:
         reason = PAIR_CLIENT_REASON
     if reason in SHOW_CLIENT_REASONS or reason == PAIR_CLIENT_REASON:
         body["reason"] = reason
+    kept = _show_detail(detail)
+    if kept:
+        body["detail"] = kept
     return web.json_response(body, status=status)
 
 

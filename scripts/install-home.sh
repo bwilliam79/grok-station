@@ -38,6 +38,7 @@ HASH_COMMON=525a9a93e02adf0eb525e90bcb813575ab95ef5b3fd9b92beabc90976e7b9001
 HASH_LOCK=af95b085e4775b875a08d692523007eb40a4c2adb36c807592874e390c90039f
 HASH_GS_RENDER=60cf61ddfa522240c0e7d61ff5fb88a2c49b8d00d52a10aa45844144b23b51f3
 HASH_OWNER=403bb0c076c5dad669f7979255c7983a884af49856d7847083e1de2ef8deab45
+HASH_CARDS=c2e7d57f2e43d6a7168b9f59d1f92d96fec942cb6d81f7f7d8faf963a6101acd
 
 die() {
   printf '%s\n' "$1" >&2
@@ -340,7 +341,8 @@ have_pinned() {
 have=0
 if [ "${UPGRADE:-}" != "1" ] && have_pinned gs-seal-setup "$HASH_SETUP" && have_pinned gs-seal-reply "$HASH_REPLY" \
     && have_pinned gs_seal_common.py "$HASH_COMMON" && have_pinned vendor-lock.txt "$HASH_LOCK" \
-    && have_pinned gs_render.py "$HASH_GS_RENDER" && have_pinned owner_check.py "$HASH_OWNER"; then
+    && have_pinned gs_render.py "$HASH_GS_RENDER" && have_pinned owner_check.py "$HASH_OWNER" \
+    && have_pinned cards.py "$HASH_CARDS"; then
   have=1
 fi
 S="$stage"
@@ -354,12 +356,14 @@ else
   refuse_exists "$BIN/vendor-lock.txt"
   refuse_exists "$BIN/gs_render.py"
   refuse_exists "$BIN/owner_check.py"
+  refuse_exists "$BIN/cards.py"
   fetch_one gs-seal-setup "$RAW/scripts/gs-seal-setup" "$HASH_SETUP" 700
   fetch_one gs-seal-reply "$RAW/scripts/gs-seal-reply" "$HASH_REPLY" 700
   fetch_one gs_seal_common.py "$RAW/scripts/gs_seal_common.py" "$HASH_COMMON" 600
   fetch_one vendor-lock.txt "$RAW/scripts/vendor-lock.txt" "$HASH_LOCK" 600
   fetch_one gs_render.py "$RAW/admin/gs_render.py" "$HASH_GS_RENDER" 600
   fetch_one owner_check.py "$RAW/relay/owner_check.py" "$HASH_OWNER" 600
+  fetch_one cards.py "$RAW/app/cards.py" "$HASH_CARDS" 600
 fi
 # 0.13.37: PyNaCl is part of every first-time setup, including a second bot on a computer that has the helper.
 # vendor-install keeps a set that already matches the lock and verifies, and otherwise downloads only the
@@ -395,6 +399,7 @@ if [ "$have" != "1" ]; then
   place_one vendor-lock.txt
   place_one gs_render.py
   place_one owner_check.py
+  place_one cards.py
 fi
 
 wrapdir="$HOME/.local/bin"

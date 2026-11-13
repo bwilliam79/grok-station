@@ -256,7 +256,7 @@ def reused_release(repo):
 
 
 HELPER_RECORD = "tools/helper-releases.txt"
-_FETCH_ONE = re.compile(r'^\s*fetch_one (\S+) "\$RAW/((?:scripts|admin|relay)/\S+)" ', re.M)
+_FETCH_ONE = re.compile(r'^\s*fetch_one (\S+) "\$RAW/((?:scripts|admin|relay|app)/\S+)" ', re.M)
 _HELPER_VERSION = re.compile(r'^HELPER_VERSION = "(\d+\.\d+\.\d+)"$', re.M)
 _RECORD_LINE = re.compile(r"^(\d+\.\d+\.\d+) ([0-9a-f]{64})$")
 

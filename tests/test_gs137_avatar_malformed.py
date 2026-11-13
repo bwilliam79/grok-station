@@ -107,7 +107,8 @@ class Pins(unittest.TestCase):
         ih = open(os.path.join(ROOT, "scripts", "install-home.sh")).read()
         commit = re.search(r"(?m)^COMMIT=([0-9a-f]{40})$", ih).group(1)
         for var, path in (("HASH_SETUP", "scripts/gs-seal-setup"), ("HASH_REPLY", "scripts/gs-seal-reply"),
-                          ("HASH_COMMON", "scripts/gs_seal_common.py"), ("HASH_LOCK", "scripts/vendor-lock.txt")):
+                          ("HASH_COMMON", "scripts/gs_seal_common.py"), ("HASH_LOCK", "scripts/vendor-lock.txt"),
+                          ("HASH_CARDS", "app/cards.py")):
             want = re.search(r"(?m)^%s=([0-9a-f]{64})$" % var, ih).group(1)
             blob = subprocess.run(["git", "-C", ROOT, "show", "%s:%s" % (commit, path)], capture_output=True, check=True).stdout
             self.assertEqual(want, hashlib.sha256(blob).hexdigest(), "%s at %s" % (var, commit[:12]))
@@ -122,9 +123,9 @@ class Pins(unittest.TestCase):
         # 0.13.16: the helper gained seal-setup-ack and setup-check (typed setup_relay), so the helper version moved on
         # 0.13.29: the helper changed in 0.13.27 without a bump (vendor bytecode caches, named refusals); 0.13.29
         # 0.13.37: vendor-install keeps a matching set, writes a lock stamp and names what it refused, so it moved again
-        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.43"$')
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.43"  #')
-        self.assertRegex(manifest, r"(?m)^helper 0\.13\.43$")
+        self.assertRegex(common, r'(?m)^HELPER_VERSION = "0\.13\.44"$')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.44"  #')
+        self.assertRegex(manifest, r"(?m)^helper 0\.13\.44$")
         sys.path.insert(0, os.path.join(ROOT, "tests"))
         import test_admin  # sets the admin test env before grok_admin is first imported
         ga = test_admin.ga
@@ -137,7 +138,8 @@ class Pins(unittest.TestCase):
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.33"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.37"})["out_of_date"])
         self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.42"})["out_of_date"])
-        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.43"})["out_of_date"])
+        self.assertTrue(ga.helper_view({"key_mode": "home", "helper_version": "0.13.43"})["out_of_date"])
+        self.assertFalse(ga.helper_view({"key_mode": "home", "helper_version": "0.13.44"})["out_of_date"])
 
 
 if __name__ == "__main__":

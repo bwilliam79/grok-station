@@ -67,7 +67,7 @@ class TimerGap(unittest.TestCase):
             above, _below, _height = painted_gaps(surf)
             panel = gs.bottom_panel_rect(layout)
             gap = chip_ink_top(surf, panel.bottom) - panel.bottom
-            self.assertGreaterEqual(gap, layout(getattr(gs, "CHIP_GAP", 24)), (size, gap, panel))
+            self.assertGreaterEqual(gap, layout(gs.CHIP_GAP), (size, gap, panel))
             self.assertGreaterEqual(above, layout(gs.PANEL_GAP), (size, above, panel))
             self.assertEqual(panel.top, tops[size], size)
             self.assertEqual(gs.LAST_UPDATE_LINES["avatar_cy"], panel.centery, size)

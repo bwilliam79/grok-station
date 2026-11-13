@@ -874,8 +874,12 @@ def ingest_show(raw, station_sk, keys_doc, known, limiter, parse_show, rate_now=
         show = parse_show(doc)
     except Reject:
         raise
-    except Exception:
-        raise Reject(400, "schema", bot)
+    except Exception as err:
+        rej = Reject(400, "schema", bot)
+        detail = getattr(err, "detail", None)
+        if isinstance(detail, str):
+            rej.detail = detail
+        raise rej
     if not isinstance(show, dict) or "bot" in show or show.get("kind") != "show":
         raise Reject(400, "schema", bot)
     nonce, exp = show.get("nonce"), show.get("exp_ms")

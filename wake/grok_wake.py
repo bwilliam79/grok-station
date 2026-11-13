@@ -243,7 +243,7 @@ ENROLL_STATE = {"busy": False, "fast_until": 0, "last": None, "pause": False, "d
 SETUP_FILE = E("GROK_SETUP_FILE", "/run/grok-station-admin/setup.json")
 OVERRIDES = E("WAKE_OVERRIDES", "/var/lib/grok-station/admin/wake-overrides.json")  # {name: {enabled, threshold}}
 SETUP_LINES = E("WAKE_SETUP_LINES", "/opt/grok-station/wake/lines")  # setup.wav, reset.wav, hotspot.wav (optional)
-LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None, "reset_until": None}  # capture: open input device; reopen_by: backoff deadline; reset_until: USB reset hold
+LIVE = {"dbfs": None, "at": 0.0, "audio_at": 0.0, "session": False, "play": None, "capture": None, "reopen_by": None, "deaf": None, "muted": False, "reset_until": None}  # deaf: stall or silence while capture is open; reset_until: USB reset hold
 CAPTURE = {"proc": None, "guard": None}  # the open arecord, so a USB reset can drop it
 RECOVERY = None  # MicRecovery, set in main before the control server accepts /mic-reset
 # Station timers (relay tool set_timer): they live here so they ring after the conversation ends and survive restarts.
@@ -1159,6 +1159,7 @@ def control_server():
                 return self._r(404, {"error": "not found"})
             return self._r(200, {"level_dbfs": LIVE["dbfs"], "level_at": LIVE["at"], "audio_at": LIVE.get("audio_at"), "session": LIVE["session"],
                                  "capture": LIVE["capture"], "reopen_by": LIVE.get("reopen_by"), "reset_until": LIVE.get("reset_until"),
+                                 "deaf": LIVE.get("deaf"),
                                  "enrolling": ENROLL_STATE["busy"], "enroll_queued": not ENROLL_Q.empty(), "last_enroll": ENROLL_STATE["last"],
                                  "words": {k: {"persona": w["persona"], "threshold": w["threshold"]} for k, w in WORDS.items()},
                                  "mic_reset": mic_reset_flags(),
@@ -3395,6 +3396,13 @@ def mic_busy():
     return False
 
 
+def capture_held():
+    """Skip deaf detection while the station is speaking, playing a line, or muted."""
+    if mic_busy() or LATE_PLAYING.get("on") or LIVE.get("muted"):
+        return True
+    return False
+
+
 def card_spec(capture):
     """ALSA card id from plughw:CARD=<id>,DEV=<n>. Card-number aliases are refused."""
     if not isinstance(capture, str):
@@ -3455,13 +3463,75 @@ def kick_capture():
 
 
 def chunk_stuck(buf):
-    """Digital silence or a constant frame. A quiet room still has noise above this."""
+    """Exact digital silence or one constant value. A quiet room still has a varying noise floor."""
     if not buf or len(buf) < 4 or len(buf) % 2:
         return False
     x = np.frombuffer(buf, "<i2")
     if int(np.max(np.abs(x.astype(np.int32)))) <= 1:
         return True
     return float(np.var(x.astype(np.float64))) == 0.0
+
+
+# An open capture that keeps delivering nothing useful. Short reopens (3 s stall, 10 s silence)
+# do not reset the USB device, and the icon stays online because frames are still arriving.
+# This window is long on purpose. A varying noise floor, however quiet, is not dead.
+DEAF_WINDOW_S = 60.0
+DEAF_GAP_S = 600.0
+DEAF_BACKOFF_MAX_S = 3600.0
+
+
+class DeafWatch:
+    """Open-but-dead capture. One reset per gap, then a longer wait. No audio is stored."""
+
+    def __init__(self, now=None, window_s=DEAF_WINDOW_S, gap_s=DEAF_GAP_S, backoff_max_s=DEAF_BACKOFF_MAX_S):
+        self._now = now or time.monotonic
+        self.window_s = float(window_s)
+        self.gap_s = float(gap_s)
+        self.backoff_max_s = float(backoff_max_s)
+        self._backoff = self.gap_s
+        self._next = 0.0
+        self._since = None
+        self._kind = None
+        self.degraded = False
+        self.reason = None
+
+    def observe(self, frame, stalled=False, speaking=False, playing=False, muted=False, now=None):
+        """'stall' or 'silence' when a reset should run, else None.
+
+        stalled or a missing frame: no capture is arriving. A stuck frame is exact
+        silence or one constant sample. speaking, playing, and muted clear the window.
+        """
+        t = self._now() if now is None else now
+        if speaking or playing or muted:
+            self._since = None
+            self._kind = None
+            self.degraded = False
+            self.reason = None
+            return None
+        if stalled or frame is None:
+            kind = "stall"
+        elif chunk_stuck(frame):
+            kind = "silence"
+        else:
+            self._since = None
+            self._kind = None
+            self.degraded = False
+            self.reason = None
+            self._backoff = self.gap_s
+            return None
+        if self._kind != kind or self._since is None:
+            self._since = t
+            self._kind = kind
+        if t - self._since + 1e-9 < self.window_s:
+            return None
+        self.degraded = True
+        self.reason = kind
+        if t < self._next:
+            return None
+        self._next = t + self._backoff
+        self._backoff = min(self._backoff * 2, self.backoff_max_s)
+        self._since = t
+        return kind
 
 
 class CaptureGuard:
@@ -3539,11 +3609,18 @@ class CaptureGuard:
             th.join(timeout=1)
 
 
-def serve_capture(proc, guard, handle, in_session, n=None):
+def serve_capture(proc, guard, handle, in_session, n=None, deaf=None, held=None, on_deaf=None):
     """Read until the capture should be opened again. Returns stall, silence, eof, or reset."""
     n = CHUNK * DECIM * 2 if n is None else n
     while True:
         buf = guard.read(n)
+        if deaf is not None:
+            was = deaf.degraded
+            paused = held() if callable(held) else bool(held)
+            kind = deaf.observe(buf if buf else None, stalled=guard.reason == "stall" or not buf,
+                                speaking=paused, now=None)
+            if on_deaf is not None:
+                on_deaf(deaf, was, kind)
         if guard.reason:
             return guard.reason
         if not buf or len(buf) < n:
@@ -3615,7 +3692,18 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
     sleep = sleep or time.sleep
     log = log or (lambda msg: print(msg, flush=True))
     now = now or time.time
+    deaf = DeafWatch(now=now)
     reasons, last_watch, n = [], 0.0, 0
+
+    def on_deaf(watch, was, kind):
+        LIVE["deaf"] = watch.reason if watch.degraded else None
+        if watch.degraded and not was and watch.reason:
+            log("mic deaf: %s" % watch.reason)
+        if kind and RECOVERY is not None:
+            try:
+                RECOVERY.request("deaf")
+            except Exception as exc:
+                log("mic reset failed: %s (deaf)" % type(exc).__name__)
     missing = False
     last_missing_log = None
     while rounds is None or n < rounds:
@@ -3646,7 +3734,7 @@ def run_capture_rounds(find_card, spawn, handle, in_session, *, rounds=None, sta
         CAPTURE["proc"], CAPTURE["guard"] = proc, guard
         guard.attach()
         try:
-            reason = serve_capture(proc, guard, handle, in_session, n=n_bytes)
+            reason = serve_capture(proc, guard, handle, in_session, n=n_bytes, deaf=deaf, held=capture_held, on_deaf=on_deaf)
         finally:
             guard.stop()
             CAPTURE["proc"] = None
@@ -3714,10 +3802,10 @@ class MicRecovery:
         self._wait_card = False
 
     def request(self, reason):
-        if reason not in ("button", "night", "drought", "stuck"):
+        if reason not in ("button", "night", "drought", "stuck", "deaf"):
             return "off"
         flags = self.flags()
-        if not flags.get(_flag_for(reason)):
+        if reason != "deaf" and not flags.get(_flag_for(reason)):
             return "off"
         if reason == "night":
             loc = self.local(self.now())
@@ -3795,7 +3883,7 @@ class MicRecovery:
 
     def _run(self, reason):
         flags = self.flags()
-        if not flags.get(_flag_for(reason)):
+        if reason != "deaf" and not flags.get(_flag_for(reason)):
             self.pending = None
             return "off"
         if reason == "night":

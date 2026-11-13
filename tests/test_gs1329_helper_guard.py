@@ -51,7 +51,7 @@ class RecordedHelper(unittest.TestCase):
         files = cv.helper_files(_tree_reader()("scripts/install-home.sh").decode())
         self.assertEqual(files, ["scripts/gs-seal-setup", "scripts/gs-seal-reply",
                                  "scripts/gs_seal_common.py", "scripts/vendor-lock.txt",
-                                 "admin/gs_render.py", "relay/owner_check.py"])
+                                 "admin/gs_render.py", "relay/owner_check.py", "app/cards.py"])
 
     def test_the_tree_matches_its_record(self):
         self.assertIsNone(cv.helper_problem(_tree_reader()))
@@ -60,14 +60,14 @@ class RecordedHelper(unittest.TestCase):
         self.assertEqual(last[0], _helper_version())
 
     def test_helper_version_is_0_13_30_everywhere(self):
-        self.assertEqual(_helper_version(), "0.13.43")  # 0.13.43: show warns on a college abbreviation logo
+        self.assertEqual(_helper_version(), "0.13.44")  # 0.13.44: show names the field that failed
         with open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8") as fh:
             admin = fh.read()
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.43"  #')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.44"  #')
 
     def test_a_changed_helper_file_without_a_bump_fails(self):
         for path in ("scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/gs-seal-setup",
-                     "scripts/vendor-lock.txt", "admin/gs_render.py"):
+                     "scripts/vendor-lock.txt", "admin/gs_render.py", "app/cards.py"):
             data = _tree_reader()(path) + b"\n# changed\n"
             msg = cv.helper_problem(_tree_reader({path: data}))
             self.assertIsNotNone(msg, path)
