@@ -935,7 +935,7 @@ class Rev4Dish(unittest.TestCase):
         for word in ("no", "nope", "no thanks", "not now"):
             self.assertEqual(cards.offer_answer(word), "no", word)
         self.assertIsNone(cards.offer_answer("next step"))
-        self.assertIsNone(cards.offer_answer("yes please set a timer for the soup"))
+        self.assertEqual(cards.offer_answer("yes please set a timer for the soup"), "yes")
 
     def test_source_round_trips_and_reads_from_step(self):
         now = 1000.0

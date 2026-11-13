@@ -4849,38 +4849,6 @@ function openPendingSheet(row, el) {
   rm.onclick = () => { close(); removePending(pend, el); };
   wrap.querySelector("h3").focus();
 }
-function saveRowVoice(sel, bot, el) {
-  if (!bot || !sel) return;
-  const voice = sel.value;
-  const send = async pw => {
-    const body = {voice};
-    if (pw) body.password = pw;
-    const r = await api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, body);
-    if (r && r.ok) {
-      bot.voice = voice || (el && el._defaultVoice) || "";
-      sel.dataset.saved = voice;
-      if (el) el._holdPaint = false;
-      attn($("#vere", el), "");
-      markSaved();
-      toast("Voice saved.");
-      refreshBots(el);
-    }
-    return r;
-  };
-  const stop = () => { if (el) el._holdPaint = false; };
-  const fail = r => {
-    stop();
-    if (sel.dataset.saved != null) sel.value = sel.dataset.saved;
-    sel.dispatchEvent(new Event("change"));
-    attn($("#vere", el), (r && r.data && r.data.error) || "Couldn't save the voice.");
-  };
-  if (el) el._holdPaint = true;
-  if (stepupOpen()) send("").then(r => {
-    if (r && r.status === 403) askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send, stop);
-    else if (!(r && r.ok)) fail(r);
-  });
-  else askPassword("Change voice?", "Enter the admin password to save this voice.", "Save", send, stop);
-}
 async function refreshBots(el) {
   const [r, s, w] = await Promise.all([api("GET", "/api/bots"), api("GET", "/api/enroll/status"), api("GET", "/api/wakewords")]);
   if (!r.ok || !$("#blist", el)) return null;
@@ -5011,9 +4979,8 @@ function openBot(bot, el) {
       ${wakeActs}
     </div>
     <div role="tabpanel" id="panel-voice" class="cpanel" hidden>
-      <div class="field"><label for="bvoice">Voice</label>
-        <div class="inline">${voiceOptions(el._voices, bot.voice, "bvoice")}<span class="oknote" id="vsaved" role="status" hidden></span></div>
-        <div id="ve"></div></div>
+      <div class="field"><div class="lbl">Voice</div>
+        <p class="help">From Grok Bot: ${esc(voiceLabel(bot.voice) || "Station default")}</p></div>
       <div class="field avsec"><div class="lbl">Avatar</div>
         <div class="inline">
           <label class="btn sm" for="photo">Upload avatar</label>
@@ -5118,12 +5085,6 @@ function openBot(bot, el) {
       if (r && r.ok) { toast("Training cleared."); d.remove(); refreshBots(el); }
       return r;
     }
-  });
-  autoSaveSelect($("#bvoice", d), {
-    note: $("#vsaved", d), err: $("#ve", d), needsPassword: true, failText: "Couldn't save the voice.",
-    title: "Change voice?", text: "Enter the admin password to save this voice.",
-    save: (voice, pw) => api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, pw ? {voice, password: pw} : {voice}),
-    onSaved: voice => { bot.voice = voice || (el && el._defaultVoice) || ""; refreshBots(el); },
   });
   $("#photo", d).onchange = () => {
     const file = $("#photo", d).files && $("#photo", d).files[0];
@@ -6000,7 +5961,6 @@ function addBot(voices, el, preset) {
       <h2>Add bot</h2><p class="sub">Check this, then add the bot.</p>
       <div class="row"><span>Name</span><span class="right">${esc(draft.name)}</span></div>
       <div class="row"><span>ID</span><span class="right mono">${esc(draft.slug)}</span></div>
-      <div class="row"><span>Voice</span><span class="right">${esc(draft.voice ? draft.voice : stationVoiceLabel(el))}</span></div>
       <div class="row"><span>Key</span><span class="right mono">${fp ? esc(fp) : "no"}</span></div>
       <div class="row"><span>Webhook</span><span class="right">${hook ? "yes" : "no"}</span></div>
       <div class="row"><span>Replies from</span><span class="right">${esc(draft.host || "not set")}</span></div>
@@ -6027,7 +5987,6 @@ function addBot(voices, el, preset) {
         if (!created) {
           const body = {name: draft.name, slug: draft.slug};
           if (draft.host) body.reply_host = draft.host;
-          if (draft.voice) body.voice = draft.voice;
           if (pw) body.password = pw;
           const r = await api("POST", "/api/bots", body);
           body.password = "";
@@ -6152,7 +6111,6 @@ function addBot(voices, el, preset) {
         <input class="inp mono" id="aslug" maxlength="24" autocomplete="off" spellcheck="false" required>
         <p class="note">${esc(BOT_ID_HELP)}</p>
         <p class="err" id="asluge" hidden></p></div>
-      <div class="field"><label for="avoice">Voice</label>${voiceOptions(voices, "", "avoice", stationVoiceLabel(el))}</div>
       <div class="field"><button class="btn p" type="submit">Next</button></div></form>`;
     let slugEdited = false;
     const showId = () => {
@@ -6168,7 +6126,6 @@ function addBot(voices, el, preset) {
       $("#aname", d).value = draft.name;
       $("#aslug", d).value = draft.slug;
       slugEdited = draft.slug !== botIdFromName(draft.name);
-      if (draft.voice && $("#avoice", d)) $("#avoice", d).value = draft.voice;
       showId();
     } else if (preset && preset.name) {
       $("#aname", d).value = preset.name;
@@ -6184,7 +6141,6 @@ function addBot(voices, el, preset) {
       if (!name || problem) return;
       draft.name = name;
       draft.slug = slug;
-      draft.voice = ($("#avoice", d) && $("#avoice", d).value) || "";
       step3();
     };
   };

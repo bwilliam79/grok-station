@@ -1520,14 +1520,132 @@ def timer_set_say(name, minutes):
     return f"{name} timer set for {_span_words(minutes)}."
 
 
-def offer_answer(text):
-    """'yes', 'no', or None. The whole utterance, folded the same way as a recipe command."""
-    folded = fold_utterance(text)
-    if folded in _OFFER_YES:
-        return "yes"
-    if folded in _OFFER_NO:
-        return "no"
+_OFFER_PUNCT = re.compile(r"[^a-z0-9' ]+")
+_YES_HEADS = (
+    "start the timer", "go ahead", "start it", "do it", "set it",
+    "yes", "yeah", "yep", "sure", "okay", "ok", "please",
+)
+_NO_HEADS = ("no thank you", "no thanks", "not now", "nope", "no")
+_POLITE = (
+    "thank you", "start the timer", "go ahead", "do it", "start it", "set it",
+    "set a timer", "please", "thanks",
+)
+_DURATION_FRAME = (
+    "set a timer for the ", "set a timer for ", "set a timer", "make it ", "for ",
+)
+_OFFER_QUESTION = re.compile(r"\b(?:what|whats|what's|why|how|when|where|who|which)\b")
+_LOCAL_TIMER_NUM = "|".join(sorted(_TIME_WORDS, key=len, reverse=True))
+_LOCAL_TIMER_RE = re.compile(
+    r"^(?:set|start) a timer for (\d{1,4}|" + _LOCAL_TIMER_NUM + r") "
+    r"(seconds|second|secs|sec|minutes|minute|mins|min|hours|hour|hrs|hr)"
+    r"(?: for (.+))?$"
+)
+
+
+def _offer_norm(text):
+    """fold_utterance, then commas and other punctuation, so 'Yes, please.' is 'yes'."""
+    t = _OFFER_PUNCT.sub(" ", fold_utterance(text))
+    return " ".join(t.split())
+
+
+def _split_head(text, heads):
+    for head in heads:
+        if text == head:
+            return head, ""
+        if text.startswith(head + " "):
+            return head, text[len(head) + 1:]
+    return None, None
+
+
+def _strip_one_polite(rest):
+    for phrase in _POLITE:
+        if rest == phrase:
+            return ""
+        if rest.startswith(phrase + " "):
+            return rest[len(phrase) + 1:]
     return None
+
+
+def _yes_tail_ok(rest):
+    """A yes or no followed only by politeness, or by 'set a timer for the <dish>'."""
+    rest = rest.strip()
+    for _ in range(8):
+        if rest.startswith("set a timer for the "):
+            tail = rest[len("set a timer for the "):].strip()
+            return bool(tail) and _OFFER_QUESTION.search(tail) is None
+        nxt = _strip_one_polite(rest)
+        if nxt is None:
+            return rest == ""
+        rest = nxt
+    return rest == ""
+
+
+def _duration_frame_ok(left):
+    left = left.strip()
+    for phrase in _DURATION_FRAME:
+        if left == phrase.strip() or left.startswith(phrase):
+            left = left[len(phrase):].strip()
+            break
+    else:
+        words = left.split()
+        return words == [] or all(w in {"make", "it", "a", "an", "the", "for", "timer", "please", "thanks"} for w in words)
+    if not left:
+        return True
+    return _OFFER_QUESTION.search(left) is None and len(left) <= 48
+
+
+def offer_answer(text):
+    """'yes', 'no', {'answer':'yes','seconds','minutes'}, or None.
+
+    Punctuation is stripped before the compare. A yes or no may be followed only by
+    politeness or timer words. A yes that names a length returns that length. A recipe
+    command, or any other question, is None so the station still cancels the offer.
+    """
+    t = _offer_norm(text)
+    if not t:
+        return None
+    hit = step_time(t)
+    if hit:
+        head, _rest = _split_head(t, _YES_HEADS)
+        if head is not None:
+            without = " ".join((t[:hit["start"]] + " " + t[hit["end"]:]).split())
+            _head, left = _split_head(without, _YES_HEADS)
+            if left is not None and _duration_frame_ok(left):
+                return {"answer": "yes", "seconds": hit["seconds"], "minutes": hit["minutes"]}
+    head, rest = _split_head(t, _NO_HEADS)
+    if head is not None:
+        return "no" if _yes_tail_ok(rest) else None
+    head, rest = _split_head(t, _YES_HEADS)
+    if head is not None and _yes_tail_ok(rest):
+        return "yes"
+    return None
+
+
+def local_timer_command(text):
+    """'set/start a timer for N seconds/minutes/hours [for X]', or None.
+
+    The number words are the same ones step_time uses. Anything else is None, so a
+    question that merely mentions a timer still goes to the bot.
+    """
+    t = fold_utterance(text)
+    match = _LOCAL_TIMER_RE.match(t)
+    if not match:
+        return None
+    raw = match.group(1).casefold()
+    n = int(raw) if raw.isdigit() else _TIME_WORDS.get(raw)
+    if not n or n < 1:
+        return None
+    unit = match.group(2).casefold()
+    if unit.startswith("h"):
+        seconds = n * 3600
+    elif unit.startswith("s"):
+        seconds = n
+    else:
+        seconds = n * 60
+    if seconds > 86400:
+        return None
+    label = " ".join((match.group(3) or "").split())
+    return {"seconds": seconds, "label": label}
 
 
 def apply_recipe_command(deck, cmd, now):

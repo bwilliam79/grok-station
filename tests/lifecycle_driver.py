@@ -560,7 +560,7 @@ elif SCENARIO == "key_migration":
             return [l.split(" ", 2)[2] for l in fh.read().splitlines() if " key-migration " in l]
 
     # 0.13.36's save_overlay dropped key_mode on the first save; it must survive until the migration has read it.
-    got = ga.relay_call("PATCH", "/admin/bots/kai", {"voice": "ara", "actor": ga.RELAY_ACTOR})
+    got = ga.relay_call("PATCH", "/admin/bots/kai", {"reply_host": "Home", "actor": ga.RELAY_ACTOR})
     with open(r.overlay_path()) as fh:
         out["key_mode_before_migration"] = (got[0], json.load(fh).get("key_mode"))
     out["trusted_before"] = trust()
@@ -574,7 +574,7 @@ elif SCENARIO == "key_migration":
     out["trusted_after"] = trust()
     out["listed"] = listed()
     out["icon"] = r.icon_view()
-    got = ga.relay_call("PATCH", "/admin/bots/kai", {"voice": "ara", "actor": ga.RELAY_ACTOR})
+    got = ga.relay_call("PATCH", "/admin/bots/kai", {"reply_host": "Home", "actor": ga.RELAY_ACTOR})
     with open(r.overlay_path()) as fh:
         out["key_mode_after_migration"] = (got[0], json.load(fh).get("key_mode"))
     # kai: Configure > Replace key with a new key from its home computer.

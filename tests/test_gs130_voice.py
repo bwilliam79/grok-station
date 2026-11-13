@@ -283,8 +283,8 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.relay.persona_list()["pia"]["voice"], self.relay.VOICE.lower())
         bad = await self.client.post("/admin/bots", headers=self.headers(),
                                      json={"slug": "quo", "name": "Quo", "voice": "robot9", "actor": "admin"})
-        self.assertEqual(bad.status, 400)
-        self.assertEqual(await bad.json(), {"error": "bad voice"})
+        self.assertEqual(bad.status, 201)
+        self.assertNotIn("voice", self._added("quo"))
         listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
         self.assertNotIn("not reported", json.dumps(listed).lower())
         row = next(b for b in listed["bots"] if b["slug"] == "max")
@@ -302,25 +302,19 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(open(self._portrait("max"), "rb").read().startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertEqual(self._added("max")["voice"], "castor")
         self.assertEqual(self.relay.persona_list()["max"]["voice"], "castor")
-        seeded = self._actions("voice-seeded")
+        seeded = self._actions("voice-synced")
         self.assertEqual(len(seeded), 1)
-        self.assertIn(" bot max voice-seeded -", seeded[0])
+        self.assertIn(" bot max voice-synced -", seeded[0])
         self.assertNotIn("castor", seeded[0])
         again = await self._post("max", "eve")
         self.assertEqual(again.status, 200, await again.text())
-        self.assertEqual(self._added("max")["voice"], "castor")
-        self.assertEqual(self._actions("voice-seeded"), seeded)
+        self.assertEqual(self._added("max")["voice"], "eve")
+        self.assertEqual(len(self._actions("voice-synced")), 2)
         changed = await self.client.patch("/admin/bots/max", headers=self.headers(),
                                           json={"voice": "rex", "actor": "admin"})
-        self.assertEqual(changed.status, 200, await changed.text())
-        self.assertEqual(self._added("max")["voice"], "rex")
-        self.assertEqual(self.relay.load_overlay_doc()["voices"]["max"], "rex")
-        later = await self._post("max", "eve")
-        self.assertEqual(later.status, 200, await later.text())
-        self.assertEqual(self._added("max")["voice"], "rex")
-        self.assertEqual(self.relay.load_overlay_doc()["voices"]["max"], "rex")
-        self.assertEqual(self._actions("voice-seeded"), seeded)
-        self.assertTrue(any(ln.split()[3] == "voice" and " max " in ln for ln in self._actions("voice")))
+        self.assertEqual(changed.status, 404, await changed.text())
+        self.assertEqual(self._added("max")["voice"], "eve")
+        self.assertNotIn("max", self.relay.load_overlay_doc()["voices"])
 
     async def test_unsupported_voice_saves_the_picture_and_adds_no_label(self):
         await self._add("rio", "Rio")
@@ -334,7 +328,7 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("voice", self._added("rio"))
         self.assertEqual(self.relay.persona_list()["rio"]["voice"], self.relay.VOICE.lower())
         self.assertEqual(self.relay._stored_voice("rio"), "")
-        self.assertEqual(self._actions("voice-seeded"), [])
+        self.assertEqual(self._actions("voice-synced"), [])
         listed = await (await self.client.get("/admin/bots", headers=self.headers())).json()
         dumped = json.dumps(listed).lower()
         self.assertNotIn("not reported", dumped)
@@ -375,22 +369,76 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.relay.persona_list()["noa"]["voice"], "eve")
         second = await self._post("noa", "sal")
         self.assertEqual(second.status, 200, await second.text())
-        self.assertEqual(self.relay.load_overlay_doc()["voices"]["noa"], "eve")
-        seeded = [ln for ln in self._actions("voice-seeded") if " noa " in ln]
-        self.assertEqual(len(seeded), 1)
+        self.assertEqual(self.relay.load_overlay_doc()["voices"]["noa"], "sal")
+        seeded = [ln for ln in self._actions("voice-synced") if " noa " in ln]
+        self.assertEqual(len(seeded), 2)
         self.assertNotIn("eve", seeded[0])
+        self.assertNotIn("sal", seeded[1])
 
     async def test_blank_user_voice_is_saved_and_not_overwritten(self):
         await self._add("pia", "Pia")
         self._pin("pia")
         blank = await self.client.patch("/admin/bots/pia", headers=self.headers(),
                                         json={"voice": "  ", "actor": "admin"})
-        self.assertEqual(blank.status, 200, await blank.text())
-        self.assertEqual(self._added("pia")["voice"], self.relay.VOICE.lower())
+        self.assertEqual(blank.status, 404, await blank.text())
+        self.assertNotIn("voice", self._added("pia"))
         posted = await self._post("pia", "eve")
         self.assertEqual(posted.status, 200, await posted.text())
-        self.assertEqual(self._added("pia")["voice"], self.relay.VOICE.lower())
-        self.assertEqual(self._actions("voice-seeded"), [])
+        self.assertEqual(self._added("pia")["voice"], "eve")
+        self.assertEqual(len(self._actions("voice-synced")), 1)
+
+    async def test_gs1345_a_later_report_replaces_the_stored_voice(self):
+        await self._add("max", "Max")
+        self._pin("max")
+        self.relay.VOICES.update({"castor", "eve"})
+        first = await self._post("max", "castor")
+        self.assertEqual(first.status, 200, await first.text())
+        self.assertEqual(self._added("max")["voice"], "castor")
+        second = await self._post("max", "eve")
+        self.assertEqual(second.status, 200, await second.text())
+        self.assertEqual(self._added("max")["voice"], "eve")
+        lines = self._actions("voice-synced")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all("castor" not in ln and "eve" not in ln for ln in lines))
+        same = await self._post("max", "EVE")
+        self.assertEqual(same.status, 200, await same.text())
+        self.assertEqual(len(self._actions("voice-synced")), 2)
+
+    async def test_gs1345_a_bad_or_unoffered_id_and_a_missing_report_keep_the_stored_voice(self):
+        await self._add("max", "Max")
+        self._pin("max")
+        self.relay.VOICES.update({"castor", "eve"})
+        saved = await self._post("max", "castor")
+        self.assertEqual(saved.status, 200, await saved.text())
+        for raw in ("robot9", "luna"):
+            kept = await self._post("max", raw)
+            self.assertEqual(kept.status, 200, await kept.text())
+            self.assertEqual(self._added("max")["voice"], "castor")
+        quiet = await self._post("max")
+        self.assertEqual(quiet.status, 200, await quiet.text())
+        self.assertEqual(self._added("max")["voice"], "castor")
+        self.assertEqual(self.relay.persona_list()["max"]["voice"], "castor")
+
+    async def test_gs1345_no_stored_voice_stays_the_station_default_until_a_report(self):
+        await self._add("pia", "Pia")
+        self.assertEqual(self.relay._stored_voice("pia"), "")
+        self.assertEqual(self.relay.persona_list()["pia"]["voice"], self.relay.VOICE.lower())
+        self._pin("pia")
+        blank = await self._post("pia")
+        self.assertEqual(blank.status, 200, await blank.text())
+        self.assertEqual(self.relay._stored_voice("pia"), "")
+        self.assertEqual(self.relay.persona_list()["pia"]["voice"], self.relay.VOICE.lower())
+
+    async def test_gs1345_admin_voice_route_is_gone(self):
+        await self._add("max", "Max")
+        gone = await self.client.patch("/admin/bots/max", headers=self.headers(),
+                                       json={"voice": "eve", "actor": "admin"})
+        self.assertEqual(gone.status, 404, await gone.text())
+        self.assertNotIn("voice", self._added("max"))
+        page = open(os.path.join(ROOT, "admin", "web", "app.js"), encoding="utf-8").read()
+        self.assertNotIn('id="bvoice"', page)
+        self.assertNotIn('id="avoice"', page)
+        self.assertIn("From Grok Bot:", page)
 
     async def test_unknown_field_is_still_rejected(self):
         await self._add("lea", "Lea")
@@ -399,7 +447,7 @@ class ReportedVoiceFlow(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resp.status, 400)
         self.assertFalse(os.path.exists(self._portrait("lea")))
         self.assertNotIn("voice", self._added("lea"))
-        self.assertEqual(self._actions("voice-seeded"), [])
+        self.assertEqual(self._actions("voice-synced"), [])
 
 
 class SealCommands(unittest.TestCase):
@@ -497,13 +545,14 @@ class InstructionTemplates(unittest.TestCase):
             self.assertIn("voiceId", pic, label)
             self.assertIn("--voice", pic, label)
             self.assertEqual(pic.count('"$HOME/.local/share/grok-station/avatar-<slug>.png"'), 2, label)
-            self.assertLess(len(text), 12000, label)
+            self.assertLess(len(text), 14000, label)  # 0.13.45 sports text crossed 12000
             self.assertTrue(text.startswith("Grok Station instructions, release " + open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() + "."), label)
             self.assertNotIn("not reported", text.lower(), label)
         self.assertIn(_VOICE_SENTENCE, sh)
         self.assertEqual(docs.count(_VOICE_SENTENCE), 1)  # 0.13.37: one template
         self.assertEqual(docs.count("Grok Station instructions, release " + open(os.path.join(ROOT, "VERSION"), encoding="utf-8").read().strip() + "."), 1)
-        self.assertIn("never replaced by a report", docs)  # 0.13.0: the add-bot picker stays; a report only seeds
+        self.assertIn("whenever it differs from the one already saved", docs)
+        self.assertNotIn("never replaced by a report", docs)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ No default password: until an admin password is set, the station shows a one-tim
 0/O/1/I), new on each boot until used, and voice stays off. Password >= 10 characters, stored as a scrypt hash.
 Secrets are write-only (last 4 shown). 5 wrong tries (code or password) lock sign-in for 15 min. Privileged changes go
 through grok-station-helper (root, fixed subcommands, validated input) via sudo. A correct admin password also opens a grace window on that session (password_grace_min, default 10 minutes;
-0 always asks; the distinct value "session" lasts this sign-in). The window never outlives the 30-minute idle limit or the 12-hour absolute limit. It covers saving a webhook, adding, renaming, or removing a bot, changing a bot's voice, uploading a
+0 always asks; the distinct value "session" lasts this sign-in). The window never outlives the 30-minute idle limit or the 12-hour absolute limit. It covers saving a webhook, adding, renaming, or removing a bot, uploading a
 portrait, revoking a key, and turning personal-info blocking on. Changing the grace setting, the password, reset-admin, and turning personal-info blocking off always ask again. Logging
 out, a password change, or any session revoke ends the window. Stdlib only.
 """
@@ -3380,7 +3380,7 @@ def enroll_bot_flags():
     return out
 
 
-HELPER_RELEASE = "0.13.44"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
+HELPER_RELEASE = "0.13.45"  # gs_seal_common.HELPER_VERSION of the pinned helper (a test keeps them equal)
 
 
 def _vtuple(v):
@@ -5958,16 +5958,6 @@ class Handler(BaseHTTPRequestHandler):
         clash = name_clash(name, devices_only=True)
         if clash:
             return self.send(409, clash)
-        raw = j.get("voice", None) if isinstance(j, dict) else None
-        voice = None
-        if raw is not None:
-            if not isinstance(raw, str):
-                return self.send(400, {"error": "Pick a voice."})
-            voice = raw.strip()
-            if voice == "":
-                voice = None
-            elif not voice_ok(voice):
-                return self.send(400, {"error": "Pick a voice."})
         if isinstance(j, dict) and "key_mode" in j and j.get("key_mode") != "home":
             return self.send(400, {"error": KEY_HOME_ONLY})
         host = clean_host(j.get("reply_host", "")) if isinstance(j, dict) else ""
@@ -5978,8 +5968,6 @@ class Handler(BaseHTTPRequestHandler):
         body = {"slug": slug, "name": name, "actor": RELAY_ACTOR}
         if host:
             body["reply_host"] = host
-        if voice:
-            body["voice"] = voice
         got = relay_call("POST", "/admin/bots", body)
         if got is None:
             return self.bots_unconfigured()
@@ -6005,7 +5993,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": KEY_HOME_ONLY})
         has_name, has_voice, has_mode = "name" in j, "voice" in j, "key_mode" in j
         has_host = "reply_host" in j
-        if not has_name and not has_voice and not has_mode and not has_host:
+        if has_voice and not has_name and not has_mode and not has_host:
+            return self.send(404, {"error": "not found"})
+        if not has_name and not has_mode and not has_host:
             return self.send(400, {"error": "Type a name."})
         host = clean_host(j.get("reply_host")) if has_host else ""
         if host is None:
@@ -6017,26 +6007,16 @@ class Handler(BaseHTTPRequestHandler):
             clash = name_clash(name, devices_only=True)
             if clash:
                 return self.send(409, clash)
-        voice = j.get("voice") if has_voice else None
-        if has_voice:
-            # An empty voice means "station default". The relay stores that default voice.
-            if not isinstance(voice, str):
-                return self.send(400, {"error": "Pick a voice."})
-            voice = voice.strip()
-            if voice and not voice_ok(voice):
-                return self.send(400, {"error": "Pick a voice."})
-        if has_mode and not (has_name or has_voice or has_host):
+        if has_mode and not (has_name or has_host):
             return self.send(200, {"ok": True})  # home is the only key location: nothing to change
         # Only the computer name is a label, not access, so it doesn't ask for the password again.
-        if (has_name or has_voice) and not self.need_password(j):
+        if has_name and not self.need_password(j):
             return
         body = {"actor": RELAY_ACTOR}
         if has_host:
             body["reply_host"] = host
         if has_name:
             body["name"] = name
-        if has_voice:
-            body["voice"] = voice
         got = relay_call("PATCH", "/admin/bots/" + slug, body)
         if got is None:
             return self.bots_unconfigured()
@@ -6045,8 +6025,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.relay_fail(status, data, (j.get("password"),))
         if has_name:
             audit(slug, "rename")
-        if has_voice:
-            audit(slug, "voice")
         return self.send(200, {"ok": True})
 
     def bots_remove(self, slug, j):

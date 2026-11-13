@@ -688,10 +688,12 @@ class Bots(unittest.TestCase):
 
     def test_add_omits_blank_voice_and_passes_default_voice(self):
         self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])
-        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "voice": "bad voice", "password": GOOD})[0], 400)
-        self.assertEqual(self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "voice": 3, "password": GOOD})[0], 400)
-        self.assertIsNone(self.c.req("GET", "/api/state")[1]["stepup_until"])  # a bad voice does not open the window
-        self.assertFalse(any(c[0] == "POST" for c in self.calls))
+        st, j = self.c.req("POST", "/api/bots", {"slug": "nope", "name": "Nope", "voice": "bad voice", "password": GOOD})
+        self.assertIn(st, (200, 201), j)
+        self.assertNotIn("voice", self.calls[-1][2])
+        st, j = self.c.req("POST", "/api/bots", {"slug": "n2", "name": "Enn", "voice": 3, "password": GOOD})
+        self.assertIn(st, (200, 201), j)
+        self.assertNotIn("voice", self.calls[-1][2])
         st, j = self.c.req("POST", "/api/bots", {"slug": "pip", "name": "Pip", "password": GOOD})
         self.assertEqual(st, 201, j)
         self.assertNotIn("voice", self.calls[-1][2])
@@ -716,19 +718,14 @@ class Bots(unittest.TestCase):
         self.assertEqual(j["message"], ga.RELAY_UNCONFIGURED)
 
     def test_voice_patch_forwards_with_the_rename_stepup(self):
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})[0], 400)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "not a voice"})[0], 404)
         self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {})[0], 400)
-        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})[0], 403)
+        self.assertEqual(self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})[0], 404)
         self.assertFalse(any(c[0] == "PATCH" for c in self.calls))
-        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve", "password": GOOD})
+        st, j = self.c.req("PATCH", "/api/bots/kai", {"name": "Kay", "voice": "rex", "password": GOOD})
         self.assertEqual(st, 200, j)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "eve", "actor": "admin"}))
-        st, j = self.c.req("PATCH", "/api/bots/kai", {"name": "Kay", "voice": "rex"})
-        self.assertEqual(st, 200, j)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"name": "Kay", "voice": "rex", "actor": "admin"}))
-        st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "   "})
-        self.assertEqual(st, 200, j)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "", "actor": "admin"}))
+        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"name": "Kay", "actor": "admin"}))
+        self.assertNotIn("voice", self.calls[-1][2])
 
     def test_test_needs_no_password_and_unconfigured_message(self):
         st, j = self.c.req("POST", "/api/bots/kai/test", {})
@@ -814,10 +811,10 @@ class Bots(unittest.TestCase):
         st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "home"})
         self.assertEqual((st, j), (200, {"ok": True}))
         self.assertEqual(len(self.calls), before)  # nothing to change, nothing sent
+        before = len(self.calls)
         st, j = self.c.req("PATCH", "/api/bots/kai", {"voice": "eve"})
-        self.assertEqual(st, 200, j)
-        self.assertNotIn("needs_key", j)
-        self.assertEqual(self.calls[-1], ("PATCH", "/admin/bots/kai", {"voice": "eve", "actor": "admin"}))
+        self.assertEqual(st, 404, j)
+        self.assertEqual(len(self.calls), before)
         st, j = self.c.req("PATCH", "/api/bots/kai", {"key_mode": "sideways"})
         self.assertEqual(st, 400)
         self.assertEqual(j["error"], ga.KEY_HOME_ONLY)

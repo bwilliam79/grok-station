@@ -2869,6 +2869,38 @@ async def session(req):
                             if end:
                                 return end
                             continue
+                        # "Set a timer for 10 minutes" is the station's timer, for every persona, including a
+                        # webhook bot. Before "heard" (that would show thinking) and before any handoff.
+                        planned = local_timer_plan(heard)
+                        if planned:
+                            st["buf"] = []
+                            if st.get("responding") or st.get("xai_active"):
+                                await cancel_response()
+                            arm_recipe_drop(st)
+                            if not st.get("utt"):
+                                st["utt"] = 1
+                            st["answered_utt"] = st.get("utt")
+                            args = recipe_timer_args(planned, st)
+                            voice = (roster.get(st["persona"]) or {}).get("voice") or VOICE
+                            now_t = timer_clock.now()
+                            out, to_pi = station_tools.set_timer(args, st.get("timers"), now_t)
+                            if out.get("ok"):
+                                for pi_msg in station_tools.pi_timer_messages(to_pi):
+                                    await pi.send_json(pi_msg)
+                                station_tools.save_timer_state(timer_path, st["timers"], now_t, time.time())
+                                say = local_timer_say(args)
+                                if say:
+                                    await play_fixed(say, voice, TTS_REPLY_S)
+                            else:
+                                miss = offer_missed_say(out)
+                                if miss:
+                                    await play_fixed(miss, voice, TTS_REPLY_S)
+                            log("timer local")  # no label
+                            st["release_model"] = not persona_routed(st["persona"])
+                            end = await end_routed_turn()
+                            if end:
+                                return end
+                            continue
                         # "Hey Grok, pause|stop|resume updates" (SPEC rev3/rev4): a reply to the wake word only.
                         pause_hit = updates_pause_reply(heard, st)
                         if pause_hit:
@@ -3561,7 +3593,7 @@ def _last4(token):
 
 
 _ACTOR = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
-_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-seeded", "pair", "revoke",
+_AUDIT_ACTIONS = {"add", "rename", "remove", "webhook-save", "webhook-remove", "test", "voice", "voice-synced", "pair", "revoke",
                   "import", "dismiss", "list-source", "key-mode", "reply-host", "avatar-ask", "helper-ask", "update-ask", "update-fail",
                   "update-reply", "update-bad", "setup-ask", "setup-fail", "rescan"}
 _REPLY_VERDICT = re.compile(r"^[a-z][a-z-]{0,15}$")
@@ -4272,7 +4304,7 @@ def recipe_match(text):
     return cmd
 
 
-OFFER_WINDOW_S = 8
+OFFER_WINDOW_S = 15
 
 
 def offer_now():
@@ -4386,19 +4418,31 @@ def classify_offer_reply(heard, st, now=None):
         kind = load_cards().offer_answer(heard)
     except Exception:
         kind = None
+    override = None
+    if isinstance(kind, dict) and kind.get("answer") == "yes":
+        override = kind
+        kind = "yes"
+    elif not isinstance(kind, str):
+        kind = None
     if off.get("pending"):
         # The offer is still playing (R2-7). A yes/no or a short fragment is held, not acted on;
         # a real command (two or more words that are not an answer) still cancels and runs.
         if kind in ("yes", "no") or len((heard or "").split()) < 2:
             return "hold"
     if kind in ("yes", "no"):
+        if kind == "yes" and isinstance(override, dict):
+            sec, minutes = override.get("seconds"), override.get("minutes")
+            if isinstance(sec, int) and not isinstance(sec, bool) and sec > 0:
+                off["seconds"] = sec
+            if isinstance(minutes, int) and not isinstance(minutes, bool) and minutes > 0:
+                off["minutes"] = minutes
         return kind
     st.pop("recipe_offer", None)
     return "cancel"
 
 
 def arm_offer_window(st, now=None):
-    """The 8 s yes window starts when follow-up listening opens (the offer has finished speaking)."""
+    """The 15 s yes window starts when follow-up listening opens (the offer has finished speaking)."""
     if not isinstance(st, dict):
         return None
     off = st.get("recipe_offer")
@@ -4449,6 +4493,37 @@ def offer_set_args(st):
     return {"seconds": int(off.get("seconds") or 0), "label": off.get("label") or "",
             "minutes": int(off.get("minutes") or 0),
             "source": {"recipe_id": rec.get("id"), "step": rec.get("step")}}
+
+
+def local_timer_plan(heard):
+    """A spoken 'set/start a timer for N ...' as set_timer args, or None. The label is not logged."""
+    try:
+        hit = load_cards().local_timer_command(heard)
+    except Exception:
+        return None
+    if not isinstance(hit, dict):
+        return None
+    sec = hit.get("seconds")
+    if isinstance(sec, bool) or not isinstance(sec, int) or sec < 1:
+        return None
+    label = hit.get("label") if isinstance(hit.get("label"), str) else ""
+    return {"seconds": sec, "label": label}
+
+
+def local_timer_say(args):
+    """The line the station already uses for a timer it set itself."""
+    said = step_timer_say(args)
+    if said:
+        return said
+    label = args.get("label") if isinstance(args, dict) else None
+    if not isinstance(label, str) or not label.strip():
+        label = "Timer"
+    sec = station_tools._seconds(args if isinstance(args, dict) else {})
+    if not isinstance(sec, int) or sec < 1:
+        return None
+    if sec % 60 == 0:
+        return load_cards().timer_set_say(label, sec // 60)
+    return f"{label} timer set for {station_tools.say_left(sec)}."
 
 
 def recipe_timer_args(args, st):
@@ -4692,17 +4767,26 @@ def _stored_voice(slug):
 
 
 def seed_reported_voice(slug, raw):
-    """Save a bot-reported voice only when this bot has none yet. The id is not logged.
+    """Make a mapped report this bot's voice when it differs from the stored one.
 
+    The id is never logged. A missing report, or an id that is not offered, leaves the
+    stored voice. A bot with none stored keeps the station default until a real report.
+    An older admin choice is that stored voice until the next report, which replaces it
+    when the report differs. That is the same as dropping the choice on load: the next
+    report wins, and a bot that reports nothing keeps what is already saved.
     A picture that already saved must still succeed if this write fails.
     """
     mapped = voices.map_reported_voice(raw, VOICES or None)
-    if not mapped or _stored_voice(slug):
+    if not mapped:
+        return
+    current = _stored_voice(slug)
+    if isinstance(current, str) and current.strip().casefold() == mapped:
         return
     try:
         ov = load_overlay_doc()
-        if slug in ov["added"]:
+        if slug in ov["added"] and isinstance(ov["added"].get(slug), dict):
             ov["added"][slug]["voice"] = mapped
+            ov["voices"].pop(slug, None)
         elif slug in registry_index() and slug not in ov["hidden"]:
             ov["voices"][slug] = mapped
         else:
@@ -4710,7 +4794,7 @@ def seed_reported_voice(slug, raw):
         save_overlay(ov)
     except OSError:
         return
-    audit("bot", slug, "voice-seeded", "-")
+    audit("bot", slug, "voice-synced", "-")
     forget_ack_clips(slug)
     try:
         persona_list()
@@ -5477,14 +5561,11 @@ async def admin_bots_post(req):
     body = await admin_json(req)
     if not body or not actor_ok(body.get("actor")):
         return web.json_response({"error": "bad request"}, status=400)
-    slug, name, voice = body.get("slug"), body.get("name"), body.get("voice")
+    slug, name = body.get("slug"), body.get("name")
     if not handoff.bot_slug_ok(slug):
         return web.json_response({"error": "bad slug"}, status=400)
     if not _name_ok(name):
         return web.json_response({"error": "bad name"}, status=400)
-    voice = chosen_voice(voice, allow_default=True)
-    if voice is False:
-        return web.json_response({"error": "bad voice"}, status=400)
     if key_mode_refused(body):
         return web.json_response({"error": KEY_HOME_ONLY}, status=400)
     host = body.get("reply_host")
@@ -5494,8 +5575,6 @@ async def admin_bots_post(req):
     if slug in ov["added"] or slug in ov["hidden"] or slug in registry_index() or slug in persona_list():
         return web.json_response({"error": "exists"}, status=409)
     entry = {"name": name}
-    if voice:
-        entry["voice"] = voice
     ov["added"][slug] = entry
     if not list_source_slug():  # the first bot (or the first after the main bot went away) becomes the main bot
         ov["list_source"] = slug
@@ -5535,31 +5614,21 @@ async def admin_bots_patch(req):
         return web.json_response({"error": KEY_HOME_ONLY}, status=400)
     has_name, has_voice, has_mode = "name" in body, "voice" in body, "key_mode" in body
     has_host = "reply_host" in body
-    if not has_name and not has_voice and not has_mode and not has_host:
+    if has_voice and not has_name and not has_mode and not has_host:
+        return web.json_response({"error": "not found"}, status=404)
+    if not has_name and not has_mode and not has_host:
         return web.json_response({"error": "bad request"}, status=400)
     if has_host and body.get("reply_host") not in (None, "") and not host_name_ok(body.get("reply_host")):
         return web.json_response({"error": "bad computer name"}, status=400)
     if has_name and not _name_ok(body.get("name")):
         return web.json_response({"error": "bad name"}, status=400)
-    voice = body.get("voice")
-    if has_voice:
-        # Empty voice is the station default, same as POST /admin/bots with no voice.
-        voice = chosen_voice(voice, allow_default=True)
-        if voice is False:
-            return web.json_response({"error": "bad voice"}, status=400)
-        if voice is None:
-            voice = VOICE.lower()
-    if has_mode and not (has_name or has_voice or has_host):
+    if has_mode and not (has_name or has_host):
         return web.json_response({"ok": True})  # home is the only location: nothing to change
     ov = load_overlay_doc()
     if has_name:
         ov["renamed"][slug] = body["name"]
         if slug in ov["added"]:
             ov["added"][slug]["name"] = body["name"]
-    if has_voice:
-        ov["voices"][slug] = voice
-        if slug in ov["added"]:
-            ov["added"][slug]["voice"] = voice
     if has_host:  # which computer posts replies: a label only, it never changes the key or who may post
         if body.get("reply_host"):
             ov["reply_host"][slug] = body["reply_host"]
@@ -5572,9 +5641,6 @@ async def admin_bots_patch(req):
     tail = _last4((current_webhooks().get(slug) or {}).get("token"))
     if has_name:
         audit(body["actor"], slug, "rename", tail)
-    if has_voice:
-        audit(body["actor"], slug, "voice", "-")
-    if has_name or has_voice:
         forget_ack_clips(slug)  # the cache key is sha(name|voice); the next reload renders the new line
         persona_list()
     if has_host:

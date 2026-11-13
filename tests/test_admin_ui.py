@@ -203,17 +203,18 @@ class AdminUI(unittest.TestCase):
 
     def test_configure_drawer_can_change_voice(self):
         fn = _fn(self.js, "openBot")
-        self.assertIn('<label for="bvoice">Voice</label>', fn)
-        self.assertNotIn('id="vsave"', fn)  # item 15d: the voice saves on change
-        self.assertIn('voiceOptions(el._voices, bot.voice, "bvoice")', fn)
-        self.assertIn('autoSaveSelect($("#bvoice", d)', fn)
+        self.assertIn("From Grok Bot:", fn)
+        self.assertNotIn('<label for="bvoice">', fn)
+        self.assertNotIn('id="bvoice"', fn)
+        self.assertNotIn('autoSaveSelect($("#bvoice", d)', fn)
         self.assertIn("refreshBots(el)", fn)
-        self.assertIn('api("PATCH", `/api/bots/${encodeURIComponent(bot.slug)}`, pw ? {voice, password: pw} : {voice})', fn)
+        self.assertNotIn("Change voice?", fn)
         auto = _fn(self.js, "autoSaveSelect")
         self.assertIn('flash("Saved")', auto)
         self.assertIn('sel.value = sel.dataset.saved', auto)  # revert on failure or cancel
         add = self.js.split("function addBot", 1)[1].split("\nasync function pageBots", 1)[0]
-        self.assertIn('voiceOptions(voices, "", "avoice", stationVoiceLabel(el))', add)
+        self.assertNotIn('id="avoice"', add)
+        self.assertNotIn("body.voice", add)
         self.assertIn("function voiceOptions", self.js)
         self.assertIn("Station default", _fn(self.js, "stationVoiceLabel"))
         x = _fn(self.js, "dialogX")
@@ -248,7 +249,7 @@ class AdminUI(unittest.TestCase):
         self.assertIn("askPassword(", sysp)
         self.assertNotIn("withPassword(", sysp)
         self.assertIn("data-bot", _fn(self.js, "paintBots"))
-        self.assertIn('voiceOptions(el._voices, bot.voice, "bvoice")', _fn(self.js, "openBot"))
+        self.assertIn("From Grok Bot:", _fn(self.js, "openBot"))
         self.assertIn('id="${id}"', _fn(self.js, "voiceOptions"))
         self.assertNotIn("data-vsel", _fn(self.js, "paintBots"))
 
@@ -346,8 +347,9 @@ class AdminUI(unittest.TestCase):
             self.assertTrue(">Save<" in body or "Save key" in body, name)
             self.assertNotIn(".onblur", body, name)
         # Single-choice selects in bot detail save on change instead (item 15d).
-        bots_voice = voice.split('<label for="bvoice">', 1)[1].split('id="panel-conn"', 1)[0]
+        bots_voice = voice.split("From Grok Bot:", 1)[1].split('id="panel-conn"', 1)[0]
         self.assertNotIn(">Save<", bots_voice)
+        self.assertNotIn("<select", bots_voice)
         self.assertIn("dataset.saved", js.split("function watchSave", 1)[1].split("function boot", 1)[0])
         self.assertIn("btn.disabled", _fn(js, "watchSave"))
         priv = chunk("async function pagePrivacy", "\nasync function pageSystem")
