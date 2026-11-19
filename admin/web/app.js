@@ -5748,10 +5748,10 @@ const SETUP_PARAMS = String.raw`Grok Station setup parameters. When the designat
 T=$(mktemp) && curl -fsS --proto '=https' --max-redirs 0 -o "$T" 'https://raw.githubusercontent.com/bwilliam79/grok-station/75239771fd94366b4bfd39331ef171ed1b61e628/scripts/install-home.sh' && printf '%s  %s\n' 'd8ff5f77eb9792a7f376620055912af31b36ec36330e5da48364364ba877fbb8' "$T" | sha256sum -c - && sh "$T" --persona '<target>' --station '<station>' --pin-sha256 '<pin_sha256>' --station-pub '<station_pub>'; rc=$?; rm -f "$T"; (exit $rc)
 On macOS, the same command with shasum -a 256 -c - in place of sha256sum -c -.
 (75239771fd94366b4bfd39331ef171ed1b61e628 and d8ff5f77eb9792a7f376620055912af31b36ec36330e5da48364364ba877fbb8 are literal in this Station setup text for 0.13.46; the script checks HASH_SETUP/REPLY/COMMON/LOCK itself and stops on any problem.)
-ROUTINE_COMMIT f20daf79f1dd07d5c8217de00b835d52c465f5e2
-HASH_ROUTINE_HOME e835b6108623e8c5ca40e0842d2d43d887efa09f1eae9db0a195e8a9b283cefa
-UPDATE_COMMIT b3607ffb56802439d4da886d0e943bc9ffadd5ab
-HASH_UPDATE e971a70252a724315f63a0a3336b553ac2ac0844ad5b91018d5dfacd93d56af2
+ROUTINE_COMMIT 693ccbabf1bf19e891993abcee56c7e3a5e1d096
+HASH_ROUTINE_HOME 4cf2ac7d9dda5d425e45e0e26a2e8cb76c651d0c02c0f01bd718e1897ca91201
+UPDATE_COMMIT 679779091e2f3ca2a7ab3f09fb9ce226f144ad71
+HASH_UPDATE 58228489f78538f20e407b7faf253a91814d6e87d2c6f08ac6d8b42a47004cbb
 RELEASE 0.13.46
 5. Save this setup parameters text, from its first line through step 7, as gs-setup-params.txt next to the installed helper. Then run exactly this command and no other. The mode is always home: your key stays on this home computer. <your slug> is your own slug. Pass the frozen or held confirmed values on the command line. The command checks the file against those values before it fetches or appends. Any mismatch prints refused.
 gs-seal-reply render-routine --persona '<your slug>' --mode home --params gs-setup-params.txt --routine-commit '<routine_commit>' --routine-sha256 '<routine_sha256>' --update-commit '<update_commit>' --update-sha256 '<update_sha256>' --install-commit '<template_commit>' --install-sha256 '<template_sha256>' --release '<release>'
