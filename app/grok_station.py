@@ -3474,7 +3474,7 @@ SPORTS_LOGO_BOX_W = 252
 SPORTS_LOGO_BOX_H = 168
 SPORTS_NAME_PX = 48   # 32 px at 1280x720, 64 px at 2560x1440
 SPORTS_SCORE_PX = 120  # 80 px at 1280x720, 160 px at 2560x1440
-SPORTS_LOGO_GAP = 24   # 16 px at 1280 between the logo's edge and the name
+SPORTS_LOGO_GAP = 24   # 16 px at 1280 between the slot's edge and the name
 # A kickoff time is three quarters of the score. Time TBD is about 62 percent, one step under that.
 PREGAME_RATIO = 0.75
 PREGAME_TBD_RATIO = 0.62
@@ -5009,6 +5009,9 @@ def _sports_side_label(card):
     return (count + "OT") if count else "OT"
 
 
+LAST_SPORTS_GUIDE = None  # the last score row's slot, column, and baselines. Tests draw the overlay. The station does not.
+
+
 def draw_sports(surf, L, card, rect, now=None):
     """Score tile in the bottom zone: header row, the two teams, and the next game as a band inside the card.
     Shields or cached logos only; no fetch while drawing."""
@@ -5019,11 +5022,12 @@ def draw_sports(surf, L, card, rect, now=None):
     live = card["status"] == "live"
     label = "LIVE" if live else card["status"].upper()
     st = _line(surf, "display", L(44), label, LISTENING if live else MUTED, max(40, rect.w // 3))
+    # LIVE, FINAL, the logo slot, and NEXT GAME share this left edge. The dot sits after the word.
+    show(surf, st, (rect.left + pad, head))
     if live:
-        pygame.draw.circle(surf, LISTENING, (rect.left + pad + L(8), head + st.get_height() // 2), max(4, L(10)))
-        show(surf, st, (rect.left + pad + L(28), head))
-    else:
-        show(surf, st, (rect.left + pad, head))
+        radius = max(4, L(10))
+        pygame.draw.circle(surf, LISTENING,
+                           (rect.left + pad + st.get_width() + L(16), head + st.get_height() // 2), radius)
     side = _sports_side_label(card)
     if side:
         period = _line(surf, "display", L(44), side, MUTED, max(40, rect.w // 3))
@@ -5054,73 +5058,92 @@ def draw_sports(surf, L, card, rect, now=None):
     col_bot = (strip_top if strip_h else rect.bottom) - bottom_inset - tail_h
     pregame = card.get("status") == "scheduled"
     when, ink = _pregame_when(card, now) if pregame else ("", TEXT)
+    name_f = font("display", name_px)
+    score_f = font("display", score_px)
+    # Ascent and descent, not the ink of one word, so a wide mark and a tall mark share baselines.
+    name_em = name_f.get_ascent() - name_f.get_descent()
+    score_em = score_f.get_ascent() - score_f.get_descent()
     if pregame:
         clock_px = _pregame_px(score_px, when)
-        center_w = font("display", clock_px).size(when)[0]
+        center_img = font("display", clock_px).render(when, True, ink)
     else:
-        clock_px = 0
-        dash_px = min(L(60), max(8, score_px // 3))
-        center_w = font("display", dash_px).size("\u2013")[0]
-    # The center keeps the clock or the dash. Each team is the logo beside its name and score,
-    # packed to the outer edge so the center stays clear.
-    inner = center_w + 2 * side_gap
-    # Same inset as LIVE and NEXT GAME: L(48) is 32 px at 1280.
-    outer = pad
-    left_box = (rect.left + outer, rect.centerx - inner // 2)
-    right_box = (rect.centerx + inner - inner // 2, rect.right - outer)
-    score_mids = []
-
-    def paint_side(team, score, box, logo_on_left):
-        box_left, box_right = box
-        if box_right < box_left:
-            box_left, box_right = box_right, box_left
-        image = team_face(team, (box_w, box_h)) if box_h else None
-        mark = image.get_width() if image is not None else 0
-        mark_h = image.get_height() if image is not None else 0
-        text_w = max(8, (box_right - box_left) - (mark + side_gap if mark else 0))
-        name = _line(surf, "display", name_px, team["name"], TEXT, text_w)
-        shown = None if pregame else _score_label(score)
-        if shown is None:
-            sc = None
-        else:
-            sc = font("display", score_px).render(shown, True, MUTED if score is None else TEXT)
-        # The kickoff stays on the score slot. A pregame name is centered on the logo instead.
-        stack_h = name.get_height() + gap + score_h
-        block_h = max(mark_h, stack_h)
+        center_img = score_f.render("\u2013", True, MUTED)
+    center_w = center_img.get_width()
+    if face:
+        # One slot per side, inset with LIVE and NEXT GAME. The art is centered in the slot.
+        # The text column starts at the slot edge plus the gap, whatever the art's width.
+        slot_w, slot_h = box_w, box_h
         span = max(0, col_bot - col_top)
-        top = col_top + max(0, (span - block_h) // 2)
-        stack_y = top + max(0, (block_h - stack_h) // 2)
-        score_y = stack_y + name.get_height() + gap
-        logo_y = top + max(0, (block_h - mark_h) // 2) if mark_h else top
-        if pregame and mark_h:
-            name_y = logo_y + max(0, (mark_h - name.get_height()) // 2)
-        else:
-            name_y = stack_y
-        if logo_on_left:
-            text_x = box_left + (mark + side_gap if mark else 0)
-            if image is not None:
-                show(surf, image, (box_left, logo_y))
-            show(surf, name, (text_x, name_y))
-            if sc is not None:
-                show(surf, sc, (text_x, score_y))
-        else:
-            text_right = box_right - (mark + side_gap if mark else 0)
-            if image is not None:
-                show(surf, image, (box_right - image.get_width(), logo_y))
-            show(surf, name, (text_right - name.get_width(), name_y))
-            if sc is not None:
-                show(surf, sc, (text_right - sc.get_width(), score_y))
-        score_mids.append(score_y + score_h // 2)
-
-    paint_side(card["home"], card.get("home_score"), left_box, True)
-    paint_side(card["away"], card.get("away_score"), right_box, False)
-    mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
-    if pregame:
-        clock = font("display", clock_px).render(when, True, ink)
-        show(surf, clock, (rect.centerx - clock.get_width() // 2, mid - clock.get_height() // 2))
+        slot_y = col_top + max(0, (span - slot_h) // 2)
+        left_slot = pygame.Rect(rect.left + pad, slot_y, slot_w, slot_h)
+        right_slot = pygame.Rect(rect.right - pad - slot_w, slot_y, slot_w, slot_h)
+        anchor_cy = slot_y + slot_h // 2
+        text_left = left_slot.right + side_gap
+        text_right = right_slot.left - side_gap
     else:
-        dash = font("display", dash_px).render("\u2013", True, MUTED)
-        show(surf, dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
+        left_slot = right_slot = None
+        span = max(0, col_bot - col_top)
+        anchor_cy = col_top + span // 2
+        text_left = rect.left + pad
+        text_right = rect.right - pad
+    left_room = (rect.centerx - center_w // 2 - side_gap) - text_left
+    right_edge = rect.centerx + (center_w - center_w // 2) + side_gap
+    right_room = text_right - right_edge
+    text_w = max(8, min(left_room, right_room))
+    # A logo row centers the name on the slot when there is no score, and the name+score
+    # block on the slot when the game has a score. A row with no mark keeps that same stack.
+    if pregame and face:
+        name_top = anchor_cy - name_em // 2
+        name_base = name_top + name_f.get_ascent()
+        score_base = None
+    else:
+        block = name_em + gap + score_em
+        block_top = anchor_cy - block // 2
+        name_base = block_top + name_f.get_ascent()
+        score_base = block_top + name_em + gap + score_f.get_ascent()
+
+    def paint_mark(team, slot):
+        if slot is None:
+            return
+        image = team_face(team, (slot.w, slot.h))
+        if image is None:
+            return
+        ix = slot.x + (slot.w - image.get_width()) // 2
+        iy = slot.y + (slot.h - image.get_height()) // 2
+        show(surf, image, (ix, iy))
+
+    def paint_name(team, x, align):
+        name = _line(surf, "display", name_px, team["name"], TEXT, text_w)
+        left = x if align == "left" else x - name.get_width()
+        show(surf, name, (left, name_base - name_f.get_ascent()))
+
+    def paint_score(score, x, align):
+        shown = _score_label(score)
+        sc = score_f.render(shown, True, MUTED if score is None else TEXT)
+        left = x if align == "left" else x - sc.get_width()
+        show(surf, sc, (left, score_base - score_f.get_ascent()))
+
+    global LAST_SPORTS_GUIDE
+    LAST_SPORTS_GUIDE = {
+        "slots": None if left_slot is None else (left_slot.copy(), right_slot.copy()),
+        "text": (text_left, text_right),
+        "baselines": (name_base, score_base),
+        "center_y": anchor_cy,
+        "label_x": rect.left + pad,
+        "label_right": rect.right - pad,
+    }
+    paint_mark(card["home"], left_slot)
+    paint_mark(card["away"], right_slot)
+    paint_name(card["home"], text_left, "left")
+    paint_name(card["away"], text_right, "right")
+    if pregame and face:
+        show(surf, center_img, (rect.centerx - center_w // 2, anchor_cy - center_img.get_height() // 2))
+    elif pregame:
+        show(surf, center_img, (rect.centerx - center_w // 2, score_base - score_f.get_ascent()))
+    else:
+        paint_score(card.get("home_score"), text_left, "left")
+        paint_score(card.get("away_score"), text_right, "right")
+        show(surf, center_img, (rect.centerx - center_w // 2, score_base - score_f.get_ascent()))
     if strip_h:
         rule_h = max(2, L(2))
         pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), rule_h)
