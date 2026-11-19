@@ -522,7 +522,7 @@ def refusal_line(reason):
 
 
 # sha256 of app/cards.py. tools/check-version.py refuses a tree where these bytes differ.
-CARDS_SHA256 = "551765f266779f40b6c2974bbb3bd9e87d9ae3de255c10324aac56f815bec4c9"
+CARDS_SHA256 = "6eec145595f56ed3dfb5aa87d68fce241e36bd3b23b6a56e7ff9472d0d73b51f"
 
 
 def _repo_cards_path(script_dir):

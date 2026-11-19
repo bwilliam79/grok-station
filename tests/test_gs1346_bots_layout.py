@@ -106,6 +106,10 @@ class BotsUpdateCell(unittest.TestCase):
         self.assertLessEqual(mid["scroll"], mid["client"] + 1, mid)
         self.assertEqual(phone["rows"][0]["order"][0], "Update")
         self.assertLessEqual(phone["scroll"], phone["client"] + 1, phone)
+        flat = re.sub(r"\s+", "", CSS)
+        self.assertIn(
+            "[bot]minmax(0,1fr)[wake]minmax(0,140px)[upd]minmax(0,112px)[act]minmax(0,108px)",
+            flat)
 
 
 if __name__ == "__main__":

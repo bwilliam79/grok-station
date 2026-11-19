@@ -818,6 +818,7 @@ def logo_cache():
     if _LOGO is None:
         root = E("GROK_STATION_LOGO_CACHE", "/var/cache/grok-station/logos")
         _LOGO = cards.LogoCache(root, cards.hosts_from_env(os.environ.get("GROK_STATION_LOGO_HOSTS")))
+        _LOGO.team_refresh = True  # a stale teams list refreshes off the show thread
     return _LOGO
 
 

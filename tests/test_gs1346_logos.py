@@ -6,6 +6,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -122,6 +124,35 @@ class ResolveCollegeLogo(unittest.TestCase):
         finally:
             cards.TEAM_LIST_AGE = old
         self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
+
+    def test_a_cold_list_returns_before_the_download(self):
+        """The show path must not wait on the teams list. The relay gives /show 3 seconds."""
+        gate = threading.Event()
+        calls = []
+        real = cards.fetch_teams_bytes
+
+        def slow(url, opener=None):
+            calls.append(threading.current_thread())
+            gate.wait(2)
+            return self.raw
+
+        self.cache.team_opener = None
+        self.cache.team_refresh = True
+        cards.fetch_teams_bytes = slow
+        try:
+            started = time.monotonic()
+            index = cards.load_team_index(self.cache, "football", "college-football", "ncaa", True)
+            elapsed = time.monotonic() - started
+        finally:
+            gate.set()
+            cards.fetch_teams_bytes = real
+        self.assertEqual(index, {})
+        self.assertLess(elapsed, 0.5)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and not calls:
+            time.sleep(0.02)
+        self.assertTrue(calls)
+        self.assertIsNot(calls[0], threading.main_thread())
 
 
 if __name__ == "__main__":

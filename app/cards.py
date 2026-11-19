@@ -1449,11 +1449,50 @@ def fetch_teams_bytes(url, opener=None):
     return data
 
 
+_TEAM_REFRESH = set()
+_TEAM_LOCK = threading.Lock()
+
+
+def _store_teams(path, data):
+    """Write a teams list when the body is a real ESPN payload. Returns the index, or None."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(doc, dict) or not _team_rows(doc):
+        return None
+    try:
+        _write_teams(path, data)
+    except OSError:
+        pass
+    return doc
+
+
+def _refresh_teams_later(path, url):
+    """Download one list off the caller. A show must not wait on this."""
+    with _TEAM_LOCK:
+        if path in _TEAM_REFRESH:
+            return
+        _TEAM_REFRESH.add(path)
+
+    def run():
+        try:
+            data = fetch_teams_bytes(url)
+            if data:
+                _store_teams(path, data)
+        finally:
+            with _TEAM_LOCK:
+                _TEAM_REFRESH.discard(path)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def load_team_index(cache, sport, league, folder, college, opener=None, now=None):
     """The exact-key index for one league, from the logo cache dir.
 
-    A file younger than a day is used as it is. An older file is refreshed, and
-    kept when the refresh fails, so the station still resolves logos offline.
+    A file on disk is used at once, fresh or stale. A test opener refreshes on
+    this thread. The station refreshes in the background, so a cold list cannot
+    hold the show past the relay's post.
     """
     root = getattr(cache, "root", None) if cache is not None else None
     path = _teams_path(root, sport, league)
@@ -1461,24 +1500,21 @@ def load_team_index(cache, sport, league, folder, college, opener=None, now=None
         return {}
     clock = time.time() if now is None else now
     hook = opener if opener is not None else getattr(cache, "team_opener", None)
-    if _teams_fresh(path, clock):
-        doc = _read_teams(path)
-        return build_team_index(doc, folder, college) if doc else {}
-    url = teams_list_url(sport, league)
-    data = fetch_teams_bytes(url, hook) if url else None
-    if data:
-        try:
-            doc = json.loads(data.decode("utf-8"))
-        except (UnicodeError, ValueError):
-            doc = None
-        if isinstance(doc, dict) and _team_rows(doc):
-            try:
-                _write_teams(path, data)
-            except OSError:
-                pass
-            return build_team_index(doc, folder, college)
+    fresh = _teams_fresh(path, clock)
+    if hook is not None and not fresh:
+        url = teams_list_url(sport, league)
+        data = fetch_teams_bytes(url, hook) if url else None
+        if data:
+            doc = _store_teams(path, data)
+            if doc is not None:
+                return build_team_index(doc, folder, college)
     doc = _read_teams(path)
-    return build_team_index(doc, folder, college) if doc else {}
+    index = build_team_index(doc, folder, college) if doc else {}
+    if hook is None and not fresh and getattr(cache, "team_refresh", False):
+        url = teams_list_url(sport, league)
+        if url:
+            _refresh_teams_later(path, url)
+    return index
 
 
 def _log_logo_none(cache, side):
