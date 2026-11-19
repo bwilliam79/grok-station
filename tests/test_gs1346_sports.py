@@ -1,10 +1,12 @@
-"""0.13.46: team marks are 112 px at 1280x720, and the pregame time is smaller than the score.
+"""0.13.46: team marks are 112 px at 1280x720, beside a name and score that stay at base size.
 
 Frames are saved for live, final, and scheduled cards at 1280x720 and 2560x1440.
+GS_FRAME_DIR overrides the directory. Otherwise the frames go in a temp directory.
 """
 import datetime
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +15,7 @@ import test_gs1342_tiles as tiles  # noqa: E402
 gs = tiles.gs
 pygame = tiles.pygame
 
-ART = os.environ.get("GS_FRAME_DIR", "/opt/cursor/artifacts/gs1346")
+ART = os.environ.get("GS_FRAME_DIR") or tempfile.mkdtemp(prefix="gs1346-frames-")
 SIZES = ((1280, 720), (2560, 1440))
 NOW = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
 
@@ -117,17 +119,40 @@ class SportsFrames(unittest.TestCase):
                 for item in logos:
                     self.assertEqual((item[2].w, item[2].h), (expect[size], expect[size]))
                     self.assertTrue(panel.contains(item[2]))
+            layout = gs.Layout(*size)
+            base_name = gs.font("display", layout(gs.SPORTS_NAME_PX)).get_height()
+            base_score = gs.font("display", layout(gs.SPORTS_SCORE_PX)).get_height()
+            score_px = layout(gs.SPORTS_SCORE_PX)
+            self.assertEqual(score_px, 80 if size == (1280, 720) else 160)
+            for name in ("live", "final", "scheduled"):
+                painted, panel, _surf = frames[name]
+                names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
+                self.assertEqual(len(names), 2, name)
+                for item in names:
+                    self.assertGreaterEqual(item[2].h, base_name, (name, item[0], item[2].h, base_name))
+                if name != "scheduled":
+                    name_bottom = max(item[2].bottom for item in names)
+                    scores = [item for item in painted
+                              if item[0] is None and item[2].top >= name_bottom - 1
+                              and item[2].w != item[2].h and abs(item[2].centerx - panel.centerx) > 40]
+                    self.assertGreaterEqual(len(scores), 2, name)
+                    for item in scores:
+                        self.assertGreaterEqual(item[2].h, base_score, (name, item[2].h, base_score))
             clock_label, _ink = gs._pregame_when(timed, NOW)
             clock = _center_line(frames["scheduled"][0], frames["scheduled"][1])
             tbd_placed = _center_line(frames["tbd"][0], frames["tbd"][1])
             self.assertIsNotNone(clock, [item[0] for item in frames["scheduled"][0]])
             self.assertIsNotNone(tbd_placed)
-            score_px = used[clock_label]
+            self.assertEqual(used[clock_label], score_px)
             self.assertEqual(used["Time TBD"], score_px)
-            self.assertEqual(clock.h, gs.font("display", gs._pregame_px(score_px, clock_label)).get_height())
-            self.assertEqual(tbd_placed.h, gs.font("display", gs._pregame_px(score_px, "Time TBD")).get_height())
-            self.assertEqual(gs._pregame_px(score_px, "Time TBD"), max(8, score_px - 1))
-            self.assertEqual(gs._pregame_px(score_px, clock_label), max(8, int(round(score_px * 0.75))))
+            kick = max(8, int(round(score_px * gs.PREGAME_RATIO)))
+            tbd_px = max(8, int(round(score_px * gs.PREGAME_TBD_RATIO)))
+            self.assertEqual(gs._pregame_px(score_px, clock_label), kick)
+            self.assertEqual(gs._pregame_px(score_px, "Time TBD"), tbd_px)
+            self.assertEqual(clock.h, gs.font("display", kick).get_height())
+            self.assertEqual(tbd_placed.h, gs.font("display", tbd_px).get_height())
+            if size == (1280, 720):
+                self.assertEqual(kick, 60)
             # The kickoff time and Time TBD stay clear of the names and the schedule line.
             for painted, panel, _surf in (frames["scheduled"], frames["tbd"]):
                 names = [item for item in painted if item[0] in ("Kansas City", "Denver")]

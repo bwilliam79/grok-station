@@ -120,6 +120,13 @@ class ReplyVoice(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(voice, "eve")
         self.assertEqual(spoken, ["eve"])
         self.assertNotEqual(voice, "luna")
+        self.relay._limits = self.handoff.Limits(
+            os.path.join(self.relay.PENDING_DIR, "limits-3.json"), self.relay.today)
+        self.relay._LATE.clear()
+        got, statuses, spoken, voice = await self._ask([(0.05, "Still eve.", "NOT A VOICE!!!")])
+        self.assertEqual(statuses, [200])
+        self.assertEqual(self.relay.persona_list()["max"]["voice"], "eve")
+        self.assertEqual(voice, "eve")
 
 
 class SealVoice(unittest.TestCase):
@@ -132,6 +139,16 @@ class SealVoice(unittest.TestCase):
         args = mod._parser().parse_args(
             ["reply", "--persona", "max", "--request-id", "vs_" + "b" * 22, "--voice", "eve"])
         self.assertEqual(args.voice, "eve")
+
+    def test_voice_id_uses_the_helper_shape_and_length_cap(self):
+        sys.path.insert(0, os.path.join(ROOT, "relay"))
+        import botreply
+        self.assertEqual(botreply._voice_id("Eve"), "eve")
+        self.assertEqual(botreply._voice_id("a" * 32), "a" * 32)
+        self.assertEqual(botreply._voice_id("a" * 33), "")
+        self.assertEqual(botreply._voice_id("has_under"), "")
+        self.assertEqual(botreply._voice_id("9start"), "")
+        self.assertEqual(botreply._voice_id(""), "")
 
 
 if __name__ == "__main__":

@@ -331,27 +331,27 @@ class LogoSize(unittest.TestCase):
     def _check(self, painted, panel, px):
         names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
         status = [item for item in painted if item[0] in ("LIVE", "FINAL", "Q4", "OT", "2OT", "NFL")]
-        logos = []
-        for word, ink, placed in painted:
-            if word is not None or placed.w != placed.h or placed.h < 8:
-                continue
-            if any(placed.centery < name[2].centery and abs(placed.centerx - name[2].centerx) < panel.w // 4
-                   for name in names):
-                logos.append((ink, placed))
+        logos = [(ink, placed) for word, ink, placed in painted
+                 if word is None and placed.w == px and placed.h == px]
         # The digits are font.render, not _line, so they have no word. The dash sits between them.
         name_bottom = max(item[2].bottom for item in names) if names else 0
         scores = [(ink, placed) for word, ink, placed in painted
-                  if word is None and placed.top >= name_bottom and (ink, placed) not in [(a, b) for a, b in logos]]
+                  if word is None and placed.top >= name_bottom - 1 and not (placed.w == px and placed.h == px)]
         self.assertEqual(len(names), 2, [item[0] for item in painted])
         self.assertEqual(len(logos), 2, [(word, placed.size) for word, _ink, placed in painted])
         self.assertGreaterEqual(len(scores), 2, [(placed.size) for _ink, placed in scores])
+        home = min(names, key=lambda item: item[2].centerx)
+        away = max(names, key=lambda item: item[2].centerx)
+        home_logo = min(logos, key=lambda item: item[1].centerx)
+        away_logo = max(logos, key=lambda item: item[1].centerx)
+        self.assertLessEqual(home_logo[1].right, home[2].left + 1)
+        self.assertGreaterEqual(away_logo[1].left, away[2].right - 1)
         for ink, placed in logos:
             self.assertEqual((placed.w, placed.h), (px, px), placed)
             self.assertTrue(panel.contains(placed), (placed, panel))
             self.assertTrue(panel.contains(ink), (ink, panel))
-            city = min(names, key=lambda item: abs(item[2].centerx - placed.centerx))
-            self.assertLessEqual(abs(city[2].centerx - placed.centerx), 1, (placed, city[2]))
-            self.assertLessEqual(placed.bottom, city[2].top, (placed, city[0], city[2]))
+            city = home if placed.centerx < panel.centerx else away
+            self.assertTrue(placed.top < city[2].bottom and placed.bottom > city[2].top, (placed, city[2]))
             self.assertFalse(placed.colliderect(city[1]) or ink.colliderect(city[1]), (placed, city[1]))
             self.assertFalse(placed.colliderect(city[2]), (placed, city[2]))
             for score_ink, score_placed in scores:

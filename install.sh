@@ -383,8 +383,9 @@ st_health() {
   chk python3 -c 'import pygame, qrcode, cryptography'
   chk python3 -m py_compile /opt/grok-station/grok_station.py /opt/grok-station/dimming.py /opt/grok-station/cards.py /opt/grok-station/admin/grok_admin.py
   # Import grok_admin as the admin user, from /, with a clean environment and a fixed
-  # module list. A failure sets bad=1 through chk. This check does not roll anything back.
-  chk runuser -u grok-admin -- env -i -C / PATH=/usr/bin:/bin python3 -I -B -c 'import importlib.util, sys
+  # module list. A failure sets bad=1. The log is a short label, not the Python source.
+  # This check does not roll anything back.
+  grok_admin_import='import importlib.util, sys
 roots = ["/opt/grok-station/admin", "/opt/grok-station/relay", "/opt/grok-station"]
 sys.path = roots + [p for p in sys.path if p and p not in roots]
 spec = importlib.util.find_spec("grok_admin")
@@ -392,6 +393,12 @@ origin = spec.origin if spec is not None else ""
 if not origin.startswith("/opt/grok-station/admin/"):
     raise SystemExit(1)
 import grok_admin'
+  if runuser -u grok-admin -- env -i -C / PATH=/usr/bin:/bin python3 -I -B -c "$grok_admin_import" >/dev/null 2>&1; then
+    echo "ok   grok_admin import"
+  else
+    echo "!!   failed: grok_admin import"
+    bad=1
+  fi
   if [ "$MODE" = update ]; then
     sleep 3
     for u in grok-station-relay grok-station-admin grok-station grok-station-wake; do

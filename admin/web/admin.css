@@ -1077,7 +1077,7 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow>div:nth-child(2){display:contents}
   #blist .botrow .lbl{grid-area:nm}
   #blist .botrow .l2{grid-area:l2;height:auto}
-  #blist .botrow .rowupd{grid-area:ru;margin-bottom:4px}  /* 0.13.34: 4 px row gap + 4 px = 8 px above Configure */
+  #blist .botrow .rowupd{grid-area:ru;margin-top:0;margin-bottom:4px}  /* 0.13.34: 4 px row gap + 4 px = 8 px above Configure. 0.13.46: no extra gap above Update. */
   #blist .botrow .rowupd .btn{min-height:44px;height:44px}
   #blist .botrow>.ww{grid-area:ww;min-height:44px;align-items:center;flex-wrap:nowrap;overflow:hidden;min-width:0}
   #blist .botrow>.ww>.phrase{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1094,7 +1094,8 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow.sentrow .setacts.sent{display:flex;flex-wrap:wrap;gap:8px;width:100%}
   #blist .botrow.sentrow .setacts.sent .btn,#blist .botrow.sentrow>.cfg .btn{flex:1 1 140px;min-height:44px;height:auto;white-space:normal}
   #blist .botrow>.cfg.sent3{display:flex}
-  .updcol .updsw{grid-template-rows:44px 16px}
+  .updcol .updsw{grid-template-rows:44px auto}
+  .updcol .updsw .updrule:empty{display:none}
 }
 /* 0.13.16 Noor: sent rows stay 100 px; helper wraps to 2 lines so the bot name is not ellipsized at 1280 */
 @media (min-width:768px){

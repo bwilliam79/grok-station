@@ -1190,11 +1190,18 @@ class SportsLayout(unittest.TestCase):
             box = _red_box(surf, 80)
             self.assertIsNotNone(box)
             left, top, right, bottom = box
-            name_y = _text_top(surf, left - 40, right + 40, bottom + 2)
-            self.assertIsNotNone(name_y)
-            self.assertLess(bottom, name_y)  # logo above the name
-            col_cx = 1920 // 4
-            self.assertLess(abs(((left + right) // 2) - col_cx), 80)  # centered in the home column
+            # The logo sits beside the name, in the home half, not stacked above it.
+            hit = None
+            target = tuple(gs.TEXT)[:3]
+            for y in range(max(0, top - 8), bottom + 12, 2):
+                for x in range(right + 2, min(surf.get_width() - 1, right + 280), 3):
+                    if _near(surf.get_at((x, y)), target):
+                        hit = (x, y)
+                        break
+                if hit:
+                    break
+            self.assertIsNotNone(hit)
+            self.assertLess((left + right) // 2, 1920 // 2)
             # the away side has no logo and no abbreviation shield in that column
             away_cx = 1920 - 1920 // 4
             shield = 0

@@ -21,7 +21,7 @@ _EXPECTED = {
 }
 _VOICE_SENTENCE = ("Read voiceId from your own Grok Bot settings.json "
                    "(your own agent's settings file, never another bot's). "
-                   "If it is present, add --voice <voiceId> to the command below. "
+                   "If it is present, add --voice '<voiceId>' to the command below. "
                    "If it is not, send that command without --voice.")
 
 

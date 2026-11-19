@@ -10,7 +10,7 @@ from chrome_harness import find_chrome, quiet_css, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSS = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
-ART = os.environ.get("GS_FRAME_DIR", "/opt/cursor/artifacts/gs1346")
+ART = os.environ.get("GS_FRAME_DIR") or tempfile.mkdtemp(prefix="gs1346-bots-")
 
 PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><link rel=icon href="data:,">
@@ -42,6 +42,7 @@ const rows=[...document.querySelectorAll("#blist .botrow")].map(row=>{
     slug: row.getAttribute("data-slug"),
     bot: box(row.querySelector(":scope > div:nth-child(2)")),
     wake: box(row.querySelector(":scope > .ww")),
+    updates: box(row.querySelector(":scope > .updcol .updbtn")),
     cfg: box(row.querySelector(":scope > .cfg")),
     upd: upd ? box(upd) : null,
     fail: fail ? box(fail) : null,
@@ -84,14 +85,25 @@ def _render(width, height, shot):
 
 class BotsUpdateCell(unittest.TestCase):
     def test_update_stays_in_the_bot_cell_and_768_does_not_overflow(self):
-        frames = {1280: (900, "bots-1280.png"), 768: (900, "bots-768.png"), 390: (844, "bots-390.png")}
+        frames = {1280: (900, "bots-1280.png"), 1190: (900, None), 1024: (900, None),
+                  768: (900, "bots-768.png"), 390: (844, "bots-390.png")}
         measured = {}
         for width, (height, name) in frames.items():
-            measured[width] = _render(width, height, os.path.join(ART, name))
-            self.assertTrue(os.path.isfile(os.path.join(ART, name)), name)
+            shot = os.path.join(ART, name) if name else os.path.join(tempfile.mkdtemp(prefix="gs1346-shot-"), "x.png")
+            measured[width] = _render(width, height, shot)
+            if name:
+                self.assertTrue(os.path.isfile(os.path.join(ART, name)), name)
         wide = measured[1280]
         mid = measured[768]
         phone = measured[390]
+        for width in (768, 1024, 1190):
+            ash = measured[width]["rows"][0]
+            cells = [ash["bot"], ash["wake"], ash["updates"], ash["cfg"]]
+            for left, right in zip(cells, cells[1:]):
+                self.assertLess(left["r"], right["l"] + 1, (width, left, right))
+                self.assertFalse(left["r"] > right["l"] and left["b"] > right["t"] and right["b"] > left["t"]
+                                 and left["l"] < right["r"], (width, left, right))
+            self.assertLessEqual(measured[width]["scroll"], measured[width]["client"] + 1, width)
         for view in (wide, mid):
             ash = view["rows"][0]
             kai = view["rows"][1]
@@ -106,6 +118,9 @@ class BotsUpdateCell(unittest.TestCase):
         self.assertLessEqual(mid["scroll"], mid["client"] + 1, mid)
         self.assertEqual(phone["rows"][0]["order"][0], "Update")
         self.assertLessEqual(phone["scroll"], phone["client"] + 1, phone)
+        ash = phone["rows"][0]
+        # No empty caption row between the Updates switch and the Update button.
+        self.assertLessEqual(ash["upd"]["t"] - ash["updates"]["b"], 12, ash)
         flat = re.sub(r"\s+", "", CSS)
         self.assertIn(
             "[bot]minmax(0,1fr)[wake]minmax(0,140px)[upd]minmax(0,112px)[act]minmax(0,108px)",

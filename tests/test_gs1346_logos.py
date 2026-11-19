@@ -56,16 +56,20 @@ class ResolveCollegeLogo(unittest.TestCase):
         self.cache = cards.LogoCache(
             self.root, ["a.espncdn.com"], opener=lambda url: (_png(), "image/png"),
             resolve=lambda host: True, log=self.lines.append)
-        self.cache.team_opener = self._open
+        with cards._TEAM_LOCK:
+            cards._TEAM_REFRESH.clear()
+            cards._TEAM_FAIL_AT.clear()
+            cards._TEAM_PARSED.clear()
 
-    def _open(self, url):
-        self.calls.append(url)
-        self.assertNotIn("espncdn.com/i/", url)
-        self.assertTrue(url.startswith("https://site.api.espn.com/"))
-        return self.raw
+    def _seed(self):
+        path = cards._teams_path(self.root, "football", "college-football")
+        os.makedirs(self.root, exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(self.raw)
+        return path
 
-    def _prepare(self, card):
-        return cards.prepare_display_logos(card, self.cache, wait_s=0)
+    def _prepare(self, card, **kw):
+        return cards.prepare_display_logos(card, self.cache, wait_s=0, **kw)
 
     def test_name_alias_and_abbreviation_resolve_to_2110(self):
         # The recorded list has no "UCA" alias. shortDisplayName and nickname are
@@ -77,18 +81,20 @@ class ResolveCollegeLogo(unittest.TestCase):
         self.assertEqual(index["cark"], UCA)
         self.assertNotIn("bears", index)  # fourteen schools share that name
         self.assertNotIn("uca", index)
+        self._seed()
         for name, abbr in (("Central Arkansas", "CARK"), ("C Arkansas", "CARK"), ("cark", "CARK")):
             card = self._prepare(_card((name, abbr), ("Arkansas", "ARK")))
             self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA), name)
             self.assertNotIn("logo_url", card["home"])
             self.assertNotIn("logo none: home", self.lines)
-        self.assertTrue(self.calls)
+        self.assertEqual(self.calls, [])
         for line in self.lines:
             self.assertNotIn("http", line)
             self.assertNotIn("espn", line)
 
     def test_unknown_team_falls_back_to_the_abbreviation(self):
-        card = self._prepare(_card(("Central Arkansas", "CARK"), ("Atlantis", "ZZZ")))
+        self._seed()
+        card = self._prepare(_card(("Central Arkansas", "CARK"), ("Atlantis", "ZZZ")), card_id="game-1")
         self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
         self.assertTrue(card["away"].get("logo_badge"))
         self.assertNotIn("logo_id", card["away"])
@@ -102,57 +108,94 @@ class ResolveCollegeLogo(unittest.TestCase):
         self.assertNotEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
 
     def test_a_fresh_cache_is_used_offline(self):
-        path = cards._teams_path(self.root, "football", "college-football")
-        os.makedirs(self.root, exist_ok=True)
-        with open(path, "wb") as fh:
-            fh.write(self.raw)
-        os.utime(path, None)
+        self._seed()
         card = self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")))
         self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
         self.assertEqual(self.calls, [])
 
-    def test_a_failed_refresh_keeps_the_stale_list(self):
-        path = cards._teams_path(self.root, "football", "college-football")
-        os.makedirs(self.root, exist_ok=True)
-        with open(path, "wb") as fh:
-            fh.write(self.raw)
-        old = cards.TEAM_LIST_AGE
-        cards.TEAM_LIST_AGE = -1
-        self.cache.team_opener = lambda url: None
+    def test_a_parsed_index_is_not_read_again_for_the_same_file(self):
+        self._seed()
+        reads = []
+        real = cards._read_teams
+
+        def wrap(path):
+            reads.append(path)
+            return real(path)
+
+        cards._read_teams = wrap
         try:
-            card = self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")))
+            cards.load_team_index(self.cache, "football", "college-football", "ncaa", True)
+            cards.load_team_index(self.cache, "football", "college-football", "ncaa", True)
         finally:
-            cards.TEAM_LIST_AGE = old
-        self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
+            cards._read_teams = real
+        self.assertEqual(len(reads), 1)
+
+    def test_logo_none_is_one_line_per_card_and_side(self):
+        self._seed()
+        card = _card(("Central Arkansas", "CARK"), ("Atlantis", "ZZZ"))
+        self._prepare(card, card_id="game-1")
+        self._prepare(card, card_id="game-1")
+        self.assertEqual(self.lines.count("logo none: away"), 1)
+        self._prepare(card, card_id="game-2")
+        self.assertEqual(self.lines.count("logo none: away"), 2)
 
     def test_a_cold_list_returns_before_the_download(self):
         """The show path must not wait on the teams list. The relay gives /show 3 seconds."""
         gate = threading.Event()
         calls = []
-        real = cards.fetch_teams_bytes
 
-        def slow(url, opener=None):
+        def slow(url):
             calls.append(threading.current_thread())
             gate.wait(2)
             return self.raw
 
-        self.cache.team_opener = None
         self.cache.team_refresh = True
-        cards.fetch_teams_bytes = slow
         try:
             started = time.monotonic()
-            index = cards.load_team_index(self.cache, "football", "college-football", "ncaa", True)
+            card = self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=slow)
             elapsed = time.monotonic() - started
         finally:
             gate.set()
-            cards.fetch_teams_bytes = real
-        self.assertEqual(index, {})
+        self.assertTrue(card["home"].get("logo_badge"))
         self.assertLess(elapsed, 0.5)
         deadline = time.monotonic() + 1
         while time.monotonic() < deadline and not calls:
             time.sleep(0.02)
         self.assertTrue(calls)
         self.assertIsNot(calls[0], threading.main_thread())
+
+    def test_a_failed_fetch_backs_off_for_about_ten_minutes(self):
+        calls = []
+
+        def fail(url):
+            calls.append(url)
+            return None
+
+        self.cache.team_refresh = True
+        path = cards._teams_path(self.root, "football", "college-football")
+        self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=fail)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and path not in cards._TEAM_FAIL_AT:
+            time.sleep(0.02)
+        self.assertIn(path, cards._TEAM_FAIL_AT)
+        self.assertEqual(len(calls), 1)
+        self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=fail)
+        time.sleep(0.3)
+        self.assertEqual(len(calls), 1)
+
+    def test_an_empty_allowlist_does_not_fetch(self):
+        calls = []
+        self.cache.hosts = []
+        self.cache.team_refresh = True
+        self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")),
+                      opener=lambda url: calls.append(url) or self.raw)
+        time.sleep(0.3)
+        self.assertEqual(calls, [])
+        self.cache.hosts = ["example.com"]
+        self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")),
+                      opener=lambda url: calls.append(url) or self.raw)
+        time.sleep(0.3)
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

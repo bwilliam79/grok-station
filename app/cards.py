@@ -654,6 +654,8 @@ class LogoCache:
         self.max_age = max_age
         self._lock = threading.Lock()
         self._pending = set()
+        self.team_refresh = False  # the station turns this on; a test cache does not fetch a teams list
+        self.logo_none = set()  # (card id, side) already logged, so a live update does not repeat the line
 
     def skipped(self, reason):
         """One log line per skipped logo. The reason only, never the URL."""
@@ -1202,11 +1204,14 @@ def logo_id_of(url):
 
 
 # ESPN's public teams list. College logos are named by numeric id, which bots do not have.
-# The list is JSON, not an image, so it is not fetched through the logo CDN allowlist.
-# The host is fixed. The same pin, size, and no-redirect rules as a logo fetch apply.
+# site.api.espn.com is fetched only when a.espncdn.com is on the logo allowlist. That CDN
+# entry is what permits this host. An empty allowlist means no fetch, the same rule as a
+# logo image. The show handler reads the cached file only. A refresh runs off that thread,
+# at most daily, and a failed fetch waits TEAM_LIST_BACKOFF before the next try.
 ESPN_TEAMS_HOST = "site.api.espn.com"
 TEAM_LIST_MAX = 3 * 1024 * 1024  # a college football list is about 1.8 MB
 TEAM_LIST_AGE = 24 * 3600  # refresh at most daily; an older file is still used offline
+TEAM_LIST_BACKOFF = 10 * 60  # after a failed fetch, leave the network alone for about 10 minutes
 _LIST_PART = re.compile(r"^[a-z0-9][a-z0-9.-]{0,40}$")
 # Card league text, already normalized, to (sport, league, cdn folder, college).
 # College folders are ncaa. A league that is not in this table is not guessed.
@@ -1451,10 +1456,24 @@ def fetch_teams_bytes(url, opener=None):
 
 _TEAM_REFRESH = set()
 _TEAM_LOCK = threading.Lock()
+# path -> (mtime_ns, size, index). The show path does not parse the file again while this matches.
+_TEAM_PARSED = {}
+# path -> monotonic time of the last failed fetch. A later card waits out TEAM_LIST_BACKOFF.
+_TEAM_FAIL_AT = {}
+
+
+def teams_list_allowed(cache):
+    """True when the logo allowlist permits the teams host.
+
+    a.espncdn.com on the allowlist is the entry that permits site.api.espn.com.
+    An empty allowlist, or a list that does not name that CDN host, means no fetch.
+    """
+    hosts = getattr(cache, "hosts", None) if cache is not None else None
+    return bool(hosts) and ESPN_LOGO_HOST in hosts
 
 
 def _store_teams(path, data):
-    """Write a teams list when the body is a real ESPN payload. Returns the index, or None."""
+    """Write a teams list when the body is a real ESPN payload. Returns the document, or None."""
     try:
         doc = json.loads(data.decode("utf-8"))
     except (UnicodeError, ValueError):
@@ -1468,59 +1487,83 @@ def _store_teams(path, data):
     return doc
 
 
-def _refresh_teams_later(path, url):
-    """Download one list off the caller. A show must not wait on this."""
+def _index_from_file(path, folder, college):
+    """The parsed index for this file. Reused until the file's mtime or size changes. Does not fetch."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    if st.st_size <= 0 or st.st_size > TEAM_LIST_MAX:
+        return {}
+    stamp = (st.st_mtime_ns, st.st_size)
     with _TEAM_LOCK:
+        hit = _TEAM_PARSED.get(path)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+    doc = _read_teams(path)
+    index = build_team_index(doc, folder, college) if doc else {}
+    with _TEAM_LOCK:
+        _TEAM_PARSED[path] = (stamp, index)
+    return index
+
+
+def load_team_index(cache, sport, league, folder, college):
+    """The exact-key index from the cached file. The show path calls this and does not fetch."""
+    root = cache.root if cache is not None and isinstance(getattr(cache, "root", None), str) else None
+    path = _teams_path(root, sport, league) if root else None
+    if not path:
+        return {}
+    return _index_from_file(path, folder, college)
+
+
+def schedule_teams_refresh(cache, path, url, opener=None, now=None):
+    """Refresh one list off the caller. opener is the test hook and is never read off the cache.
+
+    A fresh file is left alone. A failure backs off for TEAM_LIST_BACKOFF. The allowlist
+    is checked here, so an empty list never starts a thread.
+    """
+    if not path or not url or not teams_list_allowed(cache):
+        return
+    if opener is None and not cache.team_refresh:
+        return
+    clock = time.time() if now is None else now
+    if _teams_fresh(path, clock):
+        return
+    mono = time.monotonic()
+    with _TEAM_LOCK:
+        failed = _TEAM_FAIL_AT.get(path)
+        if failed is not None and (mono - failed) < TEAM_LIST_BACKOFF:
+            return
         if path in _TEAM_REFRESH:
             return
         _TEAM_REFRESH.add(path)
 
     def run():
         try:
-            data = fetch_teams_bytes(url)
-            if data:
-                _store_teams(path, data)
+            data = fetch_teams_bytes(url, opener)
+            stored = _store_teams(path, data) if data else None
+            with _TEAM_LOCK:
+                if stored is None:
+                    _TEAM_FAIL_AT[path] = time.monotonic()
+                else:
+                    _TEAM_FAIL_AT.pop(path, None)
+                    _TEAM_PARSED.pop(path, None)
         finally:
             with _TEAM_LOCK:
                 _TEAM_REFRESH.discard(path)
 
-    threading.Thread(target=run, daemon=True).start()
+    threading.Thread(target=run, daemon=True, name="teams-list").start()
 
 
-def load_team_index(cache, sport, league, folder, college, opener=None, now=None):
-    """The exact-key index for one league, from the logo cache dir.
-
-    A file on disk is used at once, fresh or stale. A test opener refreshes on
-    this thread. The station refreshes in the background, so a cold list cannot
-    hold the show past the relay's post.
-    """
-    root = getattr(cache, "root", None) if cache is not None else None
-    path = _teams_path(root, sport, league)
-    if path is None:
-        return {}
-    clock = time.time() if now is None else now
-    hook = opener if opener is not None else getattr(cache, "team_opener", None)
-    fresh = _teams_fresh(path, clock)
-    if hook is not None and not fresh:
-        url = teams_list_url(sport, league)
-        data = fetch_teams_bytes(url, hook) if url else None
-        if data:
-            doc = _store_teams(path, data)
-            if doc is not None:
-                return build_team_index(doc, folder, college)
-    doc = _read_teams(path)
-    index = build_team_index(doc, folder, college) if doc else {}
-    if hook is None and not fresh and getattr(cache, "team_refresh", False):
-        url = teams_list_url(sport, league)
-        if url:
-            _refresh_teams_later(path, url)
-    return index
-
-
-def _log_logo_none(cache, side):
-    """One line when a side has no logo. The side name only, never a URL."""
+def _log_logo_none(cache, side, card_id):
+    """One line when a side has no logo. Once per card id and side. The side name only, never a URL."""
     if side not in ("home", "away"):
         return
+    if card_id and cache is not None and isinstance(getattr(cache, "logo_none", None), set):
+        key = (card_id, side)
+        if key in cache.logo_none:
+            return
+        cache.logo_none.add(key)
     line = "logo none: " + side
     log = getattr(cache, "log", None) if cache is not None else None
     try:
@@ -1532,11 +1575,13 @@ def _log_logo_none(cache, side):
         pass
 
 
-def fill_missing_logos(card, cache, opener=None, now=None):
-    """Give a side with no logo_url the logo the teams list names, or an abbreviation badge.
+def fill_missing_logos(card, cache, opener=None, now=None, card_id=None):
+    """Give a side with no logo_url the logo the cached teams list names, or an abbreviation badge.
 
-    An explicit logo_url is left as the bot sent it. A name and an abbreviation that
-    point at different teams are not given a logo.
+    The index comes from the file on disk. This does not fetch. opener, when passed, is
+    the test hook for a background refresh and is not read from the cache. An explicit
+    logo_url is left as the bot sent it. A name and an abbreviation that point at
+    different teams are not given a logo. logo none is logged once per card id and side.
     """
     if not isinstance(card, dict):
         return card
@@ -1548,7 +1593,12 @@ def fill_missing_logos(card, cache, opener=None, now=None):
     index = {}
     if spec is not None:
         sport, league, folder, college = spec
-        index = load_team_index(cache, sport, league, folder, college, opener=opener, now=now)
+        index = load_team_index(cache, sport, league, folder, college)
+        root = cache.root if cache is not None and isinstance(getattr(cache, "root", None), str) else None
+        path = _teams_path(root, sport, league) if root else None
+        url = teams_list_url(sport, league)
+        if path and url:
+            schedule_teams_refresh(cache, path, url, opener=opener, now=now)
     for side in ("home", "away"):
         team = card.get(side) if isinstance(card, dict) else None
         if not isinstance(team, dict) or team.get("logo_url"):
@@ -1558,11 +1608,11 @@ def fill_missing_logos(card, cache, opener=None, now=None):
             team["logo_url"] = url
             continue
         team["logo_badge"] = True
-        _log_logo_none(cache, side)
+        _log_logo_none(cache, side, card_id)
     return card
 
 
-def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
+def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None, opener=None, card_id=None):
     """Settle ESPN team logos for a sports card without holding the card back. Other cards are only re-validated.
 
     HTTPS only, host a.espncdn.com, the /i/teamlogos/ file path only, and that host must
@@ -1574,7 +1624,7 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
     card = validate_card(card)
     if card["type"] != "sports":
         return card
-    fill_missing_logos(card, cache)
+    fill_missing_logos(card, cache, opener=opener, card_id=card_id)
     jobs = []
     for side in ("home", "away"):
         team = card[side]

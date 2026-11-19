@@ -813,7 +813,12 @@ def save_weather_cache(data, ok_at, path=None):
 
 
 def logo_cache():
-    """Logo files under the display cache. An empty allowlist means no fetch."""
+    """Logo files under the display cache. An empty allowlist means no fetch.
+
+    The teams list at site.api.espn.com is fetched only when a.espncdn.com is on this
+    allowlist. That CDN host is the entry that permits the teams host. It is not a
+    second name the operator has to add.
+    """
     global _LOGO
     if _LOGO is None:
         root = E("GROK_STATION_LOGO_CACHE", "/var/cache/grok-station/logos")
@@ -843,7 +848,7 @@ def apply_show(doc, cache, deck, now=None, on_logo=logo_landed):
     if show["op"] == "clear":
         deck.clear(bot, show["id"])
         return "clear", bot, show["id"]
-    card = cards.prepare_display_logos(show["card"], cache, on_ready=on_logo)
+    card = cards.prepare_display_logos(show["card"], cache, on_ready=on_logo, card_id=show["id"])
     deck.put(bot, show["id"], show["priority"], show["ttl_s"], card, now)
     return "put", bot, show["id"]
 
@@ -3413,83 +3418,23 @@ def _team_has_face(team):
 
 
 # Team logo square, in 1920x1080 spec pixels. 168 is 112 px at 1280x720 and 224 px at 2560x1440.
-# This is the one size to change when the marks should be larger or smaller.
+# The name and the score stay at their bases. The logo sits beside that stack, so none of the
+# three is scaled down to make the column fit.
 SPORTS_LOGO_PX = 168
+SPORTS_NAME_PX = 48   # 32 px at 1280x720, 64 px at 2560x1440
+SPORTS_SCORE_PX = 120  # 80 px at 1280x720, 160 px at 2560x1440
+# A kickoff time is three quarters of the score. Time TBD is about 62 percent, one step under that.
+PREGAME_RATIO = 0.75
+PREGAME_TBD_RATIO = 0.62
 
 
-def _sports_column_px(L, avail, col_w, scores, face):
-    """Logo, name, and score sizes whose font boxes fit in avail, including the gaps.
-
-    The preferred sizes are the 1920x1080 caps. A short panel scales them down together
-    until the stack ends at or above the next-game row. Width still caps the score.
-    """
+def _sports_column_px(L, face):
+    """Logo, name, and score at the spec bases. Computed once. Nothing is searched or scaled down."""
     gap = max(1, L(8))
-    avail = max(0, int(avail))
-    mark_cap = L(SPORTS_LOGO_PX) if face else 0
-    name_cap = max(8, L(48))
-    score_cap = min(
-        _fit_px("display", str(scores[0]), L(180), max(8, col_w), 8),
-        _fit_px("display", str(scores[1]), L(180), max(8, col_w), 8),
-    )
-
-    def pack(scale, mark_scale=1.0):
-        mark = int(round(mark_cap * mark_scale)) if face else 0
-        name_px = max(8, int(round(name_cap * scale)))
-        score_px = max(8, int(round(score_cap * scale)))
-        guard = 0
-        while score_px > 8 and guard < 40 and (
-            font("display", score_px).size(str(scores[0]))[0] > col_w
-            or font("display", score_px).size(str(scores[1]))[0] > col_w
-        ):
-            score_px -= 1
-            guard += 1
-        name_h = font("display", name_px).get_height()
-        score_h = max(font("display", score_px).size(str(s))[1] for s in scores)
-        block = name_h + gap + score_h
-        if mark > 0:
-            block += mark + gap
-        return block, mark, name_px, score_px
-
-    def search(mark_scale):
-        block, mark, name_px, score_px = pack(1.0, mark_scale)
-        if block <= avail:
-            return block, mark, name_px, score_px
-        lo, hi, best = 0.0, 1.0, pack(0.0, mark_scale)
-        for _ in range(18):
-            mid = (lo + hi) / 2.0
-            trial = pack(mid, mark_scale)
-            if trial[0] <= avail:
-                best = trial
-                lo = mid
-            else:
-                hi = mid
-        return best
-
-    # The logo keeps its full square while the name and the score shrink.
-    # The mark shrinks only after the text is already at its floor.
-    block, mark, name_px, score_px = search(1.0)
-    if block > avail and mark_cap:
-        lo, hi, best = 0.0, 1.0, search(0.0)
-        for _ in range(18):
-            mid = (lo + hi) / 2.0
-            trial = search(mid)
-            if trial[0] <= avail:
-                best = trial
-                lo = mid
-            else:
-                hi = mid
-        block, mark, name_px, score_px = best
-    while block > avail and (score_px > 8 or name_px > 8 or mark > 0):
-        if score_px > 8:
-            score_px -= 1
-        elif name_px > 8:
-            name_px -= 1
-        else:
-            mark -= 1
-        name_h = font("display", name_px).get_height()
-        score_h = max(font("display", score_px).size(str(s))[1] for s in scores)
-        block = name_h + gap + score_h + ((mark + gap) if mark else 0)
-    return mark, name_px, score_px, gap
+    logo = L(SPORTS_LOGO_PX) if face else 0
+    name_px = max(8, L(SPORTS_NAME_PX))
+    score_px = max(8, L(SPORTS_SCORE_PX))
+    return logo, name_px, score_px, gap
 
 
 def sports_stack(top, bottom, face_h, name_h, score_h, gap):
@@ -4979,18 +4924,13 @@ def _pregame_when(card, now=None):
 
 
 def _pregame_px(score_px, label):
-    """A kickoff time is about three quarters of the score face.
-
-    Time TBD stays on the score face and drops one step, the same one-pixel
-    step the column uses when a line does not fit.
-    """
+    """A kickoff time is PREGAME_RATIO of the score. Time TBD is PREGAME_TBD_RATIO."""
     try:
         base = int(score_px)
     except (TypeError, ValueError):
         base = 8
-    if label == "Time TBD":
-        return max(8, base - 1)
-    return max(8, int(round(base * 0.75)))
+    ratio = PREGAME_TBD_RATIO if label == "Time TBD" else PREGAME_RATIO
+    return max(8, int(round(max(0, base) * ratio)))
 
 
 def _sports_side_label(card):
@@ -5021,8 +4961,6 @@ def draw_sports(surf, L, card, rect, now=None):
     _card_chrome(surf, L, rect)
     games = card["schedule"][:4]
     pad = L(48)
-    strip_h = L(112) if games and rect.h >= L(300) else 0
-    strip_floor = max(L(36), font("display", max(8, L(22))).get_height() + L(8)) if games else 0
     head = rect.top + L(30)
     live = card["status"] == "live"
     label = "LIVE" if live else card["status"].upper()
@@ -5040,73 +4978,88 @@ def draw_sports(surf, L, card, rect, now=None):
     league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
     show(surf, league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
     face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
+    logo, name_px, score_px, gap = _sports_column_px(L, face)
+    name_h = font("display", name_px).get_height()
+    score_h = font("display", score_px).get_height()
+    row_h = max(logo, name_h + gap + score_h)
     col_top = head + st.get_height() + L(12)
-    # A schedule that does not get its own band still needs a line under the scores.
-    # The logo keeps its square. The schedule band gives up height first so the
-    # name and the score still fit under that square.
-    logo_want = L(SPORTS_LOGO_PX) if face else 0
-    text_floor = font("display", 16).get_height() + font("display", 18).get_height() + 2 * max(1, L(8))
-    while strip_h > strip_floor:
-        tail_h = 0 if strip_h or not games else font("body", L(28)).get_height() + L(8)
-        col_bot = (rect.bottom - strip_h if strip_h else rect.bottom) - L(16) - tail_h
-        if max(0, col_bot - col_top) >= logo_want + text_floor:
-            break
-        strip_h -= 1
+    # The logo sits beside the name and the score, so the schedule band keeps its height
+    # when that row fits. One subtraction, not a search, if a short panel has to give the row the room.
+    bottom_inset = L(16)
+    below = max(0, rect.bottom - bottom_inset - col_top)
+    full_strip = L(112) if games and rect.h >= L(300) else 0
+    strip_floor = max(L(36), font("display", max(8, L(22))).get_height() + L(8)) if games else 0
+    if full_strip and below - full_strip >= row_h:
+        strip_h = full_strip
+    elif full_strip:
+        strip_h = min(full_strip, max(strip_floor, below - row_h))
+    else:
+        strip_h = 0
     tail_h = 0 if strip_h or not games else font("body", L(28)).get_height() + L(8)
     strip_top = rect.bottom - strip_h
-    col_bot = (strip_top if strip_h else rect.bottom) - L(16) - tail_h
-    col_w = max(40, rect.w // 2 - L(72))
-    avail = max(0, col_bot - col_top)
+    col_bot = (strip_top if strip_h else rect.bottom) - bottom_inset - tail_h
     pregame = card.get("status") == "scheduled"
-    # A scheduled game keeps the score line's height so the names stay put, and draws no digits.
-    home_score = "\u2013" if pregame else _score_label(card.get("home_score"))
-    away_score = "\u2013" if pregame else _score_label(card.get("away_score"))
-    mark, name_px, score_px, gap = _sports_column_px(
-        L, avail, col_w, (home_score, away_score), face)
-    # The name and the score keep the fitted stack. The logo uses SPORTS_LOGO_PX and
-    # sits on the bottom of that slot, so a different mark does not push the text.
-    logo_px = L(SPORTS_LOGO_PX) if face else 0
-    status_bottom = head + st.get_height()
+    when, ink = _pregame_when(card, now) if pregame else ("", TEXT)
+    if pregame:
+        clock_px = _pregame_px(score_px, when)
+        center_w = font("display", clock_px).size(when)[0]
+    else:
+        clock_px = 0
+        dash_px = min(L(60), max(8, score_px // 3))
+        center_w = font("display", dash_px).size("\u2013")[0]
+    # The center keeps the clock or the dash. Each team is the logo beside its name and score,
+    # packed to the outer edge so the center stays clear.
+    inner = center_w + 2 * gap
+    outer = L(24)
+    left_box = (rect.left + outer, rect.centerx - inner // 2)
+    right_box = (rect.centerx + inner - inner // 2, rect.right - outer)
     score_mids = []
 
-    def paint_side(team, score, cx):
-        image = team_face(team, logo_px) if logo_px else None
-        name = _line(surf, "display", name_px, team["name"], TEXT, col_w)
+    def paint_side(team, score, box, logo_on_left):
+        box_left, box_right = box
+        if box_right < box_left:
+            box_left, box_right = box_right, box_left
+        image = team_face(team, logo) if logo else None
+        mark = image.get_width() if image is not None else 0
+        text_w = max(8, (box_right - box_left) - (mark + gap if mark else 0))
+        name = _line(surf, "display", name_px, team["name"], TEXT, text_w)
         shown = None if pregame else _score_label(score)
         if shown is None:
-            score_h = font("display", score_px).get_height()
             sc = None
+            this_h = score_h
         else:
             sc = font("display", score_px).render(shown, True, MUTED if score is None else TEXT)
-            score_h = sc.get_height()
-        face_h = mark if image is not None else 0
-        face_y, name_y, score_y = sports_stack(col_top, col_bot, face_h, name.get_height(), score_h, gap)
-        if image is not None and face_y is not None:
-            # Grow or shrink inside the space above the city name, and stop at the status line.
-            room = face_h + max(0, face_y - status_bottom)
-            side = min(image.get_width(), image.get_height(), room)
-            if side >= 1 and side != image.get_width():
-                image = pygame.transform.smoothscale(image, (side, side))
-            if image.get_width() >= 1:
-                show(surf, image, (cx - image.get_width() // 2, face_y + face_h - image.get_height()))
-        show(surf, name, (cx - name.get_width() // 2, name_y))
-        if sc is not None:
-            show(surf, sc, (cx - sc.get_width() // 2, score_y))
-        score_mids.append(score_y + score_h // 2)
+            this_h = sc.get_height()
+        stack_h = name.get_height() + gap + this_h
+        block_h = max(mark, stack_h)
+        span = max(0, col_bot - col_top)
+        top = col_top + max(0, (span - block_h) // 2)
+        stack_y = top + max(0, (block_h - stack_h) // 2)
+        name_y = stack_y
+        score_y = name_y + name.get_height() + gap
+        if logo_on_left:
+            text_x = box_left + (mark + gap if mark else 0)
+            if image is not None:
+                show(surf, image, (box_left, top + max(0, (block_h - image.get_height()) // 2)))
+            show(surf, name, (text_x, name_y))
+            if sc is not None:
+                show(surf, sc, (text_x, score_y))
+        else:
+            text_right = box_right - (mark + gap if mark else 0)
+            if image is not None:
+                show(surf, image, (box_right - image.get_width(), top + max(0, (block_h - image.get_height()) // 2)))
+            show(surf, name, (text_right - name.get_width(), name_y))
+            if sc is not None:
+                show(surf, sc, (text_right - sc.get_width(), score_y))
+        score_mids.append(score_y + this_h // 2)
 
-    paint_side(card["home"], card["home_score"], rect.left + rect.w // 4)
-    paint_side(card["away"], card["away_score"], rect.right - rect.w // 4)
+    paint_side(card["home"], card.get("home_score"), left_box, True)
+    paint_side(card["away"], card.get("away_score"), right_box, False)
     mid = sum(score_mids) // len(score_mids) if score_mids else (col_top + col_bot) // 2
     if pregame:
-        when, ink = _pregame_when(card, now)
-        px = _pregame_px(score_px, when)
-        room = max(8, rect.w // 2)
-        while px > 8 and font("display", px).size(when)[0] > room:
-            px -= 1
-        clock = font("display", px).render(when, True, ink)
+        clock = font("display", clock_px).render(when, True, ink)
         show(surf, clock, (rect.centerx - clock.get_width() // 2, mid - clock.get_height() // 2))
     else:
-        dash_px = min(L(60), max(8, score_px // 3))
         dash = font("display", dash_px).render("\u2013", True, MUTED)
         show(surf, dash, (rect.centerx - dash.get_width() // 2, mid - dash.get_height() // 2))
     if strip_h:

@@ -60,10 +60,10 @@ class RecordedHelper(unittest.TestCase):
         self.assertEqual(last[0], _helper_version())
 
     def test_helper_version_is_0_13_30_everywhere(self):
-        self.assertEqual(_helper_version(), "0.13.46")  # 0.13.46: the teams list refreshes off the show thread
+        self.assertEqual(_helper_version(), "0.13.47")  # 0.13.47: the teams list stays off the show thread
         with open(os.path.join(ROOT, "admin", "grok_admin.py"), encoding="utf-8") as fh:
             admin = fh.read()
-        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.46"  #')
+        self.assertRegex(admin, r'(?m)^HELPER_RELEASE = "0\.13\.47"  #')
 
     def test_a_changed_helper_file_without_a_bump_fails(self):
         for path in ("scripts/gs-seal-reply", "scripts/gs_seal_common.py", "scripts/gs-seal-setup",

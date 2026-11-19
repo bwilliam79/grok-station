@@ -21,6 +21,16 @@ SKEW_S = 120  # accept a sealed reply this long after issue (clock skew / replay
 _OUTER_KEYS = frozenset(("v", "bot", "sealed"))
 _REPLY_KEYS = frozenset(("request_id", "text", "tier", "action_class", "kind"))
 _ANSWER_KEYS = frozenset(("request_id", "text", "tier", "action_class"))  # 0.6.0 answers omit kind
+# Same shape as scripts/gs-seal-reply _VOICE_ID. A letter, then at most 31 more letters, digits, or hyphens.
+_VOICE_ID = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+
+
+def _voice_id(raw):
+    """Lowercase voice id, or "" when it is not the helper's voice-id shape. A bad value is not stored."""
+    if not isinstance(raw, str):
+        return ""
+    text = raw.strip().casefold()
+    return text if _VOICE_ID.fullmatch(text) else ""
 _LIST_KEYS = frozenset(("request_id", "kind", "tier", "action_class", "bots"))
 _SETUP_ACK_KEYS = frozenset(("request_id", "kind", "status", "tier", "action_class"))  # + "reason" on failed
 LIST_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .'-]{0,31}$")
@@ -404,13 +414,12 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=None):
             raise Reject(400, "schema", bot)
         keys = keys - {"interim"}
     # voiceId is optional. A missing or unusable value is not stored here, so a reply
-    # that omits it cannot clear a voice the station already saved.
-    voice_id = None
+    # that omits it cannot clear a voice the station already saved. The id has to match
+    # the helper's _VOICE_ID shape, including its length cap.
+    voice_id = ""
     if "voiceId" in keys:
         keys = keys - {"voiceId"}
-        raw = doc.get("voiceId")
-        if isinstance(raw, str) and raw.strip():
-            voice_id = raw.strip()
+        voice_id = _voice_id(doc.get("voiceId"))
     if keys == _REPLY_KEYS:
         if doc.get("kind") != "reply":
             raise Reject(400, "schema", bot)

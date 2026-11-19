@@ -191,7 +191,7 @@ console.log(JSON.stringify({fail: botRowL2HTML("Replies from: X", "", "Update fa
         self.assertNotIn("#blist.botrow:has(>.rowupd)", flat)
         self.assertIn("#blist.botrow.rowupd{margin-top:6px}", flat)
         phone = flat.split("@media(max-width:767px){#blist.botrow{display:grid;grid-template-columns:44pxminmax(0,1fr)auto;grid-template-areas:\"avnmnm\"\"avl2l2\"", 1)[1]
-        self.assertIn("#blist.botrow.rowupd{grid-area:ru;margin-bottom:4px}", phone)
+        self.assertIn("#blist.botrow.rowupd{grid-area:ru;margin-top:0;margin-bottom:4px}", phone)
         self.assertIn("#blist.botrow.rowupd.btn{min-height:44px;height:44px}", phone)
 
 
