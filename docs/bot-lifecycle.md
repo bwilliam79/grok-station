@@ -7,7 +7,7 @@ covers the station admin page (`admin/grok_admin.py`, `admin/web/app.js`), the r
 enforces it. If code and this file disagree, the code is wrong or this file is stale: fix one in the same change.
 `tests/test_lifecycle_scenarios.py` checks the rules marked [S] on a tree installed by `tools/install-files.sh`, and
 `tools/release-check.sh` runs it before every push to `main` (the clone's pre-push hook, `tools/install-release-hook`).
-0.13.47: the score tile stacks each team (mark, name, score) on a centered column. The status and the league sit in the middle column. A kickoff is the time only, and a game that is not today puts the day on the status line. The home helper stays 0.13.50.
+0.13.47: the score tile stacks each team (mark, name, score) on a centered column. The status and the league sit in the middle column. A live game draws a teal dot before LIVE. The dash is the score size, dim, centered on the digits. A kickoff is the time only, and a game that is not today puts the day on the status line. The home helper stays 0.13.50.
 0.13.46: logo_url is optional. The station finds a college logo from the team name or abbreviation when it is omitted. The teams list is read from the station cache and refreshed off the show path, and only when a.espncdn.com is on the logo allowlist. A reply may add `--voice '<voiceId>'`. A reply without voiceId keeps the voice already saved. The home helper is 0.13.50.
 0.13.45: the home routine tells a bot that every sports key is required, how to fill a pregame card, and to fix the
 field named by `refused: schema <path> <problem>` and resend that card once in the same turn. A speakerphone that

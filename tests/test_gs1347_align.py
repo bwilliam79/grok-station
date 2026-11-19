@@ -112,6 +112,24 @@ def _near(got, want, tol=1):
     return abs(got - want) <= tol
 
 
+def _same(pixel, color):
+    return all(abs(int(pixel[i]) - int(color[i])) <= 18 for i in range(3))
+
+
+def _color_box(surf, color, limit):
+    """Bounding box of pixels close to color inside limit, or None."""
+    rect = limit.clip(surf.get_rect())
+    xs, ys = [], []
+    for y in range(rect.top, rect.bottom):
+        for x in range(rect.left, rect.right):
+            if _same(surf.get_at((x, y)), color):
+                xs.append(x)
+                ys.append(y)
+    if not xs:
+        return None
+    return pygame.Rect(min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
+
+
 class Stack(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.TemporaryDirectory(prefix="gs1347-mark-")
@@ -186,14 +204,17 @@ class Stack(unittest.TestCase):
                 box = pygame.Rect(column - box_w // 2, logo_top, box_w, box_h)
                 self.assertTrue(box.contains(item[2]), (size, item[2], box))
                 self.assertTrue(_near(item[2].centerx, box.centerx) and _near(item[2].centery, box.centery), size)
-            dash_px = min(layout(60), max(8, _px(layout, 80) // 3))
-            dash_f = gs.font("display", dash_px)
-            dashes = [item for item in painted if item[0] is None and item[2].h == dash_f.get_height()
-                      and _near(item[2].centerx, cx[1])]
+            dashes = [item for item in painted if item[0] is None and item[2].h == score_f.get_height()
+                      and _near(item[2].centerx, cx[1], 4)]
             self.assertEqual(len(dashes), 1, size)
-            self.assertEqual(dashes[0][2].y + dash_f.get_ascent(), score_base, size)
-            self.assertTrue(_near(dashes[0][2].centerx, cx[1]), size)
+            self.assertEqual(dashes[0][2].h, score_f.get_height(), size)
             self.assertFalse(dashes[0][2].colliderect(left_score[2]) or dashes[0][2].colliderect(right_score[2]))
+            dash_ink, digit_ink = dashes[0][1], left_score[1]
+            other_ink = right_score[1]
+            self.assertTrue(_near(dash_ink.centerx, cx[1]), (size, dash_ink.centerx, cx[1]))
+            self.assertTrue(_near(dash_ink.centery, digit_ink.centery), (size, dash_ink.centery, digit_ink.centery))
+            self.assertTrue(_near(dash_ink.centery, other_ink.centery), size)
+            self.assertEqual(_surf.get_at((dash_ink.centerx, dash_ink.centery))[:3], tuple(gs.MUTED)[:3])
             # Painted digit ink, and the 84 px line box, stop at the next-game border.
             for word in ("128", "00"):
                 img = score_f.render(word, True, gs.TEXT)
@@ -206,13 +227,52 @@ class Stack(unittest.TestCase):
             self.assertEqual(layout(gs.SPORTS_KICK_PX), _px(layout, 60), size)
             self.assertEqual(layout(gs.SPORTS_STATUS_PX), _px(layout, 22), size)
             self.assertEqual(layout(gs.SPORTS_LEAGUE_PX), _px(layout, 18), size)
-            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "\u25cf LIVE \u00b7 Q2", size)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "LIVE \u00b7 Q2", size)
+            self.assertNotIn("\u25cf", gs.LAST_SPORTS_GUIDE["status"])
             header = [item for item in painted if item[0] in ("LIVE", "FINAL", "Q2", "NCAAF", "NFL")
                       and item[2].top < logo_top and item[2].left <= panel.left + _px(layout, 40)]
             self.assertEqual(header, [], size)
             stat = [item for item in painted if item[0] is None and _near(item[2].centerx, cx[1], 2)
                     and item[2].top >= logo_top and item[2].bottom <= logo_top + box_h and item[2].w > 40]
             self.assertGreaterEqual(len(stat), 1, size)
+
+    def test_live_dot_is_a_filled_disc(self):
+        for size in SIZES:
+            layout = gs.Layout(*size)
+            painted, panel, surf, _layout = self._live(size, self.wide, self.tall, scores=(31, 17))
+            cx = panel.left + panel.w // 2
+            logo_top, logo_bot = gs.LAST_SPORTS_GUIDE["logo"]
+            band = pygame.Rect(panel.left, logo_top, panel.w, logo_bot - logo_top)
+            teal = []
+            for y in range(band.top, band.bottom):
+                for x in range(band.left, band.right):
+                    if _same(surf.get_at((x, y)), gs.LISTENING):
+                        teal.append((x, y))
+            self.assertTrue(teal, size)
+            xs = [p[0] for p in teal]
+            ys = [p[1] for p in teal]
+            group = pygame.Rect(min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
+            self.assertTrue(_near(group.centerx, cx), (size, group.centerx, cx))
+            # The dot is the leftmost run of teal columns, before the word.
+            cols = []
+            x = min(xs)
+            while x <= max(xs) and not any(px == x for px, _py in teal):
+                x += 1
+            run = []
+            while x <= max(xs) and any(px == x for px, _py in teal):
+                run.append(x)
+                x += 1
+            self.assertTrue(run, size)
+            dot = [p for p in teal if p[0] in run]
+            left, right = min(p[0] for p in dot), max(p[0] for p in dot)
+            top, bot = min(p[1] for p in dot), max(p[1] for p in dot)
+            mid = ((left + right) // 2, (top + bot) // 2)
+            self.assertTrue(_same(surf.get_at(mid), gs.LISTENING), (size, surf.get_at(mid)))
+            for corner in ((left, top), (right, top), (left, bot), (right, bot)):
+                self.assertFalse(_same(surf.get_at(corner), gs.LISTENING), (size, corner, surf.get_at(corner)))
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "LIVE \u00b7 Q2", size)
+            self.assertNotIn("\u25cf", gs.LAST_SPORTS_GUIDE["status"])
+            del painted
 
     def test_badge_uses_the_logo_box_and_the_fixed_column(self):
         for size in SIZES:

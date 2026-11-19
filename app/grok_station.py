@@ -5126,7 +5126,7 @@ def _sports_center_text(card, now):
         return text, MUTED, label, ink
     period = " ".join(str(card.get("period") or "").split())
     if status == "live":
-        text = "\u25cf LIVE" if not period else "\u25cf LIVE \u00b7 " + period
+        text = "LIVE" if not period else "LIVE \u00b7 " + period
         return text, LISTENING, None, None
     if status == "final":
         ot = _sports_side_label(card)
@@ -5135,6 +5135,47 @@ def _sports_center_text(card, now):
     word = str(status or "").upper() or "LIVE"
     text = word if not period else word + " \u00b7 " + period
     return text, MUTED, None, None
+
+
+def _disc(surf, cx, cy, radius, color):
+    """A filled circle. The edge is anti-aliased when gfxdraw is present."""
+    ix, iy = int(round(cx)), int(round(cy))
+    ir = max(1, int(radius))
+    rgba = (color.r, color.g, color.b, color.a) if hasattr(color, "a") else color
+    try:
+        import pygame.gfxdraw as gfx
+        gfx.filled_circle(surf, ix, iy, ir, rgba)
+        gfx.aacircle(surf, ix, iy, ir, rgba)
+    except Exception:
+        pygame.draw.circle(surf, color, (ix, iy), ir)
+
+
+def _ink_center(img):
+    box = img.get_bounding_rect()
+    if box.w < 1 or box.h < 1:
+        return img.get_width() / 2.0, img.get_height() / 2.0
+    return box.x + box.w / 2.0, box.y + box.h / 2.0
+
+
+def _live_status(face, text, color, track):
+    """A filled dot, a word space, then the letter-spaced status. No missing-glyph bullet.
+
+    The dot's diameter is about 0.45 of the capital height, and its center sits on
+    the cap middle. The returned surface shares the text's font box, so a baseline
+    blit keeps the words put.
+    """
+    words = _letterspaced(face, text, color, track)
+    cap = face.render("H", True, color).get_bounding_rect()
+    cap_h = max(1, cap.h)
+    diameter = max(2, int(round(cap_h * 0.45)))
+    radius = max(1, diameter // 2)
+    cap_mid = cap.y + cap.h / 2.0
+    gap = max(1, face.size(" ")[0])
+    width = diameter + gap + words.get_width()
+    canvas = pygame.Surface((max(1, width), max(words.get_height(), 1)), pygame.SRCALPHA)
+    _disc(canvas, radius, cap_mid, radius, color)
+    canvas.blit(words, (diameter + gap, 0))
+    return canvas
 
 
 def _shown_line(face, text, width):
@@ -5215,11 +5256,16 @@ def draw_sports(surf, L, card, rect, now=None):
     away_shown = paint_name(card["away"], cx_r)
     paint_mark(card["home"], cx_l)
     paint_mark(card["away"], cx_r)
-    stat_img = _letterspaced(stat_f, status, status_ink, track)
+    if status_ink == LISTENING and str(status).startswith("LIVE"):
+        stat_img = _live_status(stat_f, status, status_ink, track)
+    else:
+        stat_img = _letterspaced(stat_f, status, status_ink, track)
     league_text = str(card.get("league") or "")
     _line(surf, "body", league_px, league_text, MUTED, L(SPORTS_CENTER_W))
     league_img = _letterspaced(league_f, league_text, MUTED, track)
-    blit_centered(stat_img, cx_c, stat_base, stat_f)
+    # Center the visible dot and words, not the transparent side bearings.
+    ink_x, _ink_y = _ink_center(stat_img)
+    show(surf, stat_img, (int(round(cx_c - ink_x)), stat_base - stat_f.get_ascent()))
     blit_centered(league_img, cx_c, league_base, league_f)
     if pregame:
         kick_px = L(SPORTS_KICK_PX)
@@ -5227,14 +5273,17 @@ def draw_sports(surf, L, card, rect, now=None):
         kick_img = kick_f.render(kick, True, kick_ink)
         blit_centered(kick_img, cx_c, score_base, kick_f)
     else:
-        dash_px = min(L(60), max(8, score_px // 3))
-        dash_f = font("display", dash_px)
         for score, cx in ((card.get("home_score"), cx_l), (card.get("away_score"), cx_r)):
             ink = MUTED if score is None else TEXT
             img = _tabular(score_f, _score_label(score), ink)
             blit_centered(img, cx, score_base, score_f)
-        dash = dash_f.render("\u2013", True, MUTED)
-        show(surf, dash, (cx_c - dash.get_width() // 2, score_base - dash_f.get_ascent()))
+        # Same size as the digits, dim, with the dash ink centered on the digit ink.
+        digit = score_f.render("0", True, TEXT)
+        dash = score_f.render("\u2013", True, MUTED)
+        top = score_base - score_f.get_ascent()
+        shift_y = int(round(_ink_center(digit)[1] - _ink_center(dash)[1]))
+        dash_left = int(round(cx_c - _ink_center(dash)[0]))
+        show(surf, dash, (dash_left, top + shift_y))
     global LAST_SPORTS_GUIDE
     LAST_SPORTS_GUIDE = {
         "columns": (cx_l, cx_c, cx_r),
