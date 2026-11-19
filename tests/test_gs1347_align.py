@@ -1,9 +1,9 @@
-"""0.13.47: a wide mark and a tall mark share one text column, one name line, and one score line.
+"""0.13.47: each team is a centered stack. Status sits in the middle column.
 
-The slot is fixed. The art is centered in it. The name and the score do not follow the art.
-Frames use real ESPN marks downloaded into a temp directory. The overlay is drawn here, not
-by the station.
+Line boxes are the CSS sizes: name 38 px, score 84 px, at 1280x720, doubled at 2560x1440.
+Frames go to GS_FRAME_DIR when that is set, otherwise a temp directory.
 """
+import datetime
 import hashlib
 import os
 import struct
@@ -21,7 +21,7 @@ gs = tiles.gs
 pygame = tiles.pygame
 
 SIZES = ((1280, 720), (2560, 1440))
-ART = "/opt/cursor/artifacts/gs1347"
+NOW = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
 LOGOS = {
     "arkansas": "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png",
     "uca": "https://a.espncdn.com/i/teamlogos/ncaa/500/2110.png",
@@ -30,8 +30,12 @@ LOGOS = {
 }
 
 
+def _px(layout, at1280):
+    """The spec pixel at 1280, doubled at 2560, through Layout."""
+    return layout(int(round(at1280 * 3 / 2)))
+
+
 def _rgba(canvas_w, canvas_h, mark_w, mark_h, color):
-    """A PNG with one opaque mark centered in a transparent canvas."""
     raw = []
     x0 = (canvas_w - mark_w) // 2
     y0 = (canvas_h - mark_h) // 2
@@ -74,7 +78,7 @@ def _paint(size, card, now=None):
             dx, dy = dest.x, dest.y
         else:
             dx, dy = int(dest[0]), int(dest[1])
-        word = next((text for img0, text in labels if img0 is img), None)
+        word = next((text for img0, text in reversed(labels) if img0 is img), None)
         placed = pygame.Rect(dx, dy, img.get_width(), img.get_height())
         painted.append((word, gs.PAINT_MARKS[-1][0], placed))
         return result
@@ -83,7 +87,7 @@ def _paint(size, card, now=None):
     gs._line = watching_line
     gs.show = watching_show
     try:
-        gs.draw_sports(surf, layout, card, panel, now=now)
+        gs.draw_sports(surf, layout, card, panel, now=now or NOW)
     finally:
         gs._line = real_line
         gs.show = real_show
@@ -91,197 +95,229 @@ def _paint(size, card, now=None):
     return painted, panel, surf, layout
 
 
-def _card(home, away, home_id, away_id, status="live", scores=(24, 17)):
+def _card(home, away, status="live", scores=(31, 17), league="NCAAF", period="Q2"):
     card = tiles._sports(status, True, False)
-    card["home"] = {"name": home, "abbr": "H", "logo_id": home_id}
-    card["away"] = {"name": away, "abbr": "A", "logo_id": away_id}
+    card["home"] = {"name": home, "abbr": "H"}
+    card["away"] = {"name": away, "abbr": "A"}
     card["home_score"], card["away_score"] = scores
-    card["league"] = "NCAAF"
-    card["period"] = "Q2"
+    card["league"] = league
+    card["period"] = period
+    if status == "scheduled":
+        card["home_score"] = card["away_score"] = None
+        card["period"] = ""
     return card
 
 
-def _column(size):
-    layout = gs.Layout(*size)
-    panel = gs.bottom_panel_rect(layout)
-    inset = layout(48)
-    slot_w = layout(gs.SPORTS_LOGO_BOX_W)
-    slot_h = layout(gs.SPORTS_LOGO_BOX_H)
-    gap = layout(gs.SPORTS_LOGO_GAP)
-    text_left = panel.left + inset + slot_w + gap
-    text_right = panel.right - inset - slot_w - gap
-    return panel, inset, slot_w, slot_h, text_left, text_right
+def _near(got, want, tol=1):
+    return abs(got - want) <= tol
 
 
-class Align(unittest.TestCase):
+class Stack(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.TemporaryDirectory(prefix="gs1347-mark-")
         self.addCleanup(self.root.cleanup)
         self.wide = "d" * 64
         self.tall = "e" * 64
+        self.square = "f" * 64
         with open(os.path.join(self.root.name, self.wide), "wb") as fh:
             fh.write(_rgba(460, 200, 230, 100, b"\xc4\x1e\x3a\xff"))
         with open(os.path.join(self.root.name, self.tall), "wb") as fh:
             fh.write(_rgba(80, 220, 70, 200, b"\x8c\x1d\x40\xff"))
+        with open(os.path.join(self.root.name, self.square), "wb") as fh:
+            fh.write(_rgba(40, 40, 40, 40, b"\x22\x55\xaa\xff"))
         self.old = gs._LOGO
         gs._LOGO = gs.cards.LogoCache(self.root.name, [])
-        self.addCleanup(self._restore)
+        self.addCleanup(setattr, gs, "_LOGO", self.old)
 
-    def _restore(self):
-        gs._LOGO = self.old
+    def _live(self, size, home_id, away_id, home="Arkansas", away="Central Arkansas", scores=(128, 105)):
+        card = _card(home, away, scores=scores)
+        card["home"]["logo_id"] = home_id
+        card["away"]["logo_id"] = away_id
+        return _paint(size, card)
 
-    def _logos(self, painted, panel, inset, slot_w):
-        home_cx = panel.left + inset + slot_w // 2
-        away_cx = panel.right - inset - slot_w // 2
-        return [item for item in painted
-                if item[0] is None and (abs(item[2].centerx - home_cx) <= 2 or abs(item[2].centerx - away_cx) <= 2)]
-
-    def test_wide_and_tall_share_the_column_and_the_baselines(self):
+    def test_columns_line_boxes_and_shared_rows(self):
         for size in SIZES:
-            panel, inset, slot_w, _slot_h, text_left, text_right = _column(size)
             layout = gs.Layout(*size)
-            home_name, away_name = "Arkansas", "Central Arkansas"
-            card = _card(home_name, away_name, self.wide, self.tall, scores=(128, 105))
-            swapped = _card(home_name, away_name, self.tall, self.wide, scores=(128, 105))
-            painted, panel, _surf, _layout = _paint(size, card)
-            other, _panel, _surf2, _layout2 = _paint(size, swapped)
-            name_px = layout(gs.SPORTS_NAME_PX)
-            score_px = layout(gs.SPORTS_SCORE_PX)
-            name_f = gs.font("display", name_px)
-            score_f = gs.font("display", score_px)
-            names = [item for item in painted if item[0] in (home_name, away_name)]
-            self.assertEqual(len(names), 2, [item[0] for item in painted])
-            home = min(names, key=lambda item: item[2].centerx)
-            away = max(names, key=lambda item: item[2].centerx)
-            self.assertEqual(home[2].left, text_left, size)
-            self.assertEqual(away[2].right, text_right, size)
-            other_names = [item for item in other if item[0] in (home_name, away_name)]
-            other_home = min(other_names, key=lambda item: item[2].centerx)
-            other_away = max(other_names, key=lambda item: item[2].centerx)
-            self.assertEqual(other_home[2].left, text_left, size)
-            self.assertEqual(other_away[2].right, text_right, size)
-            home_base = home[2].y + name_f.get_ascent()
-            away_base = away[2].y + name_f.get_ascent()
-            self.assertEqual(home_base, away_base, size)
-            scores = [item for item in painted
-                      if item[0] is None and item[2].h == score_f.get_height()
-                      and abs(item[2].centerx - panel.centerx) > 40]
-            self.assertGreaterEqual(len(scores), 2, size)
-            home_score = min(scores, key=lambda item: item[2].centerx)
-            away_score = max(scores, key=lambda item: item[2].centerx)
-            self.assertEqual(home_score[2].left, text_left, size)
-            self.assertEqual(away_score[2].right, text_right, size)
-            score_base = home_score[2].y + score_f.get_ascent()
-            self.assertEqual(away_score[2].y + score_f.get_ascent(), score_base, size)
-            dash = [item for item in painted
-                    if item[0] is None and abs(item[2].centerx - panel.centerx) <= 2
-                    and item[2].h == score_f.get_height()]
-            self.assertEqual(len(dash), 1, size)
-            self.assertEqual(dash[0][2].y + score_f.get_ascent(), score_base, size)
-            self.assertLessEqual(abs(dash[0][2].centerx - panel.centerx), 1, size)
-            logos = self._logos(painted, panel, inset, slot_w)
-            self.assertEqual(len(logos), 2, [(item[2].size, item[2].centerx) for item in painted if item[0] is None])
-            home_art = min(logos, key=lambda item: item[2].centerx)
-            away_art = max(logos, key=lambda item: item[2].centerx)
-            slot_cx = panel.left + inset + slot_w // 2
-            away_cx = panel.right - inset - slot_w // 2
-            self.assertLessEqual(abs(home_art[2].centerx - slot_cx), 1, size)
-            self.assertLessEqual(abs(away_art[2].centerx - away_cx), 1, size)
-            name_em = name_f.get_ascent() - name_f.get_descent()
-            score_em = score_f.get_ascent() - score_f.get_descent()
-            block = name_em + max(1, layout(8)) + score_em
-            block_cy = home[2].y + block // 2
-            self.assertLessEqual(abs(home_art[2].centery - block_cy), 1, size)
-            self.assertLessEqual(abs(away_art[2].centery - block_cy), 1, size)
-            self.assertLessEqual(abs(home_art[2].centery - away_art[2].centery), 1, size)
-            live = [item for item in painted if item[0] == "LIVE"]
-            nxt = [item for item in painted if item[0] == "NEXT GAME"]
-            period = [item for item in painted if item[0] == "Q2"]
-            when = [item for item in painted if item[0] == "Sun 1:00 PM"]
-            self.assertEqual(len(live), 1)
-            self.assertEqual(len(nxt), 1)
-            self.assertEqual(live[0][2].left, panel.left + inset, size)
-            self.assertEqual(nxt[0][2].left, panel.left + inset, size)
-            self.assertEqual(live[0][2].left, panel.left + inset)
-            self.assertEqual(period[0][2].right, panel.right - inset, size)
-            self.assertEqual(when[0][2].right, panel.right - inset, size)
-            for item in painted:
-                self.assertTrue(panel.contains(item[2]), (size, item[0], item[2], panel))
-            bodies = [item[2] for item in (home, away, home_score, away_score, dash[0], home_art, away_art)]
-            for i, a in enumerate(bodies):
-                for b in bodies[i + 1:]:
-                    self.assertFalse(a.colliderect(b), (size, a, b))
-
-    def test_pregame_time_sits_on_the_slot_center(self):
-        import datetime
-        moment = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
-        for size in SIZES:
-            panel, inset, slot_w, _slot_h, text_left, text_right = _column(size)
-            layout = gs.Layout(*size)
-            card = _card("Arkansas", "Central Arkansas", self.wide, self.tall, status="scheduled")
-            card["starts_at"] = "2026-11-21T19:15:00Z"
-            card["home_score"] = card["away_score"] = None
-            card["period"] = ""
-            painted, panel, _surf, _layout = _paint(size, card, now=moment)
+            painted, panel, _surf, _layout = self._live(size, self.wide, self.tall)
+            box_w, box_h = _px(layout, 120), _px(layout, 72)
+            top = _px(layout, 12)
+            gap_logo, gap_score = _px(layout, 8), _px(layout, 4)
+            name_line, score_line = _px(layout, 38), _px(layout, 84)
+            col_w = _px(layout, 360)
+            cx = (panel.left + panel.w // 4, panel.left + panel.w // 2, panel.left + (panel.w * 3) // 4)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["columns"], cx, size)
+            logo_top = panel.top + top
+            name_top = logo_top + box_h + gap_logo
+            score_top = name_top + name_line + gap_score
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["logo"], (logo_top, logo_top + box_h), size)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["lines"], (name_top, score_top), size)
+            strip = panel.bottom - _px(layout, 72)
+            self.assertLessEqual(score_top + score_line, strip, size)
+            name_f = gs.font("display", _px(layout, 32))
+            score_f = gs.font("display", _px(layout, 80))
+            name_base = gs._css_baseline(name_top, name_line, name_f)
+            score_base = gs._css_baseline(score_top, score_line, score_f)
             names = [item for item in painted if item[0] in ("Arkansas", "Central Arkansas")]
-            self.assertEqual(len(names), 2, size)
+            self.assertEqual(sorted(item[0] for item in names), ["Arkansas", "Central Arkansas"])
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["names"], ("Arkansas", "Central Arkansas"), size)
             home = min(names, key=lambda item: item[2].centerx)
             away = max(names, key=lambda item: item[2].centerx)
-            self.assertEqual(home[2].left, text_left, size)
-            self.assertEqual(away[2].right, text_right, size)
-            name_f = gs.font("display", layout(gs.SPORTS_NAME_PX))
-            self.assertEqual(home[2].y + name_f.get_ascent(), away[2].y + name_f.get_ascent(), size)
-            logos = self._logos(painted, panel, inset, slot_w)
-            self.assertEqual(len(logos), 2, size)
-            art_cy = min(logos, key=lambda item: item[2].centerx)[2].centery
-            name_em = name_f.get_ascent() - name_f.get_descent()
-            self.assertLessEqual(abs((home[2].y + name_em // 2) - art_cy), 1, size)
-            clocks = [item for item in painted
-                      if item[0] is None and abs(item[2].centerx - panel.centerx) <= 2 and item[2].w > item[2].h]
-            self.assertEqual(len(clocks), 1, [item[0] for item in painted])
-            self.assertLessEqual(abs(clocks[0][2].centery - art_cy), 1, size)
-            self.assertLessEqual(abs(clocks[0][2].centerx - panel.centerx), 1, size)
-            for item in names + logos + clocks:
-                self.assertTrue(panel.contains(item[2]), (size, item[2]))
-            for item in names + logos:
-                self.assertFalse(clocks[0][2].colliderect(item[2]), (size, item[0], item[2]))
+            self.assertTrue(_near(home[2].centerx, cx[0]), (size, home[2].centerx, cx[0]))
+            self.assertTrue(_near(away[2].centerx, cx[2]), (size, away[2].centerx, cx[2]))
+            self.assertEqual(home[2].y, away[2].y, size)
+            self.assertEqual(home[2].y + name_f.get_ascent(), name_base, size)
+            self.assertLessEqual(home[2].width, col_w, size)
+            self.assertEqual(home[2].width, name_f.size("Arkansas")[0], size)
+            self.assertEqual(away[2].width, name_f.size("Central Arkansas")[0], size)
+            self.assertNotIn("\u2026", gs.LAST_SPORTS_GUIDE["names"][1])
+            scores = [item for item in painted if item[0] is None and item[2].h == score_f.get_height()
+                      and abs(item[2].centerx - cx[1]) > 30]
+            self.assertGreaterEqual(len(scores), 2, size)
+            left_score = min(scores, key=lambda item: item[2].centerx)
+            right_score = max(scores, key=lambda item: item[2].centerx)
+            self.assertTrue(_near(left_score[2].centerx, cx[0]), size)
+            self.assertTrue(_near(right_score[2].centerx, cx[2]), size)
+            self.assertEqual(left_score[2].y, right_score[2].y, size)
+            self.assertEqual(left_score[2].y + score_f.get_ascent(), score_base, size)
+            logos = [item for item in painted if item[0] is None and item[2].bottom <= name_top + 1
+                     and (_near(item[2].centerx, cx[0], 2) or _near(item[2].centerx, cx[2], 2))]
+            self.assertEqual(len(logos), 2, [(item[2].size, item[2].centerx) for item in painted if item[0] is None])
+            for item, column in zip(sorted(logos, key=lambda item: item[2].centerx), (cx[0], cx[2])):
+                box = pygame.Rect(column - box_w // 2, logo_top, box_w, box_h)
+                self.assertTrue(box.contains(item[2]), (size, item[2], box))
+                self.assertTrue(_near(item[2].centerx, box.centerx) and _near(item[2].centery, box.centery), size)
+            dash_px = min(layout(60), max(8, _px(layout, 80) // 3))
+            dash_f = gs.font("display", dash_px)
+            dashes = [item for item in painted if item[0] is None and item[2].h == dash_f.get_height()
+                      and _near(item[2].centerx, cx[1])]
+            self.assertEqual(len(dashes), 1, size)
+            self.assertEqual(dashes[0][2].y + dash_f.get_ascent(), score_base, size)
+            self.assertTrue(_near(dashes[0][2].centerx, cx[1]), size)
+            self.assertFalse(dashes[0][2].colliderect(left_score[2]) or dashes[0][2].colliderect(right_score[2]))
+            # Painted digit ink, and the 84 px line box, stop at the next-game border.
+            for word in ("128", "00"):
+                img = score_f.render(word, True, gs.TEXT)
+                ink = img.get_bounding_rect()
+                ink_bottom = score_base - score_f.get_ascent() + ink.bottom
+                self.assertLess(ink_bottom, strip, (size, word, ink_bottom, strip))
+            self.assertLessEqual(score_top + score_line, strip, size)
+            self.assertEqual(layout(gs.SPORTS_NAME_PX), _px(layout, 32), size)
+            self.assertEqual(layout(gs.SPORTS_SCORE_PX), _px(layout, 80), size)
+            self.assertEqual(layout(gs.SPORTS_KICK_PX), _px(layout, 60), size)
+            self.assertEqual(layout(gs.SPORTS_STATUS_PX), _px(layout, 22), size)
+            self.assertEqual(layout(gs.SPORTS_LEAGUE_PX), _px(layout, 18), size)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "\u25cf LIVE \u00b7 Q2", size)
+            header = [item for item in painted if item[0] in ("LIVE", "FINAL", "Q2", "NCAAF", "NFL")
+                      and item[2].top < logo_top and item[2].left <= panel.left + _px(layout, 40)]
+            self.assertEqual(header, [], size)
+            stat = [item for item in painted if item[0] is None and _near(item[2].centerx, cx[1], 2)
+                    and item[2].top >= logo_top and item[2].bottom <= logo_top + box_h and item[2].w > 40]
+            self.assertGreaterEqual(len(stat), 1, size)
+
+    def test_badge_uses_the_logo_box_and_the_fixed_column(self):
+        for size in SIZES:
+            layout = gs.Layout(*size)
+            card = _card("Arkansas", "Central Arkansas", scores=(24, 10))
+            card["home"]["logo_badge"] = True
+            card["away"]["logo_id"] = self.square
+            painted, panel, _surf, _layout = _paint(size, card)
+            box_w, box_h = _px(layout, 120), _px(layout, 72)
+            logo_top = panel.top + _px(layout, 12)
+            cx = panel.left + panel.w // 4
+            badges = [item for item in painted if item[0] is None and item[2].w == box_h and item[2].h == box_h
+                      and _near(item[2].centerx, cx, 2)]
+            self.assertEqual(len(badges), 1, size)
+            box = pygame.Rect(cx - box_w // 2, logo_top, box_w, box_h)
+            self.assertTrue(box.contains(badges[0][2]), (size, badges[0][2], box))
+            self.assertTrue(_near(badges[0][2].centerx, box.centerx) and _near(badges[0][2].centery, box.centery))
+            names = [item for item in painted if item[0] == "Arkansas"]
+            self.assertEqual(len(names), 1, size)
+            self.assertTrue(_near(names[0][2].centerx, cx), size)
+
+    def test_pregame_day_kickoff_and_tbd(self):
+        for size in SIZES:
+            layout = gs.Layout(*size)
+            later = _card("Kansas City", "Denver", status="scheduled", league="NFL")
+            later["starts_at"] = "2026-11-22T19:00:00Z"  # Sunday 1:00 PM in the station zone
+            today = _card("Arkansas", "Central Arkansas", status="scheduled")
+            today["starts_at"] = "2026-11-19T19:15:00-06:00"
+            today["home"]["logo_id"] = self.wide
+            today["away"]["logo_id"] = self.tall
+            tbd = _card("Arkansas", "Denver", status="scheduled")
+            for card, status, kick in (
+                (later, "SCHEDULED \u00b7 SUN", "1:00 PM"),
+                (today, "SCHEDULED", "7:15 PM"),
+                (tbd, "SCHEDULED", "Time TBD"),
+            ):
+                painted, panel, _surf, _layout = _paint(size, card)
+                self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], status, (size, status))
+                self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], kick, (size, kick))
+                box_h = _px(layout, 72)
+                name_line = _px(layout, 38)
+                gap = _px(layout, 8)
+                strip = panel.bottom - _px(layout, 72)
+                main_h = strip - panel.top
+                stack_h = box_h + gap + name_line
+                logo_top = panel.top + max(0, (main_h - stack_h) // 2)
+                self.assertEqual(gs.LAST_SPORTS_GUIDE["logo"][0], logo_top, (size, status))
+                score_top = panel.top + _px(layout, 12) + box_h + gap + name_line + _px(layout, 4)
+                score_f = gs.font("display", _px(layout, 80))
+                score_base = gs._css_baseline(score_top, _px(layout, 84), score_f)
+                kick_f = gs.font("display", _px(layout, 60))
+                kicks = [item for item in painted if item[0] is None and item[2].h == kick_f.get_height()
+                         and _near(item[2].centerx, panel.left + panel.w // 2)]
+                self.assertEqual(len(kicks), 1, (size, status, [(item[2].size, item[2].centerx) for item in painted if item[0] is None]))
+                self.assertEqual(kicks[0][2].y + kick_f.get_ascent(), score_base, (size, status))
+                if kick == "Time TBD":
+                    self.assertEqual(gs._pregame_when(card, NOW)[1], gs.MUTED)
+                else:
+                    self.assertEqual(gs._pregame_when(card, NOW)[1], gs.TEXT)
+                self.assertNotIn("SUN", gs.LAST_SPORTS_GUIDE["status"] if status == "SCHEDULED" else "")
+                names = [item for item in painted if item[0] in ("Kansas City", "Denver", "Arkansas", "Central Arkansas")]
+                cx_l = panel.left + panel.w // 4
+                cx_r = panel.left + (panel.w * 3) // 4
+                self.assertTrue(_near(min(names, key=lambda item: item[2].centerx)[2].centerx, cx_l))
+                self.assertTrue(_near(max(names, key=lambda item: item[2].centerx)[2].centerx, cx_r))
 
 
 def _download(url, path):
     req = urllib.request.Request(url, headers={"User-Agent": "grok-station-test"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         data = resp.read()
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise AssertionError("not a png: %s" % url)
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise AssertionError("not a png")
     with open(path, "wb") as fh:
         fh.write(data)
 
 
-def _overlay(surf, guide):
-    """Slot boxes, column lines, the center line, the baselines, and the label line. Test only."""
-    slots = guide["slots"]
+def _overlay(surf, guide, panel):
     red = (255, 64, 64)
     blue = (64, 160, 255)
     gold = (255, 196, 64)
-    for slot in slots:
-        pygame.draw.rect(surf, red, slot, 2)
-    top = min(slot.top for slot in slots) - 24
-    bot = max(slot.bottom for slot in slots) + 36
-    for x in guide["text"]:
+    top = guide["logo"][0] - 8
+    bot = guide["strip_top"]
+    for x in guide["columns"]:
         pygame.draw.line(surf, blue, (x, top), (x, bot), 1)
-    cy = guide["center_y"]
-    pygame.draw.line(surf, blue, (slots[0].left, cy), (slots[1].right, cy), 1)
-    for base in guide["baselines"]:
-        if base is None:
-            continue
-        pygame.draw.line(surf, gold, (slots[0].left, base), (slots[1].right, base), 1)
-    x = guide["label_x"]
-    pygame.draw.line(surf, red, (x, slots[0].top - 70), (x, slots[0].bottom), 1)
+    for y in guide["logo"]:
+        pygame.draw.line(surf, red, (panel.left, y), (panel.right, y), 1)
+    for y in guide["baselines"]:
+        pygame.draw.line(surf, gold, (panel.left, y), (panel.right, y), 1)
 
 
 class Frames(unittest.TestCase):
-    def test_real_logos_and_the_overlay(self):
-        os.makedirs(ART, exist_ok=True)
+    """Numeric checks plus optional PNG dumps. The dump directory is GS_FRAME_DIR or a temp dir."""
+
+    def test_real_logos_match_the_columns(self):
+        env = os.environ.get("GS_FRAME_DIR")
+        if env:
+            os.makedirs(env, exist_ok=True)
+            art = env
+            cleanup = None
+        else:
+            tmp = tempfile.TemporaryDirectory(prefix="gs1347-frames-")
+            self.addCleanup(tmp.cleanup)
+            art = tmp.name
+            cleanup = tmp
         root = tempfile.TemporaryDirectory(prefix="gs1347-espn-")
         self.addCleanup(root.cleanup)
         ids = {}
@@ -292,42 +328,70 @@ class Frames(unittest.TestCase):
         old = gs._LOGO
         gs._LOGO = gs.cards.LogoCache(root.name, ["a.espncdn.com"])
         try:
-            live = {
-                ("ark", (1280, 720)): ("Arkansas", "Central Arkansas", ids["arkansas"], ids["uca"], "NCAAF", (31, 17)),
-                ("ark", (2560, 1440)): ("Arkansas", "Central Arkansas", ids["arkansas"], ids["uca"], "NCAAF", (31, 17)),
-                ("kc", (1280, 720)): ("Kansas City", "Denver", ids["kc"], ids["den"], "NFL", (27, 14)),
-                ("kc", (2560, 1440)): ("Kansas City", "Denver", ids["kc"], ids["den"], "NFL", (27, 14)),
-            }
-            for (tag, size), (home, away, hid, aid, league, scores) in live.items():
-                card = _card(home, away, hid, aid, scores=scores)
-                card["league"] = league
-                self._frame("live-%s" % tag, size, card, overlay=(tag == "ark" and size == (1280, 720)))
-            pre = _card("Arkansas", "Central Arkansas", ids["arkansas"], ids["uca"], status="scheduled")
-            pre["league"] = "NCAAF"
-            pre["starts_at"] = "2026-11-21T19:15:00Z"
-            pre["home_score"] = pre["away_score"] = None
-            pre["period"] = ""
-            self._frame("pregame-ark", (1280, 720), pre, overlay=False)
+            specs = (
+                ("live-ark", (1280, 720), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["arkansas"], ids["uca"], False),
+                ("live-ark", (2560, 1440), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["arkansas"], ids["uca"], False),
+                ("live-kc", (1280, 720), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["kc"], ids["den"], False),
+                ("live-kc", (2560, 1440), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["kc"], ids["den"], False),
+            )
+            for name, size, card, home, away, _overlay_flag in specs:
+                card["home"]["logo_id"] = home
+                card["away"]["logo_id"] = away
+                self._frame(art, name, size, card, overlay=False)
+                self.assertEqual(len(gs.LAST_SPORTS_GUIDE["columns"]), 3)
+                panel = gs.bottom_panel_rect(gs.Layout(*size))
+                cols = gs.LAST_SPORTS_GUIDE["columns"]
+                self.assertEqual(cols[0], panel.left + panel.w // 4)
+                self.assertEqual(cols[1], panel.left + panel.w // 2)
+                self.assertEqual(cols[2], panel.left + (panel.w * 3) // 4)
+            pre = _card("Kansas City", "Denver", status="scheduled", league="NFL")
+            pre["starts_at"] = "2026-11-22T19:00:00Z"
+            pre["home"]["logo_id"] = ids["kc"]
+            pre["away"]["logo_id"] = ids["den"]
+            self._frame(art, "pregame-kc-notoday", (1280, 720), pre, overlay=False)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED \u00b7 SUN")
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "1:00 PM")
+            today = _card("Arkansas", "Central Arkansas", status="scheduled")
+            today["starts_at"] = "2026-11-19T19:15:00-06:00"
+            today["home"]["logo_id"] = ids["arkansas"]
+            today["away"]["logo_id"] = ids["uca"]
+            self._frame(art, "pregame-ark-today", (1280, 720), today, overlay=False)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED")
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "7:15 PM")
+            tbd = _card("Arkansas", "Denver", status="scheduled")
+            tbd["home"]["logo_id"] = ids["arkansas"]
+            tbd["away"]["logo_id"] = ids["den"]
+            self._frame(art, "pregame-tbd", (1280, 720), tbd, overlay=False)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "Time TBD")
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED")
+            long = _card("Arkansas", "Central Arkansas", status="scheduled")
+            long["starts_at"] = "2026-11-22T19:00:00Z"
+            long["home"]["logo_id"] = ids["arkansas"]
+            long["away"]["logo_id"] = ids["uca"]
+            self._frame(art, "pregame-longname", (1280, 720), long, overlay=False)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["names"][1], "Central Arkansas")
+            live = _card("Arkansas", "Central Arkansas", scores=(31, 17))
+            live["home"]["logo_id"] = ids["arkansas"]
+            live["away"]["logo_id"] = ids["uca"]
+            self._frame(art, "overlay-live-ark", (1280, 720), live, overlay=True)
         finally:
             gs._LOGO = old
+        del cleanup
 
-    def _frame(self, name, size, card, overlay):
+    def _frame(self, art, name, size, card, overlay):
         layout = gs.Layout(*size)
         surf = pygame.Surface(size)
         surf.fill(gs.BG)
         zone = gs.zone_view(None, card)
-        gs.draw_zone(surf, layout, time.strptime("2026-11-19 12:00", "%Y-%m-%d %H:%M"), tiles._Wx(), True, zone)
-        path = os.path.join(ART, "%s-%dx%d.png" % (name, size[0], size[1]))
-        pygame.image.save(surf, path)
-        self.assertTrue(os.path.isfile(path), path)
-        self.assertGreater(os.path.getsize(path), 1000, path)
+        clock = time.strptime("2026-11-19 12:00", "%Y-%m-%d %H:%M")
+        gs.draw_zone(surf, layout, clock, tiles._Wx(), True, zone)
+        panel = gs.LAST_ZONE_RECT
+        self.assertIsNotNone(panel)
         if overlay:
-            self.assertIsNotNone(gs.LAST_SPORTS_GUIDE)
-            self.assertIsNotNone(gs.LAST_SPORTS_GUIDE["slots"])
-            _overlay(surf, gs.LAST_SPORTS_GUIDE)
-            over = os.path.join(ART, "overlay-ark-%dx%d.png" % (size[0], size[1]))
-            pygame.image.save(surf, over)
-            self.assertGreater(os.path.getsize(over), 1000, over)
+            _overlay(surf, gs.LAST_SPORTS_GUIDE, panel)
+        path = os.path.join(art, "%s-%dx%d.png" % (name, size[0], size[1]))
+        pygame.image.save(surf, path)
+        self.assertGreater(os.path.getsize(path), 1000, path)
 
 
 if __name__ == "__main__":

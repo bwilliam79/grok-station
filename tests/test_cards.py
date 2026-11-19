@@ -1190,11 +1190,11 @@ class SportsLayout(unittest.TestCase):
             box = _red_box(surf, 80)
             self.assertIsNotNone(box)
             left, top, right, bottom = box
-            # The logo sits beside the name, in the home half, not stacked above it.
+            # The name is under the logo, in the home column.
             hit = None
             target = tuple(gs.TEXT)[:3]
-            for y in range(max(0, top - 8), bottom + 12, 2):
-                for x in range(right + 2, min(surf.get_width() - 1, right + 280), 3):
+            for y in range(bottom + 2, min(surf.get_height() - 1, bottom + 120), 2):
+                for x in range(max(0, left - 80), min(surf.get_width() - 1, right + 80), 3):
                     if _near(surf.get_at((x, y)), target):
                         hit = (x, y)
                         break

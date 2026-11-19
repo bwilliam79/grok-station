@@ -1,4 +1,4 @@
-"""0.13.46: team marks are 112 px at 1280x720, beside a name and score that stay at base size.
+"""0.13.46 type sizes, drawn in the 0.13.47 stack: name and score stay at base size.
 
 Frames are saved for live, final, and scheduled cards at 1280x720 and 2560x1440.
 GS_FRAME_DIR overrides the directory. Otherwise the frames go in a temp directory.
@@ -82,7 +82,7 @@ class SportsFrames(unittest.TestCase):
             self.art = self._tmp.name
 
     def test_logos_and_pregame_type_at_both_frames(self):
-        expect = {(1280, 720): 112, (2560, 1440): 224}
+        expect = {(1280, 720): 72, (2560, 1440): 144}
         for size in SIZES:
             self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), expect[size], size)
             live = tiles._sports("live", True, True)
@@ -130,7 +130,8 @@ class SportsFrames(unittest.TestCase):
                 names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
                 for name_item in names:
                     logo = min(logos, key=lambda item: abs(item[2].centerx - name_item[2].centerx))
-                    self.assertLessEqual(abs(name_item[2].centery - logo[2].centery), 2, name)
+                    self.assertLessEqual(abs(name_item[2].centerx - logo[2].centerx), 2, name)
+                    self.assertLess(logo[2].bottom, name_item[2].top + 2, name)
             layout = gs.Layout(*size)
             base_name = gs.font("display", layout(gs.SPORTS_NAME_PX)).get_height()
             base_score = gs.font("display", layout(gs.SPORTS_SCORE_PX)).get_height()
@@ -143,26 +144,19 @@ class SportsFrames(unittest.TestCase):
                 for item in names:
                     self.assertGreaterEqual(item[2].h, base_name, (name, item[0], item[2].h, base_name))
                 if name != "scheduled":
-                    name_bottom = max(item[2].bottom for item in names)
                     scores = [item for item in painted
-                              if item[0] is None and item[2].top >= name_bottom - 1
-                              and item[2].w != item[2].h and abs(item[2].centerx - panel.centerx) > 40]
+                              if item[0] is None and item[2].h == base_score
+                              and abs(item[2].centerx - panel.centerx) > 40]
                     self.assertGreaterEqual(len(scores), 2, name)
                     for item in scores:
                         self.assertGreaterEqual(item[2].h, base_score, (name, item[2].h, base_score))
-            clock_label, _ink = gs._pregame_when(timed, NOW)
             clock = _center_line(frames["scheduled"][0], frames["scheduled"][1])
             tbd_placed = _center_line(frames["tbd"][0], frames["tbd"][1])
             self.assertIsNotNone(clock, [item[0] for item in frames["scheduled"][0]])
             self.assertIsNotNone(tbd_placed)
-            self.assertEqual(used[clock_label], score_px)
-            self.assertEqual(used["Time TBD"], score_px)
-            kick = max(8, int(round(score_px * gs.PREGAME_RATIO)))
-            tbd_px = max(8, int(round(score_px * gs.PREGAME_TBD_RATIO)))
-            self.assertEqual(gs._pregame_px(score_px, clock_label), kick)
-            self.assertEqual(gs._pregame_px(score_px, "Time TBD"), tbd_px)
+            kick = layout(gs.SPORTS_KICK_PX)
             self.assertEqual(clock.h, gs.font("display", kick).get_height())
-            self.assertEqual(tbd_placed.h, gs.font("display", tbd_px).get_height())
+            self.assertEqual(tbd_placed.h, gs.font("display", kick).get_height())
             if size == (1280, 720):
                 self.assertEqual(kick, 60)
             # The kickoff time and Time TBD stay clear of the names and the schedule line.
@@ -210,7 +204,7 @@ class LogoBox(unittest.TestCase):
     def test_a_wide_mark_fits_the_box_and_a_square_stays_square(self):
         size = (1280, 720)
         layout = gs.Layout(*size)
-        self.assertEqual((layout(gs.SPORTS_LOGO_BOX_W), layout(gs.SPORTS_LOGO_BOX_H)), (168, 112))
+        self.assertEqual((layout(gs.SPORTS_LOGO_BOX_W), layout(gs.SPORTS_LOGO_BOX_H)), (120, 72))
         root = tempfile.TemporaryDirectory(prefix="gs1346-mark-")
         self.addCleanup(root.cleanup)
         wide_id = "b" * 64
@@ -231,23 +225,26 @@ class LogoBox(unittest.TestCase):
         finally:
             gs._LOGO = old
         names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
-        logos = [item for item in painted if item[0] is None and (item[2].w, item[2].h) in ((168, 73), (112, 112))]
+        logos = [item for item in painted if item[0] is None and (item[2].w, item[2].h) in ((120, 52), (72, 72))]
         self.assertEqual(len(logos), 2, [(item[2].size) for item in painted if item[0] is None])
         home_name = min(names, key=lambda item: item[2].centerx)
         away_name = max(names, key=lambda item: item[2].centerx)
         home = min(logos, key=lambda item: item[2].centerx)
         away = max(logos, key=lambda item: item[2].centerx)
-        self.assertEqual(home[2].w, 168)
-        self.assertLess(home[2].h, 112)
-        self.assertEqual(home[2].h, 73)
-        self.assertEqual((away[2].w, away[2].h), (112, 112))
-        inset = layout(48)
-        slot_w = layout(gs.SPORTS_LOGO_BOX_W)
-        gap = layout(gs.SPORTS_LOGO_GAP)
-        self.assertEqual(home[2].left, panel.left + inset)
-        self.assertLessEqual(abs(away[2].centerx - (panel.right - inset - slot_w // 2)), 1)
-        self.assertEqual(home_name[2].left, panel.left + inset + slot_w + gap)
-        self.assertEqual(away_name[2].right, panel.right - inset - slot_w - gap)
+        self.assertEqual(home[2].w, 120)
+        self.assertLess(home[2].h, 72)
+        self.assertEqual(home[2].h, 52)
+        self.assertEqual((away[2].w, away[2].h), (72, 72))
+        box_w, box_h = layout(gs.SPORTS_LOGO_BOX_W), layout(gs.SPORTS_LOGO_BOX_H)
+        left_cx = panel.left + panel.w // 4
+        right_cx = panel.left + (panel.w * 3) // 4
+        self.assertLessEqual(abs(home[2].centerx - left_cx), 1)
+        self.assertLessEqual(abs(away[2].centerx - right_cx), 1)
+        self.assertLessEqual(abs(home_name[2].centerx - left_cx), 1)
+        self.assertLessEqual(abs(away_name[2].centerx - right_cx), 1)
+        logo_top = panel.top + layout(gs.SPORTS_STACK_TOP)
+        self.assertLessEqual(abs(home[2].centery - (logo_top + box_h // 2)), 1)
+        self.assertTrue(pygame.Rect(left_cx - box_w // 2, logo_top, box_w, box_h).contains(home[2]))
         for item in logos + names:
             self.assertTrue(panel.contains(item[2]), item[2])
             self.assertFalse(home[2].colliderect(home_name[2]))

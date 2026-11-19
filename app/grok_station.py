@@ -19,6 +19,7 @@ The thinking ring spins by repainting only its own rectangle; the clock colon is
 Small status icons (network, Grok, mic, and an update arrow only while a newer version is cached) sit in the top-right corner. The Grok icon takes the old relay slot and covers relay health and the Grok service. A daemon thread polls them; --demo does not.
 """
 import datetime, hashlib, hmac, ipaddress, json, math, os, re, socket, sys, threading, time, unicodedata, urllib.parse, urllib.request
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
@@ -3466,18 +3467,30 @@ def _team_has_face(team):
     return bool(path and os.path.isfile(path))
 
 
-# Logo box, in 1920x1080 spec pixels. 252x168 is 168x112 px at 1280x720 and 336x224 at 2560x1440.
-# A square mark is limited by the height, so it stays 112 px at 1280. A wide mark uses the width.
-# SPORTS_LOGO_PX is that square, kept for the tests that name it.
-SPORTS_LOGO_PX = 168
-SPORTS_LOGO_BOX_W = 252
-SPORTS_LOGO_BOX_H = 168
-SPORTS_NAME_PX = 48   # 32 px at 1280x720, 64 px at 2560x1440
+# Stacked score tile. Spec pixels at 1920x1080, so L() is 2/3 at 1280x720 and 4/3 at 2560x1440.
+# The logo box is 120 by 72 at 1280 (240 by 144 at 2560). A square mark is limited by the height.
+SPORTS_LOGO_PX = 108
+SPORTS_LOGO_BOX_W = 180
+SPORTS_LOGO_BOX_H = 108
+SPORTS_NAME_PX = 48    # 32 px at 1280x720, 64 px at 2560x1440
 SPORTS_SCORE_PX = 120  # 80 px at 1280x720, 160 px at 2560x1440
-SPORTS_LOGO_GAP = 24   # 16 px at 1280 between the slot's edge and the name
-# A kickoff time is three quarters of the score. Time TBD is about 62 percent, one step under that.
+SPORTS_NAME_LINE = 57  # 38 px line box at 1280, 76 at 2560
+SPORTS_SCORE_LINE = 126  # 84 px line box at 1280, 168 at 2560
+SPORTS_STACK_TOP = 18  # 12 px below the panel top
+SPORTS_LOGO_GAP = 12   # 8 px between the logo box and the name
+SPORTS_SCORE_GAP = 6   # 4 px between the name line and the score line
+SPORTS_COL_W = 540     # 360 px team column
+SPORTS_CENTER_W = 450  # 300 px center column
+SPORTS_STATUS_PX = 33  # 22 px
+SPORTS_LEAGUE_PX = 27  # 18 px
+SPORTS_STATUS_GAP = 9  # 6 px between the status line and the league
+SPORTS_TRACK = 3       # letter spacing, 2 px at 1280
+SPORTS_STRIP = 108     # 72 px next-game row
+SPORTS_KICK_PX = 90    # 60 px kickoff
+# Kept so older checks can still name the ratios. The tile draws SPORTS_KICK_PX for both.
 PREGAME_RATIO = 0.75
 PREGAME_TBD_RATIO = 0.62
+_SPORTS_DAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
 
 def _sports_column_px(L, face):
@@ -4941,40 +4954,127 @@ def _score_label(score):
     return str(score)
 
 
-def _pregame_when(card, now=None):
-    """(label, ink) for the center of a scheduled tile.
+def _station_zone():
+    """The station clock. TZ_NAME is the configured IANA zone. The host zone is not used."""
+    name = os.environ.get("TZ_NAME") or "America/Chicago"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return datetime.timezone.utc
 
-    A starts_at instant is the station's local clock: '7:15 PM', or 'Sun 7:15 PM' when that
-    local day is not today. No start time is 'Time TBD' in the dim ink. The score dashes stay off.
+
+def _station_clock(now):
+    """now as a station-zone datetime.
+
+    A struct_time is the wall clock already on the tile, read in the station zone.
+    An aware datetime is converted into that zone. None is the station's current time.
     """
-    raw = card.get("starts_at")
+    zone = _station_zone()
+    if now is None:
+        return datetime.datetime.now(zone)
+    if isinstance(now, datetime.datetime):
+        if now.tzinfo is None:
+            return now.replace(tzinfo=zone)
+        try:
+            return now.astimezone(zone)
+        except (ValueError, OverflowError, OSError):
+            return datetime.datetime.now(zone)
+    try:
+        return datetime.datetime(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec, tzinfo=zone)
+    except (AttributeError, ValueError, OverflowError, OSError):
+        return datetime.datetime.now(zone)
+
+
+def _kickoff_local(card, now):
+    """(local kickoff or None, station clock). None means Time TBD."""
+    clock = _station_clock(now)
+    raw = card.get("starts_at") if isinstance(card, dict) else None
     if not isinstance(raw, str) or not raw:
-        return "Time TBD", MUTED
+        return None, clock
     text = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
     try:
         parsed = datetime.datetime.fromisoformat(text)
     except ValueError:
-        return "Time TBD", MUTED
+        return None, clock
     if parsed.tzinfo is None:
-        return "Time TBD", MUTED
-    # now.tzinfo from datetime.now().astimezone() is a fixed offset for this minute.
-    # astimezone() with no argument uses the station zone's rules, including daylight time.
-    # A year the C library cannot format becomes Time TBD instead of killing the display.
+        return None, clock
     try:
-        if now is None:
-            now = datetime.datetime.now().astimezone()
-            local = parsed.astimezone()
-        else:
-            if now.tzinfo is None:
-                now = now.replace(tzinfo=datetime.datetime.now().astimezone().tzinfo)
-            local = parsed.astimezone(now.tzinfo)
-        hour = local.strftime("%I").lstrip("0") or "12"
-        clock = "%s:%s" % (hour, local.strftime("%M %p"))
-        if local.date() != now.date():
-            clock = local.strftime("%a") + " " + clock
+        local = parsed.astimezone(_station_zone())
     except (ValueError, OverflowError, OSError):
+        return None, clock
+    if local.year < 1970 or local.year > 2100:
+        return None, clock
+    return local, clock
+
+
+def _clock_label(local):
+    hour = local.hour % 12 or 12
+    return "%d:%02d %s" % (hour, local.minute, "AM" if local.hour < 12 else "PM")
+
+
+def _pregame_when(card, now=None):
+    """(label, ink) for the kickoff. Time only, in the station zone. No day prefix.
+
+    No start time, or a time the station cannot place, is 'Time TBD' in the dim ink.
+    """
+    local, _clock = _kickoff_local(card, now)
+    if local is None:
         return "Time TBD", MUTED
-    return clock, TEXT
+    return _clock_label(local), TEXT
+
+
+def _pregame_day(card, now=None):
+    """Weekday token when the kickoff is not today in the station zone, else ''."""
+    local, clock = _kickoff_local(card, now)
+    if local is None or local.date() == clock.date():
+        return ""
+    return _SPORTS_DAYS[local.weekday()]
+
+
+def _css_baseline(line_top, line_h, face):
+    """Baseline inside a CSS line box. ascent and descent are the font's em box.
+
+    pygame reports descent below the baseline as a negative number. CSS uses a
+    positive descent, so the em height is ascent minus that value.
+    """
+    ascent = face.get_ascent()
+    descent = -face.get_descent()
+    return int(round(line_top + (line_h - (ascent + descent)) / 2.0 + ascent))
+
+
+def _letterspaced(face, text, color, gap):
+    """One line with extra space between glyphs. The full phrase is rendered once so tests can see it."""
+    face.render(text, True, color)
+    parts = [face.render(ch, True, color) for ch in text] or [face.render("", True, color)]
+    width = sum(img.get_width() for img in parts)
+    if len(parts) > 1:
+        width += gap * (len(parts) - 1)
+    canvas = pygame.Surface((max(1, width), max(1, face.get_height())), pygame.SRCALPHA)
+    x = 0
+    for i, img in enumerate(parts):
+        canvas.blit(img, (x, 0))
+        x += img.get_width()
+        if i + 1 < len(parts):
+            x += gap
+    return canvas
+
+
+def _tabular(face, text, color):
+    """Digits share one cell width. Other characters keep their own width."""
+    cell = max(face.size(d)[0] for d in "0123456789")
+    parts = []
+    width = 0
+    for ch in str(text):
+        img = face.render(ch, True, color)
+        w = cell if ch.isdigit() else img.get_width()
+        parts.append((img, w))
+        width += w
+    canvas = pygame.Surface((max(1, width), max(1, face.get_height())), pygame.SRCALPHA)
+    x = 0
+    for img, w in parts:
+        canvas.blit(img, (x + max(0, (w - img.get_width()) // 2), 0))
+        x += w
+    return canvas
 
 
 def _pregame_px(score_px, label):
@@ -5009,141 +5109,142 @@ def _sports_side_label(card):
     return (count + "OT") if count else "OT"
 
 
-LAST_SPORTS_GUIDE = None  # the last score row's slot, column, and baselines. Tests draw the overlay. The station does not.
+LAST_SPORTS_GUIDE = None  # the last score row's columns and baselines. Tests draw the overlay. The station does not.
+
+
+def _sports_center_text(card, now):
+    """(status line, color, kickoff or None, kickoff ink).
+
+    A scored game puts the state and the period in the center. A scheduled game puts
+    SCHEDULED there, with the weekday when the kickoff is not today.
+    """
+    status = card.get("status")
+    if status == "scheduled":
+        label, ink = _pregame_when(card, now)
+        day = _pregame_day(card, now)
+        text = "SCHEDULED" if not day else "SCHEDULED \u00b7 " + day
+        return text, MUTED, label, ink
+    period = " ".join(str(card.get("period") or "").split())
+    if status == "live":
+        text = "\u25cf LIVE" if not period else "\u25cf LIVE \u00b7 " + period
+        return text, LISTENING, None, None
+    if status == "final":
+        ot = _sports_side_label(card)
+        text = "FINAL" if not ot else "FINAL \u00b7 " + ot
+        return text, MUTED, None, None
+    word = str(status or "").upper() or "LIVE"
+    text = word if not period else word + " \u00b7 " + period
+    return text, MUTED, None, None
+
+
+def _shown_line(face, text, width):
+    if face.size(text)[0] <= width:
+        return text
+    return ellipsize(face, text, width)
 
 
 def draw_sports(surf, L, card, rect, now=None):
-    """Score tile in the bottom zone: header row, the two teams, and the next game as a band inside the card.
+    """Score tile: two centered stacks, the status in the middle, and the next game along the bottom.
     Shields or cached logos only; no fetch while drawing."""
     _card_chrome(surf, L, rect)
     games = card["schedule"][:4]
     pad = L(48)
-    head = rect.top + L(30)
-    live = card["status"] == "live"
-    label = "LIVE" if live else card["status"].upper()
-    st = _line(surf, "display", L(44), label, LISTENING if live else MUTED, max(40, rect.w // 3))
-    # LIVE, FINAL, the logo slot, and NEXT GAME share this left edge. The dot sits after the word.
-    show(surf, st, (rect.left + pad, head))
-    if live:
-        radius = max(4, L(10))
-        pygame.draw.circle(surf, LISTENING,
-                           (rect.left + pad + st.get_width() + L(16), head + st.get_height() // 2), radius)
-    side = _sports_side_label(card)
-    if side:
-        period = _line(surf, "display", L(44), side, MUTED, max(40, rect.w // 3))
-        show(surf, period, (rect.right - pad - period.get_width(), head))
-    # MUTED, not FAINT: FAINT on SURFACE is 3.24:1 and fails AA for small text (Noor's contrast table).
-    league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
-    show(surf, league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
-    face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
-    box_w, box_h, name_px, score_px, gap, side_gap = _sports_column_px(L, face)
-    name_h = font("display", name_px).get_height()
-    score_h = font("display", score_px).get_height()
-    row_h = max(box_h, name_h + gap + score_h)
-    col_top = head + st.get_height() + L(12)
-    # The logo sits beside the name and the score, so the schedule band keeps its height
-    # when that row fits. One subtraction, not a search, if a short panel has to give the row the room.
-    bottom_inset = L(16)
-    below = max(0, rect.bottom - bottom_inset - col_top)
-    full_strip = L(112) if games and rect.h >= L(300) else 0
-    strip_floor = max(L(36), font("display", max(8, L(22))).get_height() + L(8)) if games else 0
-    if full_strip and below - full_strip >= row_h:
-        strip_h = full_strip
-    elif full_strip:
-        strip_h = min(full_strip, max(strip_floor, below - row_h))
-    else:
-        strip_h = 0
-    tail_h = 0 if strip_h or not games else font("body", L(28)).get_height() + L(8)
-    strip_top = rect.bottom - strip_h
-    col_bot = (strip_top if strip_h else rect.bottom) - bottom_inset - tail_h
     pregame = card.get("status") == "scheduled"
-    when, ink = _pregame_when(card, now) if pregame else ("", TEXT)
+    strip_h = L(SPORTS_STRIP) if games else 0
+    if strip_h and strip_h >= rect.h:
+        strip_h = 0
+    strip_top = rect.bottom - strip_h
+    main_top = rect.top
+    main_h = (strip_top if strip_h else rect.bottom) - main_top
+    box_w, box_h = L(SPORTS_LOGO_BOX_W), L(SPORTS_LOGO_BOX_H)
+    name_px, score_px = L(SPORTS_NAME_PX), L(SPORTS_SCORE_PX)
+    name_line, score_line = L(SPORTS_NAME_LINE), L(SPORTS_SCORE_LINE)
+    logo_gap, score_gap = L(SPORTS_LOGO_GAP), L(SPORTS_SCORE_GAP)
+    stack_top = L(SPORTS_STACK_TOP)
+    col_w = L(SPORTS_COL_W)
     name_f = font("display", name_px)
     score_f = font("display", score_px)
-    # Ascent and descent, not the ink of one word, so a wide mark and a tall mark share baselines.
-    name_em = name_f.get_ascent() - name_f.get_descent()
-    score_em = score_f.get_ascent() - score_f.get_descent()
+    # Live geometry. Pregame reuses this score baseline for the kickoff.
+    live_logo = main_top + stack_top
+    live_name = live_logo + box_h + logo_gap
+    live_score = live_name + name_line + score_gap
+    name_base = _css_baseline(live_name, name_line, name_f)
+    score_base = _css_baseline(live_score, score_line, score_f)
     if pregame:
-        clock_px = _pregame_px(score_px, when)
-        center_img = font("display", clock_px).render(when, True, ink)
+        stack_h = box_h + logo_gap + name_line
+        pre_logo = main_top + max(0, (main_h - stack_h) // 2)
+        pre_name = pre_logo + box_h + logo_gap
+        name_base = _css_baseline(pre_name, name_line, name_f)
+        logo_y = pre_logo
     else:
-        center_img = score_f.render("\u2013", True, MUTED)
-    center_w = center_img.get_width()
-    if face:
-        # One slot per side, inset with LIVE and NEXT GAME. The art is centered in the slot.
-        # The text column starts at the slot edge plus the gap, whatever the art's width.
-        slot_w, slot_h = box_w, box_h
-        span = max(0, col_bot - col_top)
-        slot_y = col_top + max(0, (span - slot_h) // 2)
-        left_slot = pygame.Rect(rect.left + pad, slot_y, slot_w, slot_h)
-        right_slot = pygame.Rect(rect.right - pad - slot_w, slot_y, slot_w, slot_h)
-        anchor_cy = slot_y + slot_h // 2
-        text_left = left_slot.right + side_gap
-        text_right = right_slot.left - side_gap
-    else:
-        left_slot = right_slot = None
-        span = max(0, col_bot - col_top)
-        anchor_cy = col_top + span // 2
-        text_left = rect.left + pad
-        text_right = rect.right - pad
-    left_room = (rect.centerx - center_w // 2 - side_gap) - text_left
-    right_edge = rect.centerx + (center_w - center_w // 2) + side_gap
-    right_room = text_right - right_edge
-    text_w = max(8, min(left_room, right_room))
-    # A logo row centers the name on the slot when there is no score, and the name+score
-    # block on the slot when the game has a score. A row with no mark keeps that same stack.
-    if pregame and face:
-        name_top = anchor_cy - name_em // 2
-        name_base = name_top + name_f.get_ascent()
-        score_base = None
-    else:
-        block = name_em + gap + score_em
-        block_top = anchor_cy - block // 2
-        name_base = block_top + name_f.get_ascent()
-        score_base = block_top + name_em + gap + score_f.get_ascent()
+        logo_y = live_logo
+    cx_l = rect.left + rect.w // 4
+    cx_c = rect.left + rect.w // 2
+    cx_r = rect.left + (rect.w * 3) // 4
+    status, status_ink, kick, kick_ink = _sports_center_text(card, now)
+    stat_px, league_px = L(SPORTS_STATUS_PX), L(SPORTS_LEAGUE_PX)
+    stat_f = font("display", stat_px)
+    league_f = font("body", league_px)
+    stat_em = stat_f.get_ascent() - stat_f.get_descent()
+    league_em = league_f.get_ascent() - league_f.get_descent()
+    stat_gap = L(SPORTS_STATUS_GAP)
+    pair = stat_em + stat_gap + league_em
+    pair_top = live_logo + max(0, (box_h - pair) // 2)
+    stat_base = _css_baseline(pair_top, stat_em, stat_f)
+    league_base = _css_baseline(pair_top + stat_em + stat_gap, league_em, league_f)
+    track = max(0, L(SPORTS_TRACK))
 
-    def paint_mark(team, slot):
-        if slot is None:
-            return
-        image = team_face(team, (slot.w, slot.h))
+    def blit_centered(img, cx, baseline, face):
+        show(surf, img, (cx - img.get_width() // 2, baseline - face.get_ascent()))
+
+    def paint_mark(team, cx):
+        image = team_face(team, (box_w, box_h))
         if image is None:
             return
-        ix = slot.x + (slot.w - image.get_width()) // 2
-        iy = slot.y + (slot.h - image.get_height()) // 2
+        ix = cx - box_w // 2 + (box_w - image.get_width()) // 2
+        iy = logo_y + (box_h - image.get_height()) // 2
         show(surf, image, (ix, iy))
 
-    def paint_name(team, x, align):
-        name = _line(surf, "display", name_px, team["name"], TEXT, text_w)
-        left = x if align == "left" else x - name.get_width()
-        show(surf, name, (left, name_base - name_f.get_ascent()))
+    def paint_name(team, cx):
+        shown = _shown_line(name_f, team["name"], col_w)
+        img = _line(surf, "display", name_px, team["name"], TEXT, col_w)
+        blit_centered(img, cx, name_base, name_f)
+        return shown
 
-    def paint_score(score, x, align):
-        shown = _score_label(score)
-        sc = score_f.render(shown, True, MUTED if score is None else TEXT)
-        left = x if align == "left" else x - sc.get_width()
-        show(surf, sc, (left, score_base - score_f.get_ascent()))
-
+    home_shown = paint_name(card["home"], cx_l)
+    away_shown = paint_name(card["away"], cx_r)
+    paint_mark(card["home"], cx_l)
+    paint_mark(card["away"], cx_r)
+    stat_img = _letterspaced(stat_f, status, status_ink, track)
+    league_img = _letterspaced(league_f, str(card.get("league") or ""), MUTED, track)
+    blit_centered(stat_img, cx_c, stat_base, stat_f)
+    blit_centered(league_img, cx_c, league_base, league_f)
+    if pregame:
+        kick_px = L(SPORTS_KICK_PX)
+        kick_f = font("display", kick_px)
+        kick_img = kick_f.render(kick, True, kick_ink)
+        blit_centered(kick_img, cx_c, score_base, kick_f)
+    else:
+        dash_px = min(L(60), max(8, score_px // 3))
+        dash_f = font("display", dash_px)
+        for score, cx in ((card.get("home_score"), cx_l), (card.get("away_score"), cx_r)):
+            ink = MUTED if score is None else TEXT
+            img = _tabular(score_f, _score_label(score), ink)
+            blit_centered(img, cx, score_base, score_f)
+        dash = dash_f.render("\u2013", True, MUTED)
+        show(surf, dash, (cx_c - dash.get_width() // 2, score_base - dash_f.get_ascent()))
     global LAST_SPORTS_GUIDE
     LAST_SPORTS_GUIDE = {
-        "slots": None if left_slot is None else (left_slot.copy(), right_slot.copy()),
-        "text": (text_left, text_right),
+        "columns": (cx_l, cx_c, cx_r),
+        "logo": (logo_y, logo_y + box_h),
         "baselines": (name_base, score_base),
-        "center_y": anchor_cy,
-        "label_x": rect.left + pad,
-        "label_right": rect.right - pad,
+        "lines": (live_name, live_score),
+        "status": status,
+        "kick": kick,
+        "names": (home_shown, away_shown),
+        "strip_top": strip_top if strip_h else rect.bottom,
+        "box": (box_w, box_h),
     }
-    paint_mark(card["home"], left_slot)
-    paint_mark(card["away"], right_slot)
-    paint_name(card["home"], text_left, "left")
-    paint_name(card["away"], text_right, "right")
-    if pregame and face:
-        show(surf, center_img, (rect.centerx - center_w // 2, anchor_cy - center_img.get_height() // 2))
-    elif pregame:
-        show(surf, center_img, (rect.centerx - center_w // 2, score_base - score_f.get_ascent()))
-    else:
-        paint_score(card.get("home_score"), text_left, "left")
-        paint_score(card.get("away_score"), text_right, "right")
-        show(surf, center_img, (rect.centerx - center_w // 2, score_base - score_f.get_ascent()))
     if strip_h:
         rule_h = max(2, L(2))
         pygame.draw.line(surf, RULE, (rect.left + max(2, L(2)), strip_top), (rect.right - max(2, L(2)) - 1, strip_top), rule_h)
@@ -5599,7 +5700,7 @@ def draw_zone(surf, L, now, wx, colon_on=True, zone=None, t=1.0, tele=None, now_
     if zone.get("tile"):
         card = zone["tile"]
         if card["type"] == "sports":
-            draw_sports(surf, L, card, rect)
+            draw_sports(surf, L, card, rect, now=_station_clock(now))
         else:
             draw_calendar(surf, L, card, rect)
         if zone.get("badge"):

@@ -200,14 +200,14 @@ class PregameTile(unittest.TestCase):
         unknown = cards.validate_card(_sports(
             status="scheduled", period="Sat 11:00 AM", home_score=None, away_score=None))
         for size in ((1280, 720), (2560, 1440)):
-            for card, word, ink in (
-                (today, "7:15 PM", gs.TEXT),
-                (later, "Mon 7:15 PM", gs.TEXT),
-                (unknown, "Time TBD", gs.MUTED),
+            for card, word, ink, status in (
+                (today, "7:15 PM", gs.TEXT, "SCHEDULED"),
+                (later, "7:15 PM", gs.TEXT, "SCHEDULED \u00b7 MON"),
+                (unknown, "Time TBD", gs.MUTED, "SCHEDULED"),
             ):
                 drawn, marks, panel = self._draw(card, size, now)
                 words = [text for text, _color in drawn]
-                self.assertIn("SCHEDULED", words, (size, word))
+                self.assertIn(status, words, (size, word, words))
                 self.assertIn(word, words, size)
                 self.assertNotIn("Sat 11:00 AM", words, size)
                 self.assertNotIn("\u2013", words, size)

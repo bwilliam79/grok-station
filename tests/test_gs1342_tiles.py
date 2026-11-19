@@ -307,10 +307,10 @@ def _attach_logo(card):
 
 
 class LogoSize(unittest.TestCase):
-    """Team marks use SPORTS_LOGO_PX: 112 px at 1280 wide, scaled at 2560 wide, clear of the score and the city."""
+    """Team marks use SPORTS_LOGO_PX: 72 px at 1280 wide, scaled at 2560 wide, clear of the score and the city."""
 
     def test_logos_match_the_named_size_and_clear_the_score_and_city(self):
-        expect = {(1280, 800): 112, (2560, 1706): 224}
+        expect = {(1280, 800): 72, (2560, 1706): 144}
         for size, px in expect.items():
             self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), px, size)
         for size in expect:
@@ -334,9 +334,8 @@ class LogoSize(unittest.TestCase):
         logos = [(ink, placed) for word, ink, placed in painted
                  if word is None and placed.w == px and placed.h == px]
         # The digits are font.render, not _line, so they have no word. The dash sits between them.
-        name_bottom = max(item[2].bottom for item in names) if names else 0
         scores = [(ink, placed) for word, ink, placed in painted
-                  if word is None and placed.top >= name_bottom - 1 and not (placed.w == px and placed.h == px)]
+                  if word is None and placed.h > px]
         self.assertEqual(len(names), 2, [item[0] for item in painted])
         self.assertEqual(len(logos), 2, [(word, placed.size) for word, _ink, placed in painted])
         self.assertGreaterEqual(len(scores), 2, [(placed.size) for _ink, placed in scores])
@@ -344,14 +343,16 @@ class LogoSize(unittest.TestCase):
         away = max(names, key=lambda item: item[2].centerx)
         home_logo = min(logos, key=lambda item: item[1].centerx)
         away_logo = max(logos, key=lambda item: item[1].centerx)
-        self.assertLessEqual(home_logo[1].right, home[2].left + 1)
-        self.assertGreaterEqual(away_logo[1].left, away[2].right - 1)
+        self.assertLessEqual(abs(home_logo[1].centerx - home[2].centerx), 1)
+        self.assertLessEqual(abs(away_logo[1].centerx - away[2].centerx), 1)
+        self.assertLess(home_logo[1].bottom, home[2].top + 2)
+        self.assertLess(away_logo[1].bottom, away[2].top + 2)
         for ink, placed in logos:
             self.assertEqual((placed.w, placed.h), (px, px), placed)
             self.assertTrue(panel.contains(placed), (placed, panel))
             self.assertTrue(panel.contains(ink), (ink, panel))
             city = home if placed.centerx < panel.centerx else away
-            self.assertTrue(placed.top < city[2].bottom and placed.bottom > city[2].top, (placed, city[2]))
+            self.assertLess(placed.bottom, city[2].top + 2, (placed, city[2]))
             self.assertFalse(placed.colliderect(city[1]) or ink.colliderect(city[1]), (placed, city[1]))
             self.assertFalse(placed.colliderect(city[2]), (placed, city[2]))
             for score_ink, score_placed in scores:
@@ -369,20 +370,17 @@ class FinalLabel(unittest.TestCase):
         for size in ((1280, 800), (2560, 1706)):
             for badge in (True, False):
                 painted, panel = _painted_words(size, _sports("final", True, badge))
-                finals = [word for word, _rect in painted if word.casefold() == "final"]
-                right = [word for word, rect in painted if rect.centerx > panel.centerx]
+                right = [word for word, rect in painted if rect.centerx > panel.centerx + 40]
                 with self.subTest(size=size, badge=badge):
-                    self.assertEqual(finals, ["FINAL"], (finals, right))
-                    self.assertFalse(any(word.casefold() in ("final", "f", "ot") for word in right), right)
+                    self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "FINAL")
+                    self.assertFalse(any(word.casefold() in ("final", "ot") for word in right), right)
 
     def test_an_overtime_final_paints_ot_on_the_right(self):
         card = _sports("final", False, False)
         card["period"] = "Final/OT"
         painted, panel = _painted_words((1280, 800), card)
-        finals = [word for word, _rect in painted if word.casefold() == "final"]
-        right = [word for word, rect in painted if rect.centerx > panel.centerx]
-        self.assertEqual(finals, ["FINAL"])
-        self.assertIn("OT", right)
+        self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "FINAL \u00b7 OT")
+        self.assertNotIn("OT", [word for word, rect in painted if rect.centerx > panel.centerx + 40])
 
 
 if __name__ == "__main__":
