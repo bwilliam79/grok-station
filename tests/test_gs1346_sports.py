@@ -15,7 +15,6 @@ import test_gs1342_tiles as tiles  # noqa: E402
 gs = tiles.gs
 pygame = tiles.pygame
 
-ART = os.environ.get("GS_FRAME_DIR") or tempfile.mkdtemp(prefix="gs1346-frames-")
 SIZES = ((1280, 720), (2560, 1440))
 NOW = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
 
@@ -72,8 +71,17 @@ def _paint(size, card, now=None):
 
 
 class SportsFrames(unittest.TestCase):
+    def setUp(self):
+        env = os.environ.get("GS_FRAME_DIR")
+        if env:
+            os.makedirs(env, exist_ok=True)
+            self.art = env
+        else:
+            self._tmp = tempfile.TemporaryDirectory(prefix="gs1346-frames-")
+            self.addCleanup(self._tmp.cleanup)
+            self.art = self._tmp.name
+
     def test_logos_and_pregame_type_at_both_frames(self):
-        os.makedirs(ART, exist_ok=True)
         expect = {(1280, 720): 112, (2560, 1440): 224}
         for size in SIZES:
             self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), expect[size], size)
@@ -104,7 +112,7 @@ class SportsFrames(unittest.TestCase):
                     finally:
                         gs._pregame_px = real_px
                     frames[name] = (painted, panel, surf)
-                    path = os.path.join(ART, "sports-%s-%dx%d.png" % (name, size[0], size[1]))
+                    path = os.path.join(self.art, "sports-%s-%dx%d.png" % (name, size[0], size[1]))
                     pygame.image.save(surf, path)
                     self.assertTrue(os.path.isfile(path), path)
             finally:
@@ -119,6 +127,10 @@ class SportsFrames(unittest.TestCase):
                 for item in logos:
                     self.assertEqual((item[2].w, item[2].h), (expect[size], expect[size]))
                     self.assertTrue(panel.contains(item[2]))
+                names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
+                for name_item in names:
+                    logo = min(logos, key=lambda item: abs(item[2].centerx - name_item[2].centerx))
+                    self.assertLessEqual(abs(name_item[2].centery - logo[2].centery), 2, name)
             layout = gs.Layout(*size)
             base_name = gs.font("display", layout(gs.SPORTS_NAME_PX)).get_height()
             base_score = gs.font("display", layout(gs.SPORTS_SCORE_PX)).get_height()
@@ -169,6 +181,74 @@ class SportsFrames(unittest.TestCase):
                         self.assertFalse(item[2].colliderect(name[2]), (item[0], name[0]))
                     for row in sched:
                         self.assertFalse(item[2].colliderect(row[2]), (item[0], row[0]))
+
+
+def _rgba(canvas_w, canvas_h, mark_w, mark_h):
+    """A PNG with a red mark centered in a transparent canvas."""
+    import struct
+    import zlib
+    raw = []
+    x0 = (canvas_w - mark_w) // 2
+    y0 = (canvas_h - mark_h) // 2
+    for y in range(canvas_h):
+        row = bytearray([0])
+        for x in range(canvas_w):
+            if x0 <= x < x0 + mark_w and y0 <= y < y0 + mark_h:
+                row.extend(b"\xff\x00\x00\xff")
+            else:
+                row.extend(b"\x00\x00\x00\x00")
+        raw.append(bytes(row))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", canvas_w, canvas_h, 8, 6, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"".join(raw))) + chunk(b"IEND", b"")
+
+
+class LogoBox(unittest.TestCase):
+    def test_a_wide_mark_fits_the_box_and_a_square_stays_square(self):
+        size = (1280, 720)
+        layout = gs.Layout(*size)
+        self.assertEqual((layout(gs.SPORTS_LOGO_BOX_W), layout(gs.SPORTS_LOGO_BOX_H)), (168, 112))
+        root = tempfile.TemporaryDirectory(prefix="gs1346-mark-")
+        self.addCleanup(root.cleanup)
+        wide_id = "b" * 64
+        square_id = "c" * 64
+        with open(os.path.join(root.name, wide_id), "wb") as fh:
+            fh.write(_rgba(460, 200, 230, 100))
+        with open(os.path.join(root.name, square_id), "wb") as fh:
+            fh.write(_rgba(40, 40, 40, 40))
+        card = tiles._sports("live", True, False)
+        card["home"]["logo_id"] = wide_id
+        card["home"]["logo_badge"] = False
+        card["away"]["logo_id"] = square_id
+        card["away"]["logo_badge"] = False
+        old = gs._LOGO
+        gs._LOGO = gs.cards.LogoCache(root.name, [])
+        try:
+            painted, panel, _surf = _paint(size, card)
+        finally:
+            gs._LOGO = old
+        names = [item for item in painted if item[0] in ("Kansas City", "Denver")]
+        logos = [item for item in painted if item[0] is None and (item[2].w, item[2].h) in ((168, 73), (112, 112))]
+        self.assertEqual(len(logos), 2, [(item[2].size) for item in painted if item[0] is None])
+        home_name = min(names, key=lambda item: item[2].centerx)
+        away_name = max(names, key=lambda item: item[2].centerx)
+        home = min(logos, key=lambda item: item[2].centerx)
+        away = max(logos, key=lambda item: item[2].centerx)
+        self.assertEqual(home[2].w, 168)
+        self.assertLess(home[2].h, 112)
+        self.assertEqual(home[2].h, 73)
+        self.assertEqual((away[2].w, away[2].h), (112, 112))
+        self.assertEqual(home[2].left, panel.left + layout(48))
+        self.assertEqual(away[2].right, panel.right - layout(48))
+        self.assertEqual(home_name[2].left, home[2].right + layout(gs.SPORTS_LOGO_GAP))
+        self.assertEqual(away_name[2].right, away[2].left - layout(gs.SPORTS_LOGO_GAP))
+        for item in logos + names:
+            self.assertTrue(panel.contains(item[2]), item[2])
+            self.assertFalse(home[2].colliderect(home_name[2]))
+            self.assertFalse(away[2].colliderect(away_name[2]))
 
 
 if __name__ == "__main__":

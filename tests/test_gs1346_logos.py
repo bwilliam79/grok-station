@@ -51,7 +51,10 @@ class ResolveCollegeLogo(unittest.TestCase):
         with open(FIXTURE, "rb") as fh:
             self.raw = fh.read()
         self.calls = []
-        self.root = tempfile.mkdtemp(prefix="gs1346-logo-")
+        self._tmp = tempfile.TemporaryDirectory(prefix="gs1346-logo-")
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self._drain_teams)
+        self.root = self._tmp.name
         self.lines = []
         self.cache = cards.LogoCache(
             self.root, ["a.espncdn.com"], opener=lambda url: (_png(), "image/png"),
@@ -61,6 +64,11 @@ class ResolveCollegeLogo(unittest.TestCase):
             cards._TEAM_FAIL_AT.clear()
             cards._TEAM_PARSED.clear()
 
+    def _drain_teams(self):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and cards._TEAM_REFRESH:
+            time.sleep(0.02)
+
     def _seed(self):
         path = cards._teams_path(self.root, "football", "college-football")
         os.makedirs(self.root, exist_ok=True)
@@ -68,8 +76,12 @@ class ResolveCollegeLogo(unittest.TestCase):
             fh.write(self.raw)
         return path
 
+    def _teams(self, url):
+        self.calls.append(url)
+        return self.raw
+
     def _prepare(self, card, **kw):
-        return cards.prepare_display_logos(card, self.cache, wait_s=0, **kw)
+        return cards.prepare_display_logos(card, self.cache, wait_s=1, **kw)
 
     def test_name_alias_and_abbreviation_resolve_to_2110(self):
         # The recorded list has no "UCA" alias. shortDisplayName and nickname are
@@ -82,8 +94,9 @@ class ResolveCollegeLogo(unittest.TestCase):
         self.assertNotIn("bears", index)  # fourteen schools share that name
         self.assertNotIn("uca", index)
         self._seed()
+        self.cache.team_refresh = True
         for name, abbr in (("Central Arkansas", "CARK"), ("C Arkansas", "CARK"), ("cark", "CARK")):
-            card = self._prepare(_card((name, abbr), ("Arkansas", "ARK")))
+            card = self._prepare(_card((name, abbr), ("Arkansas", "ARK")), opener=self._teams)
             self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA), name)
             self.assertNotIn("logo_url", card["home"])
             self.assertNotIn("logo none: home", self.lines)
@@ -109,9 +122,31 @@ class ResolveCollegeLogo(unittest.TestCase):
 
     def test_a_fresh_cache_is_used_offline(self):
         self._seed()
-        card = self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")))
+        self.cache.team_refresh = True
+        card = self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=self._teams)
         self.assertEqual(card["home"].get("logo_id"), cards.logo_id_of(UCA))
         self.assertEqual(self.calls, [])
+
+    def test_a_failed_write_fetches_once_and_then_backs_off(self):
+        def boom(path, data):
+            raise OSError("full")
+
+        real = cards._write_teams
+        cards._write_teams = boom
+        self.cache.team_refresh = True
+        path = cards._teams_path(self.root, "football", "college-football")
+        try:
+            self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=self._teams)
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline and path not in cards._TEAM_FAIL_AT:
+                time.sleep(0.02)
+            self.assertIn(path, cards._TEAM_FAIL_AT)
+            self.assertEqual(len(self.calls), 1)
+            self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=self._teams)
+            time.sleep(0.3)
+            self.assertEqual(len(self.calls), 1)
+        finally:
+            cards._write_teams = real
 
     def test_a_parsed_index_is_not_read_again_for_the_same_file(self):
         self._seed()

@@ -3225,14 +3225,27 @@ def draw_idle(surf, L, now, wx, colon_on=True, home_band=True, talking=False):
     # Raise a short minute so its ink meets the tallest-digit line the panel is measured from.
     base = top + int(font("display", clock_px).get_ascent() * 0.98)
     lift = clock_ink_lift("display", clock_px, hhmm)
-    x = L.m - L(8)
+    # The visible digits start on the tile's left edge. The pen moves left by the
+    # hour's bearing so a narrow hour and a wide hour share that edge.
+    margin = zpx(L, PANEL_X)
+    if margin + zpx(L, PANEL_W) > L.w - zpx(L, 16):
+        margin = L.m
+    hour = hhmm.split(":", 1)[0]
+    hour_box = font("display", clock_px).render(hour, True, TEXT).get_bounding_rect()
+    x = margin - hour_box.x
     digits, _colon = draw_clock(surf, "display", clock_px, hhmm, TEXT, x, base - lift, colon_on, lift)
     ampm_r = baseline_text(surf, "display", L(84), ampm, MUTED, x + font("display", clock_px).size(hhmm)[0] + L(18), base - lift)
     LAST_CLOCK_RECT = digits.union(ampm_r)
     date = time.strftime("%A, %B %-d", now)
-    dimg = font("body", L(IDLE_DATE_PX)).render(date, True, TEXT)
+    # The longest date sets the size, so Wednesday, September 30 stays on the screen.
+    longest = "Wednesday, September 30"
+    room = max(8, L.w - margin - margin)
+    date_px = L(IDLE_DATE_PX)
+    while date_px > 8 and font("body", date_px).size(longest)[0] > room:
+        date_px -= 1
+    dimg = font("body", date_px).render(date, True, TEXT)
     dbr = dimg.get_bounding_rect()
-    bx = int(round(digits.x + digits.w / 2.0 - (dbr.x + dbr.w / 2.0)))
+    bx = margin - dbr.x
     date_y = base + L(IDLE_DATE_GAP)
     show(surf, dimg, (bx, date_y))
     LAST_DATE_RECT = pygame.Rect(bx, date_y, dimg.get_width(), dimg.get_height())
@@ -3352,11 +3365,46 @@ def monogram_shield(abbr, px):
     return box
 
 
-def _loaded_logo(team, px):
-    """A cached logo scaled to px, or None when there is nothing to draw.
+def _logo_box(box):
+    """(max width, max height). An int is a square."""
+    if isinstance(box, (tuple, list)):
+        return max(1, int(box[0])), max(1, int(box[1]))
+    side = max(1, int(box))
+    return side, side
+
+
+def _opaque_rect(img):
+    """The visible pixels. A fully transparent file is the whole image."""
+    try:
+        mask = pygame.mask.from_surface(img, 8)
+        bits = mask.get_bounding_rects()
+    except Exception:
+        return img.get_rect()
+    if not bits:
+        return img.get_rect()
+    box = bits[0]
+    for extra in bits[1:]:
+        box.union_ip(extra)
+    return box if box.w > 0 and box.h > 0 else img.get_rect()
+
+
+def _fit_logo(img, max_w, max_h):
+    """Fit the visible mark inside the box. Aspect stays. Never taller than max_h."""
+    crop = img.subsurface(_opaque_rect(img)).copy()
+    scale = min(max_w / float(crop.get_width()), max_h / float(crop.get_height()))
+    width = max(1, min(max_w, int(round(crop.get_width() * scale))))
+    height = max(1, min(max_h, int(round(crop.get_height() * scale))))
+    if (width, height) != crop.get_size():
+        crop = pygame.transform.smoothscale(crop, (width, height))
+    return crop
+
+
+def _loaded_logo(team, box):
+    """A cached logo fitted in box, or None when there is nothing to draw.
 
     A missing file, or a file pygame cannot read, is None. This does not fetch
-    and does not leave a broken image.
+    and does not leave a broken image. The visible pixels are fitted, so a wide
+    mark stays wide and a square mark stays square.
     """
     lid = team.get("logo_id") if isinstance(team, dict) else None
     path = logo_cache().path_for(lid) if isinstance(lid, str) else None
@@ -3368,7 +3416,8 @@ def _loaded_logo(team, px):
             img = img.convert_alpha()
         except pygame.error:
             pass
-        return pygame.transform.smoothscale(img, (px, px))
+        max_w, max_h = _logo_box(box)
+        return _fit_logo(img, max_w, max_h)
     except Exception:
         return None
 
@@ -3389,18 +3438,20 @@ def team_mark(team, px):
     return monogram_shield(abbr or "?", px)
 
 
-def team_face(team, px):
-    """What sits above the team name: a logo, an abbreviation badge, or nothing.
+def team_face(team, box):
+    """The logo beside the team name, an abbreviation badge, or nothing.
 
-    No logo_url (no logo id and no badge) is nothing, so the name is not pushed down.
-    A file that fails to load is nothing too, unless the station marked logo_badge
-    because the fetch was not ready. Never a broken image and never an empty gap.
+    No logo_url (no logo id and no badge) is nothing. A file that fails to load
+    is nothing too, unless the station marked logo_badge because the fetch was
+    not ready. Never a broken image and never an empty gap. A badge is the
+    shorter side of the box, so a square mark stays square.
     """
-    img = _loaded_logo(team, px)
+    img = _loaded_logo(team, box)
     if img is not None:
         return img
     if isinstance(team, dict) and team.get("logo_badge") is True:
-        return monogram_shield(team.get("abbr") or "?", px)
+        side = min(_logo_box(box))
+        return monogram_shield(team.get("abbr") or "?", side)
     return None
 
 
@@ -3417,24 +3468,29 @@ def _team_has_face(team):
     return bool(path and os.path.isfile(path))
 
 
-# Team logo square, in 1920x1080 spec pixels. 168 is 112 px at 1280x720 and 224 px at 2560x1440.
-# The name and the score stay at their bases. The logo sits beside that stack, so none of the
-# three is scaled down to make the column fit.
+# Logo box, in 1920x1080 spec pixels. 252x168 is 168x112 px at 1280x720 and 336x224 at 2560x1440.
+# A square mark is limited by the height, so it stays 112 px at 1280. A wide mark uses the width.
+# SPORTS_LOGO_PX is that square, kept for the tests that name it.
 SPORTS_LOGO_PX = 168
+SPORTS_LOGO_BOX_W = 252
+SPORTS_LOGO_BOX_H = 168
 SPORTS_NAME_PX = 48   # 32 px at 1280x720, 64 px at 2560x1440
 SPORTS_SCORE_PX = 120  # 80 px at 1280x720, 160 px at 2560x1440
+SPORTS_LOGO_GAP = 24   # 16 px at 1280 between the logo's edge and the name
 # A kickoff time is three quarters of the score. Time TBD is about 62 percent, one step under that.
 PREGAME_RATIO = 0.75
 PREGAME_TBD_RATIO = 0.62
 
 
 def _sports_column_px(L, face):
-    """Logo, name, and score at the spec bases. Computed once. Nothing is searched or scaled down."""
+    """Logo box, name, and score at the spec bases. Computed once. Nothing is searched or scaled down."""
     gap = max(1, L(8))
-    logo = L(SPORTS_LOGO_PX) if face else 0
+    side = max(1, L(SPORTS_LOGO_GAP))
+    box_w = L(SPORTS_LOGO_BOX_W) if face else 0
+    box_h = L(SPORTS_LOGO_BOX_H) if face else 0
     name_px = max(8, L(SPORTS_NAME_PX))
     score_px = max(8, L(SPORTS_SCORE_PX))
-    return logo, name_px, score_px, gap
+    return box_w, box_h, name_px, score_px, gap, side
 
 
 def sports_stack(top, bottom, face_h, name_h, score_h, gap):
@@ -4978,10 +5034,10 @@ def draw_sports(surf, L, card, rect, now=None):
     league = _line(surf, "body", L(33), card["league"], MUTED, max(40, rect.w // 4))
     show(surf, league, (rect.centerx - league.get_width() // 2, head + max(0, (st.get_height() - league.get_height()) // 2)))
     face = _team_has_face(card.get("home")) or _team_has_face(card.get("away"))
-    logo, name_px, score_px, gap = _sports_column_px(L, face)
+    box_w, box_h, name_px, score_px, gap, side_gap = _sports_column_px(L, face)
     name_h = font("display", name_px).get_height()
     score_h = font("display", score_px).get_height()
-    row_h = max(logo, name_h + gap + score_h)
+    row_h = max(box_h, name_h + gap + score_h)
     col_top = head + st.get_height() + L(12)
     # The logo sits beside the name and the score, so the schedule band keeps its height
     # when that row fits. One subtraction, not a search, if a short panel has to give the row the room.
@@ -5009,8 +5065,9 @@ def draw_sports(surf, L, card, rect, now=None):
         center_w = font("display", dash_px).size("\u2013")[0]
     # The center keeps the clock or the dash. Each team is the logo beside its name and score,
     # packed to the outer edge so the center stays clear.
-    inner = center_w + 2 * gap
-    outer = L(24)
+    inner = center_w + 2 * side_gap
+    # Same inset as LIVE and NEXT GAME: L(48) is 32 px at 1280.
+    outer = pad
     left_box = (rect.left + outer, rect.centerx - inner // 2)
     right_box = (rect.centerx + inner - inner // 2, rect.right - outer)
     score_mids = []
@@ -5019,39 +5076,43 @@ def draw_sports(surf, L, card, rect, now=None):
         box_left, box_right = box
         if box_right < box_left:
             box_left, box_right = box_right, box_left
-        image = team_face(team, logo) if logo else None
+        image = team_face(team, (box_w, box_h)) if box_h else None
         mark = image.get_width() if image is not None else 0
-        text_w = max(8, (box_right - box_left) - (mark + gap if mark else 0))
+        mark_h = image.get_height() if image is not None else 0
+        text_w = max(8, (box_right - box_left) - (mark + side_gap if mark else 0))
         name = _line(surf, "display", name_px, team["name"], TEXT, text_w)
         shown = None if pregame else _score_label(score)
         if shown is None:
             sc = None
-            this_h = score_h
         else:
             sc = font("display", score_px).render(shown, True, MUTED if score is None else TEXT)
-            this_h = sc.get_height()
-        stack_h = name.get_height() + gap + this_h
-        block_h = max(mark, stack_h)
+        # The kickoff stays on the score slot. A pregame name is centered on the logo instead.
+        stack_h = name.get_height() + gap + score_h
+        block_h = max(mark_h, stack_h)
         span = max(0, col_bot - col_top)
         top = col_top + max(0, (span - block_h) // 2)
         stack_y = top + max(0, (block_h - stack_h) // 2)
-        name_y = stack_y
-        score_y = name_y + name.get_height() + gap
+        score_y = stack_y + name.get_height() + gap
+        logo_y = top + max(0, (block_h - mark_h) // 2) if mark_h else top
+        if pregame and mark_h:
+            name_y = logo_y + max(0, (mark_h - name.get_height()) // 2)
+        else:
+            name_y = stack_y
         if logo_on_left:
-            text_x = box_left + (mark + gap if mark else 0)
+            text_x = box_left + (mark + side_gap if mark else 0)
             if image is not None:
-                show(surf, image, (box_left, top + max(0, (block_h - image.get_height()) // 2)))
+                show(surf, image, (box_left, logo_y))
             show(surf, name, (text_x, name_y))
             if sc is not None:
                 show(surf, sc, (text_x, score_y))
         else:
-            text_right = box_right - (mark + gap if mark else 0)
+            text_right = box_right - (mark + side_gap if mark else 0)
             if image is not None:
-                show(surf, image, (box_right - image.get_width(), top + max(0, (block_h - image.get_height()) // 2)))
+                show(surf, image, (box_right - image.get_width(), logo_y))
             show(surf, name, (text_right - name.get_width(), name_y))
             if sc is not None:
                 show(surf, sc, (text_right - sc.get_width(), score_y))
-        score_mids.append(score_y + this_h // 2)
+        score_mids.append(score_y + score_h // 2)
 
     paint_side(card["home"], card.get("home_score"), left_box, True)
     paint_side(card["away"], card.get("away_score"), right_box, False)

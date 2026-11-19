@@ -1212,6 +1212,7 @@ ESPN_TEAMS_HOST = "site.api.espn.com"
 TEAM_LIST_MAX = 3 * 1024 * 1024  # a college football list is about 1.8 MB
 TEAM_LIST_AGE = 24 * 3600  # refresh at most daily; an older file is still used offline
 TEAM_LIST_BACKOFF = 10 * 60  # after a failed fetch, leave the network alone for about 10 minutes
+LOGO_NONE_MAX = 256  # one card id and side each; older lines are dropped so the set cannot grow forever
 _LIST_PART = re.compile(r"^[a-z0-9][a-z0-9.-]{0,40}$")
 # Card league text, already normalized, to (sport, league, cdn folder, college).
 # College folders are ncaa. A league that is not in this table is not guessed.
@@ -1483,7 +1484,7 @@ def _store_teams(path, data):
     try:
         _write_teams(path, data)
     except OSError:
-        pass
+        return None
     return doc
 
 
@@ -1548,6 +1549,9 @@ def schedule_teams_refresh(cache, path, url, opener=None, now=None):
                 else:
                     _TEAM_FAIL_AT.pop(path, None)
                     _TEAM_PARSED.pop(path, None)
+                    seen = getattr(cache, "logo_none", None)
+                    if isinstance(seen, set):
+                        seen.clear()
         finally:
             with _TEAM_LOCK:
                 _TEAM_REFRESH.discard(path)
@@ -1563,6 +1567,8 @@ def _log_logo_none(cache, side, card_id):
         key = (card_id, side)
         if key in cache.logo_none:
             return
+        if len(cache.logo_none) >= LOGO_NONE_MAX:
+            cache.logo_none.clear()
         cache.logo_none.add(key)
     line = "logo none: " + side
     log = getattr(cache, "log", None) if cache is not None else None
@@ -1619,7 +1625,7 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None, opener
     be on the cache allowlist. A cached logo is used at once. Otherwise the side shows the
     team's abbreviation badge, keeps the logo id, and the download runs in the background;
     on_ready() is called when a file lands so the display repaints with the logo. A logo that
-    never arrives stays the abbreviation badge. No URL and no badge is the name alone.
+    never arrives stays the abbreviation badge. A side the teams list cannot name keeps that badge.
     """
     card = validate_card(card)
     if card["type"] != "sports":

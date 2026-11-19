@@ -9,8 +9,8 @@ import unittest
 from chrome_harness import find_chrome, quiet_css, run_chrome
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CSS = open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8").read()
-ART = os.environ.get("GS_FRAME_DIR") or tempfile.mkdtemp(prefix="gs1346-bots-")
+with open(os.path.join(ROOT, "admin", "web", "admin.css"), encoding="utf-8") as _css:
+    CSS = _css.read()
 
 PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><link rel=icon href="data:,">
@@ -64,7 +64,7 @@ def _render(width, height, shot):
     chrome = find_chrome()
     if not chrome:
         raise unittest.SkipTest("google-chrome is not installed")
-    os.makedirs(ART, exist_ok=True)
+    os.makedirs(os.path.dirname(shot), exist_ok=True)
     tmp = tempfile.mkdtemp(prefix="gs1346-bots-")
     try:
         html = os.path.join(tmp, "bots.html")
@@ -84,15 +84,27 @@ def _render(width, height, shot):
 
 
 class BotsUpdateCell(unittest.TestCase):
+    def setUp(self):
+        env = os.environ.get("GS_FRAME_DIR")
+        if env:
+            os.makedirs(env, exist_ok=True)
+            self.art = env
+        else:
+            self._tmp = tempfile.TemporaryDirectory(prefix="gs1346-bots-")
+            self.addCleanup(self._tmp.cleanup)
+            self.art = self._tmp.name
+
     def test_update_stays_in_the_bot_cell_and_768_does_not_overflow(self):
         frames = {1280: (900, "bots-1280.png"), 1190: (900, None), 1024: (900, None),
                   768: (900, "bots-768.png"), 390: (844, "bots-390.png")}
         measured = {}
+        spare = tempfile.TemporaryDirectory(prefix="gs1346-shot-")
+        self.addCleanup(spare.cleanup)
         for width, (height, name) in frames.items():
-            shot = os.path.join(ART, name) if name else os.path.join(tempfile.mkdtemp(prefix="gs1346-shot-"), "x.png")
+            shot = os.path.join(self.art, name) if name else os.path.join(spare.name, "x-%d.png" % width)
             measured[width] = _render(width, height, shot)
             if name:
-                self.assertTrue(os.path.isfile(os.path.join(ART, name)), name)
+                self.assertTrue(os.path.isfile(os.path.join(self.art, name)), name)
         wide = measured[1280]
         mid = measured[768]
         phone = measured[390]
@@ -124,6 +136,10 @@ class BotsUpdateCell(unittest.TestCase):
         flat = re.sub(r"\s+", "", CSS)
         self.assertIn(
             "[bot]minmax(0,1fr)[wake]minmax(0,140px)[upd]minmax(0,112px)[act]minmax(0,108px)",
+            flat)
+        self.assertIn("#blist.botrow:not(.hasmsg).l2{height:auto}", flat)
+        self.assertIn(
+            "#blist.botrow:not(.hasmsg).l2.help{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}",
             flat)
 
 

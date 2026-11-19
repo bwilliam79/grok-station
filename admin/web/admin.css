@@ -1070,6 +1070,8 @@ a.iback:focus-visible{outline:2px solid var(--gs-teal);outline-offset:2px;color:
   #blist .botrow{grid-template-columns:[bot] minmax(0,1fr) [wake] minmax(0,140px) [upd] minmax(0,112px) [act] minmax(0,108px);column-gap:12px}
   .app,.main,.body,#pg,#blist{max-width:100%}
   #blist .botrow .lbl .nm,#blist .botrow .ww .phrase{min-width:0}
+  #blist .botrow:not(.hasmsg) .l2{height:auto}
+  #blist .botrow:not(.hasmsg) .l2 .help{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 }
 @media (max-width:767px){
   #blist .botrow{display:grid;grid-template-columns:44px minmax(0,1fr) auto;grid-template-areas:"av nm nm" "av l2 l2" "ww ww us" "ru ru ru" "cf cf cf";column-gap:12px;row-gap:4px;height:auto;align-items:start}

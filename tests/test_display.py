@@ -76,7 +76,7 @@ class ClockTests(unittest.TestCase):
                 self.assertLessEqual(abs(cx - gap_cx), 2, f"{kind} {hhmm} colon x {cx:.1f} vs gap {gap_cx:.1f}")
                 self.assertLessEqual(abs(cy - digit_cy), 2, f"{kind} {hhmm} colon y {cy:.1f} vs digits {digit_cy:.1f}")
 
-    def test_date_centered_on_digits(self):
+    def test_date_lines_up_with_the_digits(self):
         L = gs.Layout(2560, 1706)
         surf = pygame.Surface((2560, 1706))
         wx = gs.Weather()
@@ -87,13 +87,13 @@ class ClockTests(unittest.TestCase):
             gs.draw_idle(surf, L, now, wx, colon_on=True)
             digits = gs.LAST_DIGITS_RECT
             self.assertIsNotNone(digits)
-            # date sits just under the clock, on the left; weather (if any) is on the right
+            # The date's left edge is the clock digits' left edge. Weather, if any, stays on the right.
             window = pygame.Rect(0, digits.bottom + 2, 1500, L(180))
             box = ink_box(surf, window, gs.BG)
+            digit_ink = ink_box(surf, digits, gs.BG)
             self.assertIsNotNone(box, f"{hour}:{minute:02d} date ink missing")
-            cx, _cy = box_center(box)
-            dcx = digits.x + digits.w / 2.0
-            self.assertLessEqual(abs(cx - dcx), 2, f"{hour}:{minute:02d} date x {cx:.1f} vs digits {dcx:.1f}")
+            self.assertIsNotNone(digit_ink, f"{hour}:{minute:02d} digit ink missing")
+            self.assertLessEqual(abs(box[0] - digit_ink[0]), 1, f"{hour}:{minute:02d} date x {box[0]} vs digits {digit_ink[0]}")
 
 
 class RingTests(unittest.TestCase):
