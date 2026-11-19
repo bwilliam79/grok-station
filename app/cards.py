@@ -1201,6 +1201,331 @@ def logo_id_of(url):
     return hashlib.sha256(canonical_logo_url(url).encode()).hexdigest()
 
 
+# ESPN's public teams list. College logos are named by numeric id, which bots do not have.
+# The list is JSON, not an image, so it is not fetched through the logo CDN allowlist.
+# The host is fixed. The same pin, size, and no-redirect rules as a logo fetch apply.
+ESPN_TEAMS_HOST = "site.api.espn.com"
+TEAM_LIST_MAX = 3 * 1024 * 1024  # a college football list is about 1.8 MB
+TEAM_LIST_AGE = 24 * 3600  # refresh at most daily; an older file is still used offline
+_LIST_PART = re.compile(r"^[a-z0-9][a-z0-9.-]{0,40}$")
+# Card league text, already normalized, to (sport, league, cdn folder, college).
+# College folders are ncaa. A league that is not in this table is not guessed.
+_TEAM_LISTS = {
+    "ncaaf": ("football", "college-football", "ncaa", True),
+    "college football": ("football", "college-football", "ncaa", True),
+    "fbs": ("football", "college-football", "ncaa", True),
+    "ncaa football": ("football", "college-football", "ncaa", True),
+    "ncaab": ("basketball", "mens-college-basketball", "ncaa", True),
+    "mens college basketball": ("basketball", "mens-college-basketball", "ncaa", True),
+    "men's college basketball": ("basketball", "mens-college-basketball", "ncaa", True),
+    "ncaa basketball": ("basketball", "mens-college-basketball", "ncaa", True),
+    "college basketball": ("basketball", "mens-college-basketball", "ncaa", True),
+    "ncaaw": ("basketball", "womens-college-basketball", "ncaa", True),
+    "womens college basketball": ("basketball", "womens-college-basketball", "ncaa", True),
+    "women's college basketball": ("basketball", "womens-college-basketball", "ncaa", True),
+    "nfl": ("football", "nfl", "nfl", False),
+    "nba": ("basketball", "nba", "nba", False),
+    "wnba": ("basketball", "wnba", "wnba", False),
+    "mlb": ("baseball", "mlb", "mlb", False),
+    "nhl": ("hockey", "nhl", "nhl", False),
+}
+_TEAM_FIELDS = ("displayName", "shortDisplayName", "location", "name", "abbreviation", "nickname")
+
+
+def team_key(value):
+    """Case-folded team text. Spaces collapse. Nothing is deleted or guessed."""
+    if not isinstance(value, str):
+        return ""
+    text = unicodedata.normalize("NFKC", value).casefold()
+    text = text.replace("\u2019", "'").replace("\u2018", "'")
+    return " ".join(text.split())
+
+
+def league_list(label):
+    """(sport, league, cdn folder, college) for a card league, or None."""
+    return _TEAM_LISTS.get(team_key(label))
+
+
+def teams_list_url(sport, league):
+    """The one public teams URL for a sport and league. None when the parts are not plain tokens."""
+    if not _LIST_PART.fullmatch(sport or "") or not _LIST_PART.fullmatch(league or ""):
+        return None
+    return "https://%s/apis/site/v2/sports/%s/%s/teams?limit=1000" % (ESPN_TEAMS_HOST, sport, league)
+
+
+def _team_rows(doc):
+    """Team objects from an ESPN teams payload. Anything else is an empty list."""
+    sports = doc.get("sports") if isinstance(doc, dict) else None
+    if not isinstance(sports, list):
+        return []
+    rows = []
+    for sport in sports:
+        leagues = sport.get("leagues") if isinstance(sport, dict) else None
+        if not isinstance(leagues, list):
+            continue
+        for league in leagues:
+            teams = league.get("teams") if isinstance(league, dict) else None
+            if not isinstance(teams, list):
+                continue
+            for ent in teams:
+                team = ent.get("team") if isinstance(ent, dict) else None
+                if isinstance(team, dict):
+                    rows.append(team)
+    return rows
+
+
+def _href_logo(team):
+    """The first logo href that is an ESPN team-logo file, or ""."""
+    logos = team.get("logos")
+    if not isinstance(logos, list):
+        return ""
+    for logo in logos:
+        href = logo.get("href") if isinstance(logo, dict) else None
+        if not espn_teamlogo_url(href):
+            continue
+        try:
+            return canonical_espn_logo_url(href)
+        except CardError:
+            continue
+    return ""
+
+
+def _built_logo(team, folder, college):
+    """A team-logo URL built from the numeric id (college) or the abbreviation (pro)."""
+    if college:
+        tid = str(team.get("id") or "")
+        if tid.isdigit():
+            return "https://%s/i/teamlogos/ncaa/500/%s.png" % (ESPN_LOGO_HOST, tid)
+        return ""
+    abbr = str(team.get("abbreviation") or "")
+    if not abbr.isascii() or not abbr.isalnum() or not 1 <= len(abbr) <= 16:
+        return ""
+    return "https://%s/i/teamlogos/%s/500/%s.png" % (ESPN_LOGO_HOST, folder, abbr.lower())
+
+
+def build_team_index(doc, folder, college):
+    """Exact keys to a logo URL. A key that belongs to two teams is left out.
+
+    Keys are displayName, shortDisplayName, location, name, abbreviation, and nickname
+    when the list has one. nickname is the alias field the teams list actually carries.
+    """
+    owners = {}
+    for team in _team_rows(doc):
+        url = _href_logo(team) or _built_logo(team, folder, college)
+        if not url:
+            continue
+        for field in _TEAM_FIELDS:
+            key = team_key(team.get(field))
+            if not key:
+                continue
+            prev = owners.get(key, url)
+            owners[key] = url if prev == url else None
+    return {key: url for key, url in owners.items() if url}
+
+
+def match_team_logo(team, index):
+    """The logo URL for this side, or None.
+
+    The name and the abbreviation are each an exact key. When both match and they
+    name different logos, neither is used.
+    """
+    if not isinstance(team, dict) or not isinstance(index, dict):
+        return None
+    name = index.get(team_key(team.get("name")))
+    abbr = index.get(team_key(team.get("abbr")))
+    if name and abbr and name != abbr:
+        return None
+    return name or abbr or None
+
+
+def _teams_path(root, sport, league):
+    if not isinstance(root, str) or not root:
+        return None
+    if not _LIST_PART.fullmatch(sport) or not _LIST_PART.fullmatch(league):
+        return None
+    name = "teams-%s-%s.json" % (sport, league)
+    path = os.path.abspath(os.path.join(root, name))
+    if os.path.dirname(path) != os.path.abspath(root):
+        return None
+    return path
+
+
+def _read_teams(path):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        if os.path.getsize(path) > TEAM_LIST_MAX:
+            return None
+        with open(path, "rb") as fh:
+            data = fh.read(TEAM_LIST_MAX + 1)
+    except OSError:
+        return None
+    if len(data) > TEAM_LIST_MAX:
+        return None
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _teams_fresh(path, now):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    if st.st_size <= 0 or st.st_size > TEAM_LIST_MAX:
+        return False
+    return (now - st.st_mtime) < TEAM_LIST_AGE
+
+
+def _write_teams(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".teams-", dir=os.path.dirname(path))
+    try:
+        os.write(fd, data)
+        os.fchmod(fd, 0o644)
+        os.close(fd)
+        fd = -1
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def fetch_teams_bytes(url, opener=None):
+    """The teams list body, or None. opener(url) is the test hook and does not use the network.
+
+    A real fetch is HTTPS to site.api.espn.com only, pinned, with no redirect, and capped.
+    """
+    if opener is not None:
+        try:
+            opened = opener(url)
+        except Exception:
+            return None
+        if isinstance(opened, (bytes, bytearray)) and len(opened) <= TEAM_LIST_MAX:
+            return bytes(opened)
+        return None
+    parts = _split_url(url)
+    if parts is None or (parts.hostname or "").lower().rstrip(".") != ESPN_TEAMS_HOST:
+        return None
+    if parts.query is None:
+        return None
+    pin = pin_ip(parts.hostname, parts.port or 443)
+    if pin is None:
+        return None
+    ctx = ssl.create_default_context()
+    conn = PinnedHTTPSConnection(parts.hostname, pin, port=parts.port or 443, timeout=5, context=ctx)
+    path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    try:
+        conn.request("GET", path, headers={"User-Agent": "grok-station", "Accept": "application/json"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return None
+        ctype = (resp.getheader("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in ("application/json", "text/json", "text/plain"):
+            return None
+        cl = resp.getheader("Content-Length")
+        if cl is not None:
+            try:
+                n = int(cl)
+            except ValueError:
+                return None
+            if n > TEAM_LIST_MAX:
+                return None
+        data = resp.read(TEAM_LIST_MAX + 1)
+    except Exception:
+        return None
+    finally:
+        conn.close()
+    if len(data) > TEAM_LIST_MAX:
+        return None
+    return data
+
+
+def load_team_index(cache, sport, league, folder, college, opener=None, now=None):
+    """The exact-key index for one league, from the logo cache dir.
+
+    A file younger than a day is used as it is. An older file is refreshed, and
+    kept when the refresh fails, so the station still resolves logos offline.
+    """
+    root = getattr(cache, "root", None) if cache is not None else None
+    path = _teams_path(root, sport, league)
+    if path is None:
+        return {}
+    clock = time.time() if now is None else now
+    hook = opener if opener is not None else getattr(cache, "team_opener", None)
+    if _teams_fresh(path, clock):
+        doc = _read_teams(path)
+        return build_team_index(doc, folder, college) if doc else {}
+    url = teams_list_url(sport, league)
+    data = fetch_teams_bytes(url, hook) if url else None
+    if data:
+        try:
+            doc = json.loads(data.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            doc = None
+        if isinstance(doc, dict) and _team_rows(doc):
+            try:
+                _write_teams(path, data)
+            except OSError:
+                pass
+            return build_team_index(doc, folder, college)
+    doc = _read_teams(path)
+    return build_team_index(doc, folder, college) if doc else {}
+
+
+def _log_logo_none(cache, side):
+    """One line when a side has no logo. The side name only, never a URL."""
+    if side not in ("home", "away"):
+        return
+    line = "logo none: " + side
+    log = getattr(cache, "log", None) if cache is not None else None
+    try:
+        if log is not None:
+            log(line)
+        else:
+            print(line, flush=True)
+    except Exception:
+        pass
+
+
+def fill_missing_logos(card, cache, opener=None, now=None):
+    """Give a side with no logo_url the logo the teams list names, or an abbreviation badge.
+
+    An explicit logo_url is left as the bot sent it. A name and an abbreviation that
+    point at different teams are not given a logo.
+    """
+    if not isinstance(card, dict):
+        return card
+    missing = [side for side in ("home", "away")
+               if isinstance(card.get(side), dict) and not card[side].get("logo_url")]
+    if not missing:
+        return card
+    spec = league_list(card.get("league"))
+    index = {}
+    if spec is not None:
+        sport, league, folder, college = spec
+        index = load_team_index(cache, sport, league, folder, college, opener=opener, now=now)
+    for side in ("home", "away"):
+        team = card.get(side) if isinstance(card, dict) else None
+        if not isinstance(team, dict) or team.get("logo_url"):
+            continue
+        url = match_team_logo(team, index) if index else None
+        if url:
+            team["logo_url"] = url
+            continue
+        team["logo_badge"] = True
+        _log_logo_none(cache, side)
+    return card
+
+
 def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
     """Settle ESPN team logos for a sports card without holding the card back. Other cards are only re-validated.
 
@@ -1213,6 +1538,7 @@ def prepare_display_logos(card, cache, wait_s=LOGO_WAIT_S, on_ready=None):
     card = validate_card(card)
     if card["type"] != "sports":
         return card
+    fill_missing_logos(card, cache)
     jobs = []
     for side in ("home", "away"):
         team = card[side]

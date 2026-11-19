@@ -307,10 +307,10 @@ def _attach_logo(card):
 
 
 class LogoSize(unittest.TestCase):
-    """Team marks use SPORTS_LOGO_PX: 56 px at 1280x800, scaled at 2560x1706, clear of the score and the city."""
+    """Team marks use SPORTS_LOGO_PX: 112 px at 1280 wide, scaled at 2560 wide, clear of the score and the city."""
 
     def test_logos_match_the_named_size_and_clear_the_score_and_city(self):
-        expect = {(1280, 800): 56, (2560, 1706): 112}
+        expect = {(1280, 800): 112, (2560, 1706): 224}
         for size, px in expect.items():
             self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), px, size)
         for size in expect:

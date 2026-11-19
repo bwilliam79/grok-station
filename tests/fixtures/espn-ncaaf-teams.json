@@ -1,0 +1,54 @@
+{
+  "sports": [
+    {
+      "leagues": [
+        {
+          "teams": [
+            {
+              "team": {
+                "id": "2110",
+                "abbreviation": "CARK",
+                "displayName": "Central Arkansas Bears",
+                "shortDisplayName": "C Arkansas",
+                "location": "Central Arkansas",
+                "name": "Bears",
+                "nickname": "C Arkansas",
+                "logos": [
+                  {"href": "https://a.espncdn.com/i/teamlogos/ncaa/500/2110.png", "rel": ["full", "default"]}
+                ]
+              }
+            },
+            {
+              "team": {
+                "id": "8",
+                "abbreviation": "ARK",
+                "displayName": "Arkansas Razorbacks",
+                "shortDisplayName": "Arkansas",
+                "location": "Arkansas",
+                "name": "Razorbacks",
+                "nickname": "Arkansas",
+                "logos": [
+                  {"href": "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png", "rel": ["full", "default"]}
+                ]
+              }
+            },
+            {
+              "team": {
+                "id": "239",
+                "abbreviation": "BAY",
+                "displayName": "Baylor Bears",
+                "shortDisplayName": "Baylor",
+                "location": "Baylor",
+                "name": "Bears",
+                "nickname": "Baylor",
+                "logos": [
+                  {"href": "https://a.espncdn.com/i/teamlogos/ncaa/500/239.png", "rel": ["full", "default"]}
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

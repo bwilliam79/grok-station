@@ -403,6 +403,14 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=None):
         if doc.get("interim") is not True:
             raise Reject(400, "schema", bot)
         keys = keys - {"interim"}
+    # voiceId is optional. A missing or unusable value is not stored here, so a reply
+    # that omits it cannot clear a voice the station already saved.
+    voice_id = None
+    if "voiceId" in keys:
+        keys = keys - {"voiceId"}
+        raw = doc.get("voiceId")
+        if isinstance(raw, str) and raw.strip():
+            voice_id = raw.strip()
     if keys == _REPLY_KEYS:
         if doc.get("kind") != "reply":
             raise Reject(400, "schema", bot)
@@ -446,6 +454,8 @@ def _accept_answer(doc, bot, pending_for, seen, hosts, names, now_ms, pii=None):
            "nonce": nonce if isinstance(nonce, str) else ""}
     if interim:
         out["interim"] = True
+    if voice_id:
+        out["voiceId"] = voice_id
     return out
 
 

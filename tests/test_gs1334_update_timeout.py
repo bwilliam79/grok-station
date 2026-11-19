@@ -188,11 +188,11 @@ console.log(JSON.stringify({fail: botRowL2HTML("Replies from: X", "", "Update fa
         self.assertIn(".bmsg.tx{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}", flat)
         self.assertIn(".bmsg.is-fail.tx{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}", flat)
         self.assertIn(".botrow.l2:has(>.bmsg.is-fail){height:auto}", flat)
-        self.assertIn("#blist.botrow:has(>.rowupd){grid-template-columns:[bot]minmax(216px,1fr)[ru]auto[wake]200px[upd]144px[act]120px}", flat)
-        self.assertIn("#blist.botrow>.rowupd{grid-column:ru;justify-self:start}", flat)
+        self.assertNotIn("#blist.botrow:has(>.rowupd)", flat)
+        self.assertIn("#blist.botrow.rowupd{margin-top:6px}", flat)
         phone = flat.split("@media(max-width:767px){#blist.botrow{display:grid;grid-template-columns:44pxminmax(0,1fr)auto;grid-template-areas:\"avnmnm\"\"avl2l2\"", 1)[1]
-        self.assertIn("#blist.botrow>.rowupd{grid-area:ru;margin-bottom:4px}", phone)
-        self.assertIn("#blist.botrow>.rowupd.btn{min-height:44px;height:44px}", phone)
+        self.assertIn("#blist.botrow.rowupd{grid-area:ru;margin-bottom:4px}", phone)
+        self.assertIn("#blist.botrow.rowupd.btn{min-height:44px;height:44px}", phone)
 
 
 if __name__ == "__main__":

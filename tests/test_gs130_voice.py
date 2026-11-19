@@ -557,8 +557,9 @@ class SealCommands(unittest.TestCase):
         self.assertEqual(self._open(seal("robot9"), signer, station)["voice"], "robot9")  # the station decides
         args = mod._parser().parse_args(["avatar", "--persona", "max", "--voice", "ara"])
         self.assertEqual(args.voice, "ara")
-        with self.assertRaises(SystemExit):
-            mod._parser().parse_args(["reply", "--persona", "max", "--request-id", "vs_" + "a" * 22, "--voice", "ara"])
+        reply_args = mod._parser().parse_args(
+            ["reply", "--persona", "max", "--request-id", "vs_" + "a" * 22, "--voice", "ara"])
+        self.assertEqual(reply_args.voice, "ara")
 
     def test_cloud_seal_avatar_voice_flag(self):
         mod = self.tool

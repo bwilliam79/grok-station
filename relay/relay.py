@@ -2321,6 +2321,20 @@ def _bot_voice(slug):
     return voice or VOICE
 
 
+def answer_voice(roster, bot):
+    """The voice a bot's answer is spoken in, after this turn's reply has been saved.
+
+    The session roster is a snapshot from when the session opened. A voiceId on the
+    reply is already stored by then, so this reads it again and updates the snapshot.
+    A reply that did not carry voiceId leaves the previously synced voice in place.
+    """
+    voice = _bot_voice(bot)
+    ent = roster.get(bot) if isinstance(roster, dict) else None
+    if isinstance(ent, dict):
+        roster[bot] = dict(ent, voice=voice)
+    return voice
+
+
 def _nonce_ok(expected, got):
     if not isinstance(expected, str) or not isinstance(got, str) or len(expected) != len(got) or not expected:
         return False
@@ -2765,6 +2779,7 @@ async def session(req):
                     text, verdict = await ask_teammate(http, bot, question, waiting, checking)
                 finally:
                     st.update(hold=False, turn_t0=time.monotonic(), held=st.get("held", 0) + time.monotonic() - h0)
+                voice = answer_voice(roster, bot)
                 await pi.send_json({"type": "handoff_done", "slug": bot})
                 if isinstance(text, dict):  # T1 proposal: fixed read-back, not the model's words
                     why = t1.gate(st["station"]) or (None if MULTI_TURN else "off")
@@ -7297,6 +7312,13 @@ async def voice_reply(req):
                 _BLOCKED.pop(next(iter(_BLOCKED)))
         return _reply_error(rej.status, reason)
     rid, bot = reply["request_id"], reply["bot"]
+    # A reply may name the voice this bot speaks with. A reply that omits voiceId
+    # does not call this, so the saved voice stays. The id is not logged.
+    if "voiceId" in reply:
+        try:
+            seed_reported_voice(bot, reply.get("voiceId"))
+        except Exception:
+            pass
     if reply.get("kind") == "setup_relay_ack":
         # Display-only. The pending stays until the target pairs or the TTL ends, so the pairing
         # POST can still bind to this request_id. A second ack is a duplicate via _reply_seen.

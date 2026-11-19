@@ -260,10 +260,13 @@ def parse_names(text):
     return names
 
 
-def canonical_answer(request_id, text, interim=False):
+def canonical_answer(request_id, text, interim=False, voice=None):
     body = {"action_class": "answer", "request_id": request_id, "text": text, "tier": 0}
     if interim:
         body["interim"] = True  # 0.13.0: an acknowledgement only; the answer follows in a second reply
+    vid = _voice_id(voice)
+    if vid:
+        body["voiceId"] = vid
     return json.dumps(body, separators=(",", ":"), sort_keys=True).encode()
 
 
@@ -279,7 +282,7 @@ def _wipe(buf):
             buf[i] = 0
 
 
-def seal_outer(slug, request_id, kind, payload, seed, station_pub, interim=False):
+def seal_outer(slug, request_id, kind, payload, seed, station_pub, interim=False, voice=None):
     load_nacl()
     from nacl.public import PublicKey, SealedBox
     from nacl.signing import SigningKey
@@ -289,7 +292,8 @@ def seal_outer(slug, request_id, kind, payload, seed, station_pub, interim=False
     sk = None
     try:
         sk = SigningKey(bytes(material))
-        msg = canonical_list(request_id, payload) if kind == "bot_list" else canonical_answer(request_id, payload, interim)
+        msg = canonical_list(request_id, payload) if kind == "bot_list" else canonical_answer(
+            request_id, payload, interim, None if kind == "bot_list" else voice)
         signed = sk.sign(msg)
         sealed = SealedBox(PublicKey(station_pub)).encrypt(signed)
         outer = {"v": 1, "bot": slug, "sealed": base64.b64encode(sealed).decode("ascii")}
@@ -518,7 +522,7 @@ def refusal_line(reason):
 
 
 # sha256 of app/cards.py. tools/check-version.py refuses a tree where these bytes differ.
-CARDS_SHA256 = "2ad758dca51f6d039688d271227693c1dead81a31ef14bd3fde45bddf6d4ff94"
+CARDS_SHA256 = "551765f266779f40b6c2974bbb3bd9e87d9ae3de255c10324aac56f815bec4c9"
 
 
 def _repo_cards_path(script_dir):
@@ -864,7 +868,7 @@ def _prepare_reply(slug, kind, text):
     return text
 
 
-def cmd_reply(slug, request_id, kind, interim=False):
+def cmd_reply(slug, request_id, kind, interim=False, voice=None):
     if not slug_ok(slug) or not isinstance(request_id, str) or REQUEST_ID.fullmatch(request_id) is None:
         raise Refused()
     if kind not in ("answer", "bot_list") or (interim and kind != "answer"):
@@ -887,7 +891,7 @@ def cmd_reply(slug, request_id, kind, interim=False):
     try:
         endpoint, pin, station_pub = read_config(slug)
         try:
-            body = seal_outer(slug, request_id, kind, payload, seed, station_pub, interim)
+            body = seal_outer(slug, request_id, kind, payload, seed, station_pub, interim, voice)
         except Refused:
             raise
         except Exception:
@@ -1445,6 +1449,7 @@ def _parser():
     reply.add_argument("--request-id", required=True, dest="request_id")
     reply.add_argument("--kind", default="answer", choices=("answer", "bot_list"))
     reply.add_argument("--interim", action="store_true")
+    reply.add_argument("--voice", default=None)
     avatar = sub.add_parser("avatar")
     avatar.add_argument("--persona", required=True)
     avatar.add_argument("--voice", default=None)
@@ -1488,7 +1493,7 @@ def main(argv=None):
         refuse_musl()
         args = _parser().parse_args(sys.argv[1:] if argv is None else argv)
         if args.cmd == "reply":
-            return cmd_reply(args.persona, args.request_id, args.kind, args.interim)
+            return cmd_reply(args.persona, args.request_id, args.kind, args.interim, args.voice)
         if args.cmd == "avatar":
             return cmd_avatar(args.persona, args.voice)
         if args.cmd == "show":

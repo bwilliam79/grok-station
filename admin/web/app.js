@@ -2356,7 +2356,6 @@ async function pageHome(el) {
     $("#hero", el).innerHTML = `<div class="hero"><div class="ring ${state[1] === "warn" ? "amber" : ""}"></div><div><div class="h-dialog">${state[0]}</div>
       <div class="help">${h.network && h.network.connected ? "Online" : "Offline"} · last heard ${h.last_heard ? ago(h.last_heard.at) + " (" + esc(PERSONA(h.last_heard.who)) + ")" : "not yet"}</div>
       <div class="help" id="grokline">${esc(h.grok_line || "Grok: Checking")}</div></div></div>
-      <div style="margin-top:12px">${(h.words || []).map(x => `<span class="chip">${esc(WORD(x))}</span>`).join("")}</div>
       <div class="field"><label>Microphone</label>${meter(w.level_dbfs)}</div>
       <div class="inline" style="margin-top:12px"><button class="btn sm" id="ts">Test speaker</button><button class="btn sm" id="rf">Refresh</button></div>
       <p class="note">As of ${new Date(h.as_of * 1000).toLocaleTimeString()}</p>`;
@@ -4722,8 +4721,9 @@ function paintBots(el, bots) {
     const upd = updateRowBtnHTML(b);
     return `<div class="botrow${note ? " hasmsg" : ""}${sentRow ? " sentrow" : ""}" data-slug="${esc(b.slug)}">${avatar(b.slug, b.name, false, {cls: ring.cls, word: tip})}
       <div><div class="lbl">${star}<span class="nm">${esc(b.name)}</span>${pill}</div>
-        ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug, noteFail)}</div>
-      ${upd ? `<div class="rowupd">${upd}</div>` : ""}${wakeControlHTML(b, word, st, true, el._botTrain, trow && trow.message)}
+        ${su ? `<div class="l2">${su.line}</div>` : botRowL2HTML(repliesFrom(b), (b && b.reply_host) || "", note, heard.announce, trainOff ? trainOfflineSub() : "", b.slug, noteFail)}
+        ${upd ? `<div class="rowupd">${upd}</div>` : ""}</div>
+      ${wakeControlHTML(b, word, st, true, el._botTrain, trow && trow.message)}
       <div class="updcol">${su ? su.action : `<span class="updslot" data-updslot="${esc(b.slug)}"></span>`}</div>
       <div class="cfg"><span class="chev" aria-hidden="true">${ICO_CHEV}</span><button class="btn sm" type="button" data-bot="${esc(b.slug)}">Configure</button></div></div>${su ? su.panel : ""}`;
   }).join("") + pending.map(row => {
@@ -5666,7 +5666,7 @@ function bindVoiceTip() {
     }
   };
 }
-const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.45.
+const BOT_ROUTINE_HOME = String.raw`Grok Station instructions, release 0.13.46.
 
 Answer as the bot named in the request's persona field, in that bot's voice.
 
@@ -5690,6 +5690,7 @@ To answer, look things up the way you would in chat: use your own tools, connect
 
 printf '%s' "$ANSWER" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID"
 
+Read voiceId from your own Grok Bot settings.json (your own agent's settings file, never another bot's). If it is present, add --voice <voiceId> to that reply command. If it is not, send the command without --voice. A reply without voiceId keeps the voice already saved.
 Set REQUEST_ID from the webhook's request_id and ANSWER to the speech you just wrote. For a list, names one per line, the same command with --kind bot_list:
 
 printf '%s' "$NAMES" | "$HOME/.local/share/grok-station/bin/gs-seal-reply" reply --persona <slug> --request-id "$REQUEST_ID" --kind bot_list
@@ -5706,7 +5707,7 @@ sports: {"v":1,"type":"sports","league":(24),"home":TEAM,"away":TEAM,"home_score
   Every key is required except starts_at. A pregame card uses status scheduled. starts_at is optional and only allowed then: one ISO-8601 time with a numeric offset or Z, such as 2026-11-15T19:15:00-06:00. The tile shows that time in local time, or Time TBD when it is omitted. A malformed starts_at is refused as sports.starts_at invalid. Use schedule:[] when there are no other games. home_score and away_score may be null only when status is scheduled. Live and final need integer scores and a period. starts_at on any other status is refused.
   TEAM: {"name":(24),"abbr":"2-4 capitals or digits","logo_url": optional}
   Pro leagues use https://a.espncdn.com/i/teamlogos/<league>/500/<abbr>.png with the abbreviation.
-  College teams use ESPN's numeric team id under an ncaa path. Arkansas is https://a.espncdn.com/i/teamlogos/ncaa/500/8.png. The id is team.id on the ESPN team page or the site API. Leave logo_url out rather than null. If unsure, omit logo_url rather than guess.
+  College teams use ESPN's numeric team id under an ncaa path. Arkansas is https://a.espncdn.com/i/teamlogos/ncaa/500/8.png. The id is team.id on the ESPN team page or the site API. logo_url is optional. Leave logo_url out rather than null. If it is omitted, the station finds the college logo from the team name or abbreviation. If unsure, omit logo_url rather than guess.
   If the command prints "refused: schema <path> <problem>", fix that field and resend once in the same turn.
 calendar: {"v":1,"type":"calendar","date":"YYYY-MM-DD","events":[0-8 of {"time":(16),"title":(48)}]}
 home: {"v":1,"type":"home","title":(24),"items":[1-6 of {"label":(32),"value":(24),"trend":"up|down" optional}]}

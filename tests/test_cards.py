@@ -1109,7 +1109,7 @@ class DisplayLogos(unittest.TestCase):
         cache = self._cache(opener)
         card = sports()
         card["home"] = team(logo_url="https://a.espncdn.com/i/teamlogos/nfl/500/kc.png")
-        card["away"] = team("Ridgeview", "RV")  # no url: name alone
+        card["away"] = team("Ridgeview", "RV")  # no url: abbreviation badge when the list has no match
         out = cards.prepare_display_logos(card, cache, wait_s=1)
         self.assertEqual(calls, ["https://a.espncdn.com/i/teamlogos/nfl/500/kc.png"])
         self.assertRegex(out["home"].get("logo_id") or "", r"^[a-f0-9]{64}$")
@@ -1117,7 +1117,7 @@ class DisplayLogos(unittest.TestCase):
         self.assertNotIn("logo_badge", out["home"])
         self.assertTrue(os.path.isfile(cache.path_for(out["home"]["logo_id"])))
         self.assertNotIn("logo_id", out["away"])
-        self.assertNotIn("logo_badge", out["away"])
+        self.assertTrue(out["away"].get("logo_badge"))
 
     def test_a_slow_logo_becomes_a_badge_and_a_foreign_url_is_not_fetched(self):
         calls = []
