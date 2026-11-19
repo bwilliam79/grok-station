@@ -4,14 +4,13 @@ Line boxes are the CSS sizes: name 38 px, score 84 px, at 1280x720, doubled at 2
 Frames go to GS_FRAME_DIR when that is set, otherwise a temp directory.
 """
 import datetime
-import hashlib
 import os
+import shutil
 import struct
 import sys
 import tempfile
 import time
 import unittest
-import urllib.request
 import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,11 +21,11 @@ pygame = tiles.pygame
 
 SIZES = ((1280, 720), (2560, 1440))
 NOW = datetime.datetime(2026, 11, 19, 12, 0, tzinfo=datetime.timezone.utc)
-LOGOS = {
-    "arkansas": "https://a.espncdn.com/i/teamlogos/ncaa/500/8.png",
-    "uca": "https://a.espncdn.com/i/teamlogos/ncaa/500/2110.png",
-    "kc": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png",
-    "den": "https://a.espncdn.com/i/teamlogos/nfl/500/den.png",
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "gs1347")
+MARKS = {
+    "wide": ("a" * 64, "wide.png"),
+    "tall": ("b" * 64, "tall.png"),
+    "square": ("c" * 64, "square.png"),
 }
 
 
@@ -286,13 +285,16 @@ class Stack(unittest.TestCase):
             del painted
 
     def test_a_long_period_and_league_stay_in_the_center_column(self):
-        period = "P" * 16
-        league = "L" * 24
+        period = "W" * 16
+        league = "W" * 24
         for size in SIZES:
             layout = gs.Layout(*size)
             card = _card("Arkansas", "Denver", period=period, league=league, scores=(3, 2))
-            _painted, panel, surf, _layout = _paint(size, card)
             col = _px(layout, 300)
+            track = max(0, layout(gs.SPORTS_TRACK))
+            raw = gs._letterspaced(gs.font("body", layout(gs.SPORTS_LEAGUE_PX)), league, gs.MUTED, track)
+            self.assertGreater(raw.get_width(), col, (size, raw.get_width(), col))
+            _painted, panel, surf, _layout = _paint(size, card)
             cx = panel.left + panel.w // 2
             left, right = cx - col // 2, cx - col // 2 + col
             logo_top, logo_bot = gs.LAST_SPORTS_GUIDE["logo"]
@@ -400,14 +402,14 @@ class Stack(unittest.TestCase):
                 self.assertTrue(_near(max(names, key=lambda item: item[2].centerx)[2].centerx, cx_r))
 
 
-def _download(url, path):
-    req = urllib.request.Request(url, headers={"User-Agent": "grok-station-test"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        data = resp.read()
-    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise AssertionError("not a png")
-    with open(path, "wb") as fh:
-        fh.write(data)
+def _cache_marks(root):
+    """Copy the local wide, tall, and square marks into a logo cache. No network."""
+    ids = {}
+    for key, (lid, name) in MARKS.items():
+        src = os.path.join(FIXTURES, name)
+        shutil.copyfile(src, os.path.join(root, lid))
+        ids[key] = lid
+    return ids
 
 
 def _overlay(surf, guide, panel):
@@ -427,7 +429,7 @@ def _overlay(surf, guide, panel):
 class Frames(unittest.TestCase):
     """Numeric checks plus optional PNG dumps. The dump directory is GS_FRAME_DIR or a temp dir."""
 
-    def test_real_logos_match_the_columns(self):
+    def test_local_marks_match_the_columns(self):
         env = os.environ.get("GS_FRAME_DIR")
         if env:
             os.makedirs(env, exist_ok=True)
@@ -440,19 +442,15 @@ class Frames(unittest.TestCase):
             cleanup = tmp
         root = tempfile.TemporaryDirectory(prefix="gs1347-espn-")
         self.addCleanup(root.cleanup)
-        ids = {}
-        for key, url in LOGOS.items():
-            lid = hashlib.sha256(gs.cards.canonical_logo_url(url).encode()).hexdigest()
-            _download(url, os.path.join(root.name, lid))
-            ids[key] = lid
+        ids = _cache_marks(root.name)
         old = gs._LOGO
-        gs._LOGO = gs.cards.LogoCache(root.name, ["a.espncdn.com"])
+        gs._LOGO = gs.cards.LogoCache(root.name, [])
         try:
             specs = (
-                ("live-ark", (1280, 720), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["arkansas"], ids["uca"], False),
-                ("live-ark", (2560, 1440), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["arkansas"], ids["uca"], False),
-                ("live-kc", (1280, 720), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["kc"], ids["den"], False),
-                ("live-kc", (2560, 1440), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["kc"], ids["den"], False),
+                ("live-ark", (1280, 720), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["wide"], ids["tall"], False),
+                ("live-ark", (2560, 1440), _card("Arkansas", "Central Arkansas", scores=(31, 17)), ids["wide"], ids["tall"], False),
+                ("live-kc", (1280, 720), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["square"], ids["wide"], False),
+                ("live-kc", (2560, 1440), _card("Kansas City", "Denver", scores=(27, 14), league="NFL"), ids["square"], ids["wide"], False),
             )
             for name, size, card, home, away, _overlay_flag in specs:
                 card["home"]["logo_id"] = home
@@ -466,33 +464,33 @@ class Frames(unittest.TestCase):
                 self.assertEqual(cols[2], panel.left + (panel.w * 3) // 4)
             pre = _card("Kansas City", "Denver", status="scheduled", league="NFL")
             pre["starts_at"] = "2026-11-22T19:00:00Z"
-            pre["home"]["logo_id"] = ids["kc"]
-            pre["away"]["logo_id"] = ids["den"]
+            pre["home"]["logo_id"] = ids["square"]
+            pre["away"]["logo_id"] = ids["wide"]
             self._frame(art, "pregame-kc-notoday", (1280, 720), pre, overlay=False)
             self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED \u00b7 SUN")
             self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "1:00 PM")
             today = _card("Arkansas", "Central Arkansas", status="scheduled")
             today["starts_at"] = "2026-11-19T19:15:00-06:00"
-            today["home"]["logo_id"] = ids["arkansas"]
-            today["away"]["logo_id"] = ids["uca"]
+            today["home"]["logo_id"] = ids["wide"]
+            today["away"]["logo_id"] = ids["tall"]
             self._frame(art, "pregame-ark-today", (1280, 720), today, overlay=False)
             self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED")
             self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "7:15 PM")
             tbd = _card("Arkansas", "Denver", status="scheduled")
-            tbd["home"]["logo_id"] = ids["arkansas"]
-            tbd["away"]["logo_id"] = ids["den"]
+            tbd["home"]["logo_id"] = ids["wide"]
+            tbd["away"]["logo_id"] = ids["square"]
             self._frame(art, "pregame-tbd", (1280, 720), tbd, overlay=False)
             self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "Time TBD")
             self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED")
             long = _card("Arkansas", "Central Arkansas", status="scheduled")
             long["starts_at"] = "2026-11-22T19:00:00Z"
-            long["home"]["logo_id"] = ids["arkansas"]
-            long["away"]["logo_id"] = ids["uca"]
+            long["home"]["logo_id"] = ids["tall"]
+            long["away"]["logo_id"] = ids["wide"]
             self._frame(art, "pregame-longname", (1280, 720), long, overlay=False)
             self.assertEqual(gs.LAST_SPORTS_GUIDE["names"][1], "Central Arkansas")
             live = _card("Arkansas", "Central Arkansas", scores=(31, 17))
-            live["home"]["logo_id"] = ids["arkansas"]
-            live["away"]["logo_id"] = ids["uca"]
+            live["home"]["logo_id"] = ids["wide"]
+            live["away"]["logo_id"] = ids["tall"]
             self._frame(art, "overlay-live-ark", (1280, 720), live, overlay=True)
         finally:
             gs._LOGO = old
