@@ -5216,7 +5216,9 @@ def draw_sports(surf, L, card, rect, now=None):
     paint_mark(card["home"], cx_l)
     paint_mark(card["away"], cx_r)
     stat_img = _letterspaced(stat_f, status, status_ink, track)
-    league_img = _letterspaced(league_f, str(card.get("league") or ""), MUTED, track)
+    league_text = str(card.get("league") or "")
+    _line(surf, "body", league_px, league_text, MUTED, L(SPORTS_CENTER_W))
+    league_img = _letterspaced(league_f, league_text, MUTED, track)
     blit_centered(stat_img, cx_c, stat_base, stat_f)
     blit_centered(league_img, cx_c, league_base, league_f)
     if pregame:
