@@ -457,19 +457,29 @@ class ChipsUnit(unittest.TestCase):
 
 class Contrast(unittest.TestCase):
     def test_league_label_is_muted(self):
-        calls = []
-        real = gs._line
+        seen = []
+        real = gs.font
 
-        def line(surf, kind, px, text, color, width):
-            calls.append((text, tuple(color)))
-            return real(surf, kind, px, text, color, width)
+        def wrapped(kind, px, _real=real):
+            face = _real(kind, px)
 
-        gs._line = line
+            class _Face:
+                def render(self, text, antialias, color, *args, **kwargs):
+                    if text == "City league":
+                        seen.append(tuple(color))
+                    return face.render(text, antialias, color, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(face, name)
+
+            return _Face()
+
+        gs.font = wrapped
         try:
             gs.draw_sports(pygame.Surface((2560, 1706)), gs.Layout(2560, 1706), SPORTS, pygame.Rect(128, 800, 2304, 780))
         finally:
-            gs._line = real
-        self.assertIn(("City league", tuple(gs.MUTED)), calls)
+            gs.font = real
+        self.assertIn(tuple(gs.MUTED), seen)
 
 
 class OtherSizes(unittest.TestCase):

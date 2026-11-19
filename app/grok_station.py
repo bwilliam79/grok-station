@@ -3469,7 +3469,6 @@ def _team_has_face(team):
 
 # Stacked score tile. Spec pixels at 1920x1080, so L() is 2/3 at 1280x720 and 4/3 at 2560x1440.
 # The logo box is 120 by 72 at 1280 (240 by 144 at 2560). A square mark is limited by the height.
-SPORTS_LOGO_PX = 108
 SPORTS_LOGO_BOX_W = 180
 SPORTS_LOGO_BOX_H = 108
 SPORTS_NAME_PX = 48    # 32 px at 1280x720, 64 px at 2560x1440
@@ -3487,40 +3486,8 @@ SPORTS_STATUS_GAP = 9  # 6 px between the status line and the league
 SPORTS_TRACK = 3       # letter spacing, 2 px at 1280
 SPORTS_STRIP = 108     # 72 px next-game row
 SPORTS_KICK_PX = 90    # 60 px kickoff
-# Kept so older checks can still name the ratios. The tile draws SPORTS_KICK_PX for both.
-PREGAME_RATIO = 0.75
-PREGAME_TBD_RATIO = 0.62
+SPORTS_DOT_GAP = 12    # 8 px between the live dot and LIVE, 16 px at 2560
 _SPORTS_DAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-
-
-def _sports_column_px(L, face):
-    """Logo box, name, and score at the spec bases. Computed once. Nothing is searched or scaled down."""
-    gap = max(1, L(8))
-    side = max(1, L(SPORTS_LOGO_GAP))
-    box_w = L(SPORTS_LOGO_BOX_W) if face else 0
-    box_h = L(SPORTS_LOGO_BOX_H) if face else 0
-    name_px = max(8, L(SPORTS_NAME_PX))
-    score_px = max(8, L(SPORTS_SCORE_PX))
-    return box_w, box_h, name_px, score_px, gap, side
-
-
-def sports_stack(top, bottom, face_h, name_h, score_h, gap):
-    """Y positions for one team column, centered in [top, bottom].
-
-    face_h 0 means no logo and no reserved gap. Returns (face_y or None, name_y, score_y).
-    """
-    face_h = int(face_h or 0)
-    gap = int(gap)
-    block = int(name_h) + gap + int(score_h)
-    if face_h > 0:
-        block += face_h + gap
-    span = max(0, int(bottom) - int(top))
-    y = int(top) + max(0, (span - block) // 2)
-    face_y = None
-    if face_h > 0:
-        face_y = y
-        y += face_h + gap
-    return face_y, y, y + int(name_h) + gap
 
 
 def _trend(surf, x, y, size, trend):
@@ -4966,8 +4933,9 @@ def _station_zone():
 def _station_clock(now):
     """now as a station-zone datetime.
 
-    A struct_time is the wall clock already on the tile, read in the station zone.
-    An aware datetime is converted into that zone. None is the station's current time.
+    A struct_time is the process clock (the idle clock's wall time). It is read in
+    the process zone, then converted into the station zone. An aware datetime is
+    converted into the station zone. None is the station's current time.
     """
     zone = _station_zone()
     if now is None:
@@ -4980,9 +4948,22 @@ def _station_clock(now):
         except (ValueError, OverflowError, OSError):
             return datetime.datetime.now(zone)
     try:
-        return datetime.datetime(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec, tzinfo=zone)
+        wall = datetime.datetime(now.tm_year, now.tm_mon, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec, tzinfo=_process_zone())
+        return wall.astimezone(zone)
     except (AttributeError, ValueError, OverflowError, OSError):
         return datetime.datetime.now(zone)
+
+
+def _process_zone():
+    """The zone of time.localtime(). TZ is that zone when it names one."""
+    name = os.environ.get("TZ")
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    current = datetime.datetime.now().astimezone().tzinfo
+    return current or datetime.timezone.utc
 
 
 def _kickoff_local(card, now):
@@ -5059,6 +5040,21 @@ def _letterspaced(face, text, color, gap):
     return canvas
 
 
+def _fit_tracked(face, text, color, track, max_w):
+    """Letter-spaced text fitted to max_w. A tail that does not fit becomes an ellipsis."""
+    img = _letterspaced(face, text, color, track)
+    if max_w < 1 or img.get_width() <= max_w:
+        return img
+    shown = text
+    while shown:
+        shown = shown[:-1].rstrip()
+        trial = (shown + "\u2026") if shown else "\u2026"
+        img = _letterspaced(face, trial, color, track)
+        if img.get_width() <= max_w:
+            return img
+    return img
+
+
 def _tabular(face, text, color):
     """Digits share one cell width. Other characters keep their own width."""
     cell = max(face.size(d)[0] for d in "0123456789")
@@ -5077,23 +5073,11 @@ def _tabular(face, text, color):
     return canvas
 
 
-def _pregame_px(score_px, label):
-    """A kickoff time is PREGAME_RATIO of the score. Time TBD is PREGAME_TBD_RATIO."""
-    try:
-        base = int(score_px)
-    except (TypeError, ValueError):
-        base = 8
-    ratio = PREGAME_TBD_RATIO if label == "Time TBD" else PREGAME_RATIO
-    return max(8, int(round(max(0, base) * ratio)))
-
-
 def _sports_side_label(card):
-    """The right-hand status word.
+    """The overtime token for a final, or empty.
 
-    A live or delayed game keeps its period. A scheduled game leaves the slot empty.
-    A regulation final leaves the slot empty, because the left badge already says FINAL.
-    An overtime final shows OT only when the period says so (ESPN writes Final/OT or 2OT).
-    The word Final itself is not repeated.
+    A regulation final has none. An overtime final keeps the last OT count
+    (ESPN writes Final/OT or 2OT). The word Final itself is not repeated.
     """
     if card.get("status") == "scheduled":
         return ""
@@ -5157,25 +5141,28 @@ def _ink_center(img):
     return box.x + box.w / 2.0, box.y + box.h / 2.0
 
 
-def _live_status(face, text, color, track):
-    """A filled dot, a word space, then the letter-spaced status. No missing-glyph bullet.
+def _live_status(face, text, color, track, gap, max_w):
+    """A filled dot, then the letter-spaced status. No missing-glyph bullet.
 
-    The dot's diameter is about 0.45 of the capital height, and its center sits on
-    the cap middle. The returned surface shares the text's font box, so a baseline
-    blit keeps the words put.
+    The dot's diameter is 0.7 of the capital height, and its center sits on the
+    cap middle. gap is the clear space before the word. The words are fitted so
+    the dot, the gap and the words stay inside max_w.
     """
-    words = _letterspaced(face, text, color, track)
     cap = face.render("H", True, color).get_bounding_rect()
     cap_h = max(1, cap.h)
-    diameter = max(2, int(round(cap_h * 0.45)))
+    diameter = max(2, int(round(cap_h * 0.7)))
     radius = max(1, diameter // 2)
     cap_mid = cap.y + cap.h / 2.0
-    gap = max(1, face.size(" ")[0])
-    width = diameter + gap + words.get_width()
+    words = _fit_tracked(face, text, color, track, max(1, max_w - diameter - gap))
+    bearing = words.get_bounding_rect().x
+    width = diameter + gap + words.get_width() + 4
     canvas = pygame.Surface((max(1, width), max(words.get_height(), 1)), pygame.SRCALPHA)
     _disc(canvas, radius, cap_mid, radius, color)
-    canvas.blit(words, (diameter + gap, 0))
-    return canvas
+    dot = canvas.get_bounding_rect()
+    origin = dot.right + gap - bearing
+    canvas.blit(words, (origin, 0))
+    used = max(1, origin + words.get_width())
+    return canvas.subsurface((0, 0, min(used, canvas.get_width()), canvas.get_height())).copy()
 
 
 def _shown_line(face, text, width):
@@ -5256,13 +5243,13 @@ def draw_sports(surf, L, card, rect, now=None):
     away_shown = paint_name(card["away"], cx_r)
     paint_mark(card["home"], cx_l)
     paint_mark(card["away"], cx_r)
+    center_w = L(SPORTS_CENTER_W)
     if status_ink == LISTENING and str(status).startswith("LIVE"):
-        stat_img = _live_status(stat_f, status, status_ink, track)
+        stat_img = _live_status(stat_f, status, status_ink, track, L(SPORTS_DOT_GAP), center_w)
     else:
-        stat_img = _letterspaced(stat_f, status, status_ink, track)
+        stat_img = _fit_tracked(stat_f, status, status_ink, track, center_w)
     league_text = str(card.get("league") or "")
-    _line(surf, "body", league_px, league_text, MUTED, L(SPORTS_CENTER_W))
-    league_img = _letterspaced(league_f, league_text, MUTED, track)
+    league_img = _fit_tracked(league_f, league_text, MUTED, track, center_w)
     # Center the visible dot and words, not the transparent side bearings.
     ink_x, _ink_y = _ink_center(stat_img)
     show(surf, stat_img, (int(round(cx_c - ink_x)), stat_base - stat_f.get_ascent()))

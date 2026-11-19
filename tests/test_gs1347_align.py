@@ -270,9 +270,69 @@ class Stack(unittest.TestCase):
             self.assertTrue(_same(surf.get_at(mid), gs.LISTENING), (size, surf.get_at(mid)))
             for corner in ((left, top), (right, top), (left, bot), (right, bot)):
                 self.assertFalse(_same(surf.get_at(corner), gs.LISTENING), (size, corner, surf.get_at(corner)))
+            cap_h = gs.font("display", _px(layout, 22)).render("H", True, gs.LISTENING).get_bounding_rect().h
+            diameter = max(2, int(round(cap_h * 0.7)))
+            self.assertTrue(_near(right - left + 1, diameter), (size, right - left + 1, diameter))
+            self.assertTrue(_near(bot - top + 1, diameter), (size, bot - top + 1, diameter))
+            nxt = x
+            while nxt <= max(xs) and not any(px == nxt for px, _py in teal):
+                nxt += 1
+            self.assertTrue(_near(nxt - right - 1, _px(layout, 8)), (size, nxt - right - 1, _px(layout, 8)))
+            text_ys = [py for px, py in teal if px >= nxt]
+            text_mid = (min(text_ys) + max(text_ys)) // 2
+            self.assertTrue(_near(mid[1], text_mid), (size, mid[1], text_mid))
             self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "LIVE \u00b7 Q2", size)
             self.assertNotIn("\u25cf", gs.LAST_SPORTS_GUIDE["status"])
             del painted
+
+    def test_a_long_period_and_league_stay_in_the_center_column(self):
+        period = "P" * 16
+        league = "L" * 24
+        for size in SIZES:
+            layout = gs.Layout(*size)
+            card = _card("Arkansas", "Denver", period=period, league=league, scores=(3, 2))
+            _painted, panel, surf, _layout = _paint(size, card)
+            col = _px(layout, 300)
+            cx = panel.left + panel.w // 2
+            left, right = cx - col // 2, cx - col // 2 + col
+            logo_top, logo_bot = gs.LAST_SPORTS_GUIDE["logo"]
+            teal, muted = [], []
+            for y in range(logo_top, logo_bot):
+                for x in range(panel.left, panel.right):
+                    pix = surf.get_at((x, y))
+                    if _same(pix, gs.LISTENING):
+                        teal.append(x)
+                    elif _same(pix, gs.MUTED):
+                        muted.append(x)
+            self.assertTrue(teal and muted, size)
+            self.assertGreaterEqual(min(teal), left, (size, min(teal), left))
+            self.assertLess(max(teal), right, (size, max(teal), right))
+            self.assertGreaterEqual(min(muted), left, (size, min(muted), left))
+            self.assertLess(max(muted), right, (size, max(muted), right))
+
+    def test_today_follows_the_station_zone_across_midnight(self):
+        old_tz, old_name = os.environ.get("TZ"), os.environ.get("TZ_NAME")
+        os.environ["TZ"] = "America/New_York"
+        os.environ["TZ_NAME"] = "America/Chicago"
+        time.tzset()
+        try:
+            # 12:30 AM Friday in New York is 11:30 PM Thursday in Chicago.
+            wall = time.strptime("2026-11-20 00:30", "%Y-%m-%d %H:%M")
+            card = _card("Kansas City", "Denver", status="scheduled", league="NFL")
+            card["starts_at"] = "2026-11-20T18:00:00Z"  # Friday noon in Chicago
+            _paint((1280, 720), card, now=wall)
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["status"], "SCHEDULED \u00b7 FRI")
+            self.assertEqual(gs.LAST_SPORTS_GUIDE["kick"], "12:00 PM")
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            if old_name is None:
+                os.environ.pop("TZ_NAME", None)
+            else:
+                os.environ["TZ_NAME"] = old_name
+            time.tzset()
 
     def test_badge_uses_the_logo_box_and_the_fixed_column(self):
         for size in SIZES:

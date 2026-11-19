@@ -1164,15 +1164,6 @@ class SportsLayout(unittest.TestCase):
         pygame.display.init()
         pygame.font.init()
 
-    def test_stack_reserves_no_gap_without_a_logo(self):
-        bare = gs.sports_stack(100, 400, 0, 40, 80, 10)
-        marked = gs.sports_stack(100, 400, 64, 40, 80, 10)
-        self.assertIsNone(bare[0])
-        self.assertLess(bare[1], marked[1])  # the name moves up; the logo's space is not kept
-        self.assertLess(marked[0], marked[1])
-        self.assertLess(marked[1], marked[2])
-        self.assertEqual(marked[1] - marked[0], 64 + 10)
-
     def test_logo_is_centered_above_the_name(self):
         root = tempfile.mkdtemp(prefix="gs-logo-layout-")
         old = gs._LOGO

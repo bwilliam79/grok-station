@@ -84,7 +84,7 @@ class SportsFrames(unittest.TestCase):
     def test_logos_and_pregame_type_at_both_frames(self):
         expect = {(1280, 720): 72, (2560, 1440): 144}
         for size in SIZES:
-            self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_PX), expect[size], size)
+            self.assertEqual(gs.Layout(*size)(gs.SPORTS_LOGO_BOX_H), expect[size], size)
             live = tiles._sports("live", True, True)
             final = tiles._sports("final", True, True)
             timed = tiles._sports("scheduled", True, True)
@@ -93,24 +93,13 @@ class SportsFrames(unittest.TestCase):
             old = gs._LOGO
             try:
                 frames = {}
-                used = {}
-                real_px = gs._pregame_px
-
-                def watching_px(score_px, label, _real=real_px):
-                    used[label] = score_px
-                    return _real(score_px, label)
-
                 for name, card, now in (
                     ("live", live, None),
                     ("final", final, None),
                     ("scheduled", timed, NOW),
                     ("tbd", tbd, NOW),
                 ):
-                    gs._pregame_px = watching_px
-                    try:
-                        painted, panel, surf = _paint(size, card, now)
-                    finally:
-                        gs._pregame_px = real_px
+                    painted, panel, surf = _paint(size, card, now)
                     frames[name] = (painted, panel, surf)
                     path = os.path.join(self.art, "sports-%s-%dx%d.png" % (name, size[0], size[1]))
                     pygame.image.save(surf, path)
