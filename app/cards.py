@@ -1413,21 +1413,35 @@ def _teams_doc(data):
     return doc if isinstance(doc, dict) else None
 
 
-def _read_capped(resp, limit, deadline):
-    """Read at most limit bytes before deadline. None when the body is larger or time runs out."""
+def _read_capped(resp, limit, deadline, conn=None):
+    """Read at most limit bytes before deadline. None when the body is larger or time runs out.
+
+    read1 returns whatever has arrived, up to n, so a slow drip is checked after each
+    chunk. An empty read1 is the end of the body. The socket wait is the time still
+    left, and never more than 5 seconds.
+    """
     parts = []
     total = 0
     while total <= limit:
-        if time.monotonic() >= deadline:
+        left = deadline - time.monotonic()
+        if left <= 0:
             return None
+        sock = getattr(conn, "sock", None) if conn is not None else None
+        if sock is not None:
+            try:
+                sock.settimeout(min(5.0, left))
+            except OSError:
+                return None
         try:
-            block = resp.read(min(65536, limit + 1 - total))
+            block = resp.read1(min(65536, limit + 1 - total))
         except Exception:
             return None
         if not block:
             break
         parts.append(block)
         total += len(block)
+        if time.monotonic() >= deadline:
+            return None
     if total > limit:
         return None
     return b"".join(parts)
@@ -1475,7 +1489,7 @@ def fetch_teams_bytes(url, opener=None):
                 return None
             if n > TEAM_LIST_MAX:
                 return None
-        data = _read_capped(resp, TEAM_LIST_MAX, deadline)
+        data = _read_capped(resp, TEAM_LIST_MAX, deadline, conn)
     except Exception:
         return None
     finally:

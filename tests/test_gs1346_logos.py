@@ -260,7 +260,7 @@ class ResolveCollegeLogo(unittest.TestCase):
 
     def test_a_dripping_body_aborts_inside_the_deadline_and_backs_off(self):
         class Drip:
-            def read(self, n):
+            def read1(self, n):
                 time.sleep(0.2)
                 return b"x"
 
