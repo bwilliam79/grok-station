@@ -1368,11 +1368,7 @@ def _read_teams(path):
         return None
     if len(data) > TEAM_LIST_MAX:
         return None
-    try:
-        doc = json.loads(data.decode("utf-8"))
-    except (UnicodeError, ValueError):
-        return None
-    return doc if isinstance(doc, dict) else None
+    return _teams_doc(data)
 
 
 def _teams_fresh(path, now):
@@ -1405,10 +1401,43 @@ def _write_teams(path, data):
                 pass
 
 
+TEAM_FETCH_S = 15  # the whole body, not one socket read
+
+
+def _teams_doc(data):
+    """A teams object, or None. A nested array and any other parse error are None, not a raise."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError, TypeError, MemoryError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _read_capped(resp, limit, deadline):
+    """Read at most limit bytes before deadline. None when the body is larger or time runs out."""
+    parts = []
+    total = 0
+    while total <= limit:
+        if time.monotonic() >= deadline:
+            return None
+        try:
+            block = resp.read(min(65536, limit + 1 - total))
+        except Exception:
+            return None
+        if not block:
+            break
+        parts.append(block)
+        total += len(block)
+    if total > limit:
+        return None
+    return b"".join(parts)
+
+
 def fetch_teams_bytes(url, opener=None):
     """The teams list body, or None. opener(url) is the test hook and does not use the network.
 
     A real fetch is HTTPS to site.api.espn.com only, pinned, with no redirect, and capped.
+    The body must finish within TEAM_FETCH_S. A slow drip is a failure.
     """
     if opener is not None:
         try:
@@ -1429,6 +1458,7 @@ def fetch_teams_bytes(url, opener=None):
     ctx = ssl.create_default_context()
     conn = PinnedHTTPSConnection(parts.hostname, pin, port=parts.port or 443, timeout=5, context=ctx)
     path = (parts.path or "/") + ("?" + parts.query if parts.query else "")
+    deadline = time.monotonic() + TEAM_FETCH_S
     try:
         conn.request("GET", path, headers={"User-Agent": "grok-station", "Accept": "application/json"})
         resp = conn.getresponse()
@@ -1445,12 +1475,12 @@ def fetch_teams_bytes(url, opener=None):
                 return None
             if n > TEAM_LIST_MAX:
                 return None
-        data = resp.read(TEAM_LIST_MAX + 1)
+        data = _read_capped(resp, TEAM_LIST_MAX, deadline)
     except Exception:
         return None
     finally:
         conn.close()
-    if len(data) > TEAM_LIST_MAX:
+    if not data or len(data) > TEAM_LIST_MAX:
         return None
     return data
 
@@ -1476,8 +1506,8 @@ def teams_list_allowed(cache):
 def _store_teams(path, data):
     """Write a teams list when the body is a real ESPN payload. Returns the document, or None."""
     try:
-        doc = json.loads(data.decode("utf-8"))
-    except (UnicodeError, ValueError):
+        doc = _teams_doc(data)
+    except Exception:
         return None
     if not isinstance(doc, dict) or not _team_rows(doc):
         return None
@@ -1540,9 +1570,13 @@ def schedule_teams_refresh(cache, path, url, opener=None, now=None):
         _TEAM_REFRESH.add(path)
 
     def run():
+        stored = None
         try:
-            data = fetch_teams_bytes(url, opener)
-            stored = _store_teams(path, data) if data else None
+            try:
+                data = fetch_teams_bytes(url, opener)
+                stored = _store_teams(path, data) if data else None
+            except Exception:
+                stored = None
             with _TEAM_LOCK:
                 if stored is None:
                     _TEAM_FAIL_AT[path] = time.monotonic()

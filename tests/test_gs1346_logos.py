@@ -232,6 +232,66 @@ class ResolveCollegeLogo(unittest.TestCase):
         time.sleep(0.3)
         self.assertEqual(calls, [])
 
+    def test_a_nested_array_is_one_fetch_and_the_cache_does_not_raise(self):
+        nested = (b"[" * 10000) + b"0" + (b"]" * 10000)
+        calls = []
+
+        def opener(url):
+            calls.append(url)
+            return nested
+
+        self.cache.team_refresh = True
+        path = cards._teams_path(self.root, "football", "college-football")
+        card = _card(("Central Arkansas", "CARK"), ("Arkansas", "ARK"))
+        self._prepare(card, opener=opener)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and path not in cards._TEAM_FAIL_AT:
+            time.sleep(0.02)
+        self.assertIn(path, cards._TEAM_FAIL_AT)
+        self.assertEqual(len(calls), 1)
+        self._prepare(card, opener=opener)
+        time.sleep(0.3)
+        self.assertEqual(len(calls), 1)
+        os.makedirs(self.root, exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(nested)
+        self.assertIsNone(cards._read_teams(path))
+        self.assertEqual(cards.load_team_index(self.cache, "football", "college-football", "ncaa", True), {})
+
+    def test_a_dripping_body_aborts_inside_the_deadline_and_backs_off(self):
+        class Drip:
+            def read(self, n):
+                time.sleep(0.2)
+                return b"x"
+
+        calls = []
+        elapsed = []
+        old = cards.TEAM_FETCH_S
+        cards.TEAM_FETCH_S = 0.45
+
+        def opener(url):
+            calls.append(url)
+            started = time.monotonic()
+            got = cards._read_capped(Drip(), cards.TEAM_LIST_MAX, started + cards.TEAM_FETCH_S)
+            elapsed.append(time.monotonic() - started)
+            return got
+
+        self.cache.team_refresh = True
+        path = cards._teams_path(self.root, "football", "college-football")
+        try:
+            self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=opener)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and path not in cards._TEAM_FAIL_AT:
+                time.sleep(0.02)
+        finally:
+            cards.TEAM_FETCH_S = old
+        self.assertEqual(len(calls), 1)
+        self.assertLess(elapsed[0], 0.45 + 0.35)
+        self.assertIn(path, cards._TEAM_FAIL_AT)
+        self._prepare(_card(("Central Arkansas", "CARK"), ("Arkansas", "ARK")), opener=opener)
+        time.sleep(0.3)
+        self.assertEqual(len(calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

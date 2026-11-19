@@ -3399,43 +3399,41 @@ def _fit_logo(img, max_w, max_h):
     return crop
 
 
+_LOGO_FIT = {}  # (id, mtime, size, box) -> fitted surface. A draw does not crop again.
+_LOGO_FIT_MAX = 32
+
+
 def _loaded_logo(team, box):
     """A cached logo fitted in box, or None when there is nothing to draw.
 
     A missing file, or a file pygame cannot read, is None. This does not fetch
     and does not leave a broken image. The visible pixels are fitted, so a wide
-    mark stays wide and a square mark stays square.
+    mark stays wide and a square mark stays square. The fitted surface is kept
+    for this file and this box.
     """
     lid = team.get("logo_id") if isinstance(team, dict) else None
     path = logo_cache().path_for(lid) if isinstance(lid, str) else None
     if not path or not os.path.isfile(path):
         return None
     try:
+        st = os.stat(path)
+        max_w, max_h = _logo_box(box)
+        key = (lid, st.st_mtime_ns, st.st_size, max_w, max_h)
+        hit = _LOGO_FIT.get(key)
+        if hit is not None:
+            return hit
         img = pygame.image.load(path)
         try:
             img = img.convert_alpha()
         except pygame.error:
             pass
-        max_w, max_h = _logo_box(box)
-        return _fit_logo(img, max_w, max_h)
+        fitted = _fit_logo(img, max_w, max_h)
     except Exception:
         return None
-
-
-def team_mark(team, px):
-    """A cached logo, or a monogram. This does not fetch.
-
-    A logo id with no file yet (the download is still in the background) is a monogram.
-    The score card uses team_face instead, so a missing logo does not reserve a gap.
-
-    convert_alpha needs a display mode. Demo renders and tests often have none,
-    and a decoded logo should still show rather than falling back to a monogram.
-    """
-    img = _loaded_logo(team, px)
-    if img is not None:
-        return img
-    abbr = team.get("abbr") if isinstance(team, dict) else "?"
-    return monogram_shield(abbr or "?", px)
+    if len(_LOGO_FIT) >= _LOGO_FIT_MAX:
+        _LOGO_FIT.clear()
+    _LOGO_FIT[key] = fitted
+    return fitted
 
 
 def team_face(team, box):

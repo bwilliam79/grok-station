@@ -7,6 +7,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import sys
 import unittest
 
@@ -33,7 +34,10 @@ def _load_seal():
 
 
 class ReplyVoice(unittest.IsolatedAsyncioTestCase):
-    asyncSetUp = test_avatar.Avatar.asyncSetUp
+    async def asyncSetUp(self):
+        await test_avatar.Avatar.asyncSetUp(self)
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
     asyncTearDown = test_avatar.Avatar.asyncTearDown
 
     def _pin_max(self):

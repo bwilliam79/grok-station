@@ -994,11 +994,11 @@ class Station(unittest.TestCase):
         gs._trend(box, 4, 2, 14, "down")
         self.assertTrue(_has(box, gs.RED))
         self.assertFalse(_has(box, gs.GREEN))
-        mono = gs.team_mark({"name": "Harbor City", "abbr": "HC"}, 48)
+        mono = gs.monogram_shield("HC", 48)
         path = os.path.join(self.root, "ab" * 32)
         with open(path, "wb") as fh:
             fh.write(tiny_png())
-        logo = gs.team_mark({"name": "Harbor City", "abbr": "HC", "logo_id": "ab" * 32}, 48)
+        logo = gs._loaded_logo({"name": "Harbor City", "abbr": "HC", "logo_id": "ab" * 32}, 48)
         self.assertNotEqual(pygame.image.tostring(mono, "RGBA"), pygame.image.tostring(logo, "RGBA"))
         self.assertEqual(fetches, [])
 
